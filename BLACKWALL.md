@@ -152,6 +152,22 @@ fill the cold-start gap.
 - **`Content-Length`-only body read.** The MVP server reads the body by
   `Content-Length`; chunked `Transfer-Encoding` is not parsed. Fine for the
   localhost/agent path; revisit if exposed behind a proxy.
+- **Outcome reports are unauthenticated (ledger-integrity risk).**
+  `POST /v1/report-outcome` accepts any `receipt_id` + outcome from any caller,
+  so a malicious reporter could inflate a counterparty's reputation (spam
+  `delivered`) or tank a rival (spam `disputed`). The ledger is only as
+  trustworthy as its outcome reports. Mitigations for production, in order:
+  (1) the **autonomous on-chain settlement watcher** — corroborate `settled`
+  from chain, not self-report (trustless); (2) require reports to be **signed by
+  the original `agent_id`** and only accept the issuing agent's report for a
+  receipt; (3) weight self-reported delivery vs. chain-confirmed settlement
+  differently in scoring. Built now: replays are idempotent (one outcome per
+  receipt, last-wins) and receipts are unique per payment — but authenticity is
+  not yet enforced.
+- **Re-aggregates the whole ledger per lookup.** `LedgerReputationSource` folds
+  every event on each `lookup()`, and `price_history` is unbounded. Fine at
+  scaffold scale; production keeps a rolling in-memory aggregate updated on
+  append and caps/decays history.
 
 ## Deferred (NOT in this build)
 

@@ -66,7 +66,7 @@ def aggregate_counterparties(events):
     # Two passes (verdicts, then outcomes) -> materialize once so a one-shot
     # generator (EventLedger.read_events) isn't exhausted by the first pass.
     events = list(events)
-    by_receipt = {}      # receipt_id -> (counterparty, amount_str)
+    by_receipt = {}      # receipt_id -> (counterparty, amount, observed_amount)
     agg = {}             # counterparty -> mutable accumulator
 
     def acc(cp):
@@ -80,9 +80,9 @@ def aggregate_counterparties(events):
         if e.get("kind") == "verdict":
             rid = e.get("receipt_id")
             cp = e.get("counterparty")
-            if not cp:
+            if not cp or not rid:
                 continue
-            by_receipt[rid] = (cp, e.get("amount"))
+            by_receipt[rid] = [cp, e.get("amount"), None]
             a = acc(cp)
             a["verdicts"] += 1
             ts = e.get("ts")
@@ -90,40 +90,53 @@ def aggregate_counterparties(events):
                 a["first_ts"] = min(a["first_ts"], ts) if a["first_ts"] else ts
                 a["last_ts"] = max(a["last_ts"], ts) if a["last_ts"] else ts
 
-    # Second pass: attribute outcomes.
+    # Second pass: collapse outcomes to ONE per receipt (last write wins). This
+    # makes replays / retries / status updates idempotent -- a receipt counts
+    # exactly once no matter how many times its outcome is reported.
+    final_outcome = {}   # receipt_id -> outcome
     for e in events:
         if e.get("kind") != "outcome":
             continue
         rid = e.get("receipt_id")
-        ref = by_receipt.get(rid)
-        if ref is None:
+        if rid not in by_receipt:
             continue  # outcome for an unknown receipt -> cannot attribute
-        cp, amount = ref
+        final_outcome[rid] = e.get("outcome")
+        if e.get("observed_amount") is not None:
+            by_receipt[rid][2] = e.get("observed_amount")
+
+    for rid, outcome in final_outcome.items():
+        cp, amount, observed = by_receipt[rid]
         a = acc(cp)
-        outcome = e.get("outcome")
+        settled = outcome in GOOD_OUTCOMES or outcome in BAD_OUTCOMES
         if outcome in GOOD_OUTCOMES:
             a["good"] += 1
-            amt = e.get("observed_amount") or amount
-            if amt is not None:
-                a["amounts"].append(str(amt))
         elif outcome in BAD_OUTCOMES:
             a["bad"] += 1
+        # Price history is "what this counterparty charged on settled payments"
+        # -- include disputed ones too (the charge is real regardless of
+        # delivery); exclude NEUTRAL (abandoned, never settled).
+        if settled:
+            amt = observed if observed is not None else amount
+            if amt is not None:
+                a["amounts"].append(str(amt))
 
     records = {}
     for cp, a in agg.items():
-        settlements = a["good"]
-        disputes = a["bad"]
-        decided = settlements + disputes
-        dispute_rate = (disputes / decided) if decided else None
+        good, bad = a["good"], a["bad"]
+        decided = good + bad     # total SETTLED payments (good + disputed)
+        dispute_rate = (bad / decided) if decided else None
         records[cp] = {
-            "settlement_count": settlements,
+            # settlement_count is the total settled population that
+            # reputation_score splits by dispute_rate -- so it is good+bad, not
+            # good-only, which makes the Beta posterior exact.
+            "settlement_count": decided,
             "dispute_rate": dispute_rate,   # None until an outcome is observed
             "price_history": a["amounts"],
             "first_seen": a["first_ts"],
             "last_seen": a["last_ts"],
             "_meta": {
                 "source": "blackwall-ledger",
-                "known": settlements > 0 or disputes > 0,
+                "known": decided > 0,
                 "verdicts_seen": a["verdicts"],
                 "outcomes_seen": decided,
                 "dispute_rate_is_observed": decided > 0,

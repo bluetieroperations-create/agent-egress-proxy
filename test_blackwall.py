@@ -297,6 +297,18 @@ class TestForecastEndToEnd(unittest.TestCase):
         resp, err = bw.forecast(payload, self.src)
         self.assertEqual(resp["verdict"], "HOLD")
 
+    def test_receipt_unique_per_payment(self):
+        # The receipt is the ledger's join key: it MUST be unique per payment,
+        # even for two different counterparties with identical verdict content,
+        # and even for repeated identical requests. (Regression: it used to be a
+        # hash of verdict-only and collided across counterparties.)
+        base = {"amount": "0.09", "asset": "USDC", "chain": "base"}
+        a, _ = bw.forecast(dict(base, counterparty="0xAAA"), self.src)
+        b, _ = bw.forecast(dict(base, counterparty="0xBBB"), self.src)
+        c, _ = bw.forecast(dict(base, counterparty="0xAAA"), self.src)
+        self.assertNotEqual(a["receipt_id"], b["receipt_id"])
+        self.assertNotEqual(a["receipt_id"], c["receipt_id"])
+
     def test_response_shape_matches_contract(self):
         payload = {
             "counterparty": "0xKNOWNGOOD000000000000000000000000000001",

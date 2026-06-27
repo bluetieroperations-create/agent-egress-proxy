@@ -54,8 +54,34 @@ class TestAggregate(unittest.TestCase):
         events += [{"kind": "outcome", "receipt_id": "r4",
                     "outcome": "disputed"}]
         recs = L.aggregate_counterparties(events)
-        self.assertEqual(recs["0xA"]["settlement_count"], 4)
+        # settlement_count is total SETTLED (good + disputed) = 5, so that
+        # reputation_score's Beta split by dispute_rate is exact.
+        self.assertEqual(recs["0xA"]["settlement_count"], 5)
         self.assertAlmostEqual(recs["0xA"]["dispute_rate"], 0.2)  # 1 of 5
+
+    def test_duplicate_outcome_counts_once(self):
+        # Replays / retries must be idempotent (last write wins).
+        events = [
+            {"kind": "verdict", "receipt_id": "r1", "counterparty": "0xA",
+             "amount": "0.09", "ts": "t"},
+            {"kind": "outcome", "receipt_id": "r1", "outcome": "delivered"},
+            {"kind": "outcome", "receipt_id": "r1", "outcome": "delivered"},
+        ]
+        recs = L.aggregate_counterparties(events)
+        self.assertEqual(recs["0xA"]["settlement_count"], 1)
+        self.assertEqual(recs["0xA"]["price_history"], ["0.09"])
+
+    def test_outcome_status_update_last_wins(self):
+        # delivered then later disputed -> final state is disputed.
+        events = [
+            {"kind": "verdict", "receipt_id": "r1", "counterparty": "0xA",
+             "amount": "0.09", "ts": "t"},
+            {"kind": "outcome", "receipt_id": "r1", "outcome": "delivered"},
+            {"kind": "outcome", "receipt_id": "r1", "outcome": "disputed"},
+        ]
+        recs = L.aggregate_counterparties(events)
+        self.assertEqual(recs["0xA"]["settlement_count"], 1)  # still 1 settled
+        self.assertAlmostEqual(recs["0xA"]["dispute_rate"], 1.0)
 
     def test_orphan_outcome_ignored(self):
         events = [{"kind": "outcome", "receipt_id": "ghost",

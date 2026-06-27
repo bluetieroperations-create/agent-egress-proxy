@@ -436,7 +436,20 @@ def forecast(payload, reputation_source, ledger=None):
         counterparty=clean["counterparty"],
         expected_recipient=clean["expected_recipient"],
     )
-    verdict["receipt_id"] = sign_receipt(verdict)
+    # The receipt is the ledger's join key, so it must be UNIQUE PER PAYMENT --
+    # not just a hash of the verdict content (two counterparties with identical
+    # stats produce identical verdicts and would otherwise collide). Sign over
+    # the request identity plus a fresh nonce.
+    receipt_payload = dict(verdict)
+    receipt_payload.update({
+        "counterparty": clean["counterparty"],
+        "amount": str(clean["amount"]),
+        "asset": clean["asset"],
+        "chain": clean["chain"],
+        "agent_id": clean.get("agent_id"),
+        "nonce": os.urandom(12).hex(),
+    })
+    verdict["receipt_id"] = sign_receipt(receipt_payload)
 
     if ledger is not None:
         ledger.record_verdict(
