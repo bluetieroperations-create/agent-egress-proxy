@@ -255,11 +255,21 @@ Per the spec's build order, on purpose:
    + outcome ledger.
 3. ~~**x402 billing handshake**~~ — **BUILT** (`x402.py`); see "Billing" below.
 4. ~~**MCP server wrapper**~~ — **BUILT** (`mcp_server.py`); see "MCP" below.
-5. **Directory listing** (awesome-x402 / x402 service discovery).
-6. **Self-learned trust-graduation engine** — shrinks HOLD over time by
-   graduating repeat-safe counterparties. **Scaffolded** in `ledger.py` (the
-   verdict→outcome flywheel above); the production version keeps a rolling
-   aggregate and adds the autonomous on-chain settlement watcher.
+5. ~~**Directory listing**~~ — **BUILT** (`discovery.py`, `DISCOVERY.md`):
+   `GET /.well-known/x402` service card + awesome-x402 submission entry.
+6. ~~**Self-learned trust-graduation engine**~~ — **BUILT**: the verdict→outcome
+   flywheel (`ledger.py`) + the autonomous settlement watcher (`settlement_watch.py`)
+   + the indexed reputation store (`reputation_store.py`, sub-ms hot-path reads).
+   `CombinedReputationSource` fuses on-chain settlement breadth (store) with the
+   ledger's observed disputes into one verdict-driving record.
+
+**Production data path** (replaces the mocks): `reputation_store.ReputationStore`
+is a SQLite-indexed settlement store — background ingest from Base (slow ok),
+**sub-millisecond hot-path `lookup()`** (vs 1–14 s for the direct indexer — see
+the spike). It is the spike's recommended architecture, realized. The x402
+billing now runs against a real facilitator over HTTP (`HttpFacilitator`,
+`--facilitator <url>`), with `facilitator_sim.py` as a local reference; only the
+production facilitator URL is credential-gated.
 
 Also out of scope for v1 (per spec §7): escrow/custody, refund/dispute filing,
 and sanctions screening as a standalone product (it's a STOP *signal* here, not

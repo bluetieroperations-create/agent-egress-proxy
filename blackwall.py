@@ -508,8 +508,21 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/healthz":
             self._send_json(200, {"status": "ok"})
+        elif self.path in ("/.well-known/x402", "/v1/discovery"):
+            self._send_json(200, self._descriptor())
         else:
             self._send_json(404, {"error": "not found"})
+
+    def _descriptor(self):
+        from discovery import build_descriptor, human_price
+        if self.billing is not None:
+            cfg = self.billing.cfg
+            return build_descriptor(
+                pay_to=cfg.pay_to,
+                price=human_price(cfg.price_atomic, cfg.decimals),
+                asset="USDC", network=cfg.network,
+                mcp=True)
+        return build_descriptor(mcp=True)  # unpriced (billing off)
 
     def _read_json_body(self):
         """Return (payload, None) or (None, error_string). Bounded + guarded."""
