@@ -15,9 +15,10 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `addresses.py` (EVM address validation/normalization),
   `x402.py` (Blackwall's own x402 billing: 402 challenge, facilitator seam,
   replay guard, sessions),
+  `mcp_server.py` (MCP stdio server wrapping the verdict engine),
   `BLACKWALL.md`, `docs/DATA_SOURCE_SPIKE.md`. Tests: `test_blackwall.py`,
   `test_ledger.py`, `test_reputation_onchain.py`, `test_settlement_watch.py`,
-  `test_addresses.py`, `test_x402.py`.
+  `test_addresses.py`, `test_x402.py`, `test_mcp_server.py`.
 
 Convention: the security/decision-critical logic lives in small **pure functions**
 at the top of each module, unit-tested TDD-first with **mutation notes** (each
@@ -25,7 +26,7 @@ test states the mutation it kills). Keep new code stdlib-only and match this sty
 
 Run all tests:
 ```sh
-python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py
+python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py
 ```
 
 ## Standing working practice: ALWAYS deep audit → eval → verify

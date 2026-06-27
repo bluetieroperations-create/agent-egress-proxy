@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""
+mcp_server.py -- Blackwall as an MCP server (spec step 4).
+
+Wraps the verdict engine as a Model Context Protocol server over stdio, so any
+MCP-capable agent can discover and call Blackwall self-serve. It is a THIN
+transport wrapper: the tools delegate straight to blackwall.forecast() /
+ledger.record_outcome() -- no decision logic lives here.
+
+stdlib-only (no `mcp` pip SDK): a minimal JSON-RPC 2.0 loop over newline-
+delimited stdio, implementing the MCP methods an agent needs (initialize,
+tools/list, tools/call, ping). The dispatch core `handle()` is PURE (dict in ->
+dict|None out) and unit-tested without any stdio.
+
+NOTE on transport vs billing: MCP stdio is the LOCAL self-serve interface and is
+unbilled here; monetized/remote access is the x402 HTTP endpoints (x402.py).
+All chatter stays on stdout as JSON-RPC; logs go to STDERR (stdout must be clean).
+"""
+from __future__ import annotations
+
+import json
+import sys
+
+from blackwall import MockReputationSource, forecast
+
+PROTOCOL_VERSION = "2024-11-05"
+SERVER_INFO = {"name": "blackwall", "version": "0.1"}
+
+# JSON-RPC error codes
+PARSE_ERROR = -32700
+INVALID_REQUEST = -32600
+METHOD_NOT_FOUND = -32601
+INVALID_PARAMS = -32602
+INTERNAL_ERROR = -32603
+
+_FORECAST_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "counterparty": {"type": "string",
+                         "description": "recipient wallet from the 402"},
+        "amount": {"type": "string",
+                   "description": "amount as a decimal string, e.g. \"0.09\""},
+        "asset": {"type": "string", "description": "e.g. USDC"},
+        "chain": {"type": "string", "description": "e.g. base"},
+        "payer": {"type": "string",
+                  "description": "agent's EVM wallet (optional; binds settlement)"},
+        "resource": {"type": "string", "description": "what's being paid for"},
+        "agent_id": {"type": "string", "description": "caller DID/identity"},
+        "context": {"type": "object",
+                    "description": "{quoted_price_history, expected_recipient}"},
+    },
+    "required": ["counterparty", "amount", "asset", "chain"],
+}
+
+_OUTCOME_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "receipt_id": {"type": "string", "description": "receipt from a prior forecast"},
+        "outcome": {"type": "string",
+                    "description": "settled|delivered|underdelivered|disputed|refunded|abandoned"},
+        "observed_amount": {"type": "string"},
+        "settlement_tx": {"type": "string"},
+    },
+    "required": ["receipt_id", "outcome"],
+}
+
+
+def _ok(mid, result):
+    return {"jsonrpc": "2.0", "id": mid, "result": result}
+
+
+def _err(mid, code, message):
+    return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}}
+
+
+def _tool_text(resp):
+    """Human-readable one-liner for the verdict (the text content block)."""
+    head = "%s (score %s)" % (resp["verdict"], resp["score"])
+    reasons = "; ".join(resp.get("reasons", [])[:3])
+    return "Blackwall verdict: %s\n%s\nreceipt: %s" % (head, reasons, resp["receipt_id"])
+
+
+class BlackwallMCP:
+    def __init__(self, reputation_source=None, ledger=None):
+        self.src = reputation_source or MockReputationSource()
+        self.ledger = ledger
+
+    # ---- tool catalog ----
+    def _tools(self):
+        tools = [{
+            "name": "forecast_payment",
+            "description": ("Pre-signature x402 payment verdict: GO / HOLD / STOP "
+                            "for paying a counterparty, with reputation + "
+                            "price-anomaly signals and a signed receipt."),
+            "inputSchema": _FORECAST_SCHEMA,
+        }]
+        if self.ledger is not None:
+            tools.append({
+                "name": "report_outcome",
+                "description": ("Report what a prior verdict's payment did "
+                                "(settled/delivered/disputed/...), keyed by "
+                                "receipt_id -- feeds Blackwall's reputation."),
+                "inputSchema": _OUTCOME_SCHEMA,
+            })
+        return tools
+
+    # ---- pure dispatch ----
+    def handle(self, msg):
+        """Dispatch one JSON-RPC message. Returns a response dict, or None for
+        notifications (no `id`). PURE -- no stdio."""
+        if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
+            return _err(None, INVALID_REQUEST, "invalid JSON-RPC 2.0 message")
+        method = msg.get("method")
+        is_notification = "id" not in msg
+        mid = msg.get("id")
+        if not isinstance(method, str):
+            return None if is_notification else _err(mid, INVALID_REQUEST, "missing method")
+
+        try:
+            if method == "initialize":
+                result = self._initialize(msg.get("params") or {})
+            elif method == "notifications/initialized":
+                return None  # ack-only notification
+            elif method == "ping":
+                result = {}
+            elif method == "tools/list":
+                result = {"tools": self._tools()}
+            elif method == "tools/call":
+                result = self._call_tool(msg.get("params") or {})
+            else:
+                return None if is_notification \
+                    else _err(mid, METHOD_NOT_FOUND, "method not found: %s" % method)
+        except Exception as e:  # never let a handler crash the loop
+            return None if is_notification \
+                else _err(mid, INTERNAL_ERROR, "%s: %s" % (type(e).__name__, e))
+
+        return None if is_notification else _ok(mid, result)
+
+    def _initialize(self, params):
+        # Echo the client's protocol version when given (per spec), else ours.
+        version = params.get("protocolVersion") or PROTOCOL_VERSION
+        return {
+            "protocolVersion": version,
+            "capabilities": {"tools": {}},
+            "serverInfo": SERVER_INFO,
+        }
+
+    def _call_tool(self, params):
+        name = params.get("name")
+        args = params.get("arguments") or {}
+        if not isinstance(args, dict):
+            return self._tool_error("arguments must be an object")
+
+        if name == "forecast_payment":
+            resp, err = forecast(args, self.src, self.ledger)
+            if err is not None:
+                return self._tool_error(err)
+            return {
+                "content": [{"type": "text", "text": _tool_text(resp)}],
+                "structuredContent": resp,
+                "isError": False,
+            }
+
+        if name == "report_outcome":
+            if self.ledger is None:
+                return self._tool_error("report_outcome unavailable: no ledger configured")
+            rid = args.get("receipt_id")
+            if not rid or not isinstance(rid, str):
+                return self._tool_error("receipt_id is required")
+            try:
+                self.ledger.record_outcome(
+                    receipt_id=args.get("receipt_id"),
+                    outcome=args.get("outcome"),
+                    observed_amount=args.get("observed_amount"),
+                    settlement_tx=args.get("settlement_tx"))
+            except (ValueError, TypeError) as e:
+                return self._tool_error(str(e))
+            return {
+                "content": [{"type": "text", "text": "recorded"}],
+                "isError": False,
+            }
+
+        return self._tool_error("unknown tool: %s" % name)
+
+    @staticmethod
+    def _tool_error(message):
+        # MCP convention: tool failures are a normal result with isError=true,
+        # not a JSON-RPC protocol error.
+        return {"content": [{"type": "text", "text": message}], "isError": True}
+
+    # ---- stdio loop ----
+    def serve_stdio(self, stdin=None, stdout=None):
+        stdin = stdin or sys.stdin
+        stdout = stdout or sys.stdout
+        for line in stdin:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                self._write(stdout, _err(None, PARSE_ERROR, "parse error"))
+                continue
+            resp = self.handle(msg)
+            if resp is not None:
+                self._write(stdout, resp)
+
+    @staticmethod
+    def _write(stdout, obj):
+        stdout.write(json.dumps(obj, separators=(",", ":")) + "\n")
+        stdout.flush()
+
+
+def main(argv=None):
+    import argparse
+    import os
+    p = argparse.ArgumentParser(description="Blackwall MCP server (stdio).")
+    p.add_argument("--ledger", default=os.environ.get("BLACKWALL_LEDGER"),
+                   help="ledger path; enables the report_outcome tool")
+    args = p.parse_args(argv)
+
+    ledger = None
+    if args.ledger:
+        from ledger import EventLedger
+        ledger = EventLedger(args.ledger)
+
+    sys.stderr.write("blackwall MCP server on stdio (ledger: %s)\n"
+                     % ("on" if ledger else "off"))
+    sys.stderr.flush()
+    BlackwallMCP(ledger=ledger).serve_stdio()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

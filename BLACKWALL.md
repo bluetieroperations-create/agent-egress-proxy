@@ -177,6 +177,24 @@ forecast calls then present `X-PAYMENT-SESSION` and skip per-call signing
 Pricing default is `0.001` USDC/call (sub-cent, the spec's per-check ceiling); a
 session is `price × credits` (no bulk discount yet).
 
+## MCP server (`mcp_server.py`)
+
+Wraps the verdict engine as a Model Context Protocol server over stdio, so any
+MCP-capable agent discovers and calls Blackwall self-serve. A thin transport
+wrapper — the tools delegate straight to `forecast()` / `record_outcome()`.
+
+```sh
+python mcp_server.py [--ledger blackwall_ledger.jsonl]
+```
+
+Tools: **`forecast_payment`** (GO/HOLD/STOP + signed receipt) and, with a ledger,
+**`report_outcome`**. Stdlib-only — a minimal JSON-RPC 2.0 loop (no `mcp` SDK),
+`initialize` / `tools/list` / `tools/call` / `ping`; the `handle()` dispatch core
+is pure and unit-tested, and the real stdio path is exercised via subprocess.
+Logs go to **stderr** so stdout stays clean JSON-RPC. MCP stdio is the local
+self-serve interface and is **unbilled**; monetized/remote access is the x402
+HTTP endpoints.
+
 ## Known limitations (eval notes)
 
 - **No price history → GO on small amounts.** A reputable counterparty with no
@@ -236,7 +254,7 @@ Per the spec's build order, on purpose:
    the dispute/moat signal isn't on-chain — Blackwall needs its own indexed store
    + outcome ledger.
 3. ~~**x402 billing handshake**~~ — **BUILT** (`x402.py`); see "Billing" below.
-4. **MCP server wrapper.**
+4. ~~**MCP server wrapper**~~ — **BUILT** (`mcp_server.py`); see "MCP" below.
 5. **Directory listing** (awesome-x402 / x402 service discovery).
 6. **Self-learned trust-graduation engine** — shrinks HOLD over time by
    graduating repeat-safe counterparties. **Scaffolded** in `ledger.py` (the
