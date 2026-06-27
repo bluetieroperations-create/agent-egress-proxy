@@ -134,6 +134,10 @@ def aggregate_counterparties(events):
             # reputation_score splits by dispute_rate -- so it is good+bad, not
             # good-only, which makes the Beta posterior exact.
             "settlement_count": decided,
+            # Of those, how many are trustless (chain-watch confirmed). The
+            # verdict's thin-history gate uses THIS, so unauthenticated
+            # self-reports cannot graduate a counterparty to GO.
+            "confirmed_settlement_count": a["chain_confirmed"],
             "dispute_rate": dispute_rate,   # None until an outcome is observed
             "price_history": a["amounts"],
             "first_seen": a["first_ts"],
@@ -248,6 +252,7 @@ class LedgerReputationSource:
             return rec
         return {
             "settlement_count": 0,
+            "confirmed_settlement_count": 0,
             "dispute_rate": None,
             "price_history": [],
             "sanctioned": False,

@@ -238,6 +238,59 @@ class TestSignReceipt(unittest.TestCase):
                             bw.sign_receipt(obj, key=b"k2"))
 
 
+class TestConfirmedSettlementGate(unittest.TestCase):
+    """
+    decide_payment's thin-history gate counts CONFIRMED settlements only.
+
+    Mutation note: gate on settlement_count instead of confirmed_settlement_count
+    -> test_self_reported_inflation_still_holds FAILS (would GO).
+    """
+
+    def test_self_reported_inflation_still_holds(self):
+        # 1000 reported settlements but 0 confirmed -> thin -> HOLD.
+        rec = {"settlement_count": 1000, "confirmed_settlement_count": 0,
+               "dispute_rate": 0.0}
+        v = bw.decide_payment("0.09", rec, ["0.09"] * 5, counterparty="0xA")
+        self.assertEqual(v["verdict"], "HOLD")
+        self.assertTrue(any("chain-confirmed" in r for r in v["reasons"]))
+
+    def test_confirmed_settlements_go(self):
+        rec = {"settlement_count": 1000, "confirmed_settlement_count": 30,
+               "dispute_rate": 0.0}
+        v = bw.decide_payment("0.09", rec, ["0.09"] * 5, counterparty="0xA")
+        self.assertEqual(v["verdict"], "GO")
+
+    def test_absent_field_vouches_all(self):
+        # On-chain/seed sources omit the field -> count all (backward compatible).
+        rec = {"settlement_count": 30, "dispute_rate": 0.0}
+        v = bw.decide_payment("0.09", rec, ["0.09"] * 5, counterparty="0xA")
+        self.assertEqual(v["verdict"], "GO")
+
+
+class TestReportToken(unittest.TestCase):
+    """sign/verify_report_token: capability authorizing an outcome report."""
+
+    def test_roundtrip(self):
+        t = bw.sign_report_token("bw_abc", key=b"k")
+        self.assertTrue(bw.verify_report_token("bw_abc", t, key=b"k"))
+
+    def test_wrong_receipt_rejected(self):
+        t = bw.sign_report_token("bw_abc", key=b"k")
+        self.assertFalse(bw.verify_report_token("bw_other", t, key=b"k"))
+
+    def test_missing_or_garbage_rejected(self):
+        self.assertFalse(bw.verify_report_token("bw_abc", None, key=b"k"))
+        self.assertFalse(bw.verify_report_token("bw_abc", "deadbeef", key=b"k"))
+
+    def test_wrong_key_rejected(self):
+        t = bw.sign_report_token("bw_abc", key=b"k1")
+        self.assertFalse(bw.verify_report_token("bw_abc", t, key=b"k2"))
+
+    def test_not_the_receipt_id(self):
+        # domain-separated: the token is not just the receipt id.
+        self.assertNotEqual(bw.sign_report_token("bw_abc", key=b"k"), "bw_abc")
+
+
 class TestValidateRequest(unittest.TestCase):
     """validate_request: required fields + typed context."""
 

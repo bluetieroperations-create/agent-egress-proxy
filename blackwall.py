@@ -169,7 +169,16 @@ def decide_payment(amount, record, price_history,
     rep = reputation_score(record)
     ratio = price_anomaly_ratio(amount, price_history)
     a_score = anomaly_score(ratio)
-    thin = settlements < THIN_HISTORY_SETTLEMENTS
+    # The thin-history gate counts only CONFIRMED settlements -- on-chain
+    # (reputation store) or chain-watch-confirmed (ledger). A source that does
+    # not distinguish (None) vouches for all of its count (seed/on-chain). The
+    # ledger sets this to its chain-confirmed subset, so unauthenticated
+    # self-reported "settled" can inflate settlement_count but NOT graduate a
+    # counterparty out of HOLD.
+    confirmed = record.get("confirmed_settlement_count")
+    if confirmed is None:
+        confirmed = settlements
+    thin = confirmed < THIN_HISTORY_SETTLEMENTS
 
     reasons = []
 
@@ -234,9 +243,12 @@ def decide_payment(amount, record, price_history,
         else:
             verdict = "HOLD"
             if thin:
+                extra = ("" if confirmed == settlements
+                         else " (%d reported, only %d chain-confirmed)"
+                         % (settlements, confirmed))
                 reasons.append(
-                    "counterparty thin on history (%d < %d settlements) -- escalating"
-                    % (settlements, THIN_HISTORY_SETTLEMENTS)
+                    "counterparty thin on confirmed history (%d < %d) -- escalating%s"
+                    % (confirmed, THIN_HISTORY_SETTLEMENTS, extra)
                 )
             if rep < GO_REPUTATION_MIN:
                 reasons.append(
@@ -291,6 +303,32 @@ def sign_receipt(verdict_obj, key=None):
                            separators=(",", ":")).encode("utf-8")
     digest = hmac.new(key, canonical, hashlib.sha256).hexdigest()
     return "bw_" + digest[:24]
+
+
+def _receipt_key():
+    return os.environ.get("BLACKWALL_RECEIPT_KEY", "").encode("utf-8") \
+        or _DEV_RECEIPT_KEY
+
+
+def sign_report_token(receipt_id, key=None):
+    """
+    Capability token authorizing an OUTCOME report for `receipt_id`.
+
+    Returned to the caller alongside the verdict and required to POST an outcome.
+    Only Blackwall (holding the key) can compute it, so a party that merely knows
+    a receipt_id -- e.g. saw it in a log -- cannot forge a report. Domain-
+    separated from the receipt id with a "report:" prefix.
+    """
+    key = key or _receipt_key()
+    return hmac.new(key, ("report:" + str(receipt_id)).encode("utf-8"),
+                    hashlib.sha256).hexdigest()[:32]
+
+
+def verify_report_token(receipt_id, token, key=None):
+    """Constant-time check that `token` authorizes reporting on `receipt_id`."""
+    if not token or not isinstance(token, str):
+        return False
+    return hmac.compare_digest(token, sign_report_token(receipt_id, key))
 
 
 # ===========================================================================
@@ -468,6 +506,9 @@ def forecast(payload, reputation_source, ledger=None):
     verdict["receipt_id"] = sign_receipt(receipt_payload)
 
     if ledger is not None:
+        # The caller gets a capability token to later report this payment's
+        # outcome -- only the party that received the verdict can report on it.
+        verdict["report_token"] = sign_report_token(verdict["receipt_id"])
         ledger.record_verdict(
             receipt_id=verdict["receipt_id"],
             counterparty=clean["counterparty"],
@@ -609,6 +650,12 @@ class _Handler(BaseHTTPRequestHandler):
         outcome = payload.get("outcome")
         if not receipt_id or not isinstance(receipt_id, str):
             self._send_json(400, {"error": "missing receipt_id"})
+            return
+        # Authenticate the reporter: only the party that received the verdict
+        # holds a valid report_token for this receipt. Stops a third party who
+        # merely knows a receipt_id from poisoning a counterparty's reputation.
+        if not verify_report_token(receipt_id, payload.get("report_token")):
+            self._send_json(403, {"error": "invalid or missing report_token"})
             return
         try:
             self.ledger.record_outcome(

@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import sys
 
-from blackwall import MockReputationSource, forecast
+from blackwall import MockReputationSource, forecast, verify_report_token
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_INFO = {"name": "blackwall", "version": "0.1"}
@@ -56,12 +56,14 @@ _OUTCOME_SCHEMA = {
     "type": "object",
     "properties": {
         "receipt_id": {"type": "string", "description": "receipt from a prior forecast"},
+        "report_token": {"type": "string",
+                         "description": "report_token returned with that forecast (authorizes this report)"},
         "outcome": {"type": "string",
                     "description": "settled|delivered|underdelivered|disputed|refunded|abandoned"},
         "observed_amount": {"type": "string"},
         "settlement_tx": {"type": "string"},
     },
-    "required": ["receipt_id", "outcome"],
+    "required": ["receipt_id", "report_token", "outcome"],
 }
 
 
@@ -167,6 +169,8 @@ class BlackwallMCP:
             rid = args.get("receipt_id")
             if not rid or not isinstance(rid, str):
                 return self._tool_error("receipt_id is required")
+            if not verify_report_token(rid, args.get("report_token")):
+                return self._tool_error("invalid or missing report_token")
             try:
                 self.ledger.record_outcome(
                     receipt_id=args.get("receipt_id"),

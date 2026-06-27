@@ -130,6 +130,12 @@ def merge_records(records):
         return None
     out = {
         "settlement_count": max((r.get("settlement_count") or 0) for r in records),
+        # Confirmed = max trustless count across sources. A source that omits the
+        # field vouches for all of its settlement_count (on-chain store / seed);
+        # the ledger reports only its chain-confirmed subset.
+        "confirmed_settlement_count": max(
+            (r.get("confirmed_settlement_count", r.get("settlement_count") or 0) or 0)
+            for r in records),
         "dispute_rate": next((r.get("dispute_rate") for r in records
                               if r.get("dispute_rate") is not None), None),
         "price_history": max((r.get("price_history") or [] for r in records),

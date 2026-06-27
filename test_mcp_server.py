@@ -137,14 +137,35 @@ class TestReportOutcomeTool(unittest.TestCase):
               "arguments": {"counterparty": GOOD, "amount": "0.09",
                             "asset": "USDC", "chain": "base"}}))["result"]
         rid = f["structuredContent"]["receipt_id"]
+        tok = f["structuredContent"]["report_token"]  # capability from the verdict
         r = self.s.handle(req("tools/call", {"name": "report_outcome",
-              "arguments": {"receipt_id": rid, "outcome": "delivered"}}))["result"]
+              "arguments": {"receipt_id": rid, "report_token": tok,
+                            "outcome": "delivered"}}))["result"]
         self.assertFalse(r["isError"])
         self.assertEqual(self.led.aggregate()[GOOD]["settlement_count"], 1)
 
-    def test_invalid_outcome_is_tool_error(self):
+    def test_report_without_token_is_rejected(self):
+        f = self.s.handle(req("tools/call", {"name": "forecast_payment",
+              "arguments": {"counterparty": GOOD, "amount": "0.09",
+                            "asset": "USDC", "chain": "base"}}))["result"]
+        rid = f["structuredContent"]["receipt_id"]
+        # Knowing the receipt_id is NOT enough -- need the report_token.
         r = self.s.handle(req("tools/call", {"name": "report_outcome",
-              "arguments": {"receipt_id": "bw_x", "outcome": "exploded"}}))["result"]
+              "arguments": {"receipt_id": rid, "outcome": "delivered"}}))["result"]
+        self.assertTrue(r["isError"])
+        # verdict was recorded by the forecast, but NO outcome -> 0 settlements.
+        self.assertEqual(self.led.aggregate()[GOOD]["settlement_count"], 0)
+
+    def test_invalid_outcome_is_tool_error(self):
+        # valid token, but bad outcome -> still rejected (need a real receipt+token)
+        f = self.s.handle(req("tools/call", {"name": "forecast_payment",
+              "arguments": {"counterparty": GOOD, "amount": "0.09",
+                            "asset": "USDC", "chain": "base"}}))["result"]
+        rid = f["structuredContent"]["receipt_id"]
+        tok = f["structuredContent"]["report_token"]
+        r = self.s.handle(req("tools/call", {"name": "report_outcome",
+              "arguments": {"receipt_id": rid, "report_token": tok,
+                            "outcome": "exploded"}}))["result"]
         self.assertTrue(r["isError"])
 
     def test_missing_receipt_id_is_tool_error(self):

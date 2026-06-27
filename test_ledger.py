@@ -133,29 +133,38 @@ class TestChainedSource(unittest.TestCase):
 class TestFlywheel(unittest.TestCase):
     """The loop: verdict -> outcome -> drives the NEXT verdict's reputation."""
 
-    def test_self_learned_reputation_graduates_counterparty(self):
+    def test_self_reports_do_NOT_graduate_only_chain_confirmed_do(self):
+        # Security property: the verdict's thin-history gate counts only
+        # CHAIN-CONFIRMED settlements, so unauthenticated self-reports cannot
+        # graduate a counterparty to GO -- only the settlement watcher can.
         path = os.path.join(tempfile.mkdtemp(), "fly.jsonl")
         led = L.EventLedger(path)
         src = L.LedgerReputationSource(led)
         cp = "0xFRESH"
-
         payload = {"counterparty": cp, "amount": "0.09",
                    "asset": "USDC", "chain": "base"}
 
-        # First contact: ledger has nothing -> thin -> HOLD.
+        # First contact -> thin -> HOLD.
         resp1, err = bw.forecast(payload, src, ledger=led)
         self.assertIsNone(err)
         self.assertEqual(resp1["verdict"], "HOLD")
 
-        # Accumulate 25 clean delivered settlements for this counterparty.
+        # 25 SELF-REPORTED deliveries -> settlement_count rises, but confirmed
+        # stays 0 -> still HOLD (self-reports can't graduate).
         for i in range(25):
             r, _ = bw.forecast(dict(payload), src, ledger=led)
-            led.record_outcome(r["receipt_id"], "delivered")
-
-        # Now the ledger has graduated it out of thin-history -> GO.
+            led.record_outcome(r["receipt_id"], "delivered")  # source=self-report
         resp2, _ = bw.forecast(payload, src, ledger=led)
-        self.assertEqual(resp2["verdict"], "GO")
-        self.assertGreater(resp2["score"], 0.8)
+        self.assertEqual(resp2["verdict"], "HOLD")
+        self.assertEqual(src.lookup(cp)["settlement_count"], 25)
+        self.assertEqual(src.lookup(cp)["confirmed_settlement_count"], 0)
+
+        # Now 25 CHAIN-CONFIRMED settlements -> graduates to GO.
+        for i in range(25):
+            r, _ = bw.forecast(dict(payload), src, ledger=led)
+            led.record_outcome(r["receipt_id"], "settled", source="chain-watch")
+        resp3, _ = bw.forecast(payload, src, ledger=led)
+        self.assertEqual(resp3["verdict"], "GO")
 
 
 if __name__ == "__main__":
