@@ -97,6 +97,45 @@ them, so changing one flips a named test (mutation-checked, like the proxy).
 python -m unittest test_blackwall.py -v
 ```
 
+## The moat flywheel (data accumulation)
+
+The data-source spike found that the durable moat isn't data Blackwall can *read*
+from a public indexer — it's data Blackwall *accumulates*. The
+**verdict→outcome ledger** (`ledger.py`) is the write path that closes the loop:
+
+```
+forecast() ──writes──▶ VERDICT event ──┐
+                                        │  (settlement watch / agent report)
+LedgerReputationSource.lookup() ◀──aggregate──  OUTCOME event  (joined by receipt_id)
+        │
+        └──feeds──▶ next forecast()
+```
+
+Each verdict is logged with its signed `receipt_id`. The agent (or, later, an
+on-chain settlement watcher) reports what the payment actually did via
+`POST /v1/report-outcome`, keyed by that receipt. `aggregate_counterparties`
+folds the stream into per-counterparty records — `settlement_count`,
+**`dispute_rate` (the signal that is NOT on-chain)**, price history — which
+`LedgerReputationSource` serves back through the same `lookup()` seam. A fresh
+counterparty HOLDs; after enough clean settlements it graduates to GO
+(`test_ledger.py::TestFlywheel`). `dispute_rate` stays `None` (UNKNOWN) until an
+outcome is actually observed — never a fabricated 0.
+
+`ChainedReputationSource` lets the ledger lead and an on-chain/bootstrap source
+fill the cold-start gap.
+
+**Other accumulation taps** (don't all need agent cooperation):
+
+| Tap | Harvests | Cooperation |
+|-----|----------|-------------|
+| **402 quote corpus** | server's declared price/recipient per resource — price-norms from the quotes themselves | none, every call |
+| **On-chain settlement watch** | confirms paid / amount / timing after a GO | none |
+| **Egress proxy (sibling product)** | which endpoints an agent reaches *before* paying | none (if both used) |
+| **Verdict→outcome ledger** | dispute/underdelivery — the moat signal | partial |
+| **MCP distribution** | counterparty/amount/resource on every decision | none, once adopted |
+| **Facilitator partnership** | settlement confirmations for everyone | relationship |
+| **OFAC / scam-list feeds** | sanctions & known-bad bootstrap | none |
+
 ## Known limitations (eval notes)
 
 - **No price history → GO on small amounts.** A reputable counterparty with no
@@ -129,7 +168,9 @@ Per the spec's build order, on purpose:
 4. **MCP server wrapper.**
 5. **Directory listing** (awesome-x402 / x402 service discovery).
 6. **Self-learned trust-graduation engine** — shrinks HOLD over time by
-   graduating repeat-safe counterparties. The retention story, not the MVP.
+   graduating repeat-safe counterparties. **Scaffolded** in `ledger.py` (the
+   verdict→outcome flywheel above); the production version keeps a rolling
+   aggregate and adds the autonomous on-chain settlement watcher.
 
 Also out of scope for v1 (per spec §7): escrow/custody, refund/dispute filing,
 and sanctions screening as a standalone product (it's a STOP *signal* here, not

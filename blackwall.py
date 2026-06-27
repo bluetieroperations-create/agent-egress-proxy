@@ -408,13 +408,17 @@ def validate_request(payload):
     }, None
 
 
-def forecast(payload, reputation_source):
+def forecast(payload, reputation_source, ledger=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
     Returns (response_dict, None) or (None, error_message). The reputation
     lookup is the ONLY external dependency, and it is the (mocked) part that
     step 2 will replace with a real, latency-bounded source.
+
+    If `ledger` is given, the verdict is recorded (the write half of the moat
+    flywheel -- see ledger.py). The agent later closes the loop by reporting the
+    outcome against the returned receipt_id.
     """
     clean, err = validate_request(payload)
     if err is not None:
@@ -433,6 +437,19 @@ def forecast(payload, reputation_source):
         expected_recipient=clean["expected_recipient"],
     )
     verdict["receipt_id"] = sign_receipt(verdict)
+
+    if ledger is not None:
+        ledger.record_verdict(
+            receipt_id=verdict["receipt_id"],
+            counterparty=clean["counterparty"],
+            amount=clean["amount"],
+            verdict=verdict["verdict"],
+            score=verdict["score"],
+            agent_id=clean.get("agent_id"),
+            resource=clean.get("resource"),
+            asset=clean.get("asset"),
+            chain=clean.get("chain"),
+        )
     return verdict, None
 
 
@@ -444,6 +461,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     # Injected by BlackwallServer.
     reputation_source = None
+    ledger = None
 
     def _send_json(self, code, obj):
         body = json.dumps(obj, separators=(",", ":")).encode("utf-8")
@@ -460,42 +478,77 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._send_json(404, {"error": "not found"})
 
-    def do_POST(self):
-        if self.path != "/v1/forecast-payment":
-            self._send_json(404, {"error": "not found"})
-            return
+    def _read_json_body(self):
+        """Return (payload, None) or (None, error_string). Bounded + guarded."""
+        raw_len = self.headers.get("Content-Length")
+        try:
+            length = int(raw_len) if raw_len is not None else 0
+        except (TypeError, ValueError):
+            return None, "invalid Content-Length header"
+        if length <= 0:
+            return None, "empty request body"
+        if length > MAX_BODY_BYTES:
+            return None, "request body too large"
+        raw = self.rfile.read(length)
+        try:
+            return json.loads(raw.decode("utf-8")), None
+        except (ValueError, UnicodeDecodeError):
+            return None, "body is not valid JSON"
 
+    def do_POST(self):
+        if self.path == "/v1/forecast-payment":
+            self._do_forecast()
+        elif self.path == "/v1/report-outcome":
+            self._do_report_outcome()
+        else:
+            self._send_json(404, {"error": "not found"})
+
+    def _do_forecast(self):
         # TODO(step 3): x402 billing handshake. Blackwall is itself an x402
         # resource -- before serving a verdict it should answer the first
         # (unpaid) call with `402 Payment Required { price, asset, chain,
         # recipient }`, then verify the agent's payment via the facilitator on
         # the retry. Deferred so the MVP verdict path is testable on its own;
         # the verdict logic above does not change when this lands.
-
-        raw_len = self.headers.get("Content-Length")
-        try:
-            length = int(raw_len) if raw_len is not None else 0
-        except (TypeError, ValueError):
-            self._send_json(400, {"error": "invalid Content-Length header"})
+        payload, err = self._read_json_body()
+        if err is not None:
+            self._send_json(400, {"error": err})
             return
-        if length <= 0:
-            self._send_json(400, {"error": "empty request body"})
-            return
-        if length > MAX_BODY_BYTES:
-            self._send_json(413, {"error": "request body too large"})
-            return
-        raw = self.rfile.read(length)
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError):
-            self._send_json(400, {"error": "body is not valid JSON"})
-            return
-
-        response, err = forecast(payload, self.reputation_source)
+        response, err = forecast(payload, self.reputation_source, self.ledger)
         if err is not None:
             self._send_json(400, {"error": err})
             return
         self._send_json(200, response)
+
+    def _do_report_outcome(self):
+        # Close the moat flywheel: the agent reports what a prior verdict's
+        # payment actually did, keyed by the receipt_id Blackwall signed.
+        if self.ledger is None:
+            self._send_json(503, {"error": "no ledger configured"})
+            return
+        payload, err = self._read_json_body()
+        if err is not None:
+            self._send_json(400, {"error": err})
+            return
+        if not isinstance(payload, dict):
+            self._send_json(400, {"error": "body must be a JSON object"})
+            return
+        receipt_id = payload.get("receipt_id")
+        outcome = payload.get("outcome")
+        if not receipt_id or not isinstance(receipt_id, str):
+            self._send_json(400, {"error": "missing receipt_id"})
+            return
+        try:
+            self.ledger.record_outcome(
+                receipt_id=receipt_id,
+                outcome=outcome,
+                observed_amount=payload.get("observed_amount"),
+                settlement_tx=payload.get("settlement_tx"),
+            )
+        except ValueError as e:
+            self._send_json(400, {"error": str(e)})
+            return
+        self._send_json(202, {"status": "recorded", "receipt_id": receipt_id})
 
     def log_message(self, fmt, *args):
         # One concise line to stdout, matching the proxy's house style.
@@ -506,21 +559,25 @@ class _Handler(BaseHTTPRequestHandler):
 class BlackwallServer:
     """Localhost-only verdict server. Binds 127.0.0.1; not exposed."""
 
-    def __init__(self, host="127.0.0.1", port=8402, reputation_source=None):
+    def __init__(self, host="127.0.0.1", port=8402, reputation_source=None,
+                 ledger=None):
         self.host = host
         self.port = port
         self.reputation_source = reputation_source or MockReputationSource()
+        self.ledger = ledger
         self._httpd = None
 
     def serve_forever(self):
         handler = type("_BoundHandler", (_Handler,),
-                       {"reputation_source": self.reputation_source})
+                       {"reputation_source": self.reputation_source,
+                        "ledger": self.ledger})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
         self.port = self._httpd.server_address[1]
         sys.stdout.write(
             "blackwall verdict service on %s:%d  "
-            "POST /v1/forecast-payment  (reputation source: MOCK)\n"
-            % (self.host, self.port)
+            "POST /v1/forecast-payment  POST /v1/report-outcome  "
+            "(reputation source: MOCK, ledger: %s)\n"
+            % (self.host, self.port, "on" if self.ledger else "off")
         )
         sys.stdout.flush()
         try:
@@ -551,9 +608,18 @@ def main(argv=None):
     p.add_argument("--port", type=int,
                    default=int(os.environ.get("BLACKWALL_PORT", "8402")),
                    help="listen port (default 8402; bind is always 127.0.0.1)")
+    p.add_argument("--ledger",
+                   default=os.environ.get("BLACKWALL_LEDGER"),
+                   help="path to the verdict->outcome ledger (JSONL); enables "
+                        "POST /v1/report-outcome and self-learned reputation")
     args = p.parse_args(argv)
 
-    server = BlackwallServer(host="127.0.0.1", port=args.port)
+    led = None
+    if args.ledger:
+        from ledger import EventLedger
+        led = EventLedger(args.ledger)
+
+    server = BlackwallServer(host="127.0.0.1", port=args.port, ledger=led)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
