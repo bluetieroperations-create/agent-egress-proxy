@@ -492,13 +492,16 @@ class _Handler(BaseHTTPRequestHandler):
     # Injected by BlackwallServer.
     reputation_source = None
     ledger = None
+    billing = None  # x402.BillingGate, or None to disable billing
 
-    def _send_json(self, code, obj):
+    def _send_json(self, code, obj, extra_headers=None):
         body = json.dumps(obj, separators=(",", ":")).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Connection", "close")
+        for k, v in (extra_headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 
@@ -530,25 +533,51 @@ class _Handler(BaseHTTPRequestHandler):
             self._do_forecast()
         elif self.path == "/v1/report-outcome":
             self._do_report_outcome()
+        elif self.path == "/v1/session":
+            self._do_session()
         else:
             self._send_json(404, {"error": "not found"})
 
     def _do_forecast(self):
-        # TODO(step 3): x402 billing handshake. Blackwall is itself an x402
-        # resource -- before serving a verdict it should answer the first
-        # (unpaid) call with `402 Payment Required { price, asset, chain,
-        # recipient }`, then verify the agent's payment via the facilitator on
-        # the retry. Deferred so the MVP verdict path is testable on its own;
-        # the verdict logic above does not change when this lands.
         payload, err = self._read_json_body()
         if err is not None:
             self._send_json(400, {"error": err})
             return
+
+        # x402 billing (opt-in): on the first/unpaid call answer 402; the agent
+        # retries with X-PAYMENT (or X-PAYMENT-SESSION). The verdict logic is
+        # unchanged -- billing is a gate in front of it.
+        remaining = None
+        if self.billing is not None:
+            resource = payload.get("resource") or self.path
+            result = self.billing.check(
+                resource,
+                x_payment=self.headers.get("X-PAYMENT"),
+                x_session=self.headers.get("X-PAYMENT-SESSION"))
+            if not result.paid:
+                self._send_json(result.status or 402, result.body)
+                return
+            remaining = result.session_remaining
+
         response, err = forecast(payload, self.reputation_source, self.ledger)
         if err is not None:
             self._send_json(400, {"error": err})
             return
-        self._send_json(200, response)
+        extra = {"X-PAYMENT-SESSION-REMAINING": str(remaining)} \
+            if remaining is not None else None
+        self._send_json(200, response, extra_headers=extra)
+
+    def _do_session(self):
+        # Fund-once, many-checks: a payment covering the session price returns a
+        # reusable session token (x402 V2 session). Cuts per-call signing/latency.
+        if self.billing is None:
+            self._send_json(404, {"error": "billing not enabled"})
+            return
+        payload, _ = self._read_json_body()  # body optional here
+        resource = (payload or {}).get("resource") if isinstance(payload, dict) else None
+        result = self.billing.open_session(resource or self.path,
+                                           self.headers.get("X-PAYMENT"))
+        self._send_json(result.status or 402, result.body)
 
     def _do_report_outcome(self):
         # Close the moat flywheel: the agent reports what a prior verdict's
@@ -590,24 +619,29 @@ class BlackwallServer:
     """Localhost-only verdict server. Binds 127.0.0.1; not exposed."""
 
     def __init__(self, host="127.0.0.1", port=8402, reputation_source=None,
-                 ledger=None):
+                 ledger=None, billing=None):
         self.host = host
         self.port = port
         self.reputation_source = reputation_source or MockReputationSource()
         self.ledger = ledger
+        self.billing = billing
         self._httpd = None
 
     def serve_forever(self):
         handler = type("_BoundHandler", (_Handler,),
                        {"reputation_source": self.reputation_source,
-                        "ledger": self.ledger})
+                        "ledger": self.ledger,
+                        "billing": self.billing})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
         self.port = self._httpd.server_address[1]
         sys.stdout.write(
             "blackwall verdict service on %s:%d  "
-            "POST /v1/forecast-payment  POST /v1/report-outcome  "
-            "(reputation source: MOCK, ledger: %s)\n"
-            % (self.host, self.port, "on" if self.ledger else "off")
+            "POST /v1/forecast-payment  POST /v1/report-outcome%s  "
+            "(reputation source: MOCK, ledger: %s, billing: %s)\n"
+            % (self.host, self.port,
+               "  POST /v1/session" if self.billing else "",
+               "on" if self.ledger else "off",
+               "on" if self.billing else "off")
         )
         sys.stdout.flush()
         try:
@@ -642,6 +676,11 @@ def main(argv=None):
                    default=os.environ.get("BLACKWALL_LEDGER"),
                    help="path to the verdict->outcome ledger (JSONL); enables "
                         "POST /v1/report-outcome and self-learned reputation")
+    p.add_argument("--pay-to", default=os.environ.get("BLACKWALL_PAY_TO"),
+                   help="Blackwall's EVM wallet; enabling it turns ON x402 "
+                        "billing (402 challenge + POST /v1/session)")
+    p.add_argument("--price", default=os.environ.get("BLACKWALL_PRICE", "0.001"),
+                   help="per-forecast price in USDC (default 0.001)")
     args = p.parse_args(argv)
 
     led = None
@@ -649,7 +688,13 @@ def main(argv=None):
         from ledger import EventLedger
         led = EventLedger(args.ledger)
 
-    server = BlackwallServer(host="127.0.0.1", port=args.port, ledger=led)
+    billing = None
+    if args.pay_to:
+        from x402 import BillingConfig, BillingGate
+        billing = BillingGate(BillingConfig(price=args.price, pay_to=args.pay_to))
+
+    server = BlackwallServer(host="127.0.0.1", port=args.port, ledger=led,
+                             billing=billing)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

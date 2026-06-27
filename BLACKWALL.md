@@ -147,6 +147,36 @@ trustless settlements, not self-reports.
 | **Facilitator partnership** | settlement confirmations for everyone | relationship |
 | **OFAC / scam-list feeds** | sanctions & known-bad bootstrap | none |
 
+## Billing — Blackwall is itself an x402 resource (`x402.py`)
+
+Opt-in (`--pay-to <wallet> [--price 0.001]`). The service that judges x402
+payments is itself paid via x402:
+
+```
+Agent → POST /v1/forecast-payment                 (no payment)
+Blackwall → 402 { accepts:[{maxAmountRequired, asset, network, payTo}] }
+Agent → retry with  X-PAYMENT: <base64 payload>
+Blackwall → match → facilitator.verify → reserve nonce → facilitator.settle
+          → serve verdict (+ settlement tx)
+```
+
+**Division of labor (spec §5.4):** the **facilitator** does signature + balance +
+on-chain replay + settlement and sits behind the `Facilitator` seam
+(`MockFacilitator` here; `HttpFacilitator` is the real-deployment stub — there's
+no live facilitator in this environment). Blackwall owns the **protocol
+envelope**: the 402 challenge, matching the payment to the requirements (right
+`payTo`/asset/network/amount), **local idempotency** (a nonce is reserved before
+settling, so a replay can never double-settle; released if settlement fails so a
+legit retry survives), and **sessions**.
+
+**Sessions (fund-once, many checks).** `POST /v1/session` with a payment covering
+the session price returns an HMAC-signed `session_token` good for N credits;
+forecast calls then present `X-PAYMENT-SESSION` and skip per-call signing
+(latency/cost answer from spec §5). Credits decrement under lock; expiry enforced.
+
+Pricing default is `0.001` USDC/call (sub-cent, the spec's per-check ceiling); a
+session is `price × credits` (no bulk discount yet).
+
 ## Known limitations (eval notes)
 
 - **No price history → GO on small amounts.** A reputable counterparty with no
@@ -187,6 +217,13 @@ trustless settlements, not self-reports.
   every event on each `lookup()`, and `price_history` is unbounded. Fine at
   scaffold scale; production keeps a rolling in-memory aggregate updated on
   append and caps/decays history.
+- **Billing: facilitator is mocked; nonce ledger is unbounded; price discovery
+  needs a valid body.** `MockFacilitator` always approves — a real deployment
+  points `HttpFacilitator` at an x402 facilitator's `/verify` + `/settle`. The
+  `NonceLedger` grows without eviction (production should evict on the payment's
+  `validBefore` expiry). The 402 challenge is returned only for a well-formed
+  forecast request body, so price discovery requires a valid request, not an
+  empty probe.
 
 ## Deferred (NOT in this build)
 
@@ -198,8 +235,7 @@ Per the spec's build order, on purpose:
    data is reachable no-key, but a free indexer is too slow for the hot path and
    the dispute/moat signal isn't on-chain — Blackwall needs its own indexed store
    + outcome ledger.
-3. **x402 billing handshake** — Blackwall is itself an x402 resource (charges
-   per forecast). Seam marked `TODO(step 3)` in `blackwall.py`.
+3. ~~**x402 billing handshake**~~ — **BUILT** (`x402.py`); see "Billing" below.
 4. **MCP server wrapper.**
 5. **Directory listing** (awesome-x402 / x402 service discovery).
 6. **Self-learned trust-graduation engine** — shrinks HOLD over time by
