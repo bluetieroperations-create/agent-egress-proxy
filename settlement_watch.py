@@ -232,8 +232,12 @@ class SettlementWatcher:
 
         confirmed = 0
         for e in pending:
+            # Bind to the agent's payer wallet when the verdict recorded one:
+            # the on-chain SENDER must be this agent, so a third party's payment
+            # of the same amount to the counterparty can't confirm this receipt.
             match = self.scan_for_settlement(
-                e.get("counterparty"), e.get("amount"), since_ts=e.get("ts"))
+                e.get("counterparty"), e.get("amount"),
+                since_ts=e.get("ts"), from_addr=e.get("payer"))
             if match is None:
                 continue
             tx = match.get("tx_hash")

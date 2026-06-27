@@ -61,6 +61,7 @@ curl -s http://127.0.0.1:8402/v1/forecast-payment \
 | `asset`       | yes      | e.g. `USDC`                                       |
 | `chain`       | yes      | e.g. `base`                                       |
 | `agent_id`    | no       | DID / ERC-8004 identity of the caller             |
+| `payer`       | no       | agent's on-chain wallet (the x402 signer); validated as a real EVM address, **binds settlement confirmation to this agent** |
 | `resource`    | no       | what's being paid for                             |
 | `context`     | no       | `{quoted_price_history:[...], expected_recipient}`|
 
@@ -174,11 +175,14 @@ trustless settlements, not self-reports.
   differently in scoring. **Built (1):** `settlement_watch.py` writes trustless
   chain-confirmed `settled` outcomes (`_meta.chain_confirmed_settlements` exposes
   the count); replays are idempotent and receipts unique per payment.
-  **Residual gap:** confirmation proves *a* payment of the amount reached the
-  counterparty, not that *this* agent paid it — full trustlessness needs binding
-  `from_addr` to the agent's payer wallet (captured from the x402 payment), which
-  the verdict event does not yet store. Delivery *quality* is genuinely off-chain
-  and stays a report.
+  **Payer binding (built):** when the verdict request includes `payer` (the
+  agent's wallet, validated as a real EVM address), confirmation requires the
+  on-chain SENDER to be that wallet — so a third party's payment of the same
+  amount to the counterparty cannot confirm this agent's receipt. Address
+  comparison is case-insensitive (EIP-55-agnostic; we don't verify the checksum
+  because keccak256 isn't in the stdlib). **Residual:** a payer-less verdict
+  still falls back to the weaker recipient+amount match; and delivery *quality*
+  (underdelivered/disputed) is genuinely off-chain and stays a report.
 - **Re-aggregates the whole ledger per lookup.** `LedgerReputationSource` folds
   every event on each `lookup()`, and `price_history` is unbounded. Fine at
   scaffold scale; production keeps a rolling in-memory aggregate updated on

@@ -148,6 +148,21 @@ class TestWatcher(unittest.TestCase):
         self.assertEqual(w.confirm_pending(), 1)
         self.assertEqual(self.led.aggregate()["0xCP"]["settlement_count"], 1)
 
+    def test_payer_binding_rejects_third_party_payment(self):
+        # The verdict recorded a payer; a same-amount payment to the counterparty
+        # from a DIFFERENT wallet must NOT confirm this agent's receipt.
+        payer = "0x" + "a" * 40
+        self.led.record_verdict("bw_1", "0xCP", "0.09", "GO", payer=payer,
+                                ts="2026-06-27T04:00:00Z")
+        wrong = FakeChain(inbound_map={"0xCP": [
+            xfer("0xCP", "90000", frm="0x" + "b" * 40,
+                 ts="2026-06-27T05:00:00Z")]})
+        self.assertEqual(sw.SettlementWatcher(wrong, self.led).confirm_pending(), 0)
+        # The agent's OWN payment confirms it.
+        right = FakeChain(inbound_map={"0xCP": [
+            xfer("0xCP", "90000", frm=payer, ts="2026-06-27T05:00:00Z")]})
+        self.assertEqual(sw.SettlementWatcher(right, self.led).confirm_pending(), 1)
+
     def test_confirm_pending_skips_hold(self):
         # Only GO verdicts are settlement candidates.
         self.led.record_verdict("bw_1", "0xCP", "0.09", "HOLD")

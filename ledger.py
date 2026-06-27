@@ -171,13 +171,16 @@ class EventLedger:
 
     def record_verdict(self, receipt_id, counterparty, amount, verdict,
                        score=None, agent_id=None, resource=None,
-                       asset=None, chain=None, ts=None):
+                       asset=None, chain=None, ts=None, payer=None):
         self._append({
             "kind": "verdict",
             "ts": ts or _now(),
             "receipt_id": receipt_id,
             "agent_id": agent_id,
             "counterparty": counterparty,
+            # payer = the agent's on-chain wallet; binds settlement confirmation
+            # to THIS agent so a third party's payment can't confirm this receipt.
+            "payer": payer,
             "resource": resource,
             "amount": str(amount),
             "asset": asset,

@@ -173,6 +173,15 @@ class TestDecidePayment(unittest.TestCase):
         self.assertEqual(v["verdict"], "STOP")
         self.assertEqual(v["score"], 0.0)
 
+    def test_recipient_match_is_case_insensitive(self):
+        # Regression: a checksummed counterparty and the lowercase 402 recipient
+        # are the SAME address -> NOT a mismatch -> must not STOP.
+        checksummed = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+        v = bw.decide_payment("0.09", self.GOOD, self.STABLE_HISTORY,
+                              counterparty=checksummed,
+                              expected_recipient=checksummed.lower())
+        self.assertNotEqual(v["verdict"], "STOP")
+
     def test_stop_price_wildly_off(self):
         # 8x the median -> STOP, not merely HOLD.
         v = bw.decide_payment("0.72", self.GOOD, self.STABLE_HISTORY,
@@ -255,6 +264,22 @@ class TestValidateRequest(unittest.TestCase):
         bad = dict(self.BASE, context={"quoted_price_history": "0.09"})
         clean, err = bw.validate_request(bad)
         self.assertIsNone(clean)
+
+    def test_payer_optional(self):
+        clean, err = bw.validate_request(dict(self.BASE))
+        self.assertIsNone(err)
+        self.assertIsNone(clean["payer"])
+
+    def test_payer_valid_normalized(self):
+        addr = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+        clean, err = bw.validate_request(dict(self.BASE, payer=addr))
+        self.assertIsNone(err)
+        self.assertEqual(clean["payer"], addr.lower())  # normalized
+
+    def test_payer_malformed_rejected(self):
+        clean, err = bw.validate_request(dict(self.BASE, payer="0xNOPE"))
+        self.assertIsNone(clean)
+        self.assertIn("payer", err)
 
 
 class TestForecastEndToEnd(unittest.TestCase):

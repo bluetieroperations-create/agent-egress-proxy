@@ -39,6 +39,8 @@ import threading
 from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from addresses import addresses_equal, normalize_address
+
 # ---------------------------------------------------------------------------
 # Tunables -- the decision boundary's thresholds. Changing one of these should
 # change a verdict; the tests pin the current values.
@@ -175,7 +177,9 @@ def decide_payment(amount, record, price_history,
     stop = False
     hard_stop = False  # sanctioned / known-bad / mismatch => trust score floored to 0
     if expected_recipient is not None and counterparty is not None \
-            and counterparty != expected_recipient:
+            and not addresses_equal(counterparty, expected_recipient):
+        # Case-INSENSITIVE: an EIP-55 checksummed recipient and its lowercase
+        # form are the same address, not a mismatch.
         stop = hard_stop = True
         reasons.append(
             "recipient mismatch: paying %s but the 402 named %s"
@@ -396,6 +400,17 @@ def validate_request(payload):
     if expected_recipient is not None and not isinstance(expected_recipient, str):
         return None, "context.expected_recipient must be a string"
 
+    # payer = the agent's on-chain wallet that will sign/send the x402 payment.
+    # Optional, but when supplied it must be a real EVM address: it binds the
+    # later settlement confirmation to THIS agent (see settlement_watch), so a
+    # malformed payer can never be matched on-chain. Normalized to lowercase.
+    payer = payload.get("payer")
+    if payer is not None:
+        npayer = normalize_address(payer)
+        if npayer is None:
+            return None, "payer must be a valid EVM address (0x + 40 hex chars)"
+        payer = npayer
+
     return {
         "agent_id": payload.get("agent_id"),
         "counterparty": payload["counterparty"],
@@ -405,6 +420,7 @@ def validate_request(payload):
         "chain": payload["chain"],
         "price_history": price_history,
         "expected_recipient": expected_recipient,
+        "payer": payer,
     }, None
 
 
@@ -462,6 +478,7 @@ def forecast(payload, reputation_source, ledger=None):
             resource=clean.get("resource"),
             asset=clean.get("asset"),
             chain=clean.get("chain"),
+            payer=clean.get("payer"),
         )
     return verdict, None
 
