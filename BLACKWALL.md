@@ -118,8 +118,12 @@ python -m unittest test_blackwall.py -v
 
 Per the spec's build order, on purpose:
 
-2. **Real counterparty-history source** — `MockReputationSource` is the seam.
-   Open item: where from, and fast enough for a hot-path call?
+2. **Real counterparty-history source** — `MockReputationSource` is the seam;
+   `reputation_onchain.OnchainReputationSource` is a live Base-backed drop-in
+   spike. Feasibility answered in [docs/DATA_SOURCE_SPIKE.md](docs/DATA_SOURCE_SPIKE.md):
+   data is reachable no-key, but a free indexer is too slow for the hot path and
+   the dispute/moat signal isn't on-chain — Blackwall needs its own indexed store
+   + outcome ledger.
 3. **x402 billing handshake** — Blackwall is itself an x402 resource (charges
    per forecast). Seam marked `TODO(step 3)` in `blackwall.py`.
 4. **MCP server wrapper.**
