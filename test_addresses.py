@@ -33,6 +33,16 @@ class TestIsEvmAddress(unittest.TestCase):
     def test_non_hex(self):
         self.assertFalse(A.is_evm_address("0x" + "z" * 40))
 
+    def test_trailing_newline_rejected(self):
+        # Regression: Python `$` matches before a trailing \n; a polluted address
+        # must NOT validate (it would be stored and break on-chain comparison).
+        self.assertFalse(A.is_evm_address(LOWER + "\n"))
+        self.assertIsNone(A.normalize_address(LOWER + "\n"))
+
+    def test_internal_and_leading_whitespace_rejected(self):
+        self.assertFalse(A.is_evm_address(" " + LOWER))
+        self.assertFalse(A.is_evm_address(LOWER[:10] + " " + LOWER[11:]))
+
     def test_non_string(self):
         self.assertFalse(A.is_evm_address(None))
         self.assertFalse(A.is_evm_address(12345))

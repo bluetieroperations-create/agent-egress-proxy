@@ -15,7 +15,11 @@ checksum is only an integrity hint, not the identity.
 """
 import re
 
-_EVM_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+# \A ... \Z (not ^ ... $): Python's `$` also matches just before a trailing
+# newline, so "0x<40hex>\n" would wrongly validate -- and the newline would then
+# be stored and silently break the on-chain sender comparison. \Z anchors the
+# absolute end of string.
+_EVM_RE = re.compile(r"\A0x[0-9a-fA-F]{40}\Z")
 
 
 def is_evm_address(s):
