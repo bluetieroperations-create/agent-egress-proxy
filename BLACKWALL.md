@@ -97,6 +97,23 @@ them, so changing one flips a named test (mutation-checked, like the proxy).
 python -m unittest test_blackwall.py -v
 ```
 
+## Known limitations (eval notes)
+
+- **No price history → GO on small amounts.** A reputable counterparty with no
+  recorded price history for a resource class gets `price_anomaly = 0` (UNKNOWN,
+  surfaced as a reason) and can GO. The exposure is **bounded by the budget
+  gate**: anything above `HOLD_AMOUNT_THRESHOLD` with no history is HOLD. This is
+  a deliberate noise-vs-safety tradeoff — HOLDing every first-seen price would
+  make the tool noisy and push agents to route around it (spec's high-volume-GO
+  requirement). Step 2's real data source narrows the no-history window.
+- **`score` is trust, not verdict confidence.** A HOLD can carry a high `score`
+  (e.g. reputable counterparty, amount merely over the auto-approve threshold).
+  Consumers should branch on `verdict`, using `score`/`signals` for their own
+  logic — not infer the verdict from the score.
+- **`Content-Length`-only body read.** The MVP server reads the body by
+  `Content-Length`; chunked `Transfer-Encoding` is not parsed. Fine for the
+  localhost/agent path; revisit if exposed behind a proxy.
+
 ## Deferred (NOT in this build)
 
 Per the spec's build order, on purpose:

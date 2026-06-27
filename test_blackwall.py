@@ -197,12 +197,20 @@ class TestDecidePayment(unittest.TestCase):
                               counterparty="0xA")
         self.assertEqual(v["verdict"], "HOLD")
 
-    def test_unknown_price_history_holds_not_go(self):
-        # Reputable, in budget, but NO price history -> cannot auto-GO blindly...
-        # actually a long clean history with no price data still GOes; the price
-        # anomaly is simply 0 (unknown) and reported as such. Assert the reason.
+    def test_reputable_no_price_history_goes_but_flags_unknown(self):
+        # DELIBERATE tradeoff (see BLACKWALL.md known-limitations): a reputable,
+        # in-budget counterparty with NO price history still GOes -- the anomaly
+        # is UNKNOWN (treated as 0), surfaced as a reason, NOT silently a HOLD.
+        # The budget gate bounds the exposure (large + no-history -> HOLD; see
+        # test_no_history_large_amount_holds).
         v = bw.decide_payment("0.09", self.GOOD, [], counterparty="0xA")
+        self.assertEqual(v["verdict"], "GO")
         self.assertTrue(any("price anomaly unknown" in r for r in v["reasons"]))
+
+    def test_no_history_large_amount_holds(self):
+        # The budget gate is what bounds the no-price-history GO path.
+        v = bw.decide_payment("50.00", self.GOOD, [], counterparty="0xA")
+        self.assertEqual(v["verdict"], "HOLD")
 
 
 class TestSignReceipt(unittest.TestCase):
@@ -302,6 +310,52 @@ class TestForecastEndToEnd(unittest.TestCase):
             self.assertIn(key, resp["signals"])
         # JSON-serializable (the wire format).
         json.dumps(resp)
+
+
+class TestServerHardening(unittest.TestCase):
+    """The HTTP layer must answer malformed requests, never drop the socket."""
+
+    def setUp(self):
+        import threading
+        self.server = bw.BlackwallServer(port=0)
+        # bind without serve_forever's blocking loop
+        from http.server import ThreadingHTTPServer
+        handler = type("_H", (bw._Handler,),
+                       {"reputation_source": bw.MockReputationSource()})
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        self.t = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.t.start()
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def _raw(self, headers, body=b""):
+        import socket
+        s = socket.create_connection(("127.0.0.1", self.port), timeout=3)
+        s.sendall(headers.encode() + body)
+        data = b""
+        while True:
+            c = s.recv(4096)
+            if not c:
+                break
+            data += c
+        s.close()
+        return data.split(b"\r\n", 1)[0].decode("latin-1")
+
+    def test_malformed_content_length_gets_400_not_dropped(self):
+        status = self._raw(
+            "POST /v1/forecast-payment HTTP/1.1\r\nHost: x\r\n"
+            "Content-Length: abc\r\nConnection: close\r\n\r\n{}")
+        self.assertIn("400", status)
+
+    def test_non_json_gets_400(self):
+        body = b"{not json"
+        status = self._raw(
+            "POST /v1/forecast-payment HTTP/1.1\r\nHost: x\r\n"
+            "Content-Length: %d\r\nConnection: close\r\n\r\n" % len(body), body)
+        self.assertIn("400", status)
 
 
 if __name__ == "__main__":

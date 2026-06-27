@@ -472,7 +472,12 @@ class _Handler(BaseHTTPRequestHandler):
         # the retry. Deferred so the MVP verdict path is testable on its own;
         # the verdict logic above does not change when this lands.
 
-        length = int(self.headers.get("Content-Length") or 0)
+        raw_len = self.headers.get("Content-Length")
+        try:
+            length = int(raw_len) if raw_len is not None else 0
+        except (TypeError, ValueError):
+            self._send_json(400, {"error": "invalid Content-Length header"})
+            return
         if length <= 0:
             self._send_json(400, {"error": "empty request body"})
             return
