@@ -178,31 +178,49 @@ class MockFacilitator:
 
 class HttpFacilitator:
     """
-    Real-deployment stub: POST {payment, requirements} to a facilitator's
-    /verify endpoint. NOT exercised here (no facilitator in this environment);
-    present so the seam is obvious and the wiring is real.
+    Real x402 facilitator over HTTP. POST {x402Version, paymentPayload,
+    paymentRequirements} to /verify and /settle; normalize the x402 response
+    shape (isValid/invalidReason, success/transaction/errorReason) into the seam
+    contract the BillingGate expects ({valid,reason} / {success,transaction,
+    reason}). A non-2xx / network error fails CLOSED (valid/success False).
+
+    In production, base_url is a hosted facilitator; for dev/tests it is the
+    local facilitator_sim. The facilitator does signature/balance/settlement --
+    Blackwall does not (spec 5.4).
     """
 
     def __init__(self, base_url, timeout=10.0):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
-    def _post(self, path, payment, requirements):  # pragma: no cover - needs network
+    def _post(self, path, payment, requirements):
         import urllib.request
         body = json.dumps({"x402Version": X402_VERSION,
                            "paymentPayload": payment,
                            "paymentRequirements": requirements}).encode("utf-8")
         req = urllib.request.Request(
             self.base_url + path, data=body,
-            headers={"Content-Type": "application/json"})
+            headers={"Content-Type": "application/json",
+                     "Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
             return json.loads(r.read().decode("utf-8"))
 
-    def verify(self, payment, requirements):  # pragma: no cover - needs network
-        return self._post("/verify", payment, requirements)
+    def verify(self, payment, requirements):
+        try:
+            resp = self._post("/verify", payment, requirements)
+        except Exception as e:  # network / HTTP / decode -> fail closed
+            return {"valid": False, "reason": "facilitator unreachable: %s" % e}
+        return {"valid": bool(resp.get("isValid")),
+                "reason": resp.get("invalidReason") or "ok"}
 
-    def settle(self, payment, requirements):  # pragma: no cover - needs network
-        return self._post("/settle", payment, requirements)
+    def settle(self, payment, requirements):
+        try:
+            resp = self._post("/settle", payment, requirements)
+        except Exception as e:  # fail closed -- never report captured if unsure
+            return {"success": False, "reason": "facilitator unreachable: %s" % e}
+        return {"success": bool(resp.get("success")),
+                "transaction": resp.get("transaction"),
+                "reason": resp.get("errorReason") or "ok"}
 
 
 # ===========================================================================

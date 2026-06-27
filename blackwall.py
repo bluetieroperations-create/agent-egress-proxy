@@ -681,6 +681,9 @@ def main(argv=None):
                         "billing (402 challenge + POST /v1/session)")
     p.add_argument("--price", default=os.environ.get("BLACKWALL_PRICE", "0.001"),
                    help="per-forecast price in USDC (default 0.001)")
+    p.add_argument("--facilitator", default=os.environ.get("BLACKWALL_FACILITATOR"),
+                   help="x402 facilitator base URL (verify/settle); default is "
+                        "the built-in mock facilitator")
     args = p.parse_args(argv)
 
     led = None
@@ -690,8 +693,10 @@ def main(argv=None):
 
     billing = None
     if args.pay_to:
-        from x402 import BillingConfig, BillingGate
-        billing = BillingGate(BillingConfig(price=args.price, pay_to=args.pay_to))
+        from x402 import BillingConfig, BillingGate, HttpFacilitator
+        facilitator = HttpFacilitator(args.facilitator) if args.facilitator else None
+        billing = BillingGate(BillingConfig(price=args.price, pay_to=args.pay_to),
+                              facilitator=facilitator)
 
     server = BlackwallServer(host="127.0.0.1", port=args.port, ledger=led,
                              billing=billing)
