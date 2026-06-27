@@ -77,7 +77,9 @@ def derive_record(counters_json, transfers_json, counterparty,
     usdc_amounts = []
     for it in items:
         tok = it.get("token") or {}
-        addr = (tok.get("address") or "").lower()
+        # Blockscout v2 carries the contract under `address_hash` (older shapes
+        # use `address`). Identify by CONTRACT, not the spoofable `symbol`.
+        addr = (tok.get("address_hash") or tok.get("address") or "").lower()
         if addr != usdc_address.lower():
             continue
         tot = it.get("total") or {}

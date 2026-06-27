@@ -16,7 +16,8 @@ USDC = ro.BASE_USDC
 
 
 def _xfer(symbol, addr, value, decimals="6", to="0xCP"):
-    return {"token": {"symbol": symbol, "address": addr},
+    # Mirrors the REAL Blockscout v2 shape: contract under `token.address_hash`.
+    return {"token": {"symbol": symbol, "address_hash": addr},
             "total": {"value": value, "decimals": decimals},
             "from": {"hash": "0xSender"}, "to": {"hash": to}}
 

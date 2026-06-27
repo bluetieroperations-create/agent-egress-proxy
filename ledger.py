@@ -71,7 +71,7 @@ def aggregate_counterparties(events):
 
     def acc(cp):
         if cp not in agg:
-            agg[cp] = {"good": 0, "bad": 0, "amounts": [],
+            agg[cp] = {"good": 0, "bad": 0, "amounts": [], "chain_confirmed": 0,
                        "first_ts": None, "last_ts": None, "verdicts": 0}
         return agg[cp]
 
@@ -93,18 +93,18 @@ def aggregate_counterparties(events):
     # Second pass: collapse outcomes to ONE per receipt (last write wins). This
     # makes replays / retries / status updates idempotent -- a receipt counts
     # exactly once no matter how many times its outcome is reported.
-    final_outcome = {}   # receipt_id -> outcome
+    final_outcome = {}   # receipt_id -> (outcome, source)
     for e in events:
         if e.get("kind") != "outcome":
             continue
         rid = e.get("receipt_id")
         if rid not in by_receipt:
             continue  # outcome for an unknown receipt -> cannot attribute
-        final_outcome[rid] = e.get("outcome")
+        final_outcome[rid] = (e.get("outcome"), e.get("source", "self-report"))
         if e.get("observed_amount") is not None:
             by_receipt[rid][2] = e.get("observed_amount")
 
-    for rid, outcome in final_outcome.items():
+    for rid, (outcome, source) in final_outcome.items():
         cp, amount, observed = by_receipt[rid]
         a = acc(cp)
         settled = outcome in GOOD_OUTCOMES or outcome in BAD_OUTCOMES
@@ -112,6 +112,10 @@ def aggregate_counterparties(events):
             a["good"] += 1
         elif outcome in BAD_OUTCOMES:
             a["bad"] += 1
+        # Settlement counts as CHAIN-CONFIRMED only when a trustless watcher
+        # wrote it -- this is the un-fakeable backbone the self-report can't be.
+        if settled and source == "chain-watch":
+            a["chain_confirmed"] += 1
         # Price history is "what this counterparty charged on settled payments"
         # -- include disputed ones too (the charge is real regardless of
         # delivery); exclude NEUTRAL (abandoned, never settled).
@@ -140,6 +144,10 @@ def aggregate_counterparties(events):
                 "verdicts_seen": a["verdicts"],
                 "outcomes_seen": decided,
                 "dispute_rate_is_observed": decided > 0,
+                # How many of the settlements are trustless (chain-confirmed) vs
+                # merely self-reported. A production GO policy should gate on the
+                # confirmed count, not the raw one.
+                "chain_confirmed_settlements": a["chain_confirmed"],
             },
         }
     return records
@@ -179,7 +187,7 @@ class EventLedger:
         })
 
     def record_outcome(self, receipt_id, outcome, observed_amount=None,
-                       settlement_tx=None, ts=None):
+                       settlement_tx=None, ts=None, source="self-report"):
         if outcome not in VALID_OUTCOMES:
             raise ValueError("unknown outcome %r (valid: %s)"
                              % (outcome, sorted(VALID_OUTCOMES)))
@@ -190,6 +198,9 @@ class EventLedger:
             "outcome": outcome,
             "observed_amount": None if observed_amount is None else str(observed_amount),
             "settlement_tx": settlement_tx,
+            # "chain-watch" = trustless on-chain confirmation; "self-report" =
+            # claimed by a caller (unauthenticated -- weight accordingly).
+            "source": source,
         })
 
     def read_events(self):

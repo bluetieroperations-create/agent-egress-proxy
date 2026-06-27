@@ -84,6 +84,19 @@ Until both exist, the honest product is the **single-hop safety + price-anomaly
 check with a self-built reputation ledger warming up** — not a claim of
 on-chain-derived reputation depth.
 
+## Correction (found later, during the settlement-watcher audit)
+
+The original run reported `usdc_inbound = 0` for the sample addresses and
+attributed it to unrepresentative wallets. That was **partly a bug**: Blockscout
+v2 carries the token contract under `token.address_hash`, but the extractor read
+`token.address` (always null) and dropped every USDC transfer. Fixed (read
+`address_hash`, identify USDC by contract not the spoofable `symbol`). Re-checked
+against a real USDC-receiving address: **26 inbound USDC settlements with real
+price history**. The latency findings above stand; the signal-completeness one is
+*better* than first reported — USDC volume/price IS extractable once the field is
+right. (Lesson logged in CLAUDE.md: verify against the live path, not just green
+unit tests that may encode the wrong API shape.)
+
 ## Reproduce
 
 ```sh

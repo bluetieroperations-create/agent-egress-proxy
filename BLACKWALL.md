@@ -124,6 +124,16 @@ outcome is actually observed — never a fabricated 0.
 `ChainedReputationSource` lets the ledger lead and an on-chain/bootstrap source
 fill the cold-start gap.
 
+**Trustless settlement confirmation** (`settlement_watch.py`) closes the loop
+*without agent goodwill* and fixes the unauthenticated-report hole for the one
+fact that lives on-chain: it reads Base and writes a **chain-confirmed**
+`settled` outcome (`source="chain-watch"`) only when a real USDC transfer of the
+right amount reached the counterparty — by independent tx verification or a
+zero-cooperation scan. USDC is identified by **contract** (`token.address_hash`),
+never the spoofable `symbol`; one on-chain tx confirms at most one receipt; and
+the record exposes `_meta.chain_confirmed_settlements` so a GO policy can gate on
+trustless settlements, not self-reports.
+
 **Other accumulation taps** (don't all need agent cooperation):
 
 | Tap | Harvests | Cooperation |
@@ -161,9 +171,14 @@ fill the cold-start gap.
   from chain, not self-report (trustless); (2) require reports to be **signed by
   the original `agent_id`** and only accept the issuing agent's report for a
   receipt; (3) weight self-reported delivery vs. chain-confirmed settlement
-  differently in scoring. Built now: replays are idempotent (one outcome per
-  receipt, last-wins) and receipts are unique per payment — but authenticity is
-  not yet enforced.
+  differently in scoring. **Built (1):** `settlement_watch.py` writes trustless
+  chain-confirmed `settled` outcomes (`_meta.chain_confirmed_settlements` exposes
+  the count); replays are idempotent and receipts unique per payment.
+  **Residual gap:** confirmation proves *a* payment of the amount reached the
+  counterparty, not that *this* agent paid it — full trustlessness needs binding
+  `from_addr` to the agent's payer wallet (captured from the x402 payment), which
+  the verdict event does not yet store. Delivery *quality* is genuinely off-chain
+  and stays a report.
 - **Re-aggregates the whole ledger per lookup.** `LedgerReputationSource` folds
   every event on each `lookup()`, and `price_history` is unbounded. Fine at
   scaffold scale; production keeps a rolling in-memory aggregate updated on
