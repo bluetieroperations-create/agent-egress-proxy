@@ -28,6 +28,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 class _Handler(BaseHTTPRequestHandler):
     approve = True       # injected by the server
     settle_ok = True
+    # Real facilitators (e.g. x402.rs on Base Sepolia) return a structured
+    # rejection with a non-2xx status when on-chain recovery reverts. Mirror that.
+    verify_reject_status = 200
 
     def _json(self, code, obj):
         body = json.dumps(obj).encode("utf-8")
@@ -56,8 +59,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": "bad json"})
             return
         if self.path == "/verify":
-            self._json(200, {"isValid": bool(self.approve),
-                             "invalidReason": None if self.approve else "sim-rejected"})
+            status = 200 if self.approve else self.verify_reject_status
+            self._json(status, {"isValid": bool(self.approve),
+                                "invalidReason": None if self.approve else "sim-rejected"})
         elif self.path == "/settle":
             self._json(200, {"success": bool(self.settle_ok),
                              "transaction": "0xsimsettle" if self.settle_ok else None,
@@ -72,10 +76,12 @@ class _Handler(BaseHTTPRequestHandler):
 class FacilitatorSim:
     """Localhost reference facilitator. Toggle approve / settle_ok for tests."""
 
-    def __init__(self, host="127.0.0.1", port=0, approve=True, settle_ok=True):
+    def __init__(self, host="127.0.0.1", port=0, approve=True, settle_ok=True,
+                 verify_reject_status=200):
         self.host = host
         self.port = port
-        handler = type("_H", (_Handler,), {"approve": approve, "settle_ok": settle_ok})
+        handler = type("_H", (_Handler,), {"approve": approve, "settle_ok": settle_ok,
+                                           "verify_reject_status": verify_reject_status})
         self._httpd = ThreadingHTTPServer((host, port), handler)
         self.port = self._httpd.server_address[1]
 

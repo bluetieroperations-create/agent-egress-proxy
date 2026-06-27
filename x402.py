@@ -194,6 +194,7 @@ class HttpFacilitator:
         self.timeout = timeout
 
     def _post(self, path, payment, requirements):
+        import urllib.error
         import urllib.request
         body = json.dumps({"x402Version": X402_VERSION,
                            "paymentPayload": payment,
@@ -202,8 +203,18 @@ class HttpFacilitator:
             self.base_url + path, data=body,
             headers={"Content-Type": "application/json",
                      "Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=self.timeout) as r:
-            return json.loads(r.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            # Real facilitators return a STRUCTURED x402 error with a non-2xx
+            # status (observed on Base Sepolia: 500 + {isValid:false,
+            # invalidReason:...} when on-chain signature recovery reverts).
+            # Surface that body instead of treating it as opaque/unreachable.
+            try:
+                return json.loads(e.read().decode("utf-8"))
+            except Exception:
+                raise  # genuinely opaque error -> propagate -> fail closed
 
     def verify(self, payment, requirements):
         try:

@@ -55,6 +55,17 @@ class TestHttpFacilitator(unittest.TestCase):
         # possible here; assert release on the SAME gate via direct ledger check:
         self.assertTrue(gate.nonces.add("0x3") is True)  # was released, addable
 
+    def test_structured_rejection_at_non_2xx_is_surfaced(self):
+        # Regression (testnet dry-run): a real facilitator returned isValid:false
+        # with HTTP 500 (on-chain recovery revert). The adapter must surface the
+        # structured reason, not report "unreachable".
+        sim = FacilitatorSim(approve=False, verify_reject_status=500).start_background()
+        self.addCleanup(sim.shutdown)
+        fac = X.HttpFacilitator(sim.url)
+        v = fac.verify(payment(), X.build_requirements(1000, PAY_TO, "https://r"))
+        self.assertFalse(v["valid"])
+        self.assertEqual(v["reason"], "sim-rejected")  # not "unreachable"
+
     def test_facilitator_unreachable_fails_closed(self):
         cfg = X.BillingConfig(price="0.001", pay_to=PAY_TO)
         gate = X.BillingGate(cfg, facilitator=X.HttpFacilitator("http://127.0.0.1:1"))
