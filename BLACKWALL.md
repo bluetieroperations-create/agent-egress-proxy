@@ -229,28 +229,31 @@ HTTP endpoints.
 - **`Content-Length`-only body read.** The MVP server reads the body by
   `Content-Length`; chunked `Transfer-Encoding` is not parsed. Fine for the
   localhost/agent path; revisit if exposed behind a proxy.
-- **Outcome-report trust model (hardened).** Two defenses make self-reports
-  non-load-bearing for the security-critical decision:
-  1. **The verdict gates on CONFIRMED settlements.** `decide_payment`'s
-     thin-history gate counts `confirmed_settlement_count` — on-chain (store) or
-     chain-watch-confirmed (ledger) — not raw `settlement_count`. So an
-     unauthenticated `delivered`/`settled` spam inflates the reported count but
-     **cannot graduate a counterparty to GO** (verified: 40 self-reports → HOLD;
-     25 chain-confirmed → GO).
-  2. **Outcome reports are authenticated.** `POST /v1/report-outcome` and the MCP
-     `report_outcome` tool require a `report_token` (HMAC capability returned with
-     the verdict). Knowing a `receipt_id` — e.g. from a log — is not enough; only
-     the party that received the verdict can report on it. Forged/missing token →
-     403 (verified).
-  - **Settlement is trustless** (`settlement_watch.py`): chain-confirmed `settled`
-    outcomes, payer-bound (the on-chain SENDER must be the verdict's `payer`),
-    one-tx-one-receipt, idempotent.
-  - **Residual (griefing, not safety):** a reporter that *did* transact with a
-    counterparty can still self-assert a delivery `disputed` (delivery quality is
-    inherently off-chain). This biases that counterparty toward **HOLD**, never
-    toward an unsafe GO — an availability/griefing concern, not a verdict bypass.
-    A payer-less verdict also still uses the weaker recipient+amount settlement
-    match.
+- **Outcome-report trust model (chain-confirmed anchored).** Every
+  verdict-affecting ledger signal — `settlement_count`, `confirmed_settlement_count`,
+  `dispute_rate`, `price_history` — derives **only from chain-confirmed settlements**
+  (`source="chain-watch"`, written by `settlement_watch` after on-chain
+  verification, deduped by `settlement_tx`, payer-bound). A self-report on a
+  receipt that never settled on-chain is **advisory only** (`_meta.advisory_self_reports`)
+  and moves nothing. This closes the self-report poisoning channels found in the
+  full audit (verified): you can't drag a counterparty GO→HOLD with fake
+  `disputed` reports, can't poison `price_history` with a fake `observed_amount`,
+  can't inflate the confirmed count by replaying one tx across N receipts, and a
+  self-report can't mask a downstream `sanctioned` flag. Among confirmed
+  settlements, the payer's latest delivery report sets quality (you can only
+  dispute a payment that really happened); chain-confirmation is **sticky** (a
+  later self-report can't erase it). Reports are also authenticated by a
+  `report_token` (HMAC capability returned with the verdict).
+  - **Residual (Sybil / wash-trading — design limit, documented).** On-chain
+    settlement *count* — whether from the indexed store or chain-watch — is
+    **wash-tradeable**: an attacker who controls both wallets can pay themselves
+    real USDC to manufacture settlement history (the payer-binding doesn't help
+    when the attacker owns the payer). So raw confirmed-count is not Sybil-proof;
+    the real defenses are **counterparty diversity** (many distinct payers),
+    amount floors, and dispute/age weighting — future work, not a code one-liner.
+    Treat confirmed-count as *necessary, not sufficient* for trust. Delivery
+    `disputed` on a real settlement still biases toward HOLD (griefing), never an
+    unsafe GO. A payer-less verdict uses the weaker recipient+amount match.
 - **Re-aggregates the whole ledger per lookup.** `LedgerReputationSource` folds
   every event on each `lookup()`, and `price_history` is unbounded. Fine at
   scaffold scale; production keeps a rolling in-memory aggregate updated on

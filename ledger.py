@@ -63,26 +63,35 @@ def aggregate_counterparties(events):
     price_history -- plus age/velocity/_meta. This is what makes the ledger a
     drop-in reputation source.
     """
-    # Two passes (verdicts, then outcomes) -> materialize once so a one-shot
-    # generator (EventLedger.read_events) isn't exhausted by the first pass.
+    # Materialize once (read_events is a one-shot generator).
+    #
+    # TRUST MODEL: every verdict-affecting signal (settlement_count, dispute_rate,
+    # price_history) is anchored to CHAIN-CONFIRMED settlements only -- a receipt
+    # that the settlement watcher confirmed on-chain (source="chain-watch"). A
+    # self-report on a receipt that never settled on-chain contributes NOTHING to
+    # the verdict (it is advisory metadata). This closes the self-report poisoning
+    # channels: you cannot dispute, price-anomaly-poison, or inflate a counterparty
+    # you never actually paid. Among confirmed receipts, the latest delivery
+    # outcome (which the payer may self-report) sets quality (good vs disputed) --
+    # you can only dispute a payment that really happened.
     events = list(events)
-    by_receipt = {}      # receipt_id -> (counterparty, amount, observed_amount)
-    agg = {}             # counterparty -> mutable accumulator
+    by_receipt = {}      # receipt_id -> {cp, amount}
+    agg = {}
 
     def acc(cp):
         if cp not in agg:
-            agg[cp] = {"good": 0, "bad": 0, "amounts": [], "chain_confirmed": 0,
-                       "first_ts": None, "last_ts": None, "verdicts": 0}
+            agg[cp] = {"good": 0, "bad": 0, "amounts": [], "confirmed_txs": set(),
+                       "first_ts": None, "last_ts": None, "verdicts": 0,
+                       "self_reports": 0}
         return agg[cp]
 
-    # First pass: index verdicts (so outcomes can attribute regardless of order).
     for e in events:
         if e.get("kind") == "verdict":
             rid = e.get("receipt_id")
             cp = e.get("counterparty")
             if not cp or not rid:
                 continue
-            by_receipt[rid] = [cp, e.get("amount"), None]
+            by_receipt[rid] = {"cp": cp, "amount": e.get("amount")}
             a = acc(cp)
             a["verdicts"] += 1
             ts = e.get("ts")
@@ -90,68 +99,76 @@ def aggregate_counterparties(events):
                 a["first_ts"] = min(a["first_ts"], ts) if a["first_ts"] else ts
                 a["last_ts"] = max(a["last_ts"], ts) if a["last_ts"] else ts
 
-    # Second pass: collapse outcomes to ONE per receipt (last write wins). This
-    # makes replays / retries / status updates idempotent -- a receipt counts
-    # exactly once no matter how many times its outcome is reported.
-    final_outcome = {}   # receipt_id -> (outcome, source)
+    # Per receipt: the STICKY chain-watch confirmation (first one wins -- a later
+    # self-report can't erase it) and the LATEST delivery outcome (any source).
+    chain_tx = {}        # rid -> settlement_tx of the chain-watch confirmation
+    chain_amount = {}    # rid -> on-chain observed amount from that confirmation
+    latest_quality = {}  # rid -> latest outcome (delivery quality)
+    self_reported = set()
     for e in events:
         if e.get("kind") != "outcome":
             continue
         rid = e.get("receipt_id")
         if rid not in by_receipt:
             continue  # outcome for an unknown receipt -> cannot attribute
-        final_outcome[rid] = (e.get("outcome"), e.get("source", "self-report"))
-        if e.get("observed_amount") is not None:
-            by_receipt[rid][2] = e.get("observed_amount")
+        outcome = e.get("outcome")
+        source = e.get("source", "self-report")
+        latest_quality[rid] = outcome
+        if source != "chain-watch":
+            self_reported.add(rid)
+        elif outcome in GOOD_OUTCOMES and rid not in chain_tx:
+            chain_tx[rid] = e.get("settlement_tx")   # sticky
+            if e.get("observed_amount") is not None:
+                chain_amount[rid] = e.get("observed_amount")
 
-    for rid, (outcome, source) in final_outcome.items():
-        cp, amount, observed = by_receipt[rid]
-        a = acc(cp)
-        settled = outcome in GOOD_OUTCOMES or outcome in BAD_OUTCOMES
-        if outcome in GOOD_OUTCOMES:
+    # Only CHAIN-CONFIRMED receipts move the signals; dedup by settlement_tx so
+    # one on-chain payment confirms at most one settlement for a counterparty.
+    for rid, tx in chain_tx.items():
+        a = acc(by_receipt[rid]["cp"])
+        if tx is not None:
+            if tx in a["confirmed_txs"]:
+                continue
+            a["confirmed_txs"].add(tx)
+        if latest_quality.get(rid) in BAD_OUTCOMES:
+            a["bad"] += 1     # payer disputed a payment that really settled
+        else:
             a["good"] += 1
-        elif outcome in BAD_OUTCOMES:
-            a["bad"] += 1
-        # Settlement counts as CHAIN-CONFIRMED only when a trustless watcher
-        # wrote it -- this is the un-fakeable backbone the self-report can't be.
-        if settled and source == "chain-watch":
-            a["chain_confirmed"] += 1
-        # Price history is "what this counterparty charged on settled payments"
-        # -- include disputed ones too (the charge is real regardless of
-        # delivery); exclude NEUTRAL (abandoned, never settled).
-        if settled:
-            amt = observed if observed is not None else amount
-            if amt is not None:
-                a["amounts"].append(str(amt))
+        amt = chain_amount.get(rid)
+        if amt is None:
+            amt = by_receipt[rid]["amount"]
+        if amt is not None:
+            a["amounts"].append(str(amt))
+
+    # Advisory only: self-reports on receipts with no chain confirmation.
+    for rid in self_reported:
+        if rid not in chain_tx:
+            acc(by_receipt[rid]["cp"])["self_reports"] += 1
 
     records = {}
     for cp, a in agg.items():
         good, bad = a["good"], a["bad"]
-        decided = good + bad     # total SETTLED payments (good + disputed)
-        dispute_rate = (bad / decided) if decided else None
+        confirmed = good + bad   # all chain-confirmed (deduped by tx)
+        dispute_rate = (bad / confirmed) if confirmed else None
         records[cp] = {
-            # settlement_count is the total settled population that
-            # reputation_score splits by dispute_rate -- so it is good+bad, not
-            # good-only, which makes the Beta posterior exact.
-            "settlement_count": decided,
-            # Of those, how many are trustless (chain-watch confirmed). The
-            # verdict's thin-history gate uses THIS, so unauthenticated
-            # self-reports cannot graduate a counterparty to GO.
-            "confirmed_settlement_count": a["chain_confirmed"],
-            "dispute_rate": dispute_rate,   # None until an outcome is observed
-            "price_history": a["amounts"],
+            # settlement_count == confirmed: the ledger's reputation is built ONLY
+            # from chain-confirmed settlements, so the count cannot be self-report
+            # inflated. reputation_score's Beta splits it by dispute_rate.
+            "settlement_count": confirmed,
+            "confirmed_settlement_count": confirmed,
+            "dispute_rate": dispute_rate,   # over confirmed settlements only
+            "price_history": a["amounts"],  # on-chain amounts of confirmed settlements
             "first_seen": a["first_ts"],
             "last_seen": a["last_ts"],
             "_meta": {
                 "source": "blackwall-ledger",
-                "known": decided > 0,
+                "known": confirmed > 0,
                 "verdicts_seen": a["verdicts"],
-                "outcomes_seen": decided,
-                "dispute_rate_is_observed": decided > 0,
-                # How many of the settlements are trustless (chain-confirmed) vs
-                # merely self-reported. A production GO policy should gate on the
-                # confirmed count, not the raw one.
-                "chain_confirmed_settlements": a["chain_confirmed"],
+                "outcomes_seen": confirmed,
+                "dispute_rate_is_observed": confirmed > 0,
+                "chain_confirmed_settlements": confirmed,
+                # self-reports that never reached chain confirmation (ignored
+                # for the verdict; surfaced for transparency only).
+                "advisory_self_reports": a["self_reports"],
             },
         }
     return records
@@ -275,15 +292,31 @@ class ChainedReputationSource:
         self.sources = list(sources)
 
     def lookup(self, counterparty):
+        # sanctioned / known_bad are safety hard-STOPs: they must be OR-ed across
+        # ALL sources, never masked by an earlier source's absence/False. So we
+        # consult every source (no short-circuit) for those flags, while still
+        # taking the FIRST known source's record as the reputation data. (A
+        # leading ledger record with a self-report used to mask a downstream
+        # sanctions source -> a sanctions bypass; this closes it.)
+        primary = None
         last = None
+        sanctioned = False
+        known_bad = False
         for src in self.sources:
             rec = src.lookup(counterparty)
             last = rec
-            known = (rec.get("_meta", {}) or {}).get("known")
-            if known or rec.get("sanctioned") or rec.get("known_bad") \
-                    or (rec.get("settlement_count") or 0) > 0:
-                return rec
-        return last
+            sanctioned = sanctioned or bool(rec.get("sanctioned"))
+            known_bad = known_bad or bool(rec.get("known_bad"))
+            if primary is None:
+                known = (rec.get("_meta", {}) or {}).get("known") \
+                    or (rec.get("settlement_count") or 0) > 0 \
+                    or rec.get("sanctioned") or rec.get("known_bad")
+                if known:
+                    primary = rec
+        result = dict(primary if primary is not None else last)
+        result["sanctioned"] = bool(result.get("sanctioned")) or sanctioned
+        result["known_bad"] = bool(result.get("known_bad")) or known_bad
+        return result
 
 
 if __name__ == "__main__":

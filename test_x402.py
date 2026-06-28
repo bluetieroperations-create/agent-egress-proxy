@@ -116,6 +116,24 @@ class TestPaymentSatisfies(unittest.TestCase):
         ok, _ = X.payment_satisfies(make_payment(asset="0x" + "2" * 40), self.req)
         self.assertFalse(ok)
 
+    def test_missing_nonce_rejected(self):
+        # A real EIP-3009 authorization always has a nonce; one without is
+        # malformed and must not pass (else the local replay guard is bypassed).
+        p = make_payment(nonce=None)
+        del p["payload"]["authorization"]["nonce"]
+        ok, reason = X.payment_satisfies(p, self.req)
+        self.assertFalse(ok)
+        self.assertIn("nonce", reason)
+
+    def test_non_dict_payload_does_not_crash(self):
+        # Crafted X-PAYMENT with a non-dict payload/authorization must return
+        # cleanly, never raise (fail-closed, not fault).
+        for bad in ({"scheme": "exact", "network": "base", "payload": ["x"]},
+                    {"scheme": "exact", "network": "base",
+                     "payload": {"authorization": "nope"}}):
+            ok, _ = X.payment_satisfies(bad, self.req)
+            self.assertFalse(ok)
+
 
 class TestSessionToken(unittest.TestCase):
     def test_sign_verify_roundtrip(self):
@@ -224,6 +242,12 @@ class TestBillingGate(unittest.TestCase):
     def test_bad_session_token_gets_402(self):
         r = self.gate.check("https://r", x_session="not.a.valid.token")
         self.assertFalse(r.paid)
+
+    def test_402_advertises_price_override(self):
+        # The unpaid 402 must quote the per-resource override price, not the base
+        # price -- else the agent pays the quote and is rejected as underpaid.
+        r = self.gate.check("https://r", price_atomic=100000)
+        self.assertEqual(r.body["accepts"][0]["maxAmountRequired"], "100000")
 
 
 class TestBillingConfig(unittest.TestCase):

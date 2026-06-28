@@ -57,6 +57,12 @@ class TestParseAmount(unittest.TestCase):
         self.assertIsNone(bw.parse_amount("NaN"))
         self.assertIsNone(bw.parse_amount("Infinity"))
 
+    def test_reject_underscore_and_scientific(self):
+        # Decimal accepts these but they're surprising for a money field.
+        self.assertIsNone(bw.parse_amount("1_000"))
+        self.assertIsNone(bw.parse_amount("1e3"))
+        self.assertIsNone(bw.parse_amount("+5"))
+
 
 class TestPriceAnomalyRatio(unittest.TestCase):
     """
@@ -333,6 +339,14 @@ class TestValidateRequest(unittest.TestCase):
         clean, err = bw.validate_request(dict(self.BASE, payer="0xNOPE"))
         self.assertIsNone(clean)
         self.assertIn("payer", err)
+
+    def test_counterparty_address_canonicalized(self):
+        # A mixed-case EVM-address counterparty is lowercased so reputation
+        # doesn't split across spellings of one address.
+        addr = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+        clean, err = bw.validate_request(dict(self.BASE, counterparty=addr))
+        self.assertIsNone(err)
+        self.assertEqual(clean["counterparty"], addr.lower())
 
 
 class TestForecastEndToEnd(unittest.TestCase):

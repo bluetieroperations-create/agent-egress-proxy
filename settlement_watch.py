@@ -26,14 +26,18 @@ unit-tested offline. Data source: Blockscout for Base (no key). Stdlib only.
 from __future__ import annotations
 
 import json
+import re
 import urllib.request
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+
+from addresses import is_evm_address
 
 BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 DEFAULT_BASE_URL = "https://base.blockscout.com"
 DEFAULT_UA = "blackwall-settlement-watch/0.1"
 HTTP_TIMEOUT = 12.0
+_TX_HASH_RE = re.compile(r"\A0x[0-9a-fA-F]{64}\Z")  # 32-byte tx hash
 
 
 # ===========================================================================
@@ -91,6 +95,8 @@ def extract_usdc_transfers(items, usdc_address=BASE_USDC):
             amount = amt / (Decimal(10) ** int(dec))
         except (InvalidOperation, ValueError, ArithmeticError):
             continue
+        if amount <= 0:
+            continue  # real USDC transfers are positive; drop dust/negative noise
         out.append({
             "to": ((it.get("to") or {}).get("hash") or "").lower(),
             "from": ((it.get("from") or {}).get("hash") or "").lower(),
@@ -115,13 +121,13 @@ def find_settlement(transfers, counterparty, expected_amount,
     cp = (counterparty or "").lower()
     want = _to_decimal(expected_amount)
     tol = _to_decimal(tolerance) or Decimal(0)
-    if want is None:
-        return None
+    if want is None or not cp:
+        return None   # no recipient to match against -> never match
     since = parse_ts(since_ts) if since_ts else None
     want_from = (from_addr or "").lower() or None
 
     for t in transfers:
-        if t["to"] != cp:
+        if not t["to"] or t["to"] != cp:
             continue
         if abs(t["amount"] - want) > tol:
             continue
@@ -129,7 +135,10 @@ def find_settlement(transfers, counterparty, expected_amount,
             continue
         if since is not None:
             ts = parse_ts(t.get("timestamp"))
-            if ts is not None and ts < since:
+            # FAIL CLOSED: a transfer with a missing/unparseable timestamp must
+            # NOT satisfy a time-bounded match (else an old/undated payment could
+            # confirm a new receipt).
+            if ts is None or ts < since:
                 continue
         return t
     return None
@@ -155,6 +164,10 @@ class BlockscoutChain:
 
     def tx_token_transfers(self, tx_hash):
         """USDC-normalized transfers carried by a single transaction."""
+        # Validate before interpolating into the URL: an unencoded tx_hash with
+        # '/', '?', '#' would rewrite the request path on the fixed host.
+        if not _TX_HASH_RE.match(tx_hash or ""):
+            return []
         data = self._get("/api/v2/transactions/%s/token-transfers" % tx_hash)
         return extract_usdc_transfers(data.get("items") or [], self.usdc_address)
 
@@ -166,6 +179,8 @@ class BlockscoutChain:
         (see docs/DATA_SOURCE_SPIKE.md), and a just-settled payment is on the
         first page anyway.
         """
+        if not is_evm_address(counterparty):
+            return []   # non-address -> no on-chain history + avoids URL injection
         data = self._get(
             "/api/v2/addresses/%s/token-transfers?type=ERC-20&filter=to"
             % counterparty)
@@ -184,14 +199,20 @@ class SettlementWatcher:
         self.tolerance = tolerance
 
     def confirm_by_tx(self, receipt_id, counterparty, amount, tx_hash,
-                      from_addr=None):
+                      from_addr=None, since_ts=None):
         """Verify a specific tx settles the payment; record `settled` if so.
 
-        Returns the matching transfer dict, or None if the tx does not contain a
-        matching USDC transfer (in which case NOTHING is recorded)."""
+        Pass the verdict's `from_addr` (payer) and `since_ts` (verdict time) to
+        bind the confirmation to THIS agent's payment after the verdict -- not
+        any historical same-amount transfer. Returns the matching transfer dict,
+        or None (nothing recorded). One on-chain tx confirms at most one
+        settlement per counterparty; the dedup is enforced in
+        ledger.aggregate_counterparties (by settlement_tx), so a tx already used
+        cannot inflate the confirmed count."""
         transfers = self.chain.tx_token_transfers(tx_hash)
         match = find_settlement(transfers, counterparty, amount,
-                                from_addr=from_addr, tolerance=self.tolerance)
+                                from_addr=from_addr, since_ts=since_ts,
+                                tolerance=self.tolerance)
         if match is None:
             return None
         self.ledger.record_outcome(

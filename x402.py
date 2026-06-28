@@ -109,10 +109,18 @@ def decode_payment_header(header_value):
 
 
 def _authorization(payment):
-    """Pull the EIP-3009 authorization fields out of an x402 payment payload."""
-    payload = payment.get("payload") or {}
-    auth = payload.get("authorization") or {}
-    return auth
+    """Pull the EIP-3009 authorization out of a payment payload, type-safely.
+
+    The nested payload/authorization are fully attacker-controlled (only the top
+    level is guaranteed a dict by decode_payment_header). A non-dict here must
+    return {} -- never raise -- so a crafted X-PAYMENT can't crash the gate."""
+    if not isinstance(payment, dict):
+        return {}
+    payload = payment.get("payload")
+    if not isinstance(payload, dict):
+        return {}
+    auth = payload.get("authorization")
+    return auth if isinstance(auth, dict) else {}
 
 
 def payment_satisfies(payment, req):
@@ -147,6 +155,12 @@ def payment_satisfies(payment, req):
         return False, "missing/invalid payment value"
     if value < int(req["maxAmountRequired"]):
         return False, "underpaid"
+
+    # A real EIP-3009 authorization always carries a nonce; one without it is
+    # malformed. Reject it here so Blackwall's local replay guard never has to
+    # wave a nonce-less payment through (NonceLedger.add(None) is a no-op).
+    if not auth.get("nonce"):
+        return False, "missing authorization nonce"
 
     return True, "ok"
 
@@ -380,12 +394,16 @@ class BillingGate:
             ok, info = self.sessions.consume(x_session)
             if ok:
                 return BillingResult(True, session_remaining=info, via="session")
-            return self._challenge(resource, error="session: %s" % info)
+            # Carry the price override so the fallback 402 advertises the real
+            # (premium) price -- otherwise the agent is quoted the base price,
+            # pays it, and gets rejected as underpaid (unsatisfiable loop).
+            return self._challenge(resource, error="session: %s" % info,
+                                  price_atomic=price_atomic)
 
         if x_payment:
             return self._verify_payment(resource, x_payment, price_atomic)
 
-        return self._challenge(resource)
+        return self._challenge(resource, price_atomic=price_atomic)
 
     def _verify_payment(self, resource, x_payment, price_atomic=None):
         req = self._requirements(resource, price_atomic)

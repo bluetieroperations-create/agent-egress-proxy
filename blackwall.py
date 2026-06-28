@@ -34,12 +34,15 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import sys
 import threading
 from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from addresses import addresses_equal, normalize_address
+from addresses import addresses_equal, is_evm_address, normalize_address
+
+_AMOUNT_RE = re.compile(r"\A\d+(\.\d+)?\Z")  # plain decimal money string only
 
 # ---------------------------------------------------------------------------
 # Tunables -- the decision boundary's thresholds. Changing one of these should
@@ -72,15 +75,19 @@ def parse_amount(raw):
     if raw is None:
         return None
     # Accept str / int / Decimal; reject float (binary-rounding) and junk.
-    if isinstance(raw, float):
+    if isinstance(raw, bool) or isinstance(raw, float):
+        return None
+    s = str(raw).strip()
+    # Plain decimal only -- reject Decimal's permissive forms ("1_000", "1e3",
+    # "+5", "Inf", "NaN") that would silently mean something other than the
+    # literal digits for a money field.
+    if not _AMOUNT_RE.match(s):
         return None
     try:
-        amount = Decimal(str(raw).strip())
+        amount = Decimal(s)
     except (InvalidOperation, ValueError, ArithmeticError):
         return None
-    if not amount.is_finite():
-        return None
-    if amount <= 0:
+    if not amount.is_finite() or amount <= 0:
         return None
     return amount
 
@@ -449,9 +456,16 @@ def validate_request(payload):
             return None, "payer must be a valid EVM address (0x + 40 hex chars)"
         payer = npayer
 
+    # Canonicalize counterparty: when it's an EVM address, lowercase it so the
+    # reputation key and the recipient-mismatch check (case-insensitive) agree,
+    # and reputation doesn't split across mixed-case spellings of one address.
+    counterparty = payload["counterparty"]
+    if is_evm_address(counterparty):
+        counterparty = counterparty.lower()
+
     return {
         "agent_id": payload.get("agent_id"),
-        "counterparty": payload["counterparty"],
+        "counterparty": counterparty,
         "resource": payload.get("resource"),
         "amount": amount,
         "asset": payload["asset"],

@@ -15,6 +15,24 @@ import blackwall as bw
 import ledger as L
 
 
+def verdict(rid, cp, amount="0.09", ts="t"):
+    return {"kind": "verdict", "receipt_id": rid, "counterparty": cp,
+            "amount": amount, "ts": ts}
+
+
+def chain_settled(rid, tx, observed_amount=None):
+    # A CHAIN-WATCH confirmation -- the only kind that counts toward reputation.
+    e = {"kind": "outcome", "receipt_id": rid, "outcome": "settled",
+         "source": "chain-watch", "settlement_tx": tx}
+    if observed_amount is not None:
+        e["observed_amount"] = observed_amount
+    return e
+
+
+def self_report(rid, outcome):
+    return {"kind": "outcome", "receipt_id": rid, "outcome": outcome}
+
+
 class TestAggregate(unittest.TestCase):
     """
     aggregate_counterparties: event stream -> per-counterparty records.
@@ -33,59 +51,62 @@ class TestAggregate(unittest.TestCase):
         self.assertIsNone(recs["0xA"]["dispute_rate"])
         self.assertFalse(recs["0xA"]["_meta"]["known"])
 
-    def test_outcome_attributed_via_receipt(self):
-        events = [
-            {"kind": "verdict", "receipt_id": "bw_1", "counterparty": "0xA",
-             "amount": "0.09", "ts": "t1"},
-            {"kind": "outcome", "receipt_id": "bw_1", "outcome": "delivered"},
-        ]
-        recs = L.aggregate_counterparties(events)
+    def test_chain_confirmed_counts_self_report_does_not(self):
+        # Only a chain-watch confirmation counts; a self-report is advisory.
+        recs = L.aggregate_counterparties([
+            verdict("bw_1", "0xA"), chain_settled("bw_1", "0xtx1")])
         self.assertEqual(recs["0xA"]["settlement_count"], 1)
         self.assertEqual(recs["0xA"]["price_history"], ["0.09"])
         self.assertTrue(recs["0xA"]["_meta"]["known"])
+        # a self-report alone -> NOT counted, NOT known.
+        recs2 = L.aggregate_counterparties([
+            verdict("bw_2", "0xB"), self_report("bw_2", "delivered")])
+        self.assertEqual(recs2["0xB"]["settlement_count"], 0)
+        self.assertFalse(recs2["0xB"]["_meta"]["known"])
+        self.assertEqual(recs2["0xB"]["_meta"]["advisory_self_reports"], 1)
 
-    def test_dispute_rate(self):
-        events = [
-            {"kind": "verdict", "receipt_id": "r%d" % i, "counterparty": "0xA",
-             "amount": "0.09", "ts": "t"} for i in range(5)
-        ]
-        events += [{"kind": "outcome", "receipt_id": "r%d" % i,
-                    "outcome": "delivered"} for i in range(4)]
-        events += [{"kind": "outcome", "receipt_id": "r4",
-                    "outcome": "disputed"}]
+    def test_dispute_rate_over_confirmed(self):
+        # 5 chain-confirmed settlements; the payer disputes one of them.
+        events = [verdict("r%d" % i, "0xA") for i in range(5)]
+        events += [chain_settled("r%d" % i, "0xtx%d" % i) for i in range(5)]
+        events += [self_report("r4", "disputed")]  # quality of a REAL settlement
         recs = L.aggregate_counterparties(events)
-        # settlement_count is total SETTLED (good + disputed) = 5, so that
-        # reputation_score's Beta split by dispute_rate is exact.
         self.assertEqual(recs["0xA"]["settlement_count"], 5)
         self.assertAlmostEqual(recs["0xA"]["dispute_rate"], 0.2)  # 1 of 5
 
-    def test_duplicate_outcome_counts_once(self):
-        # Replays / retries must be idempotent (last write wins).
-        events = [
-            {"kind": "verdict", "receipt_id": "r1", "counterparty": "0xA",
-             "amount": "0.09", "ts": "t"},
-            {"kind": "outcome", "receipt_id": "r1", "outcome": "delivered"},
-            {"kind": "outcome", "receipt_id": "r1", "outcome": "delivered"},
-        ]
-        recs = L.aggregate_counterparties(events)
-        self.assertEqual(recs["0xA"]["settlement_count"], 1)
-        self.assertEqual(recs["0xA"]["price_history"], ["0.09"])
+    def test_self_reported_dispute_on_unsettled_is_ignored(self):
+        # Dispute on a receipt that never chain-settled -> no effect (anti-poison).
+        recs = L.aggregate_counterparties([
+            verdict("r1", "0xA"), self_report("r1", "disputed")])
+        self.assertEqual(recs["0xA"]["settlement_count"], 0)
+        self.assertIsNone(recs["0xA"]["dispute_rate"])
 
-    def test_outcome_status_update_last_wins(self):
-        # delivered then later disputed -> final state is disputed.
-        events = [
-            {"kind": "verdict", "receipt_id": "r1", "counterparty": "0xA",
-             "amount": "0.09", "ts": "t"},
-            {"kind": "outcome", "receipt_id": "r1", "outcome": "delivered"},
-            {"kind": "outcome", "receipt_id": "r1", "outcome": "disputed"},
-        ]
-        recs = L.aggregate_counterparties(events)
-        self.assertEqual(recs["0xA"]["settlement_count"], 1)  # still 1 settled
-        self.assertAlmostEqual(recs["0xA"]["dispute_rate"], 1.0)
+    def test_one_tx_confirms_once(self):
+        # The SAME settlement_tx across two receipts confirms at most one.
+        recs = L.aggregate_counterparties([
+            verdict("r1", "0xA"), verdict("r2", "0xA"),
+            chain_settled("r1", "0xSAME"), chain_settled("r2", "0xSAME")])
+        self.assertEqual(recs["0xA"]["settlement_count"], 1)
+
+    def test_chain_confirmation_is_sticky(self):
+        # A later self-report must NOT erase a real chain confirmation.
+        recs = L.aggregate_counterparties([
+            verdict("r1", "0xA"), chain_settled("r1", "0xtx"),
+            self_report("r1", "disputed")])
+        self.assertEqual(recs["0xA"]["settlement_count"], 1)   # still confirmed
+        self.assertAlmostEqual(recs["0xA"]["dispute_rate"], 1.0)  # quality bad
+
+    def test_price_history_only_from_confirmed_observed_amount(self):
+        # Self-reported observed_amount must NOT poison price_history.
+        recs = L.aggregate_counterparties([
+            verdict("r1", "0xA", amount="0.09"),
+            {"kind": "outcome", "receipt_id": "r1", "outcome": "settled",
+             "observed_amount": "5.00"},  # self-report (no chain-watch source)
+        ])
+        self.assertEqual(recs["0xA"]["price_history"], [])  # ignored
 
     def test_orphan_outcome_ignored(self):
-        events = [{"kind": "outcome", "receipt_id": "ghost",
-                   "outcome": "delivered"}]
+        events = [chain_settled("ghost", "0xtx")]
         self.assertEqual(L.aggregate_counterparties(events), {})
 
 
@@ -97,7 +118,8 @@ class TestEventLedger(unittest.TestCase):
 
     def test_roundtrip_and_aggregate(self):
         self.led.record_verdict("bw_x", "0xA", "0.09", "GO", score=0.99)
-        self.led.record_outcome("bw_x", "delivered")
+        self.led.record_outcome("bw_x", "settled", settlement_tx="0xtx",
+                                source="chain-watch")
         recs = self.led.aggregate()
         self.assertEqual(recs["0xA"]["settlement_count"], 1)
 
@@ -119,7 +141,8 @@ class TestChainedSource(unittest.TestCase):
         led = L.EventLedger(os.path.join(tempfile.mkdtemp(), "l.jsonl"))
         for i in range(3):
             led.record_verdict("r%d" % i, "0xA", "0.09", "GO")
-            led.record_outcome("r%d" % i, "delivered")
+            led.record_outcome("r%d" % i, "settled", settlement_tx="0xtx%d" % i,
+                               source="chain-watch")
         chained = L.ChainedReputationSource(
             [L.LedgerReputationSource(led), bw.MockReputationSource()])
         # Known in ledger -> ledger record wins.
@@ -128,6 +151,20 @@ class TestChainedSource(unittest.TestCase):
         # Unknown to ledger but seeded in mock -> falls through to mock.
         rec = chained.lookup("0xSANCTIONED00000000000000000000000000003")
         self.assertTrue(rec["sanctioned"])
+
+    def test_sanctioned_not_masked_by_leading_self_report(self):
+        # A self-report on a sanctioned counterparty must NOT let the leading
+        # ledger source mask the sanctions flag from a downstream source.
+        class SanctSrc:
+            def lookup(self, c):
+                return {"settlement_count": 0, "sanctioned": True,
+                        "price_history": [], "_meta": {"known": True}}
+        led = L.EventLedger(os.path.join(tempfile.mkdtemp(), "l.jsonl"))
+        led.record_verdict("r1", "0xSANC", "0.09", "STOP")
+        led.record_outcome("r1", "settled")  # self-report
+        chained = L.ChainedReputationSource(
+            [L.LedgerReputationSource(led), SanctSrc()])
+        self.assertTrue(chained.lookup("0xSANC")["sanctioned"])
 
 
 class TestFlywheel(unittest.TestCase):
@@ -149,20 +186,21 @@ class TestFlywheel(unittest.TestCase):
         self.assertIsNone(err)
         self.assertEqual(resp1["verdict"], "HOLD")
 
-        # 25 SELF-REPORTED deliveries -> settlement_count rises, but confirmed
-        # stays 0 -> still HOLD (self-reports can't graduate).
+        # 25 SELF-REPORTED deliveries -> do NOT count at all (advisory only) ->
+        # still HOLD (self-reports can't graduate).
         for i in range(25):
             r, _ = bw.forecast(dict(payload), src, ledger=led)
             led.record_outcome(r["receipt_id"], "delivered")  # source=self-report
         resp2, _ = bw.forecast(payload, src, ledger=led)
         self.assertEqual(resp2["verdict"], "HOLD")
-        self.assertEqual(src.lookup(cp)["settlement_count"], 25)
+        self.assertEqual(src.lookup(cp)["settlement_count"], 0)
         self.assertEqual(src.lookup(cp)["confirmed_settlement_count"], 0)
 
         # Now 25 CHAIN-CONFIRMED settlements -> graduates to GO.
         for i in range(25):
             r, _ = bw.forecast(dict(payload), src, ledger=led)
-            led.record_outcome(r["receipt_id"], "settled", source="chain-watch")
+            led.record_outcome(r["receipt_id"], "settled", settlement_tx="0xtx%d" % i,
+                               source="chain-watch")
         resp3, _ = bw.forecast(payload, src, ledger=led)
         self.assertEqual(resp3["verdict"], "GO")
 

@@ -142,7 +142,10 @@ class TestReportOutcomeTool(unittest.TestCase):
               "arguments": {"receipt_id": rid, "report_token": tok,
                             "outcome": "delivered"}}))["result"]
         self.assertFalse(r["isError"])
-        self.assertEqual(self.led.aggregate()[GOOD]["settlement_count"], 1)
+        # MCP reports are self-reports -> advisory only, never a settlement count.
+        agg = self.led.aggregate()[GOOD]
+        self.assertEqual(agg["settlement_count"], 0)
+        self.assertEqual(agg["_meta"]["advisory_self_reports"], 1)
 
     def test_report_without_token_is_rejected(self):
         f = self.s.handle(req("tools/call", {"name": "forecast_payment",

@@ -88,6 +88,30 @@ class TestFindSettlement(unittest.TestCase):
             sw.find_settlement(self.transfers, "0xCP", "0.09",
                                since_ts="2026-06-27T06:00:00Z"))
 
+    def test_missing_timestamp_fails_closed_under_since(self):
+        # A transfer with no/garbage timestamp must NOT satisfy a time-bounded
+        # match (fail-closed), or an undated old payment could confirm a receipt.
+        ts_none = sw.extract_usdc_transfers([
+            xfer("0xCP", "90000", frm="0xAGENT", ts=None)])
+        self.assertIsNone(
+            sw.find_settlement(ts_none, "0xCP", "0.09",
+                               since_ts="2026-06-27T06:00:00Z"))
+
+    def test_empty_counterparty_never_matches(self):
+        self.assertIsNone(sw.find_settlement(self.transfers, "", "0.09"))
+        self.assertIsNone(sw.find_settlement(self.transfers, None, "0.09"))
+
+    def test_negative_amount_dropped(self):
+        out = sw.extract_usdc_transfers([xfer("0xCP", "-90000")])
+        self.assertEqual(out, [])
+
+    def test_chain_client_rejects_bad_tx_hash_and_address(self):
+        # No outbound call for a non-hex tx_hash / non-address counterparty
+        # (URL path/query injection guard).
+        chain = sw.BlockscoutChain()
+        self.assertEqual(chain.tx_token_transfers("0xnot/a/hash?x=1"), [])
+        self.assertEqual(chain.recent_inbound("addr?evil=1"), [])
+
 
 class FakeChain:
     """Injectable chain stub."""
