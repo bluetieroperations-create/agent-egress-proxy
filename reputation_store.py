@@ -93,14 +93,17 @@ class ReputationStore:
         cp = (counterparty or "").lower()
         with self._lock:
             cur = self._conn.execute(
-                "SELECT COUNT(*), MIN(ts), MAX(ts) FROM settlements "
-                "WHERE counterparty=?", (cp,))
-            count, first_seen, last_seen = cur.fetchone()
+                "SELECT COUNT(*), MIN(ts), MAX(ts), COUNT(DISTINCT payer) "
+                "FROM settlements WHERE counterparty=?", (cp,))
+            count, first_seen, last_seen, distinct_payers = cur.fetchone()
             amounts = [r[0] for r in self._conn.execute(
                 "SELECT amount FROM settlements WHERE counterparty=? "
                 "ORDER BY ts DESC LIMIT ?", (cp, PRICE_HISTORY_LIMIT))]
         return {
             "settlement_count": count,
+            # distinct on-chain senders (Sybil signal). A wash-trader can inflate
+            # COUNT cheaply but not the number of distinct funded payers.
+            "distinct_payers": distinct_payers or 0,
             "dispute_rate": None,   # not on-chain; merged from the ledger
             "price_history": amounts,
             "first_seen": first_seen,
@@ -138,6 +141,9 @@ def merge_records(records):
         "confirmed_settlement_count": max(
             (r.get("confirmed_settlement_count", r.get("settlement_count") or 0) or 0)
             for r in records),
+        # Sybil signal: max distinct payers seen by any source (a lower bound on
+        # the true union, fine for the gate).
+        "distinct_payers": max((r.get("distinct_payers") or 0) for r in records),
         "dispute_rate": next((r.get("dispute_rate") for r in records
                               if r.get("dispute_rate") is not None), None),
         "price_history": max((r.get("price_history") or [] for r in records),

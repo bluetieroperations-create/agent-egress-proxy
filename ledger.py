@@ -81,8 +81,8 @@ def aggregate_counterparties(events):
     def acc(cp):
         if cp not in agg:
             agg[cp] = {"good": 0, "bad": 0, "amounts": [], "confirmed_txs": set(),
-                       "first_ts": None, "last_ts": None, "verdicts": 0,
-                       "self_reports": 0}
+                       "payers": set(), "first_ts": None, "last_ts": None,
+                       "verdicts": 0, "self_reports": 0}
         return agg[cp]
 
     for e in events:
@@ -91,7 +91,8 @@ def aggregate_counterparties(events):
             cp = e.get("counterparty")
             if not cp or not rid:
                 continue
-            by_receipt[rid] = {"cp": cp, "amount": e.get("amount")}
+            by_receipt[rid] = {"cp": cp, "amount": e.get("amount"),
+                               "payer": e.get("payer")}
             a = acc(cp)
             a["verdicts"] += 1
             ts = e.get("ts")
@@ -138,6 +139,12 @@ def aggregate_counterparties(events):
             amt = by_receipt[rid]["amount"]
         if amt is not None:
             a["amounts"].append(str(amt))
+        # distinct payers among confirmed settlements (Sybil signal). Only
+        # payer-bound confirmations contribute -- a payer-less verdict can't
+        # establish diversity (conservative).
+        payer = by_receipt[rid].get("payer")
+        if payer:
+            a["payers"].add(payer)
 
     # Advisory only: self-reports on receipts with no chain confirmation.
     for rid in self_reported:
@@ -155,6 +162,7 @@ def aggregate_counterparties(events):
             # inflated. reputation_score's Beta splits it by dispute_rate.
             "settlement_count": confirmed,
             "confirmed_settlement_count": confirmed,
+            "distinct_payers": len(a["payers"]),  # Sybil signal: distinct funders
             "dispute_rate": dispute_rate,   # over confirmed settlements only
             "price_history": a["amounts"],  # on-chain amounts of confirmed settlements
             "first_seen": a["first_ts"],
@@ -270,6 +278,7 @@ class LedgerReputationSource:
         return {
             "settlement_count": 0,
             "confirmed_settlement_count": 0,
+            "distinct_payers": 0,
             "dispute_rate": None,
             "price_history": [],
             "sanctioned": False,

@@ -244,14 +244,19 @@ HTTP endpoints.
   dispute a payment that really happened); chain-confirmation is **sticky** (a
   later self-report can't erase it). Reports are also authenticated by a
   `report_token` (HMAC capability returned with the verdict).
-  - **Residual (Sybil / wash-trading — design limit, documented).** On-chain
-    settlement *count* — whether from the indexed store or chain-watch — is
-    **wash-tradeable**: an attacker who controls both wallets can pay themselves
-    real USDC to manufacture settlement history (the payer-binding doesn't help
-    when the attacker owns the payer). So raw confirmed-count is not Sybil-proof;
-    the real defenses are **counterparty diversity** (many distinct payers),
-    amount floors, and dispute/age weighting — future work, not a code one-liner.
-    Treat confirmed-count as *necessary, not sufficient* for trust. Delivery
+  - **Sybil / wash-trading — partially mitigated (counterparty diversity).**
+    On-chain settlement *count* alone is wash-tradeable (pay yourself). So GO now
+    also requires settlements from **>= `MIN_DISTINCT_PAYERS` (3) distinct
+    payers** (`distinct_payers`, from the ledger's payer-bound confirmations and
+    the store's distinct on-chain senders). Because a confirmation is payer-bound
+    (the on-chain sender must equal the claimed payer), an attacker can't fake
+    diversity — they need that many distinct *funded* wallets actually paying
+    (verified: 25 confirmed settlements from 1 payer → HOLD; payer-less confirms →
+    `distinct_payers=0` → HOLD). This *raises* the Sybil cost; it is not absolute
+    (a determined attacker with N funded wallets still passes). Deliberately **no
+    amount floor** — legit x402 payments are sub-cent micropayments. Remaining
+    future work: dispute/age weighting, larger/relative diversity thresholds.
+    Treat confirmed-count + diversity as *necessary, not sufficient*. Delivery
     `disputed` on a real settlement still biases toward HOLD (griefing), never an
     unsafe GO. A payer-less verdict uses the weaker recipient+amount match.
 - **Re-aggregates the whole ledger per lookup.** `LedgerReputationSource` folds

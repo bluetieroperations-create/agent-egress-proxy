@@ -210,19 +210,37 @@ class TestTrustlessFlywheel(unittest.TestCase):
         r1, _ = bw.forecast(payload, src, ledger=led)
         self.assertEqual(r1["verdict"], "HOLD")
 
-        # 25 GO payments, each confirmed ON-CHAIN by the watcher (no self-report).
+        # 25 GO payments from 5 DISTINCT payers (real service, not wash-trade),
+        # each confirmed ON-CHAIN by the watcher (no self-report).
         for i in range(25):
-            r, _ = bw.forecast(dict(payload), src, ledger=led)
+            payer = "0x" + ("%040x" % (i % 5))
+            r, _ = bw.forecast(dict(payload, payer=payer), src, ledger=led)
             tx = "0xtx%d" % i
             chain = FakeChain(tx_map={tx: [xfer(cp, "90000", tx=tx)]})
             w = sw.SettlementWatcher(chain, led)
-            # confirm THIS receipt directly (scan would also work).
             w.confirm_by_tx(r["receipt_id"], cp, "0.09", tx)
 
         rec = src.lookup(cp)
         self.assertEqual(rec["_meta"]["chain_confirmed_settlements"], 25)
+        self.assertGreaterEqual(rec["distinct_payers"], 3)
         r2, _ = bw.forecast(payload, src, ledger=led)
         self.assertEqual(r2["verdict"], "GO")
+
+    def test_single_payer_wash_trade_does_NOT_graduate(self):
+        # Sybil guard: 25 confirmed settlements but all from ONE payer -> HOLD.
+        led = L.EventLedger(os.path.join(tempfile.mkdtemp(), "w.jsonl"))
+        src = L.LedgerReputationSource(led)
+        cp = "0xCP"
+        payload = {"counterparty": cp, "amount": "0.09", "asset": "USDC",
+                   "chain": "base", "payer": "0x" + "a" * 40}  # one wallet
+        for i in range(25):
+            r, _ = bw.forecast(dict(payload), src, ledger=led)
+            tx = "0xtx%d" % i
+            sw.SettlementWatcher(FakeChain(tx_map={tx: [xfer(cp, "90000", tx=tx)]}),
+                                 led).confirm_by_tx(r["receipt_id"], cp, "0.09", tx)
+        rec = src.lookup(cp)
+        self.assertEqual(rec["distinct_payers"], 1)
+        self.assertEqual(bw.forecast(payload, src, ledger=led)[0]["verdict"], "HOLD")
 
 
 if __name__ == "__main__":

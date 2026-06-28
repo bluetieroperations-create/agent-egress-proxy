@@ -105,8 +105,9 @@ class TestCombinedSourceDrivesVerdict(unittest.TestCase):
 
     def test_store_breadth_plus_ledger_clean_goes(self):
         store = RS.ReputationStore(":memory:")
-        for i in range(30):
-            store.ingest_transfers([xf("0xCP", "0.09", tx="0xt%d" % i)])
+        for i in range(30):  # 30 settlements from 5 distinct payers (real)
+            store.ingest_transfers([xf("0xCP", "0.09", frm="0x%040x" % (i % 5),
+                                       tx="0xt%d" % i)])
         ledger = self._LedgerLike({"settlement_count": 30, "dispute_rate": 0.0,
                                    "price_history": [], "_meta": {"known": True}})
         src = RS.CombinedReputationSource([store, ledger])

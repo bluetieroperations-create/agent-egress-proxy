@@ -50,6 +50,7 @@ _AMOUNT_RE = re.compile(r"\A\d+(\.\d+)?\Z")  # plain decimal money string only
 # ---------------------------------------------------------------------------
 GO_REPUTATION_MIN = 0.70          # below this trust score, never an automatic GO
 THIN_HISTORY_SETTLEMENTS = 20     # fewer prior settlements => "thin" => cannot GO
+MIN_DISTINCT_PAYERS = 3           # confirmed settlements must span >= N payers (Sybil guard)
 HOLD_AMOUNT_THRESHOLD = Decimal("10.00")  # amounts above this escalate (HOLD)
 HOLD_ANOMALY = 0.30               # price-anomaly score at/above this cannot GO
 STOP_ANOMALY_RATIO = 8.0          # charged >= 8x its own median => STOP (wildly off)
@@ -187,6 +188,16 @@ def decide_payment(amount, record, price_history,
         confirmed = settlements
     thin = confirmed < THIN_HISTORY_SETTLEMENTS
 
+    # Sybil / wash-trade guard: a counterparty that received its confirmed
+    # settlements from too few DISTINCT payers is suspicious -- one actor paying
+    # itself can manufacture settlement COUNT but not many distinct funded
+    # payers. Gate GO on payer diversity. A source that doesn't track it (None)
+    # vouches for all (seed/mock); the ledger and store provide it. (No amount
+    # floor: legit x402 payments are sub-cent micropayments.)
+    distinct_payers = record.get("distinct_payers")
+    sybil_thin = distinct_payers is not None \
+        and distinct_payers < MIN_DISTINCT_PAYERS
+
     reasons = []
 
     # ---- STOP conditions (any one trips it) ----
@@ -243,12 +254,18 @@ def decide_payment(amount, record, price_history,
     else:
         go = (rep >= GO_REPUTATION_MIN
               and not thin
+              and not sybil_thin
               and a_score < HOLD_ANOMALY
               and not over_budget)
         if go:
             verdict = "GO"
         else:
             verdict = "HOLD"
+            if sybil_thin:
+                reasons.append(
+                    "settlements from only %d distinct payer(s) (< %d) -- possible "
+                    "wash-trading; escalating" % (distinct_payers, MIN_DISTINCT_PAYERS)
+                )
             if thin:
                 extra = ("" if confirmed == settlements
                          else " (%d reported, only %d chain-confirmed)"

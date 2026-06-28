@@ -196,9 +196,10 @@ class TestFlywheel(unittest.TestCase):
         self.assertEqual(src.lookup(cp)["settlement_count"], 0)
         self.assertEqual(src.lookup(cp)["confirmed_settlement_count"], 0)
 
-        # Now 25 CHAIN-CONFIRMED settlements -> graduates to GO.
+        # Now 25 CHAIN-CONFIRMED settlements from 5 distinct payers -> GO.
         for i in range(25):
-            r, _ = bw.forecast(dict(payload), src, ledger=led)
+            p = dict(payload, payer="0x" + ("%040x" % (i % 5)))
+            r, _ = bw.forecast(p, src, ledger=led)
             led.record_outcome(r["receipt_id"], "settled", settlement_tx="0xtx%d" % i,
                                source="chain-watch")
         resp3, _ = bw.forecast(payload, src, ledger=led)

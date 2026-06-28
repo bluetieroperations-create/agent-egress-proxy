@@ -273,6 +273,34 @@ class TestConfirmedSettlementGate(unittest.TestCase):
         self.assertEqual(v["verdict"], "GO")
 
 
+class TestSybilDiversityGate(unittest.TestCase):
+    """GO requires confirmed settlements from >= MIN_DISTINCT_PAYERS payers."""
+
+    BASE = {"settlement_count": 50, "confirmed_settlement_count": 50,
+            "dispute_rate": 0.0}
+
+    def _v(self, distinct):
+        rec = dict(self.BASE)
+        if distinct is not None:
+            rec["distinct_payers"] = distinct
+        return bw.decide_payment("0.09", rec, ["0.09"] * 5, counterparty="0xA")
+
+    def test_few_payers_holds(self):
+        v = self._v(1)  # wash-trade shape
+        self.assertEqual(v["verdict"], "HOLD")
+        self.assertTrue(any("distinct payer" in r for r in v["reasons"]))
+
+    def test_at_threshold_goes(self):
+        self.assertEqual(self._v(bw.MIN_DISTINCT_PAYERS)["verdict"], "GO")
+
+    def test_below_threshold_holds(self):
+        self.assertEqual(self._v(bw.MIN_DISTINCT_PAYERS - 1)["verdict"], "HOLD")
+
+    def test_absent_vouches_all(self):
+        # seed/mock sources omit it -> not gated (backward compatible).
+        self.assertEqual(self._v(None)["verdict"], "GO")
+
+
 class TestReportToken(unittest.TestCase):
     """sign/verify_report_token: capability authorizing an outcome report."""
 
