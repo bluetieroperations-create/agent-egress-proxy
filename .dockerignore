@@ -1,0 +1,12 @@
+test_*.py
+*.md
+docs/
+.git/
+__pycache__/
+*.pyc
+*.log
+*.jsonl
+*.db
+allowlist.txt*
+egress_proxy.py
+spike_data_source.py

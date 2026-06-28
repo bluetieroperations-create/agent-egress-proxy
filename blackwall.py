@@ -763,9 +763,12 @@ def main(argv=None):
     p = argparse.ArgumentParser(
         description="Blackwall pre-signature payment-verdict service (x402, step 1)."
     )
+    p.add_argument("--host", default=os.environ.get("BLACKWALL_HOST", "127.0.0.1"),
+                   help="bind address (default 127.0.0.1, localhost-only). Use "
+                        "0.0.0.0 ONLY for a hosted/public deploy -- see DEPLOY.md")
     p.add_argument("--port", type=int,
                    default=int(os.environ.get("BLACKWALL_PORT", "8402")),
-                   help="listen port (default 8402; bind is always 127.0.0.1)")
+                   help="listen port (default 8402)")
     p.add_argument("--ledger",
                    default=os.environ.get("BLACKWALL_LEDGER"),
                    help="path to the verdict->outcome ledger (JSONL); enables "
@@ -805,7 +808,17 @@ def main(argv=None):
         billing = BillingGate(BillingConfig(price=args.price, pay_to=args.pay_to),
                               facilitator=facilitator)
 
-    server = BlackwallServer(host="127.0.0.1", port=args.port, ledger=led,
+    # Public bind is a deliberate posture change (the service is localhost-only
+    # by default, like the egress proxy). Warn loudly if exposing it with no
+    # billing -- that publishes a free verdict oracle.
+    if args.host not in ("127.0.0.1", "::1", "localhost") and billing is None:
+        sys.stderr.write(
+            "blackwall: WARNING -- binding %s (PUBLIC) with billing OFF: anyone "
+            "can call /v1/forecast-payment for free. Set --pay-to to bill, or "
+            "front it with auth. See DEPLOY.md.\n" % args.host)
+        sys.stderr.flush()
+
+    server = BlackwallServer(host=args.host, port=args.port, ledger=led,
                              billing=billing, reputation_source=reputation_source)
     try:
         server.serve_forever()
