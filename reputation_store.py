@@ -25,6 +25,7 @@ import time
 
 # Reuse the contract-correct extractor (token.address_hash, USDC-by-contract).
 from settlement_watch import BlockscoutChain, extract_usdc_transfers  # noqa: F401
+from addresses import is_evm_address
 
 PRICE_HISTORY_LIMIT = 200  # cap the per-lookup price sample (bounded work + memory)
 
@@ -198,7 +199,14 @@ class SelfPopulatingReputationSource:
 
     def lookup(self, counterparty):
         cp = (counterparty or "").lower()
-        if self._stale(cp):
+        # Only fetch on-chain for a well-formed EVM address: a non-address
+        # counterparty has no on-chain history anyway, and -- critically -- it
+        # would otherwise be interpolated UNENCODED into the outbound indexer URL
+        # (path/query injection on a fixed host). Garbage -> skip ingest -> the
+        # store returns a thin record -> HOLD-leaning. (The check-then-act on
+        # _last_ingest can let two threads ingest the same new counterparty at
+        # once; that is benign -- ingest is idempotent and store-locked.)
+        if is_evm_address(counterparty) and self._stale(cp):
             try:
                 self.store.ingest_from_chain(counterparty, self.chain)
             except Exception:

@@ -128,31 +128,48 @@ class _FakeChain:
 
 
 class TestSelfPopulating(unittest.TestCase):
+    CP = "0x" + "c" * 40  # a well-formed EVM address (ingest only fires for these)
+
     def test_lazy_ingest_then_cached(self):
         store = RS.ReputationStore(":memory:")
-        chain = _FakeChain({"0xcp": [xf("0xCP", "0.09", tx="0xt1"),
-                                     xf("0xCP", "0.10", tx="0xt2")]})
+        chain = _FakeChain({self.CP.lower(): [xf(self.CP, "0.09", tx="0xt1"),
+                                              xf(self.CP, "0.10", tx="0xt2")]})
         src = RS.SelfPopulatingReputationSource(store, chain=chain,
                                                 refresh_after_seconds=1000)
         # first lookup ingests from chain...
-        rec = src.lookup("0xCP")
+        rec = src.lookup(self.CP)
         self.assertEqual(rec["settlement_count"], 2)
-        self.assertEqual(chain.calls, ["0xCP"])
+        self.assertEqual(chain.calls, [self.CP])
         # ...second lookup is served from the store, no re-ingest.
-        rec2 = src.lookup("0xCP")
+        rec2 = src.lookup(self.CP)
         self.assertEqual(rec2["settlement_count"], 2)
-        self.assertEqual(chain.calls, ["0xCP"])  # still just one ingest
+        self.assertEqual(chain.calls, [self.CP])  # still just one ingest
 
     def test_refresh_after_window(self):
         store = RS.ReputationStore(":memory:")
-        chain = _FakeChain({"0xcp": [xf("0xCP", "0.09")]})
+        chain = _FakeChain({self.CP.lower(): [xf(self.CP, "0.09")]})
         t = [1000.0]
         src = RS.SelfPopulatingReputationSource(
             store, chain=chain, refresh_after_seconds=60, clock=lambda: t[0])
-        src.lookup("0xCP")
+        src.lookup(self.CP)
         t[0] = 1100.0  # past the refresh window
-        src.lookup("0xCP")
+        src.lookup(self.CP)
         self.assertEqual(len(chain.calls), 2)  # re-ingested
+
+    def test_non_address_counterparty_skips_ingest(self):
+        # Regression: a non-EVM-address counterparty must NOT be sent to the
+        # indexer (it would be interpolated unencoded into the outbound URL).
+        store = RS.ReputationStore(":memory:")
+        chain = _FakeChain({})
+        src = RS.SelfPopulatingReputationSource(store, chain=chain)
+        for bad in ["addr?evil=1", "../../stats", "0xshort", "notanaddr"]:
+            src.lookup(bad)
+        self.assertEqual(chain.calls, [])  # nothing reached the chain client
+        # a valid address DOES trigger ingest
+        src2 = RS.SelfPopulatingReputationSource(
+            store, chain=_FakeChain({("0x" + "a" * 40): [xf("0x" + "a" * 40, "0.09")]}))
+        src2.lookup("0x" + "A" * 40)
+        self.assertEqual(src2.chain.calls, ["0x" + "A" * 40])
 
     def test_ingest_failure_does_not_break_lookup(self):
         class Boom:
