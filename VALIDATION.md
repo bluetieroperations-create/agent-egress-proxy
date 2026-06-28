@@ -32,6 +32,19 @@ Test the riskiest, cheapest-to-test first. Each has an explicit kill criterion.
 **STOP before any customer interviews.** Don't validate demand for a market
 that's too early or already served free.
 
+> **✅ RUN — see `docs/sprint0-desk-research.md`.** Outcome:
+> **A1 NO-GO (too early** — ~$28K/day real settlement, ~92% off peak, much of the
+> 100M-tx headline was meme-coin minting; Chainalysis: "mass adoption remains
+> distant"). **A2 NO-GO on "niche open"** — ≥8 live pre-signature risk-verdict
+> competitors (x402-secure/t54, AgentRadar, …); free CDP facilitator bundles KYT
+> sanctions — **but the *crack* is that nobody clearly owns Blackwall's exact
+> signal mix (settlement/dispute reputation + price-anomaly).** **A6 viable but
+> brutal** ($0.001 CDP settle w/ KYT free; true per-check query cost unresolved).
+> **Net: CONDITIONAL GO to Sprint 1 — hypothesis reframed.** The bet is no longer
+> "the niche is open" (falsified) but "will agents pay for the reputation+price-
+> anomaly signal *specifically*, on top of free KYT, vs. 8+ (pre-revenue) rivals."
+> Do not build further on an open-niche assumption.
+
 **Sprint 1 — Customer discovery (~2 weeks, founder-only).** A3 willingness-to-pay
 + A4 signal value. = HANDOFF §4 "willingness-to-pay sanity-checked" — the gate
 the whole spec is conditional on. See `docs/customer-discovery.md`.
