@@ -682,6 +682,8 @@ class BlackwallServer:
                  ledger=None, billing=None):
         self.host = host
         self.port = port
+        self._source_kind = "MOCK" if reputation_source is None \
+            else type(reputation_source).__name__
         self.reputation_source = reputation_source or MockReputationSource()
         self.ledger = ledger
         self.billing = billing
@@ -697,9 +699,10 @@ class BlackwallServer:
         sys.stdout.write(
             "blackwall verdict service on %s:%d  "
             "POST /v1/forecast-payment  POST /v1/report-outcome%s  "
-            "(reputation source: MOCK, ledger: %s, billing: %s)\n"
+            "(reputation source: %s, ledger: %s, billing: %s)\n"
             % (self.host, self.port,
                "  POST /v1/session" if self.billing else "",
+               self._source_kind,
                "on" if self.ledger else "off",
                "on" if self.billing else "off")
         )
@@ -744,12 +747,25 @@ def main(argv=None):
     p.add_argument("--facilitator", default=os.environ.get("BLACKWALL_FACILITATOR"),
                    help="x402 facilitator base URL (verify/settle); default is "
                         "the built-in mock facilitator")
+    p.add_argument("--store", default=os.environ.get("BLACKWALL_STORE"),
+                   help="SQLite reputation store path; uses REAL on-chain "
+                        "reputation instead of the mock source")
+    p.add_argument("--ingest", action="store_true",
+                   default=bool(os.environ.get("BLACKWALL_INGEST")),
+                   help="with --store, self-populate from chain on first sight "
+                        "of a counterparty (first call slow, then cached)")
     args = p.parse_args(argv)
 
     led = None
     if args.ledger:
         from ledger import EventLedger
         led = EventLedger(args.ledger)
+
+    reputation_source = None
+    if args.store:
+        from reputation_store import production_source
+        reputation_source = production_source(args.store, ledger=led,
+                                              ingest=args.ingest)
 
     billing = None
     if args.pay_to:
@@ -759,7 +775,7 @@ def main(argv=None):
                               facilitator=facilitator)
 
     server = BlackwallServer(host="127.0.0.1", port=args.port, ledger=led,
-                             billing=billing)
+                             billing=billing, reputation_source=reputation_source)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

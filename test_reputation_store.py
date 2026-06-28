@@ -117,5 +117,70 @@ class TestCombinedSourceDrivesVerdict(unittest.TestCase):
         self.assertEqual(resp["verdict"], "GO")
 
 
+class _FakeChain:
+    """Records ingest calls; returns canned transfers per counterparty."""
+    def __init__(self, by_cp):
+        self.by_cp = by_cp
+        self.calls = []
+    def recent_inbound(self, cp):
+        self.calls.append(cp)
+        return self.by_cp.get(cp.lower(), [])
+
+
+class TestSelfPopulating(unittest.TestCase):
+    def test_lazy_ingest_then_cached(self):
+        store = RS.ReputationStore(":memory:")
+        chain = _FakeChain({"0xcp": [xf("0xCP", "0.09", tx="0xt1"),
+                                     xf("0xCP", "0.10", tx="0xt2")]})
+        src = RS.SelfPopulatingReputationSource(store, chain=chain,
+                                                refresh_after_seconds=1000)
+        # first lookup ingests from chain...
+        rec = src.lookup("0xCP")
+        self.assertEqual(rec["settlement_count"], 2)
+        self.assertEqual(chain.calls, ["0xCP"])
+        # ...second lookup is served from the store, no re-ingest.
+        rec2 = src.lookup("0xCP")
+        self.assertEqual(rec2["settlement_count"], 2)
+        self.assertEqual(chain.calls, ["0xCP"])  # still just one ingest
+
+    def test_refresh_after_window(self):
+        store = RS.ReputationStore(":memory:")
+        chain = _FakeChain({"0xcp": [xf("0xCP", "0.09")]})
+        t = [1000.0]
+        src = RS.SelfPopulatingReputationSource(
+            store, chain=chain, refresh_after_seconds=60, clock=lambda: t[0])
+        src.lookup("0xCP")
+        t[0] = 1100.0  # past the refresh window
+        src.lookup("0xCP")
+        self.assertEqual(len(chain.calls), 2)  # re-ingested
+
+    def test_ingest_failure_does_not_break_lookup(self):
+        class Boom:
+            def recent_inbound(self, cp):
+                raise RuntimeError("indexer down")
+        src = RS.SelfPopulatingReputationSource(RS.ReputationStore(":memory:"),
+                                                chain=Boom())
+        rec = src.lookup("0xCP")  # must not raise
+        self.assertEqual(rec["settlement_count"], 0)  # thin -> HOLD-leaning
+
+
+class TestProductionSource(unittest.TestCase):
+    def test_store_plus_ledger_combined(self):
+        import tempfile, os, ledger as L
+        store_path = os.path.join(tempfile.mkdtemp(), "s.db")
+        led = L.EventLedger(os.path.join(tempfile.mkdtemp(), "l.jsonl"))
+        src = RS.production_source(store_path, ledger=led, ingest=False)
+        self.assertIsInstance(src, RS.CombinedReputationSource)
+        # lookup returns a merged record shape
+        rec = src.lookup("0xNOBODY")
+        self.assertIn("_meta", rec)
+        self.assertEqual(rec["_meta"]["source"], "combined")
+
+    def test_store_only_when_no_ledger(self):
+        import tempfile, os
+        src = RS.production_source(os.path.join(tempfile.mkdtemp(), "s.db"))
+        self.assertIsInstance(src, RS.ReputationStore)
+
+
 if __name__ == "__main__":
     unittest.main()

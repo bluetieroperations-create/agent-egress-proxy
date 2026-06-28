@@ -221,6 +221,12 @@ def main(argv=None):
     p = argparse.ArgumentParser(description="Blackwall MCP server (stdio).")
     p.add_argument("--ledger", default=os.environ.get("BLACKWALL_LEDGER"),
                    help="ledger path; enables the report_outcome tool")
+    p.add_argument("--store", default=os.environ.get("BLACKWALL_STORE"),
+                   help="SQLite reputation store path; uses REAL on-chain "
+                        "reputation instead of the mock source")
+    p.add_argument("--ingest", action="store_true",
+                   default=bool(os.environ.get("BLACKWALL_INGEST")),
+                   help="with --store, self-populate from chain on first sight")
     args = p.parse_args(argv)
 
     ledger = None
@@ -228,10 +234,16 @@ def main(argv=None):
         from ledger import EventLedger
         ledger = EventLedger(args.ledger)
 
-    sys.stderr.write("blackwall MCP server on stdio (ledger: %s)\n"
-                     % ("on" if ledger else "off"))
+    source = None
+    if args.store:
+        from reputation_store import production_source
+        source = production_source(args.store, ledger=ledger, ingest=args.ingest)
+
+    sys.stderr.write("blackwall MCP server on stdio (reputation: %s, ledger: %s)\n"
+                     % ("MOCK" if source is None else type(source).__name__,
+                        "on" if ledger else "off"))
     sys.stderr.flush()
-    BlackwallMCP(ledger=ledger).serve_stdio()
+    BlackwallMCP(reputation_source=source, ledger=ledger).serve_stdio()
     return 0
 
 

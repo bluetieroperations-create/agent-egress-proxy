@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 
 # Reuse the contract-correct extractor (token.address_hash, USDC-by-contract).
 from settlement_watch import BlockscoutChain, extract_usdc_transfers  # noqa: F401
@@ -168,3 +169,81 @@ class CombinedReputationSource:
 
     def lookup(self, counterparty):
         return merge_records([s.lookup(counterparty) for s in self.sources])
+
+
+class SelfPopulatingReputationSource:
+    """
+    A reputation store that bootstraps itself: on a lookup for a counterparty it
+    hasn't ingested (or hasn't refreshed within `refresh_after_seconds`), it
+    pulls that counterparty's history from chain ONCE, then serves from the fast
+    store. First sight of a counterparty is slow (~one indexer call); every
+    subsequent check is the sub-ms store read.
+
+    Lets the server run self-serve with no separate pre-warm cron. For a hot
+    path that must never block, pre-warm the store via the CLI and use the bare
+    ReputationStore instead.
+    """
+
+    def __init__(self, store, chain=None, refresh_after_seconds=86400,
+                 clock=None):
+        self.store = store
+        self.chain = chain or BlockscoutChain()
+        self.refresh_after = refresh_after_seconds
+        self._last_ingest = {}   # counterparty -> monotonic-ish timestamp
+        self._clock = clock or time.time
+
+    def _stale(self, cp):
+        last = self._last_ingest.get(cp)
+        return last is None or (self._clock() - last) >= self.refresh_after
+
+    def lookup(self, counterparty):
+        cp = (counterparty or "").lower()
+        if self._stale(cp):
+            try:
+                self.store.ingest_from_chain(counterparty, self.chain)
+            except Exception:
+                # Ingest failure must not break the verdict -- serve whatever the
+                # store has (possibly an unknown/thin record -> HOLD-leaning).
+                pass
+            self._last_ingest[cp] = self._clock()
+        return self.store.lookup(counterparty)
+
+
+def production_source(store_path, ledger=None, ingest=False, sanctioned=None,
+                      known_bad=None):
+    """
+    Build the production reputation source from a SQLite store (+ optional
+    ledger for disputes). With `ingest=True` the store self-populates from chain
+    on first sight of a counterparty.
+    """
+    store = ReputationStore(store_path, sanctioned=sanctioned, known_bad=known_bad)
+    store_source = SelfPopulatingReputationSource(store) if ingest else store
+    if ledger is not None:
+        from ledger import LedgerReputationSource
+        return CombinedReputationSource(
+            [store_source, LedgerReputationSource(ledger)])
+    return store_source
+
+
+# ---------------------------------------------------------------------------
+# CLI: pre-warm a store by ingesting counterparties from chain.
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) < 3:
+        sys.stderr.write(
+            "usage: python reputation_store.py STORE.db ADDR [ADDR ...]\n"
+            "  ingests each counterparty's inbound USDC history into STORE.db\n")
+        raise SystemExit(2)
+    path, addrs = sys.argv[1], sys.argv[2:]
+    store = ReputationStore(path)
+    chain = BlockscoutChain()
+    total = 0
+    for a in addrs:
+        n = store.ingest_from_chain(a, chain)
+        rec = store.lookup(a)
+        total += n
+        sys.stdout.write("%s  +%d new  (settlements=%d)\n"
+                         % (a, n, rec["settlement_count"]))
+    sys.stdout.write("done: %d new settlements into %s\n" % (total, path))
+    store.close()

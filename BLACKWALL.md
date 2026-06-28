@@ -30,8 +30,26 @@ regulatory posture.)
 ## Run it
 
 ```sh
-python blackwall.py --port 8402        # binds 127.0.0.1 only
+python blackwall.py --port 8402        # binds 127.0.0.1 only (MOCK reputation)
 ```
+
+**On REAL on-chain reputation** (not the mock) — point it at a SQLite store:
+
+```sh
+# pre-warm the store with real Base counterparty history (background, slow ok):
+python reputation_store.py rep.db 0xCounterparty1 0xCounterparty2 ...
+
+# serve verdicts from the real store (sub-ms hot-path reads):
+python blackwall.py --port 8402 --store rep.db --ledger bw.jsonl
+
+# or self-populate on first sight of a counterparty (first call slow, then cached):
+python blackwall.py --port 8402 --store rep.db --ingest
+```
+
+With `--store` the source becomes the SQLite `ReputationStore` (on-chain
+settlement breadth); add `--ledger` and it's `CombinedReputationSource`
+(store + the ledger's observed disputes). Same `--store`/`--ingest` flags on
+`mcp_server.py`.
 
 ```sh
 curl -s http://127.0.0.1:8402/v1/forecast-payment \
