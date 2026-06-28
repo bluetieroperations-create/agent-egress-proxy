@@ -45,6 +45,21 @@ that's too early or already served free.
 > anomaly signal *specifically*, on top of free KYT, vs. 8+ (pre-revenue) rivals."
 > Do not build further on an open-niche assumption.
 
+> **✅ FOLLOW-UPS RUN — see `docs/sprint0-followups.md`.** Both landed in
+> Blackwall's favor and retire two of the risks:
+> - **A6 cost — SOLVED, sub-cent with margin.** Real query = `getAssetTransfers`
+>   (120 CU, verified primary) → **~$0.00006/check worst-case (reuse=1), ~16×
+>   under the $0.001 CDP settle fee**, effectively free amortized. COGS is not the
+>   constraint.
+> - **A4 differentiation — REAL.** No live rival computes Blackwall's exact pair:
+>   AgentRadar's "Reputation" is **ERC-8004 registry** (not observed
+>   settlement/dispute); x402-secure is behavioral/identity/tx-logic; CDP/AnChain
+>   are sanctions/AML. Observed settlement/dispute reputation + price-vs-norm
+>   anomaly is **uncovered**.
+> - **Remaining open risk is now ONLY A1 (real recurring volume) + A3 (WTP for
+>   this signal over free KYT)** — the Sprint 1 founder-interview questions. Desk
+>   research has taken cost and differentiation off the table.
+
 **Sprint 1 — Customer discovery (~2 weeks, founder-only).** A3 willingness-to-pay
 + A4 signal value. = HANDOFF §4 "willingness-to-pay sanity-checked" — the gate
 the whole spec is conditional on. See `docs/customer-discovery.md`.
