@@ -41,7 +41,7 @@ def human_price(price_atomic, decimals=6):
 
 
 def build_descriptor(pay_to=None, price=None, asset="USDC", network="base",
-                     mcp=True):
+                     mcp=True, sanctions_screening=False):
     """
     The x402 service card. `price`/`pay_to` are present only when billing is on
     (otherwise the resource is advertised as unpriced).
@@ -63,6 +63,11 @@ def build_descriptor(pay_to=None, price=None, asset="USDC", network="base",
         "outputVerdicts": ["GO", "HOLD", "STOP"],
         "accepts": accepts,
     }
+    # What the verdict covers -- a SUPERSET of the free facilitator baseline:
+    # sanctions screening (what KYT does) PLUS the signals it doesn't.
+    signals = ["counterparty-reputation", "price-anomaly"]
+    if sanctions_screening:
+        signals.insert(0, "sanctions-ofac")
     descriptor = {
         "name": "Blackwall",
         "description": DESCRIPTION,
@@ -70,6 +75,8 @@ def build_descriptor(pay_to=None, price=None, asset="USDC", network="base",
         "category": "payment-risk",
         "tags": ["x402", "payments", "risk", "reputation", "agent-guardrail",
                  "base", "usdc"],
+        "signals": signals,
+        "screening": (["sanctions-ofac"] if sanctions_screening else []),
         "resources": [resource],
         "mcp": ({"transport": "stdio", "tool": "forecast_payment"}
                 if mcp else None),

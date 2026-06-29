@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""
+sanctions.py -- OFAC sanctions screening (Blackwall's "superset of free").
+
+The free facilitator baseline (e.g. Coinbase CDP's KYT) declines sanctioned
+addresses. For Blackwall to be strictly BETTER than free -- "everything the free
+check does, PLUS counterparty reputation + price-anomaly, in one call" -- it
+screens the counterparty against an OFAC sanctioned-address list and STOPs on a
+hit, on top of its behavioral signals.
+
+Source: the OFAC SDN list's digital-currency addresses, publicly published one
+address per line (e.g. the community-maintained
+`0xB10C/ofac-sanctioned-digital-currency-addresses`). Load from an operator-
+supplied file and/or refresh from a URL. The operator owns keeping it current --
+this is the screening *mechanism*, not legal advice.
+
+`SanctionsScreeningSource` wraps ANY reputation source and OR-s in the sanctioned
+flag, so screening composes orthogonally with the store / ledger / mock. The pure
+parts (membership, file parse) are unit-tested offline. Stdlib only.
+"""
+from __future__ import annotations
+
+import urllib.request
+
+from addresses import is_evm_address
+
+# Canonical OFAC digital-currency address list (EVM addresses; usable on Base).
+DEFAULT_OFAC_URL = ("https://raw.githubusercontent.com/0xB10C/"
+                    "ofac-sanctioned-digital-currency-addresses/lists/"
+                    "sanctioned_addresses_ETH.txt")
+
+
+def _normalize(addr):
+    return addr.strip().lower() if isinstance(addr, str) else None
+
+
+class SanctionsList:
+    """A set of sanctioned addresses with case-insensitive membership."""
+
+    def __init__(self, addresses=None):
+        self._set = set()
+        for a in (addresses or ()):
+            self.add(a)
+
+    def add(self, addr):
+        n = _normalize(addr)
+        if n:
+            self._set.add(n)
+
+    def is_sanctioned(self, address):
+        n = _normalize(address)
+        return n is not None and n in self._set
+
+    def __len__(self):
+        return len(self._set)
+
+    @classmethod
+    def from_file(cls, path):
+        """Load one address per line; `#` comments and blanks ignored. Missing
+        file -> empty list (screening simply finds nothing)."""
+        s = cls()
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for raw in f:
+                    tok = raw.strip().split("#", 1)[0].strip()
+                    if tok:
+                        s.add(tok.split()[0])
+        except OSError:
+            pass
+        return s
+
+    def refresh_from_url(self, url=DEFAULT_OFAC_URL, timeout=15):
+        """Fetch a plain-text address list and merge in the EVM addresses.
+        Returns the count added. Network errors propagate to the caller."""
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "blackwall-sanctions/0.1",
+                          "Accept": "text/plain"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            text = r.read().decode("utf-8", "replace")
+        added = 0
+        for line in text.splitlines():
+            tok = line.strip().split("#", 1)[0].strip()
+            if tok and is_evm_address(tok.split()[0]):
+                self.add(tok.split()[0])
+                added += 1
+        return added
+
+
+class SanctionsScreeningSource:
+    """
+    Drop-in reputation source that adds OFAC screening on top of any inner
+    source: it returns the inner record with `sanctioned` OR-ed with a hit on the
+    sanctions list. decide_payment treats `sanctioned` as a hard STOP, so a
+    sanctioned counterparty is blocked regardless of its behavioral signals.
+    """
+
+    def __init__(self, inner, sanctions):
+        self.inner = inner
+        self.sanctions = sanctions
+
+    def lookup(self, counterparty):
+        rec = dict(self.inner.lookup(counterparty))
+        if self.sanctions.is_sanctioned(counterparty):
+            rec["sanctioned"] = True
+        return rec
+
+
+if __name__ == "__main__":
+    # Refresh a local sanctions file from the published OFAC list.
+    import sys
+    out = sys.argv[1] if len(sys.argv) > 1 else "sanctions.txt"
+    sl = SanctionsList()
+    n = sl.refresh_from_url()
+    with open(out, "w", encoding="utf-8") as f:
+        f.write("# OFAC sanctioned EVM addresses -- refreshed from %s\n" % DEFAULT_OFAC_URL)
+        for a in sorted(sl._set):
+            f.write(a + "\n")
+    sys.stdout.write("wrote %d sanctioned addresses to %s\n" % (n, out))

@@ -1,0 +1,17 @@
+# Blackwall sanctions list -- one EVM address per line, `#` comments ignored.
+#
+# This file is the screening MECHANISM's input, not an authoritative list. The
+# single entry below is a SYNTHETIC TEST ADDRESS (not a real sanctioned address)
+# so you can see screening work. Do NOT rely on it.
+#
+# Load the REAL, current OFAC sanctioned-address list before relying on this:
+#
+#   python sanctions.py sanctions.txt          # fetches the published OFAC list
+#   python blackwall.py --sanctions sanctions.txt
+#
+# Authoritative machine-readable source:
+#   github.com/0xB10C/ofac-sanctioned-digital-currency-addresses
+#   (sanctioned_addresses_ETH.txt -- EVM addresses, usable on Base)
+
+# --- synthetic test address (replace with the real list) ---
+0x000000000000000000000000000000000000dEaD

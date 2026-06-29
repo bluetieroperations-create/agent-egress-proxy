@@ -110,6 +110,20 @@ the proxy's `parse_connect_target`/`host_allowed`/`decide`):
 Thresholds live as named constants at the top of `blackwall.py`; the tests pin
 them, so changing one flips a named test (mutation-checked, like the proxy).
 
+## Superset of the free baseline (sanctions screening)
+
+The free facilitator (e.g. CDP KYT) declines sanctioned addresses. To be strictly
+*better* than free — "everything the free check does, **plus** reputation +
+price-anomaly, in one call" — Blackwall screens the counterparty against an OFAC
+sanctioned-address list (`sanctions.py`, `--sanctions <file>`) and STOPs on a hit.
+Screening composes over any reputation source (`SanctionsScreeningSource`), and
+`/.well-known/x402` advertises it (`screening: ["sanctions-ofac"]`) so the
+superset claim is machine-readable. Load the authoritative list with
+`python sanctions.py sanctions.txt` (verified: pulls the published OFAC list).
+The shipped `sanctions.txt.example` holds only a **synthetic test address** — the
+real, current list is operator-supplied (sanctions data accuracy is the
+operator's responsibility).
+
 ## Tests
 
 ```sh

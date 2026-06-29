@@ -587,14 +587,16 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _descriptor(self):
         from discovery import build_descriptor, human_price
+        from sanctions import SanctionsScreeningSource
+        screening = isinstance(self.reputation_source, SanctionsScreeningSource)
         if self.billing is not None:
             cfg = self.billing.cfg
             return build_descriptor(
                 pay_to=cfg.pay_to,
                 price=human_price(cfg.price_atomic, cfg.decimals),
                 asset="USDC", network=cfg.network,
-                mcp=True)
-        return build_descriptor(mcp=True)  # unpriced (billing off)
+                mcp=True, sanctions_screening=screening)
+        return build_descriptor(mcp=True, sanctions_screening=screening)
 
     def _read_json_body(self):
         """Return (payload, None) or (None, error_string). Bounded + guarded."""
@@ -796,6 +798,9 @@ def main(argv=None):
                    default=bool(os.environ.get("BLACKWALL_INGEST")),
                    help="with --store, self-populate from chain on first sight "
                         "of a counterparty (first call slow, then cached)")
+    p.add_argument("--sanctions", default=os.environ.get("BLACKWALL_SANCTIONS"),
+                   help="path to an OFAC sanctioned-address file; STOPs sanctioned "
+                        "counterparties (the free-baseline check, in one call)")
     args = p.parse_args(argv)
 
     led = None
@@ -808,6 +813,16 @@ def main(argv=None):
         from reputation_store import production_source
         reputation_source = production_source(args.store, ledger=led,
                                               ingest=args.ingest)
+
+    # Sanctions screening on top of whatever reputation source -- this is what
+    # makes Blackwall a SUPERSET of the free facilitator KYT baseline.
+    if args.sanctions:
+        from sanctions import SanctionsList, SanctionsScreeningSource
+        sl = SanctionsList.from_file(args.sanctions)
+        base = reputation_source or MockReputationSource()
+        reputation_source = SanctionsScreeningSource(base, sl)
+        sys.stdout.write("blackwall: sanctions screening ON (%d addresses)\n"
+                         % len(sl))
 
     billing = None
     if args.pay_to:
