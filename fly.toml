@@ -1,0 +1,57 @@
+# fly.io deploy for the Blackwall verdict service.
+#
+#   fly launch --no-deploy            # creates the app from this file + Dockerfile
+#   fly volume create blackwall_data --size 1 --region iad
+#   fly secrets set \
+#       BLACKWALL_PAY_TO=0xYourFundedWallet \
+#       BLACKWALL_FACILITATOR=https://facilitator.x402.rs \
+#       BLACKWALL_RECEIPT_KEY=$(openssl rand -hex 32)
+#   fly deploy
+#
+# Non-secret config lives in [env] below; secrets go through `fly secrets`
+# (encrypted, never in this file or the image). State persists on the volume
+# mounted at /data.
+
+app = "blackwall"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Non-secret defaults. These mirror the Dockerfile ENV; setting them here keeps
+# the deploy config self-describing. Secrets (PAY_TO / FACILITATOR / RECEIPT_KEY
+# / SANCTIONS) are intentionally NOT here -- use `fly secrets set`.
+[env]
+  BLACKWALL_HOST = "0.0.0.0"
+  BLACKWALL_PORT = "8402"
+  BLACKWALL_STORE = "/data/reputation.db"
+  BLACKWALL_LEDGER = "/data/ledger.jsonl"
+  BLACKWALL_INGEST = "1"
+
+# SQLite store + JSONL ledger survive restarts/redeploys on this volume.
+# Create it once with: fly volume create blackwall_data --size 1
+[mounts]
+  source = "blackwall_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8402
+  force_https = true
+  # Scale-to-zero to keep idle cost ~$0. Cold start adds a little latency to the
+  # first verdict after idle; set min_machines_running = 1 if you want it always
+  # warm (an agent-facing paid endpoint usually does -- flip this before launch).
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  # Liveness: the service answers GET /healthz with 200 when up.
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

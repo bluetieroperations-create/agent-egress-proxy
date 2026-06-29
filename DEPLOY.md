@@ -50,10 +50,27 @@ curl http://localhost:8402/healthz
 curl http://localhost:8402/.well-known/x402
 ```
 
-Deploys as-is to fly.io (`fly launch` detects the Dockerfile; add a volume +
-`fly secrets set …`), Render (Docker web service + a disk + env), Railway, or any
-Kubernetes/ECS. The only requirements are a persistent volume for `/data` and the
-secrets above.
+### Hosted platforms (config included)
+
+Two ready blueprints live at the repo root — both pull the non-secret config from
+their file and take the secrets at deploy time (never committed, never baked in):
+
+- **fly.io** — `fly.toml`. `fly launch --no-deploy` adopts it, then:
+  ```sh
+  fly volume create blackwall_data --size 1 --region iad
+  fly secrets set BLACKWALL_PAY_TO=0xYourFundedWallet \
+      BLACKWALL_FACILITATOR=https://facilitator.x402.rs \
+      BLACKWALL_RECEIPT_KEY=$(openssl rand -hex 32)
+  fly deploy
+  ```
+  Defaults to scale-to-zero (idle cost ~$0); set `min_machines_running = 1` to
+  keep it warm before launch.
+- **Render** — `render.yaml`. New → Blueprint → point at the repo; Render prompts
+  for the `sync: false` secrets and attaches the `/data` disk.
+
+Both bind `0.0.0.0:8402` and route HTTPS to it; health is `GET /healthz`. Also
+deploys to Railway or any Kubernetes/ECS — the only requirements are a persistent
+volume for `/data` and the secrets above.
 
 ## Runbook — the order you asked for
 

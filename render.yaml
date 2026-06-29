@@ -1,0 +1,46 @@
+# Render blueprint for the Blackwall verdict service.
+# Render detects this file at the repo root: New > Blueprint, point it here.
+#
+# State (SQLite store + JSONL ledger) persists on the attached disk at /data.
+# Secrets are declared with `sync: false` -- Render prompts for them at deploy
+# time and stores them encrypted; they are never committed here or baked in.
+services:
+  - type: web
+    name: blackwall
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter            # smallest paid plan; disks require a paid plan
+    region: oregon
+    autoDeploy: false        # deploy on demand, not on every push
+    healthCheckPath: /healthz
+
+    # Persistent volume -- Render routes external HTTPS to the port the process
+    # listens on (8402, set via BLACKWALL_PORT below + EXPOSE in the Dockerfile).
+    disk:
+      name: blackwall-data
+      mountPath: /data
+      sizeGB: 1
+
+    envVars:
+      # Non-secret config (mirrors the Dockerfile ENV).
+      - key: BLACKWALL_HOST
+        value: "0.0.0.0"
+      - key: BLACKWALL_PORT
+        value: "8402"
+      - key: BLACKWALL_STORE
+        value: /data/reputation.db
+      - key: BLACKWALL_LEDGER
+        value: /data/ledger.jsonl
+      - key: BLACKWALL_INGEST
+        value: "1"
+      # Secrets -- Render prompts for these; left unset, billing stays OFF and
+      # the service runs free/public (the server prints a loud warning).
+      - key: BLACKWALL_PAY_TO
+        sync: false
+      - key: BLACKWALL_FACILITATOR
+        sync: false
+      - key: BLACKWALL_RECEIPT_KEY
+        sync: false
+      # Optional OFAC list path on the volume (fetch with `python sanctions.py`).
+      - key: BLACKWALL_SANCTIONS
+        sync: false

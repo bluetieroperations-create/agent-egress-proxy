@@ -8,5 +8,5 @@ __pycache__/
 *.jsonl
 *.db
 allowlist.txt*
+sanctions.txt
 egress_proxy.py
-spike_data_source.py
