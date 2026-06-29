@@ -23,7 +23,7 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `clients/x402_pay.py` (TEST-ONLY funded-signer dry-run client; the one place
   that uses a dep -- `eth-account` -- to sign a real EIP-3009 X-PAYMENT;
   see `clients/README.md`. Deploy: `Dockerfile`, `fly.toml`, `render.yaml`),
-  `BLACKWALL.md`, `DISCOVERY.md`, `DEPLOY.md`, `COMPETITIVE.md`,
+  `BLACKWALL.md`, `DISCOVERY.md`, `DEPLOY.md`, `COMPETITIVE.md`, `PRICING.md`,
   `docs/DATA_SOURCE_SPIKE.md`. Tests:
   `test_blackwall.py`, `test_ledger.py`, `test_reputation_onchain.py`,
   `test_settlement_watch.py`, `test_addresses.py`, `test_x402.py`,

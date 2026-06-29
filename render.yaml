@@ -33,6 +33,12 @@ services:
         value: /data/ledger.jsonl
       - key: BLACKWALL_INGEST
         value: "1"
+      # Pricing posture (see PRICING.md): value-aligned / freemium-on-stakes.
+      # Low-stakes verdicts free (incl. sanctions safety); high-stakes pay.
+      - key: BLACKWALL_VALUE_PRICING
+        value: "1"
+      - key: BLACKWALL_FREE_BELOW
+        value: "10.00"
       # Secrets -- Render prompts for these; left unset, billing stays OFF and
       # the service runs free/public (the server prints a loud warning).
       - key: BLACKWALL_PAY_TO

@@ -27,6 +27,11 @@ primary_region = "iad"
   BLACKWALL_STORE = "/data/reputation.db"
   BLACKWALL_LEDGER = "/data/ledger.jsonl"
   BLACKWALL_INGEST = "1"
+  # Pricing posture (see PRICING.md): value-aligned / freemium-on-stakes.
+  # Low-stakes verdicts are free (incl. sanctions safety); high-stakes pay.
+  # Start generous to win adoption while the category has no data moat.
+  BLACKWALL_VALUE_PRICING = "1"
+  BLACKWALL_FREE_BELOW = "10.00"
 
 # SQLite store + JSONL ledger survive restarts/redeploys on this volume.
 # Create it once with: fly volume create blackwall_data --size 1
