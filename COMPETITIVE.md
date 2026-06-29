@@ -30,9 +30,11 @@ nearest competitor (Ontario's free `can-pay`) decides on **endpoint readiness +
 budget policy**; Blackwall decides on **counterparty payment behavior + price
 fairness + sanctions**. Others are buyer-scoring gates for sellers (MolTrust /
 Larkinsh / Crest), transaction-malice decoders (GPT55 / Blockaid), or enterprise
-KYT (Chainalysis / AnChain). Blackwall is **complementary** to most and can
-consume their signals (incl. Ontario's readiness grade) as inputs — but on the
-core pre-payment verdict it now has a **direct, free competitor**, so the pitch is
+KYT (Chainalysis / AnChain). Blackwall is **complementary** to most and
+**consumes** their signals: `readiness.py` folds Ontario's free `can-pay`
+readiness grade into the verdict (fail-open, conservative-only), so Blackwall is
+literally *Ontario's endpoint-readiness **plus** the financial layer*. On the core
+pre-payment verdict it now has a **direct, free competitor**, so the pitch is
 **signal depth and the data moat**, not "the only one doing this."
 
 ## The map

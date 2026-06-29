@@ -504,7 +504,7 @@ def default_billing_asset(network, explicit, base_usdc, sepolia_usdc):
     return sepolia_usdc if network == "base-sepolia" else base_usdc
 
 
-def forecast(payload, reputation_source, ledger=None):
+def forecast(payload, reputation_source, ledger=None, readiness_source=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
@@ -515,6 +515,12 @@ def forecast(payload, reputation_source, ledger=None):
     If `ledger` is given, the verdict is recorded (the write half of the moat
     flywheel -- see ledger.py). The agent later closes the loop by reporting the
     outcome against the returned receipt_id.
+
+    If `readiness_source` is given AND the request carries a `resource` (the
+    endpoint URL the agent is paying), the verdict is enriched with a
+    third-party ENDPOINT-readiness grade (see readiness.py). It is fail-open and
+    conservative-only: it can escalate GO->HOLD on a poorly-configured endpoint
+    but never upgrades, and a readiness outage never blocks the core verdict.
     """
     clean, err = validate_request(payload)
     if err is not None:
@@ -532,6 +538,12 @@ def forecast(payload, reputation_source, ledger=None):
         counterparty=clean["counterparty"],
         expected_recipient=clean["expected_recipient"],
     )
+
+    # Endpoint-readiness enrichment (address-based verdict + URL-based readiness).
+    if readiness_source is not None and clean.get("resource"):
+        from readiness import apply_readiness
+        readiness = readiness_source.check(clean["resource"])
+        verdict = apply_readiness(verdict, readiness)
     # The receipt is the ledger's join key, so it must be UNIQUE PER PAYMENT --
     # not just a hash of the verdict content (two counterparties with identical
     # stats produce identical verdicts and would otherwise collide). Sign over
@@ -576,6 +588,7 @@ class _Handler(BaseHTTPRequestHandler):
     reputation_source = None
     ledger = None
     billing = None  # x402.BillingGate, or None to disable billing
+    readiness_source = None  # readiness.OntarioReadinessSource, or None
 
     def _send_json(self, code, obj, extra_headers=None):
         body = json.dumps(obj, separators=(",", ":")).encode("utf-8")
@@ -600,14 +613,17 @@ class _Handler(BaseHTTPRequestHandler):
         from discovery import build_descriptor, human_price
         from sanctions import SanctionsScreeningSource
         screening = isinstance(self.reputation_source, SanctionsScreeningSource)
+        readiness = self.readiness_source is not None
         if self.billing is not None:
             cfg = self.billing.cfg
             return build_descriptor(
                 pay_to=cfg.pay_to,
                 price=human_price(cfg.price_atomic, cfg.decimals),
                 asset="USDC", network=cfg.network,
-                mcp=True, sanctions_screening=screening)
-        return build_descriptor(mcp=True, sanctions_screening=screening)
+                mcp=True, sanctions_screening=screening,
+                endpoint_readiness=readiness)
+        return build_descriptor(mcp=True, sanctions_screening=screening,
+                                endpoint_readiness=readiness)
 
     def _read_json_body(self):
         """Return (payload, None) or (None, error_string). Bounded + guarded."""
@@ -660,7 +676,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             remaining = result.session_remaining
 
-        response, err = forecast(payload, self.reputation_source, self.ledger)
+        response, err = forecast(payload, self.reputation_source, self.ledger,
+                                 readiness_source=self.readiness_source)
         if err is not None:
             self._send_json(400, {"error": err})
             return
@@ -726,7 +743,7 @@ class BlackwallServer:
     """Localhost-only verdict server. Binds 127.0.0.1; not exposed."""
 
     def __init__(self, host="127.0.0.1", port=8402, reputation_source=None,
-                 ledger=None, billing=None):
+                 ledger=None, billing=None, readiness_source=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -734,13 +751,15 @@ class BlackwallServer:
         self.reputation_source = reputation_source or MockReputationSource()
         self.ledger = ledger
         self.billing = billing
+        self.readiness_source = readiness_source
         self._httpd = None
 
     def serve_forever(self):
         handler = type("_BoundHandler", (_Handler,),
                        {"reputation_source": self.reputation_source,
                         "ledger": self.ledger,
-                        "billing": self.billing})
+                        "billing": self.billing,
+                        "readiness_source": self.readiness_source})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
         self.port = self._httpd.server_address[1]
         sys.stdout.write(
@@ -819,6 +838,11 @@ def main(argv=None):
     p.add_argument("--sanctions", default=os.environ.get("BLACKWALL_SANCTIONS"),
                    help="path to an OFAC sanctioned-address file; STOPs sanctioned "
                         "counterparties (the free-baseline check, in one call)")
+    p.add_argument("--readiness", default=os.environ.get("BLACKWALL_READINESS"),
+                   help="base URL of an endpoint-readiness oracle (e.g. Ontario "
+                        "https://ontarioprotocol.com); when a request carries a "
+                        "`resource` URL, folds its readiness grade into the verdict "
+                        "(fail-open, conservative-only)")
     args = p.parse_args(argv)
 
     led = None
@@ -871,8 +895,16 @@ def main(argv=None):
             "front it with auth. See DEPLOY.md.\n" % args.host)
         sys.stderr.flush()
 
+    readiness_source = None
+    if args.readiness:
+        from readiness import OntarioReadinessSource
+        readiness_source = OntarioReadinessSource(args.readiness)
+        sys.stdout.write("blackwall: endpoint-readiness enrichment ON (%s)\n"
+                         % args.readiness)
+
     server = BlackwallServer(host=args.host, port=args.port, ledger=led,
-                             billing=billing, reputation_source=reputation_source)
+                             billing=billing, reputation_source=reputation_source,
+                             readiness_source=readiness_source)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

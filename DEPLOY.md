@@ -35,6 +35,7 @@ has **no pip dependencies**.
 | `BLACKWALL_VALUE_PRICING` | set to enable value-aligned pricing (fee tracks amount-at-risk; micro is free) |
 | `BLACKWALL_FREE_BELOW` / `BLACKWALL_PRICE_BPS` / `BLACKWALL_MIN_FEE` / `BLACKWALL_MAX_FEE` | value-pricing knobs (defaults `1.00` / `10`bps / `0.001` / `0.10`) |
 | `BLACKWALL_SANCTIONS` | path to an OFAC sanctioned-address file (the "superset of free" screen). Refresh it: `python sanctions.py /data/sanctions.txt` |
+| `BLACKWALL_READINESS` | base URL of an endpoint-readiness oracle (e.g. `https://ontarioprotocol.com`); folds its grade into the verdict when a request carries a `resource` URL (fail-open, conservative-only) |
 | `BLACKWALL_RECEIPT_KEY` | **secret** for signing receipts + report tokens (set a strong random value) |
 
 ## Build & run (any container host)

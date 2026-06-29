@@ -20,6 +20,8 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `facilitator_sim.py` (reference x402 facilitator for the HttpFacilitator path),
   `discovery.py` (x402 service-discovery descriptor),
   `sanctions.py` (OFAC sanctions screening -- the "superset of free" layer),
+  `readiness.py` (folds a third-party ENDPOINT-readiness grade -- e.g. Ontario's
+  free can-pay -- into the verdict; fail-open, conservative-only),
   `clients/x402_pay.py` (TEST-ONLY funded-signer dry-run client; the one place
   that uses a dep -- `eth-account` -- to sign a real EIP-3009 X-PAYMENT;
   see `clients/README.md`. Deploy: `Dockerfile`, `fly.toml`, `render.yaml`),
@@ -28,7 +30,7 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `test_blackwall.py`, `test_ledger.py`, `test_reputation_onchain.py`,
   `test_settlement_watch.py`, `test_addresses.py`, `test_x402.py`,
   `test_mcp_server.py`, `test_reputation_store.py`, `test_facilitator.py`,
-  `test_discovery.py`, `test_sanctions.py`.
+  `test_discovery.py`, `test_sanctions.py`, `test_readiness.py`.
 
 Convention: the security/decision-critical logic lives in small **pure functions**
 at the top of each module, unit-tested TDD-first with **mutation notes** (each

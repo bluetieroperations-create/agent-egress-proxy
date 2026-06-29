@@ -41,7 +41,7 @@ def human_price(price_atomic, decimals=6):
 
 
 def build_descriptor(pay_to=None, price=None, asset="USDC", network="base",
-                     mcp=True, sanctions_screening=False):
+                     mcp=True, sanctions_screening=False, endpoint_readiness=False):
     """
     The x402 service card. `price`/`pay_to` are present only when billing is on
     (otherwise the resource is advertised as unpriced).
@@ -68,6 +68,10 @@ def build_descriptor(pay_to=None, price=None, asset="USDC", network="base",
     signals = ["counterparty-reputation", "price-anomaly"]
     if sanctions_screening:
         signals.insert(0, "sanctions-ofac")
+    # Composed third-party signal: endpoint readiness (e.g. Ontario), folded in
+    # conservatively. Blackwall = endpoint readiness PLUS the financial layer.
+    if endpoint_readiness:
+        signals.append("endpoint-readiness")
     descriptor = {
         "name": "Blackwall",
         "description": DESCRIPTION,

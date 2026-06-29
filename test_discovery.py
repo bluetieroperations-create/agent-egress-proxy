@@ -41,6 +41,13 @@ class TestBuildDescriptor(unittest.TestCase):
     def test_json_serializable(self):
         json.dumps(D.build_descriptor(pay_to=PAY_TO, price="0.001"))
 
+    def test_endpoint_readiness_advertised_only_when_on(self):
+        # Mutation: advertise readiness unconditionally -> this FAILS.
+        on = D.build_descriptor(endpoint_readiness=True)
+        self.assertIn("endpoint-readiness", on["signals"])
+        off = D.build_descriptor()
+        self.assertNotIn("endpoint-readiness", off["signals"])
+
 
 class TestDiscoveryEndpoint(unittest.TestCase):
     def setUp(self):
