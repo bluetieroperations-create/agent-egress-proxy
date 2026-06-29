@@ -8,7 +8,7 @@ WORKDIR /app
 # Source (stdlib only -- nothing to pip install).
 COPY blackwall.py x402.py ledger.py addresses.py reputation_store.py \
      reputation_onchain.py settlement_watch.py discovery.py mcp_server.py \
-     facilitator_sim.py sanctions.py ./
+     facilitator_sim.py sanctions.py readiness.py ./
 
 # Persistent state (SQLite reputation store + JSONL ledger) lives on a volume.
 RUN mkdir -p /data && chown -R blackwall /data
