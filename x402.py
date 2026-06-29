@@ -41,6 +41,15 @@ DEFAULT_SCHEME = "exact"          # EIP-3009 transferWithAuthorization
 BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"          # Base mainnet
 BASE_SEPOLIA_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"  # Base Sepolia (Circle testnet)
 
+# EIP-712 domain (name, version) of each supported asset -- read on-chain from
+# the token's name()/version(). The "exact" scheme carries this in the 402's
+# `extra` so the facilitator can reconstruct the domain and verify the EIP-3009
+# signature. (USDC contracts' domains are stable.)
+EIP712_DOMAINS = {
+    BASE_USDC.lower():         {"name": "USD Coin", "version": "2"},
+    BASE_SEPOLIA_USDC.lower(): {"name": "USDC", "version": "2"},
+}
+
 
 # ===========================================================================
 # Amounts
@@ -67,7 +76,7 @@ def build_requirements(price_atomic, pay_to, resource, asset=BASE_USDC,
                        network="base", scheme=DEFAULT_SCHEME,
                        max_timeout_seconds=120, description="Blackwall payment forecast"):
     """One entry of the 402 `accepts` array (x402 payment requirements)."""
-    return {
+    req = {
         "scheme": scheme,
         "network": network,
         "maxAmountRequired": str(price_atomic),
@@ -78,6 +87,14 @@ def build_requirements(price_atomic, pay_to, resource, asset=BASE_USDC,
         "maxTimeoutSeconds": max_timeout_seconds,
         "asset": asset,
     }
+    # `extra` carries the asset's EIP-712 domain for the exact scheme; the
+    # facilitator needs it to verify the EIP-3009 signature (else it rejects with
+    # missing_eip712_domain). Omitted for unknown assets (facilitator may read it
+    # on-chain itself).
+    domain = EIP712_DOMAINS.get((asset or "").lower())
+    if domain:
+        req["extra"] = dict(domain)
+    return req
 
 
 def make_402_body(requirements_list, error=None):

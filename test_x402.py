@@ -73,6 +73,25 @@ class TestDecodeHeader(unittest.TestCase):
         self.assertIsNone(X.decode_payment_header(""))
 
 
+class TestRequirementsExtraDomain(unittest.TestCase):
+    """The 402's `extra` must carry the asset EIP-712 domain so the facilitator
+    can verify the EIP-3009 signature (else: missing_eip712_domain).
+
+    Mutation notes:
+      - omit `extra` for known assets -> test_known_assets FAILS.
+      - emit a wrong domain -> test_domain_values FAILS.
+    """
+    def test_known_assets(self):
+        r = X.build_requirements(1000, PAY_TO, "https://r", asset=X.BASE_SEPOLIA_USDC)
+        self.assertEqual(r["extra"], {"name": "USDC", "version": "2"})
+        r2 = X.build_requirements(1000, PAY_TO, "https://r", asset=X.BASE_USDC)
+        self.assertEqual(r2["extra"], {"name": "USD Coin", "version": "2"})
+
+    def test_unknown_asset_omits_extra(self):
+        r = X.build_requirements(1000, PAY_TO, "https://r", asset="0x" + "9" * 40)
+        self.assertNotIn("extra", r)
+
+
 class TestPaymentSatisfies(unittest.TestCase):
     """
     Mutation notes:
