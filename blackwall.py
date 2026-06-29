@@ -36,7 +36,6 @@ import json
 import os
 import re
 import sys
-import threading
 from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 

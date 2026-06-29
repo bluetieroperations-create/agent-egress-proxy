@@ -30,7 +30,6 @@ import json
 import os
 import threading
 import time
-from decimal import Decimal
 
 # Outcome taxonomy. The two axes Blackwall cares about: did it SETTLE (money
 # moved) and did it DELIVER (the agent got what it paid for).

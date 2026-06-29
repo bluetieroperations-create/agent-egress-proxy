@@ -19,8 +19,9 @@ else's indexer.
 - Client: **stdlib `urllib`** only (matches the repo), through the session's
   egress proxy. (403 from the proxy was an origin-side User-Agent filter, not a
   policy block — fixed with a real UA; curl confirmed the host is allowed.)
-- Code: `reputation_onchain.py` (the adapter, drop-in for `MockReputationSource`)
-  and `spike_data_source.py` (the live latency/feasibility harness).
+- Code: `reputation_onchain.py` (the adapter, drop-in for `MockReputationSource`).
+  The live latency/feasibility harness was a one-off probe and has since been
+  removed; its measured findings are recorded below.
 
 ## Evidence (measured this session)
 
@@ -100,6 +101,5 @@ unit tests that may encode the wrong API shape.)
 ## Reproduce
 
 ```sh
-python spike_data_source.py                 # live latency + completeness probe
 python -m unittest test_reputation_onchain.py -v   # offline derivation tests
 ```
