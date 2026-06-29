@@ -250,6 +250,81 @@ class TestBillingGate(unittest.TestCase):
         self.assertEqual(r.body["accepts"][0]["maxAmountRequired"], "100000")
 
 
+class TestPricingPolicy(unittest.TestCase):
+    """
+    Value-aligned fee = f(amount-at-risk).
+
+    Mutation notes:
+      - drop the free_below branch -> test_micro_is_free FAILS.
+      - drop the max cap -> test_large_capped FAILS.
+      - drop the min floor -> test_small_floored FAILS.
+    """
+    def setUp(self):
+        self.p = X.PricingPolicy(free_below="1.00", bps=10,
+                                 min_fee="0.001", max_fee="0.10")
+
+    def test_micro_is_free(self):
+        self.assertEqual(self.p.fee_atomic("0.09"), 0)
+        self.assertEqual(self.p.fee_atomic("1.00"), 0)  # at threshold -> free
+
+    def test_proportional(self):
+        # $50 * 0.1% = $0.05 -> 50000 atomic
+        self.assertEqual(self.p.fee_atomic("50"), 50000)
+
+    def test_large_capped(self):
+        # $5000 * 0.1% = $5 -> capped at $0.10 = 100000 atomic
+        self.assertEqual(self.p.fee_atomic("5000"), 100000)
+
+    def test_small_floored(self):
+        # With a low free threshold the min floor binds: $0.50 * 0.1% = $0.0005
+        # -> floored to min $0.01 = 10000 atomic.
+        p = X.PricingPolicy(free_below="0.10", bps=10, min_fee="0.01", max_fee="1.00")
+        self.assertEqual(p.fee_atomic("0.50"), 10000)
+
+    def test_unknown_amount_charges_floor(self):
+        self.assertEqual(self.p.fee_atomic(None), 1000)
+        self.assertEqual(self.p.fee_atomic("junk"), 1000)
+
+
+class TestValueAlignedGate(unittest.TestCase):
+    def setUp(self):
+        self.gate = X.BillingGate(
+            X.BillingConfig(pay_to=PAY_TO), facilitator=X.MockFacilitator(),
+            pricing=X.PricingPolicy(free_below="1.00"))
+
+    def test_micro_served_free(self):
+        # a $0.09 forecast is free -> paid, no 402, no payment needed.
+        r = self.gate.check("https://r", amount_at_risk="0.09")
+        self.assertTrue(r.paid)
+        self.assertEqual(r.via, "free")
+
+    def test_large_gets_priced_402(self):
+        r = self.gate.check("https://r", amount_at_risk="50")
+        self.assertFalse(r.paid)
+        self.assertEqual(r.body["accepts"][0]["maxAmountRequired"], "50000")
+
+    def test_pay_the_value_aligned_price(self):
+        r = self.gate.check("https://r", amount_at_risk="50",
+                            x_payment=encode(make_payment(value="50000")))
+        self.assertTrue(r.paid)
+
+    def test_underpay_value_aligned_rejected(self):
+        # pay the base price for a large forecast -> underpaid.
+        r = self.gate.check("https://r", amount_at_risk="50",
+                            x_payment=encode(make_payment(value="1000")))
+        self.assertFalse(r.paid)
+        self.assertEqual(r.body["error"], "underpaid")
+
+    def test_free_does_not_consume_session(self):
+        # a micro forecast with a session token stays free (no credit spent).
+        store = self.gate.sessions
+        tok = store.open(credits=5, ttl_seconds=100)
+        r = self.gate.check("https://r", amount_at_risk="0.09", x_session=tok)
+        self.assertEqual(r.via, "free")
+        self.assertTrue(store.consume(tok)[0])  # all 5 still there
+        self.assertEqual(store.consume(tok)[1], 3)  # 5 -> consumed 2 here -> 3
+
+
 class TestBillingConfig(unittest.TestCase):
     def test_requires_valid_pay_to(self):
         with self.assertRaises(ValueError):

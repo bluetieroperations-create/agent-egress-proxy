@@ -195,6 +195,17 @@ forecast calls then present `X-PAYMENT-SESSION` and skip per-call signing
 Pricing default is `0.001` USDC/call (sub-cent, the spec's per-check ceiling); a
 session is `price × credits` (no bulk discount yet).
 
+**Value-aligned pricing** (`--value-pricing`, `x402.PricingPolicy`). The fee
+tracks the **amount-at-risk** (the payment being forecast), not a flat rate:
+micro-payments (`<= BLACKWALL_FREE_BELOW`, default $1) are **FREE** — served
+without a 402, and the loss-leader that feeds the reputation moat — while larger
+payments carry a small fraction (`BLACKWALL_PRICE_BPS`, default 10bps = 0.1%)
+clamped to `[min, max]` (default `$0.001`–`$0.10`). So a $5000 forecast costs at
+most $0.10, and a $0.09 one is free. Priced on **amount** (known up front), not
+the verdict — x402 is pay-before-serve, and the amount can't be gamed (declaring
+a smaller amount just yields a verdict for that smaller amount). Verified live:
+$0.09 → free, $50 → $0.05, $5000 → capped $0.10.
+
 ## MCP server (`mcp_server.py`)
 
 Wraps the verdict engine as a Model Context Protocol server over stdio, so any

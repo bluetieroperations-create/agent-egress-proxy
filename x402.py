@@ -32,7 +32,7 @@ import json
 import os
 import threading
 import time
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from addresses import addresses_equal, is_evm_address
 
@@ -335,6 +335,55 @@ class SessionStore:
 # ===========================================================================
 # Billing gate -- orchestrates the above for the HTTP layer
 # ===========================================================================
+class PricingPolicy:
+    """
+    Value-aligned per-forecast pricing: the fee tracks the amount-at-risk (the
+    payment being forecast), NOT a flat rate.
+
+    Priced on AMOUNT, not the verdict -- x402 is pay-before-serve, so the verdict
+    isn't known when the 402 is issued; the amount IS known (it's in the request).
+    The agent can't game it: declaring a smaller amount to dodge the fee just gets
+    a verdict for that smaller amount (which is what the price-anomaly check uses).
+
+      * amount <= free_below  -> FREE (no 402). The loss-leader that feeds the
+        reputation moat -- and it kills the "why pay a cent to protect a cent"
+        objection for micro-payments (most of today's x402 traffic).
+      * else  -> bps of the amount, clamped to [min_fee, max_fee]. A big payment
+        carries a (still tiny) fee proportional to the loss being prevented.
+      * unknown amount -> min_fee (can't assess value; charge the floor).
+    """
+
+    def __init__(self, decimals=6, free_below="1.00", bps=10,
+                 min_fee="0.001", max_fee="0.10"):
+        self.decimals = int(decimals)
+        self.free_below = Decimal(str(free_below))
+        self.bps = Decimal(str(bps))            # basis points: 10 = 0.1%
+        self.min_fee = Decimal(str(min_fee))
+        self.max_fee = Decimal(str(max_fee))
+        self._q = Decimal(1).scaleb(-self.decimals)  # quantization unit
+
+    def fee_atomic(self, amount_at_risk):
+        """Return the fee in atomic units for protecting `amount_at_risk` (0=free)."""
+        try:
+            amt = Decimal(str(amount_at_risk))
+            if not amt.is_finite():
+                amt = None
+        except (InvalidOperation, ValueError, ArithmeticError, TypeError):
+            amt = None
+        if amt is None or amt <= 0:
+            fee = self.min_fee
+        elif amt <= self.free_below:
+            return 0
+        else:
+            fee = amt * self.bps / Decimal(10000)
+            if fee < self.min_fee:
+                fee = self.min_fee
+            elif fee > self.max_fee:
+                fee = self.max_fee
+        fee = fee.quantize(self._q, rounding=ROUND_HALF_UP)
+        return int(fee * (Decimal(10) ** self.decimals))
+
+
 class BillingConfig:
     def __init__(self, price="0.001", asset=BASE_USDC, network="base",
                  pay_to=None, decimals=6, session_credits=1000,
@@ -369,11 +418,18 @@ class BillingResult:
 
 
 class BillingGate:
-    def __init__(self, config, facilitator=None, nonces=None, sessions=None):
+    def __init__(self, config, facilitator=None, nonces=None, sessions=None,
+                 pricing=None):
         self.cfg = config
         self.facilitator = facilitator or MockFacilitator()
         self.nonces = nonces or NonceLedger()
         self.sessions = sessions or SessionStore()
+        self.pricing = pricing  # PricingPolicy or None (flat cfg.price)
+
+    def _price_for(self, amount_at_risk):
+        if self.pricing is not None:
+            return self.pricing.fee_atomic(amount_at_risk)
+        return self.cfg.price_atomic
 
     def _requirements(self, resource, price_atomic=None):
         return build_requirements(
@@ -385,11 +441,21 @@ class BillingGate:
             False, status=402,
             body=make_402_body([self._requirements(resource, price_atomic)], error))
 
-    def check(self, resource, x_payment=None, x_session=None, price_atomic=None):
+    def check(self, resource, x_payment=None, x_session=None, amount_at_risk=None,
+              price_atomic=None):
         """
-        Decide whether a forecast call is paid. Order: session token, else
-        per-call X-PAYMENT, else a 402 challenge.
+        Decide whether a forecast call is paid. With a PricingPolicy the price is
+        derived from `amount_at_risk` (value-aligned); micro-payments are FREE.
+        Order: free fast-path, session token, per-call X-PAYMENT, else a 402.
         """
+        if price_atomic is None:
+            price_atomic = self._price_for(amount_at_risk)
+
+        # Value-aligned free path: a fee of 0 (micro-payment) is served WITHOUT a
+        # 402 and without consuming a session credit.
+        if price_atomic <= 0:
+            return BillingResult(True, via="free")
+
         if x_session:
             ok, info = self.sessions.consume(x_session)
             if ok:

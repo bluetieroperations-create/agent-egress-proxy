@@ -31,7 +31,9 @@ has **no pip dependencies**.
 | `BLACKWALL_INGEST` | self-populate the store from chain on first sight |
 | `BLACKWALL_PAY_TO` | **your funded EVM wallet** — turns billing ON (you get paid here) |
 | `BLACKWALL_FACILITATOR` | real x402 facilitator base URL (verify/settle) |
-| `BLACKWALL_PRICE` | per-forecast price in USDC (default `0.001`) |
+| `BLACKWALL_PRICE` | flat per-forecast price in USDC (default `0.001`) |
+| `BLACKWALL_VALUE_PRICING` | set to enable value-aligned pricing (fee tracks amount-at-risk; micro is free) |
+| `BLACKWALL_FREE_BELOW` / `BLACKWALL_PRICE_BPS` / `BLACKWALL_MIN_FEE` / `BLACKWALL_MAX_FEE` | value-pricing knobs (defaults `1.00` / `10`bps / `0.001` / `0.10`) |
 | `BLACKWALL_RECEIPT_KEY` | **secret** for signing receipts + report tokens (set a strong random value) |
 
 ## Build & run (any container host)

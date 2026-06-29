@@ -638,7 +638,10 @@ class _Handler(BaseHTTPRequestHandler):
             result = self.billing.check(
                 resource,
                 x_payment=self.headers.get("X-PAYMENT"),
-                x_session=self.headers.get("X-PAYMENT-SESSION"))
+                x_session=self.headers.get("X-PAYMENT-SESSION"),
+                # value-aligned pricing: the fee tracks the payment being forecast.
+                amount_at_risk=(payload.get("amount") if isinstance(payload, dict)
+                                else None))
             if not result.paid:
                 self._send_json(result.status or 402, result.body)
                 return
@@ -777,7 +780,12 @@ def main(argv=None):
                    help="Blackwall's EVM wallet; enabling it turns ON x402 "
                         "billing (402 challenge + POST /v1/session)")
     p.add_argument("--price", default=os.environ.get("BLACKWALL_PRICE", "0.001"),
-                   help="per-forecast price in USDC (default 0.001)")
+                   help="flat per-forecast price in USDC (default 0.001)")
+    p.add_argument("--value-pricing", action="store_true",
+                   default=bool(os.environ.get("BLACKWALL_VALUE_PRICING")),
+                   help="value-aligned pricing: free under BLACKWALL_FREE_BELOW "
+                        "(default $1), else BLACKWALL_PRICE_BPS of the amount "
+                        "(default 10bps) capped at BLACKWALL_MAX_FEE (default $0.10)")
     p.add_argument("--facilitator", default=os.environ.get("BLACKWALL_FACILITATOR"),
                    help="x402 facilitator base URL (verify/settle); default is "
                         "the built-in mock facilitator")
@@ -803,10 +811,17 @@ def main(argv=None):
 
     billing = None
     if args.pay_to:
-        from x402 import BillingConfig, BillingGate, HttpFacilitator
+        from x402 import BillingConfig, BillingGate, HttpFacilitator, PricingPolicy
         facilitator = HttpFacilitator(args.facilitator) if args.facilitator else None
+        pricing = None
+        if args.value_pricing:
+            pricing = PricingPolicy(
+                free_below=os.environ.get("BLACKWALL_FREE_BELOW", "1.00"),
+                bps=os.environ.get("BLACKWALL_PRICE_BPS", "10"),
+                min_fee=os.environ.get("BLACKWALL_MIN_FEE", "0.001"),
+                max_fee=os.environ.get("BLACKWALL_MAX_FEE", "0.10"))
         billing = BillingGate(BillingConfig(price=args.price, pay_to=args.pay_to),
-                              facilitator=facilitator)
+                              facilitator=facilitator, pricing=pricing)
 
     # Public bind is a deliberate posture change (the service is localhost-only
     # by default, like the egress proxy). Warn loudly if exposing it with no
