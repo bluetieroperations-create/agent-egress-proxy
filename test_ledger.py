@@ -105,6 +105,32 @@ class TestAggregate(unittest.TestCase):
         ])
         self.assertEqual(recs["0xA"]["price_history"], [])  # ignored
 
+    def test_price_observations_are_payer_attributed(self):
+        # Confirmed settlements carry {payer, amount} so the verdict engine can
+        # build a wash-trade-resistant median. Payer-less verdicts contribute to
+        # price_history but NOT to price_observations.
+        events = [
+            {"kind": "verdict", "receipt_id": "r1", "counterparty": "0xC",
+             "amount": "5.00", "payer": "0xpayerA", "ts": "t1"},
+            chain_settled("r1", "0xtx1"),
+            {"kind": "verdict", "receipt_id": "r2", "counterparty": "0xC",
+             "amount": "6.00", "payer": "0xpayerB", "ts": "t2"},
+            chain_settled("r2", "0xtx2"),
+            {"kind": "verdict", "receipt_id": "r3", "counterparty": "0xC",
+             "amount": "7.00", "ts": "t3"},  # no payer
+            chain_settled("r3", "0xtx3"),
+        ]
+        rec = L.aggregate_counterparties(events)["0xC"]
+        obs = rec["price_observations"]
+        self.assertEqual(len(obs), 2)  # only the two payer-bound settlements
+        self.assertEqual({o["payer"] for o in obs}, {"0xpayerA", "0xpayerB"})
+        self.assertEqual({o["amount"] for o in obs}, {"5.00", "6.00"})
+        # price_history still includes the payer-less one
+        self.assertEqual(len(rec["price_history"]), 3)
+        # and it flows into the wash-resistant median path
+        med, n = bw.robust_price_median(obs, min_payers=2)
+        self.assertEqual(n, 2)
+
     def test_orphan_outcome_ignored(self):
         events = [chain_settled("ghost", "0xtx")]
         self.assertEqual(L.aggregate_counterparties(events), {})

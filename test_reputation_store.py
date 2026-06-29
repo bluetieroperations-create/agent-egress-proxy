@@ -35,6 +35,24 @@ class TestIngestAndLookup(unittest.TestCase):
         self.assertEqual(rec["first_seen"], "2026-06-01T00:00:00Z")
         self.assertTrue(rec["_meta"]["known"])
 
+    def test_price_observations_payer_attributed(self):
+        # store carries (payer, amount) so the verdict engine can build a
+        # wash-trade-resistant median across distinct funders.
+        self.store.ingest_transfers([
+            xf("0xCP", "1.00", frm="0xp1", tx="0xt1"),
+            xf("0xCP", "1.00", frm="0xp2", tx="0xt2"),
+            xf("0xCP", "100.0", frm="0xwash", tx="0xt3"),
+            xf("0xCP", "100.0", frm="0xwash", tx="0xt4"),
+        ])
+        rec = self.store.lookup("0xCP")
+        obs = rec["price_observations"]
+        self.assertEqual(len(obs), 4)
+        self.assertEqual({o["payer"] for o in obs}, {"0xp1", "0xp2", "0xwash"})
+        med, n = bw.robust_price_median(obs, min_payers=3)
+        self.assertEqual(n, 3)  # 3 distinct payers, not 4 rows
+        # wash payer collapses to one rep -> median across {1,1,100} = 1
+        self.assertEqual(med, Decimal("1.00"))
+
     def test_idempotent_reingest(self):
         rows = [xf("0xCP", "0.09", tx="0xt1")]
         self.assertEqual(self.store.ingest_transfers(rows), 1)

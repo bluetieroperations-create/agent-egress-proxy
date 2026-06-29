@@ -490,6 +490,70 @@ class TestServerHardening(unittest.TestCase):
         self.assertIn("400", status)
 
 
+class TestRobustPriceMedian(unittest.TestCase):
+    """
+    Wash-trade resistance: a counterparty paying ITSELF many times must not be
+    able to anchor its own 'normal' price.
+
+    Mutation notes:
+      - count each observation instead of collapsing per payer -> test_wash_trade_defeated FAILS.
+      - drop the min_payers gate -> test_thin_returns_none FAILS.
+      - keep non-positive/garbage amounts -> test_garbage_dropped FAILS.
+    """
+    def test_wash_trade_defeated(self):
+        # attacker self-settles 50x at 100 to inflate the FLAT median to ~100;
+        # three legit payers paid 1. Flat median would bless a 100 overcharge.
+        obs = [{"payer": "0xattacker", "amount": "100"} for _ in range(50)]
+        obs += [{"payer": "0xlegit1", "amount": "1"},
+                {"payer": "0xlegit2", "amount": "1"},
+                {"payer": "0xlegit3", "amount": "1"}]
+        flat = bw.price_anomaly_ratio("100", [o["amount"] for o in obs])
+        robust = bw.price_anomaly_ratio("100", None, observations=obs)
+        self.assertLess(flat, 2.0)        # flat median ~100 -> 100/100 ~ 1 (blessed)
+        self.assertGreater(robust, 50.0)  # robust median ~1 -> 100/1 = 100 (caught)
+        med, n = bw.robust_price_median(obs)
+        self.assertEqual(n, 4)            # 4 distinct payers, not 53 observations
+        self.assertEqual(med, Decimal("1"))
+
+    def test_thin_returns_none(self):
+        # fewer than MIN_DISTINCT_PAYERS distinct payers -> not trustworthy
+        obs = [{"payer": "0xa", "amount": "5"}, {"payer": "0xb", "amount": "5"}]
+        med, n = bw.robust_price_median(obs)
+        self.assertIsNone(med)
+        self.assertEqual(n, 2)
+        # ...and price_anomaly_ratio falls back to the flat median
+        r = bw.price_anomaly_ratio("10", ["5", "5"], observations=obs)
+        self.assertEqual(r, 2.0)
+
+    def test_per_payer_collapse(self):
+        # one payer, 100 observations -> counts as ONE payer (below min) -> None
+        obs = [{"payer": "0xsolo", "amount": "7"} for _ in range(100)]
+        med, n = bw.robust_price_median(obs)
+        self.assertIsNone(med)
+        self.assertEqual(n, 1)
+
+    def test_garbage_dropped(self):
+        obs = [{"payer": "0xa", "amount": "5"}, {"payer": "0xb", "amount": "0"},
+               {"payer": "0xc", "amount": "notnum"}, {"payer": None, "amount": "5"},
+               {"payer": "0xd", "amount": "5"}, {"payer": "0xe", "amount": "5"}]
+        med, n = bw.robust_price_median(obs)
+        # only 0xa, 0xd, 0xe carry a usable positive amount -> 3 payers, median 5
+        self.assertEqual(n, 3)
+        self.assertEqual(med, Decimal("5"))
+
+    def test_decide_payment_reports_price_basis(self):
+        obs = [{"payer": "0x%d" % i, "amount": "1"} for i in range(5)]
+        rec = {"settlement_count": 100, "confirmed_settlement_count": 100,
+               "distinct_payers": 5, "dispute_rate": 0.0,
+               "price_observations": obs, "price_history": ["1"] * 5}
+        v = bw.decide_payment("1.00", rec, ["1"] * 5, counterparty="0x" + "1" * 40)
+        self.assertEqual(v["signals"]["price_basis"], "payer-weighted")
+        # without observations -> flat basis
+        rec2 = dict(rec); rec2.pop("price_observations")
+        v2 = bw.decide_payment("1.00", rec2, ["1"] * 5, counterparty="0x" + "1" * 40)
+        self.assertEqual(v2["signals"]["price_basis"], "flat")
+
+
 class TestDefaultBillingAsset(unittest.TestCase):
     """
     The 402 challenge must advertise the RIGHT USDC contract for the network,

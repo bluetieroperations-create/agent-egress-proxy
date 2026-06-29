@@ -80,8 +80,8 @@ def aggregate_counterparties(events):
     def acc(cp):
         if cp not in agg:
             agg[cp] = {"good": 0, "bad": 0, "amounts": [], "confirmed_txs": set(),
-                       "payers": set(), "first_ts": None, "last_ts": None,
-                       "verdicts": 0, "self_reports": 0}
+                       "payers": set(), "priced": [], "first_ts": None,
+                       "last_ts": None, "verdicts": 0, "self_reports": 0}
         return agg[cp]
 
     for e in events:
@@ -144,6 +144,11 @@ def aggregate_counterparties(events):
         payer = by_receipt[rid].get("payer")
         if payer:
             a["payers"].add(payer)
+            # Payer-attributed price observation -> wash-trade-resistant median
+            # (see blackwall.robust_price_median). Needs both a payer and an
+            # amount to be usable.
+            if amt is not None:
+                a["priced"].append({"payer": payer, "amount": str(amt)})
 
     # Advisory only: self-reports on receipts with no chain confirmation.
     for rid in self_reported:
@@ -164,6 +169,7 @@ def aggregate_counterparties(events):
             "distinct_payers": len(a["payers"]),  # Sybil signal: distinct funders
             "dispute_rate": dispute_rate,   # over confirmed settlements only
             "price_history": a["amounts"],  # on-chain amounts of confirmed settlements
+            "price_observations": a["priced"],  # payer-attributed (wash-resistant median)
             "first_seen": a["first_ts"],
             "last_seen": a["last_ts"],
             "_meta": {
@@ -280,6 +286,7 @@ class LedgerReputationSource:
             "distinct_payers": 0,
             "dispute_rate": None,
             "price_history": [],
+            "price_observations": [],
             "sanctioned": False,
             "known_bad": False,
             "_meta": {"source": "blackwall-ledger", "known": False},

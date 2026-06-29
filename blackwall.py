@@ -92,7 +92,61 @@ def parse_amount(raw):
     return amount
 
 
-def price_anomaly_ratio(amount, price_history):
+def _median_of(values):
+    """Median of a non-empty iterable of Decimals."""
+    s = sorted(values)
+    n = len(s)
+    mid = n // 2
+    return s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2
+
+
+def robust_price_median(observations, min_payers=MIN_DISTINCT_PAYERS):
+    """Wash-trade-resistant median price from payer-attributed observations.
+
+    The flat median over all amounts is gameable: a counterparty can pay ITSELF
+    many times to anchor its own 'normal' price, then overcharge a victim without
+    tripping the anomaly check. This collapses each DISTINCT payer to ONE
+    representative price (that payer's own median), then takes the median across
+    payers -- so transaction COUNT from one actor counts once. Moving the result
+    requires controlling a MAJORITY of distinct, chain-confirmed, funded payers,
+    not just spamming settlements.
+
+    `observations` is an iterable of {"payer", "amount"} dicts or (payer, amount)
+    pairs. Entries with no payer or a non-positive/garbage amount are dropped.
+    Returns (median_Decimal, n_distinct_payers), or (None, n) when fewer than
+    `min_payers` distinct payers contribute -- too thin to trust over the flat
+    median.
+
+    Limitation (honest): this raises the cost of a wash-trade -- each fake payer
+    must be a distinct, funded, chain-confirmed settler -- but does not eliminate
+    it. At exactly `min_payers` an attacker controlling a majority of those few
+    payers can still move the median; the defense strengthens as the distinct
+    payer count grows. A peer-group cross-check (vs comparable services) is the
+    complementary half and is NOT yet built."""
+    by_payer = {}
+    for obs in observations or []:
+        if isinstance(obs, dict):
+            payer, amt = obs.get("payer"), obs.get("amount")
+        elif isinstance(obs, (list, tuple)) and len(obs) == 2:
+            payer, amt = obs
+        else:
+            continue
+        if not payer:
+            continue
+        try:
+            d = Decimal(str(amt))
+        except (InvalidOperation, ValueError, TypeError):
+            continue
+        if not d.is_finite() or d <= 0:
+            continue
+        by_payer.setdefault(payer, []).append(d)
+    n = len(by_payer)
+    if n < min_payers:
+        return None, n
+    return _median_of([_median_of(v) for v in by_payer.values()]), n
+
+
+def price_anomaly_ratio(amount, price_history, observations=None):
     """
     Ratio of `amount` to the counterparty's own median historical price for
     this resource class.
@@ -102,16 +156,19 @@ def price_anomaly_ratio(amount, price_history):
     is a different question from "is the signature valid", and with no history
     it simply cannot be answered (so the caller treats anomaly as UNKNOWN, not
     as zero-and-fine).
-    """
-    if not price_history:
-        return None
-    prices = sorted(Decimal(str(p)) for p in price_history)
-    n = len(prices)
-    mid = n // 2
-    if n % 2:
-        median = prices[mid]
-    else:
-        median = (prices[mid - 1] + prices[mid]) / 2
+
+    When payer-attributed `observations` are supplied and span enough distinct
+    payers, a WASH-TRADE-RESISTANT median (one price per payer; see
+    robust_price_median) is used instead of the flat median -- so a counterparty
+    can't set its own 'normal' price by paying itself. Falls back to the flat
+    median of `price_history` otherwise (unchanged behavior)."""
+    median = None
+    if observations is not None:
+        median, _n = robust_price_median(observations)
+    if median is None:
+        if not price_history:
+            return None
+        median = _median_of(Decimal(str(p)) for p in price_history)
     if median <= 0:
         return None
     return float(Decimal(str(amount)) / median)
@@ -174,8 +231,15 @@ def decide_payment(amount, record, price_history,
     settlements = record.get("settlement_count", 0) or 0
     dispute_rate = float(record.get("dispute_rate", 0.0) or 0.0)
     rep = reputation_score(record)
-    ratio = price_anomaly_ratio(amount, price_history)
+    # Payer-attributed price observations (chain-confirmed) let us use a
+    # wash-trade-resistant median; without them we fall back to the flat median.
+    observations = record.get("price_observations")
+    ratio = price_anomaly_ratio(amount, price_history, observations=observations)
     a_score = anomaly_score(ratio)
+    robust_median = None
+    if observations:
+        robust_median, _ = robust_price_median(observations)
+    price_basis = "payer-weighted" if robust_median is not None else "flat"
     # The thin-history gate counts only CONFIRMED settlements -- on-chain
     # (reputation store) or chain-watch-confirmed (ledger). A source that does
     # not distinguish (None) vouches for all of its count (seed/on-chain). The
@@ -298,6 +362,9 @@ def decide_payment(amount, record, price_history,
     signals = {
         "counterparty_reputation": round(rep, 3),
         "price_anomaly": round(a_score, 3),
+        # whether the anomaly baseline is wash-trade-resistant (per-payer) or the
+        # flat median -- so the caller knows how trustworthy the price norm is.
+        "price_basis": price_basis,
         # x402 settlement is on-chain and final.
         "reversibility": "irreversible",
         "blast_radius": "bounded" if not over_budget else "unbounded",

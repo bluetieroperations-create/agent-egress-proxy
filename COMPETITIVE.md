@@ -120,7 +120,10 @@ Verified **absent** in the nearest neighbor and not found elsewhere in the
 verified set:
 
 1. **Price-anomaly / price-fairness** — quoted amount vs the counterparty's *own*
-   median historical price. Not present in any verified competitor.
+   median historical price, now **wash-trade-hardened**: the baseline is a
+   per-distinct-payer median (`robust_price_median`), so a counterparty can't
+   anchor its own "normal" price by paying itself. Not present in any verified
+   competitor. (Peer-group cross-check is the remaining, not-yet-built half.)
 2. **Behavioral counterparty reputation** — Bayesian settlement/dispute history
    from *actual chain-confirmed outcomes*, vs attestation/credential reputation
    (Ontario/EAS, ERC-8004). Harder to game; harder to bootstrap (the trade-off).

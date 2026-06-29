@@ -96,9 +96,13 @@ class ReputationStore:
                 "SELECT COUNT(*), MIN(ts), MAX(ts), COUNT(DISTINCT payer) "
                 "FROM settlements WHERE counterparty=?", (cp,))
             count, first_seen, last_seen, distinct_payers = cur.fetchone()
-            amounts = [r[0] for r in self._conn.execute(
-                "SELECT amount FROM settlements WHERE counterparty=? "
-                "ORDER BY ts DESC LIMIT ?", (cp, PRICE_HISTORY_LIMIT))]
+            rows = list(self._conn.execute(
+                "SELECT amount, payer FROM settlements WHERE counterparty=? "
+                "ORDER BY ts DESC LIMIT ?", (cp, PRICE_HISTORY_LIMIT)))
+            amounts = [r[0] for r in rows]
+            # Payer-attributed observations -> wash-trade-resistant median
+            # (blackwall.robust_price_median). Only payer-bound rows qualify.
+            observations = [{"payer": r[1], "amount": r[0]} for r in rows if r[1]]
         return {
             "settlement_count": count,
             # distinct on-chain senders (Sybil signal). A wash-trader can inflate
@@ -106,6 +110,7 @@ class ReputationStore:
             "distinct_payers": distinct_payers or 0,
             "dispute_rate": None,   # not on-chain; merged from the ledger
             "price_history": amounts,
+            "price_observations": observations,
             "first_seen": first_seen,
             "last_seen": last_seen,
             "sanctioned": cp in self.sanctioned,
@@ -148,6 +153,10 @@ def merge_records(records):
                               if r.get("dispute_rate") is not None), None),
         "price_history": max((r.get("price_history") or [] for r in records),
                              key=len),
+        # Longest payer-attributed sample (not unioned -- avoids double-counting a
+        # settlement seen by both the store and the ledger).
+        "price_observations": max(
+            (r.get("price_observations") or [] for r in records), key=len),
         "sanctioned": any(r.get("sanctioned") for r in records),
         "known_bad": any(r.get("known_bad") for r in records),
         "_meta": {
