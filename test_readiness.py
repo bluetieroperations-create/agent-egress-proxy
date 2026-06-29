@@ -106,6 +106,102 @@ class TestApplyReadiness(unittest.TestCase):
         self.assertEqual(v["verdict"], before_verdict)
 
 
+class TestScoreReadiness(unittest.TestCase):
+    """
+    Mutation notes:
+      - count unknown signals as satisfied -> test_empty_is_needs_work FAILS.
+      - drop normalization (raw weight sum) -> test_score_is_0_100 FAILS.
+      - wrong grade thresholds -> test_grades FAILS.
+    """
+    def test_empty_is_needs_work(self):
+        r = R.score_readiness({})
+        self.assertEqual(r["score"], 0)
+        self.assertEqual(r["grade"], "needs_work")
+        self.assertEqual(r["source"], "local")
+
+    def test_full_is_ready_100(self):
+        allsig = {k: True for k in R._READINESS_WEIGHTS}
+        r = R.score_readiness(allsig)
+        self.assertEqual(r["score"], 100)
+        self.assertEqual(r["grade"], "ready")
+
+    def test_score_is_0_100(self):
+        # only the 402 challenge (weight 20 of 95) -> normalized, not raw 20
+        r = R.score_readiness({"payment_challenge": True})
+        self.assertGreater(r["score"], 0)
+        self.assertLessEqual(r["score"], 100)
+        self.assertNotEqual(r["score"], 20)  # normalized, not the raw weight
+
+    def test_grades(self):
+        # craft observed sets around the thresholds
+        self.assertEqual(R.score_readiness({k: True for k in R._READINESS_WEIGHTS})["grade"], "ready")
+        # 402 + manifest present/well-formed = 50/95 ~ 53 -> close
+        mid = {"payment_challenge": True, "manifest_present": True, "manifest_well_formed": True}
+        self.assertEqual(R.score_readiness(mid)["grade"], "close")
+        self.assertEqual(R.score_readiness({"robots": True})["grade"], "needs_work")
+
+
+class TestLocalReadinessSource(unittest.TestCase):
+    """
+    Mutation notes:
+      - treat 'reached nothing' as needs_work instead of None -> test_all_unreachable FAILS.
+      - count a 404 manifest as present -> test_partial FAILS.
+      - skip the https check from the URL scheme -> test_https_from_scheme FAILS.
+    """
+    def _fetch_map(self, mapping):
+        # mapping: url-suffix-substring -> (status, body bytes); missing -> None
+        def fetch(url):
+            for key, val in mapping.items():
+                if key in url:
+                    return (val[0], {}, val[1])
+            return None
+        return fetch
+
+    def test_ready_endpoint(self):
+        x402 = b'{"x402Version":1,"accepts":[{}]}'
+        fetch = self._fetch_map({
+            "/paid": (402, x402),
+            "/.well-known/x402": (200, x402),
+            "/openapi.json": (200, b"{}"),
+            "robots.txt": (200, b"User-agent: *"),
+            "https://api.example.com/": (200, b'<html>schema.org</html>'),
+        })
+        src = R.LocalReadinessSource(fetch=fetch)
+        out = src.check("https://api.example.com/paid")
+        self.assertEqual(out["source"], "local")
+        self.assertTrue(out["signals"]["payment_challenge"])
+        self.assertTrue(out["signals"]["manifest_well_formed"])
+        self.assertTrue(out["signals"]["https"])
+        self.assertEqual(out["grade"], "ready")
+
+    def test_partial(self):
+        # manifest 404 (not present), endpoint reachable but no 402
+        fetch = self._fetch_map({
+            "/paid": (200, b"ok"),
+            "/.well-known/x402": (404, b"nope"),
+            "https://api.example.com/": (200, b"<html></html>"),
+        })
+        out = R.LocalReadinessSource(fetch=fetch).check("https://api.example.com/paid")
+        self.assertFalse(out["signals"]["manifest_present"])
+        self.assertFalse(out["signals"]["payment_challenge"])
+        self.assertIn(out["grade"], ("needs_work", "close"))
+
+    def test_all_unreachable_is_unknown(self):
+        # fetch returns None for everything -> reached nothing -> None (not needs_work)
+        src = R.LocalReadinessSource(fetch=lambda url: None)
+        self.assertIsNone(src.check("https://api.example.com/paid"))
+
+    def test_https_from_scheme(self):
+        fetch = self._fetch_map({"api.example.com": (200, b"{}")})
+        out = R.LocalReadinessSource(fetch=fetch).check("http://api.example.com/paid")
+        self.assertFalse(out["signals"]["https"])
+
+    def test_bad_url_is_none(self):
+        src = R.LocalReadinessSource(fetch=lambda url: (200, {}, b"{}"))
+        self.assertIsNone(src.check("not-a-url"))
+        self.assertIsNone(src.check(None))
+
+
 class TestOntarioReadinessSource(unittest.TestCase):
     """
     Mutation notes:

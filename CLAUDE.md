@@ -20,8 +20,10 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `facilitator_sim.py` (reference x402 facilitator for the HttpFacilitator path),
   `discovery.py` (x402 service-discovery descriptor),
   `sanctions.py` (OFAC sanctions screening -- the "superset of free" layer),
-  `readiness.py` (folds a third-party ENDPOINT-readiness grade -- e.g. Ontario's
-  free can-pay -- into the verdict; fail-open, conservative-only),
+  `readiness.py` (folds an ENDPOINT-readiness grade into the verdict; fail-open,
+  conservative-only. Two sources: SELF-OWNED `LocalReadinessSource` (scores public
+  signals we observe ourselves -- no third-party call, no query leak; preferred)
+  and external `OntarioReadinessSource` (their free can-pay)),
   `clients/x402_pay.py` (TEST-ONLY funded-signer dry-run client; the one place
   that uses a dep -- `eth-account` -- to sign a real EIP-3009 X-PAYMENT;
   see `clients/README.md`. Deploy: `Dockerfile`, `fly.toml`, `render.yaml`),

@@ -30,12 +30,17 @@ nearest competitor (Ontario's free `can-pay`) decides on **endpoint readiness +
 budget policy**; Blackwall decides on **counterparty payment behavior + price
 fairness + sanctions**. Others are buyer-scoring gates for sellers (MolTrust /
 Larkinsh / Crest), transaction-malice decoders (GPT55 / Blockaid), or enterprise
-KYT (Chainalysis / AnChain). Blackwall is **complementary** to most and
-**consumes** their signals: `readiness.py` folds Ontario's free `can-pay`
-readiness grade into the verdict (fail-open, conservative-only), so Blackwall is
-literally *Ontario's endpoint-readiness **plus** the financial layer*. On the core
-pre-payment verdict it now has a **direct, free competitor**, so the pitch is
-**signal depth and the data moat**, not "the only one doing this."
+KYT (Chainalysis / AnChain). Blackwall is **complementary** to most. For endpoint
+readiness it **replicates the commodity signal itself** rather than depending on a
+competitor: `readiness.py`'s `LocalReadinessSource` scores the same observable
+signals (402 implemented, manifest, https, openapi, ...) from public data we fetch
+ourselves — no per-request call to Ontario, and no leaking our query stream to a
+competitor. (An optional `OntarioReadinessSource` can consume their free `can-pay`
+directly, but it is *not* the default precisely because of that dependency and
+leak.) Either way the grade folds through the same conservative `apply_readiness`,
+so Blackwall is *endpoint-readiness **plus** the financial layer*. On the core
+pre-payment verdict it has a **direct, free competitor**, so the pitch is **signal
+depth and the data moat**, not "the only one doing this."
 
 ## The map
 

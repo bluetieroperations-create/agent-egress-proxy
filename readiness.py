@@ -98,6 +98,152 @@ def apply_readiness(verdict, readiness):
     return v
 
 
+# ===========================================================================
+# Self-owned readiness -- replicate the OBSERVABLE part of an endpoint-readiness
+# check from public signals. No competitor dependency, no query-stream leak.
+# Weights are MODELED ON Ontario's public x402-trust weights; the implementation
+# is ours. Score is normalized to 0..100 over the signals we can observe.
+# ===========================================================================
+_READINESS_WEIGHTS = {
+    "payment_challenge": 20,    # endpoint returns HTTP 402 with an x402 challenge
+    "manifest_present": 15,     # /.well-known/x402 exists
+    "manifest_well_formed": 15, # ...and parses with x402 fields
+    "https": 10,                # endpoint is https
+    "endpoint_reachable": 10,   # endpoint responds at all
+    "openapi": 10,              # an OpenAPI schema is published
+    "homepage_reachable": 10,   # the base origin responds
+    "robots": 3,                # robots.txt present
+    "schema_org": 2,            # homepage advertises schema.org metadata
+}
+_READINESS_MAX_BODY = 65536
+
+
+def score_readiness(observed):
+    """Pure: map observed endpoint signals -> {grade, score, source, signals}.
+
+    `observed` is {signal_name: bool}; unknown/absent signals count as not
+    satisfied. Score is 100 * (satisfied weight / total weight). Grade
+    thresholds are OURS (documented), not claimed to match Ontario's exactly:
+    >=80 ready, >=50 close, else needs_work. Output shape matches
+    normalize_readiness() so it folds through apply_readiness() unchanged."""
+    total = sum(_READINESS_WEIGHTS.values())
+    got = sum(w for k, w in _READINESS_WEIGHTS.items() if observed.get(k))
+    score = round(100 * got / total) if total else 0
+    grade = "ready" if score >= 80 else ("close" if score >= 50 else "needs_work")
+    return {
+        "grade": grade,
+        "score": score,
+        "source": "local",
+        "signals": {k: bool(observed.get(k)) for k in _READINESS_WEIGHTS},
+    }
+
+
+def _looks_x402(body):
+    """True if a body looks like an x402 challenge / manifest (accepts/x402Version)."""
+    try:
+        d = json.loads(body)
+    except Exception:
+        return False
+    return isinstance(d, dict) and bool(
+        d.get("accepts") or d.get("x402Version") or d.get("resources"))
+
+
+class LocalReadinessSource:
+    """Self-owned endpoint-readiness scorer: fetch the endpoint + its well-known
+    surfaces and score the observable signals ourselves. No third-party call.
+
+    Fail-open: per-check failures count as "signal not satisfied"; if NOTHING
+    could be reached at all (likely our own network), check() returns None
+    ("unknown") rather than a false 'needs_work'. `fetch` is a test seam:
+    callable(url) -> (status:int, headers:dict, body:bytes) or None/raises.
+    """
+
+    def __init__(self, timeout=2.5, fetch=None):
+        self.timeout = timeout
+        self._fetch = fetch
+
+    def check(self, endpoint_url):
+        if not endpoint_url or not isinstance(endpoint_url, str):
+            return None
+        observed = self._observe(endpoint_url)
+        if observed is None:
+            return None  # reached nothing -> unknown, not a false negative
+        return score_readiness(observed)
+
+    def _observe(self, endpoint_url):
+        from urllib.parse import urlparse
+        u = urlparse(endpoint_url)
+        if not u.scheme or not u.netloc:
+            return None
+        base = "%s://%s" % (u.scheme, u.netloc)
+        obs = {"https": u.scheme == "https"}
+        reached = False
+
+        # NOTE: we GET the endpoint and look for a 402 challenge. POST-only x402
+        # endpoints won't surface their 402 on a GET -- manifest_well_formed below
+        # still flags it as an x402 service, so the score degrades gracefully
+        # rather than zeroing.
+        r = self._get(endpoint_url)
+        if r is not None:
+            reached = True
+            status, _h, body = r
+            obs["endpoint_reachable"] = True
+            if status == 402:
+                obs["payment_challenge"] = _looks_x402(body)
+
+        m = self._get(base + "/.well-known/x402")
+        if m is not None:
+            reached = True
+            if m[0] == 200:
+                obs["manifest_present"] = True
+                obs["manifest_well_formed"] = _looks_x402(m[2])
+
+        for path in ("/.well-known/openapi.json", "/openapi.json"):
+            o = self._get(base + path)
+            if o is not None:
+                reached = True
+                if o[0] == 200:
+                    obs["openapi"] = True
+                    break
+
+        h = self._get(base + "/")
+        if h is not None:
+            reached = True
+            if h[0] < 400:
+                obs["homepage_reachable"] = True
+                obs["schema_org"] = b"schema.org" in (h[2] or b"")
+
+        rb = self._get(base + "/robots.txt")
+        if rb is not None:
+            reached = True
+            if rb[0] == 200:
+                obs["robots"] = True
+
+        return obs if reached else None
+
+    def _get(self, url):
+        if self._fetch is not None:
+            try:
+                return self._fetch(url)
+            except Exception:
+                return None
+        import urllib.error
+        try:
+            req = urllib.request.Request(
+                url, headers={"user-agent": "Blackwall-readiness/1",
+                              "accept": "application/json, */*"})
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                return (r.status, dict(r.headers), r.read(_READINESS_MAX_BODY))
+        except urllib.error.HTTPError as e:  # 402/404/etc. are signal, not failure
+            try:
+                body = e.read(_READINESS_MAX_BODY)
+            except Exception:
+                body = b""
+            return (e.code, dict(e.headers or {}), body)
+        except Exception:
+            return None
+
+
 class OntarioReadinessSource:
     """Query Ontario's FREE pre-payment readiness for an endpoint URL.
 

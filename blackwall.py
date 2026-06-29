@@ -839,10 +839,18 @@ def main(argv=None):
                    help="path to an OFAC sanctioned-address file; STOPs sanctioned "
                         "counterparties (the free-baseline check, in one call)")
     p.add_argument("--readiness", default=os.environ.get("BLACKWALL_READINESS"),
-                   help="base URL of an endpoint-readiness oracle (e.g. Ontario "
-                        "https://ontarioprotocol.com); when a request carries a "
-                        "`resource` URL, folds its readiness grade into the verdict "
-                        "(fail-open, conservative-only)")
+                   help="base URL of an EXTERNAL endpoint-readiness oracle (e.g. "
+                        "Ontario https://ontarioprotocol.com); folds its grade into "
+                        "the verdict when a request carries a `resource` URL "
+                        "(fail-open, conservative-only). NOTE: this calls a third "
+                        "party per request and reveals your query stream -- prefer "
+                        "--readiness-local")
+    p.add_argument("--readiness-local", action="store_true",
+                   default=bool(os.environ.get("BLACKWALL_READINESS_LOCAL")),
+                   help="SELF-OWNED endpoint-readiness: score the `resource` URL "
+                        "from public signals we observe ourselves (no third-party "
+                        "call, no query-stream leak). Takes precedence over "
+                        "--readiness.")
     args = p.parse_args(argv)
 
     led = None
@@ -896,11 +904,16 @@ def main(argv=None):
         sys.stderr.flush()
 
     readiness_source = None
-    if args.readiness:
+    if args.readiness_local:
+        from readiness import LocalReadinessSource
+        readiness_source = LocalReadinessSource()
+        sys.stdout.write("blackwall: endpoint-readiness enrichment ON "
+                         "(self-owned -- no third-party call)\n")
+    elif args.readiness:
         from readiness import OntarioReadinessSource
         readiness_source = OntarioReadinessSource(args.readiness)
-        sys.stdout.write("blackwall: endpoint-readiness enrichment ON (%s)\n"
-                         % args.readiness)
+        sys.stdout.write("blackwall: endpoint-readiness enrichment ON "
+                         "(external: %s -- reveals query stream)\n" % args.readiness)
 
     server = BlackwallServer(host=args.host, port=args.port, ledger=led,
                              billing=billing, reputation_source=reputation_source,
