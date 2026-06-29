@@ -204,7 +204,7 @@ class HttpFacilitator:
     Blackwall does not (spec 5.4).
     """
 
-    def __init__(self, base_url, timeout=10.0):
+    def __init__(self, base_url, timeout=20.0):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
@@ -214,10 +214,13 @@ class HttpFacilitator:
         body = json.dumps({"x402Version": X402_VERSION,
                            "paymentPayload": payment,
                            "paymentRequirements": requirements}).encode("utf-8")
+        # Some facilitators sit behind Cloudflare, which tarpits/blocks the
+        # default Python-urllib UA (manifests as a timeout). Send a browser UA.
         req = urllib.request.Request(
             self.base_url + path, data=body,
             headers={"Content-Type": "application/json",
-                     "Accept": "application/json"})
+                     "Accept": "application/json",
+                     "User-Agent": "Mozilla/5.0 (Blackwall x402 facilitator client)"})
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 return json.loads(r.read().decode("utf-8"))
