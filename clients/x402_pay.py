@@ -96,8 +96,13 @@ def _http_json(url, body=None, headers=None, timeout=30):
 
 def _rpc(rpc_url, method, params, timeout=20):
     payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
-    req = urllib.request.Request(rpc_url, data=json.dumps(payload).encode(),
-                                 headers={"content-type": "application/json"})
+    # Some public RPCs (e.g. sepolia.base.org behind Cloudflare) 403 the default
+    # Python-urllib UA; send a browser-like UA + explicit accept.
+    req = urllib.request.Request(
+        rpc_url, data=json.dumps(payload).encode(),
+        headers={"content-type": "application/json",
+                 "accept": "application/json",
+                 "user-agent": "Mozilla/5.0 (x402-pay test client)"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         out = json.loads(r.read())
     if "error" in out:
