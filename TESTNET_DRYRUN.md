@@ -45,14 +45,29 @@ A **completed paid transaction** could not run from this environment:
 
 ## To complete a full paid testnet transaction (next, outside this sandbox)
 
-1. Fund a Base-Sepolia wallet for Blackwall (the `payTo`/recipient) — testnet ETH + USDC.
-2. Run an x402 **client** (e.g. the `x402` JS/Python SDK with a funded signer) to
-   produce a real signed `X-PAYMENT` for `POST /v1/forecast-payment`.
-3. Start Blackwall: `--pay-to <sepolia wallet> --price 0.001
-   --facilitator https://facilitator.x402.rs` (and set the resource's network to
-   `base-sepolia` + testnet USDC asset).
+The funded-signer client is now built — `clients/x402_pay.py` (see
+`clients/README.md`). It signs a real EIP-3009 authorization with `eth-account`
+(test-only dep) and reads the token's EIP-712 domain on-chain via `--rpc`.
+
+1. Fund a **throwaway** Base-Sepolia wallet — testnet USDC (the asset transferred)
+   + a little testnet ETH. Export its key: `export SIGNER_PRIVATE_KEY=0x…`.
+2. Start Blackwall advertising the testnet network/asset (the `--network` flag
+   added with this client; asset defaults to Base-Sepolia USDC):
+   ```sh
+   python blackwall.py --pay-to <your-sepolia-payTo> \
+       --network base-sepolia --facilitator https://facilitator.x402.rs
+   ```
+3. Run the client:
+   ```sh
+   pip install -r clients/requirements.txt
+   python clients/x402_pay.py --url http://localhost:8402/v1/forecast-payment \
+       --counterparty 0x… --amount 5.00 \
+       --network base-sepolia --rpc https://sepolia.base.org
+   ```
 4. Expect: unpaid → 402 → signed retry → facilitator verify+settle succeed →
    verdict served + real settlement tx on Base Sepolia.
 
-The Blackwall side of every step above is built and tested; the gap is purely a
-funded signer, which is a wallet/ops task, not a code task.
+The full loop (402 → sign → X-PAYMENT → verify+settle → verdict) is verified
+locally against the built-in mock facilitator (see `clients/README.md`); the only
+piece that can't run from this sandbox is the real on-chain settlement, which
+needs the funded wallet above.

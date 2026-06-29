@@ -490,5 +490,37 @@ class TestServerHardening(unittest.TestCase):
         self.assertIn("400", status)
 
 
+class TestDefaultBillingAsset(unittest.TestCase):
+    """
+    The 402 challenge must advertise the RIGHT USDC contract for the network,
+    so a funded signer signs an EIP-3009 authorization the facilitator can settle.
+
+    Mutation notes:
+      - ignore `explicit` (always derive) -> test_explicit_wins FAILS.
+      - return base USDC for base-sepolia -> test_sepolia_default FAILS (this is
+        the dangerous mutation: mainnet USDC advertised on a testnet deploy).
+      - return sepolia USDC for mainnet -> test_mainnet_default FAILS.
+    """
+    BASE = "0xBASE"
+    SEP = "0xSEPOLIA"
+
+    def test_explicit_wins(self):
+        self.assertEqual(
+            bw.default_billing_asset("base-sepolia", "0xCUSTOM", self.BASE, self.SEP),
+            "0xCUSTOM")
+
+    def test_sepolia_default(self):
+        self.assertEqual(
+            bw.default_billing_asset("base-sepolia", None, self.BASE, self.SEP),
+            self.SEP)
+
+    def test_mainnet_default(self):
+        self.assertEqual(
+            bw.default_billing_asset("base", None, self.BASE, self.SEP), self.BASE)
+        # unknown network is treated as mainnet (conservative, not testnet)
+        self.assertEqual(
+            bw.default_billing_asset("polygon", None, self.BASE, self.SEP), self.BASE)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -38,7 +38,8 @@ from addresses import addresses_equal, is_evm_address
 
 X402_VERSION = 1
 DEFAULT_SCHEME = "exact"          # EIP-3009 transferWithAuthorization
-BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"          # Base mainnet
+BASE_SEPOLIA_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"  # Base Sepolia (Circle testnet)
 
 
 # ===========================================================================

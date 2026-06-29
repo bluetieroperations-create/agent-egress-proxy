@@ -492,6 +492,18 @@ def validate_request(payload):
     }, None
 
 
+def default_billing_asset(network, explicit, base_usdc, sepolia_usdc):
+    """Pick the USDC contract to advertise in the 402 challenge.
+
+    An explicit --asset/BLACKWALL_ASSET always wins. Otherwise the asset follows
+    the network: Base-Sepolia USDC for the testnet dry-run, Base mainnet USDC
+    everywhere else (so an operator can't accidentally advertise mainnet USDC on
+    a base-sepolia deploy just by forgetting the asset flag)."""
+    if explicit:
+        return explicit
+    return sepolia_usdc if network == "base-sepolia" else base_usdc
+
+
 def forecast(payload, reputation_source, ledger=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
@@ -790,6 +802,13 @@ def main(argv=None):
     p.add_argument("--facilitator", default=os.environ.get("BLACKWALL_FACILITATOR"),
                    help="x402 facilitator base URL (verify/settle); default is "
                         "the built-in mock facilitator")
+    p.add_argument("--network", default=os.environ.get("BLACKWALL_NETWORK", "base"),
+                   help="x402 settlement network advertised in the 402 challenge "
+                        "(default 'base'; use 'base-sepolia' for the testnet dry-run)")
+    p.add_argument("--asset", default=os.environ.get("BLACKWALL_ASSET"),
+                   help="USDC contract advertised in the 402 challenge; defaults to "
+                        "Base mainnet USDC, or Base-Sepolia USDC when --network is "
+                        "base-sepolia")
     p.add_argument("--store", default=os.environ.get("BLACKWALL_STORE"),
                    help="SQLite reputation store path; uses REAL on-chain "
                         "reputation instead of the mock source")
@@ -825,7 +844,8 @@ def main(argv=None):
 
     billing = None
     if args.pay_to:
-        from x402 import BillingConfig, BillingGate, HttpFacilitator, PricingPolicy
+        from x402 import (BASE_SEPOLIA_USDC, BASE_USDC, BillingConfig,
+                          BillingGate, HttpFacilitator, PricingPolicy)
         facilitator = HttpFacilitator(args.facilitator) if args.facilitator else None
         pricing = None
         if args.value_pricing:
@@ -834,8 +854,12 @@ def main(argv=None):
                 bps=os.environ.get("BLACKWALL_PRICE_BPS", "10"),
                 min_fee=os.environ.get("BLACKWALL_MIN_FEE", "0.001"),
                 max_fee=os.environ.get("BLACKWALL_MAX_FEE", "0.10"))
-        billing = BillingGate(BillingConfig(price=args.price, pay_to=args.pay_to),
-                              facilitator=facilitator, pricing=pricing)
+        billing = BillingGate(
+            BillingConfig(price=args.price, pay_to=args.pay_to,
+                          network=args.network,
+                          asset=default_billing_asset(args.network, args.asset,
+                                                       BASE_USDC, BASE_SEPOLIA_USDC)),
+            facilitator=facilitator, pricing=pricing)
 
     # Public bind is a deliberate posture change (the service is localhost-only
     # by default, like the egress proxy). Warn loudly if exposing it with no
