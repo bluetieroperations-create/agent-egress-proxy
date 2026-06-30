@@ -9,7 +9,9 @@ Verdict engine (GO/HOLD/STOP) · behavioral counterparty reputation ·
 wash-trade-resistant price-anomaly · OFAC sanctions screening · self-owned
 endpoint-readiness · value-aligned pricing · x402 billing (EIP-3009 / facilitator
 seam) · MCP stdio server · service-discovery descriptor · **deployed live on Base
-mainnet** (settles real x402 payments) · listed on awesome-x402 · adversarially
+mainnet** · **real mainnet USDC settlement driven end-to-end** (paid x402 path:
+402 → EIP-3009 sign → facilitator verify+settle → verdict; caught a 100× price
+gouge on live ingested reputation) · listed on awesome-x402 · adversarially
 audited (315 tests).
 
 ---
@@ -65,8 +67,7 @@ before you sign." Captures developers at build time.
   all three.
 
 ### Listing follow-ups
-- Update the awesome-x402 entry from "Base Sepolia (testnet)" → **"Live on Base"**
-  now that mainnet is live (edit the open PR's README).
+- ~~Update the awesome-x402 entry to "Live on Base".~~ **Done.**
 - Submit to additional registries (Smithery / Glama MCP) once the MCP-over-HTTP
   transport exists (below) — they want a reachable MCP endpoint, not stdio.
 
@@ -86,10 +87,3 @@ The MCP server is **stdio/local-only**; an HTTP transport lets *remote* agents a
 MCP registries use it.
 - **Why deferred:** post-traffic; the HTTP verdict API + discovery cover discovery
   today.
-
-### Full mainnet settlement confirmation
-Testnet settled end-to-end twice; mainnet **config** is live and verified, but a
-real **mainnet USDC** settlement hasn't been driven through yet.
-- **Next concrete step:** one tiny real-USDC payment from a funded mainnet wallet
-  via `clients/x402_pay.py`, to confirm xpay settles on Base mainnet (it
-  *advertises* support; this proves it).
