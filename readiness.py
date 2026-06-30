@@ -277,6 +277,7 @@ class OntarioReadinessSource:
         req = urllib.request.Request(
             self.base_url + path, data=data,
             headers={"content-type": "application/json",
-                     "accept": "application/json"})
+                     "accept": "application/json",
+                     "user-agent": "Mozilla/5.0 (compatible; Blackwall/0.1)"})
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
             return json.loads(r.read())

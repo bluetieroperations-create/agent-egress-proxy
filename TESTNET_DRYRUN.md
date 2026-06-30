@@ -32,40 +32,46 @@ non-2xx bodies and reporting a useless `"facilitator unreachable"`. Fixed
 and surface the real `invalidReason`; opaque (non-JSON) errors still propagate →
 fail closed. Regression: `test_facilitator.test_structured_rejection_at_non_2xx_is_surfaced`.
 
-## What was NOT exercised (and why)
+## ✅ COMPLETED: full paid transaction settled on-chain (2026-06-30)
 
-A **completed paid transaction** could not run from this environment:
+The end-to-end paid path was run from an operator machine with a funded
+Base-Sepolia wallet and **settled on-chain**:
 
-- **No signing key / wallet.** Constructing a valid `X-PAYMENT` requires signing
-  an EIP-3009 `transferWithAuthorization` (secp256k1 + keccak256) with a funded
-  Base-Sepolia wallet. This repo is stdlib-only (no keccak/secp256k1) and holds
-  no keys — by design, Blackwall is the *resource server*, not the paying client.
-- Consequently `verify`/`settle` can only be driven to the **rejection** path
-  here, not to a successful settlement.
+- **Result:** `POST /v1/forecast-payment` → `402` → signed EIP-3009 → `X-PAYMENT`
+  → facilitator **verify + settle** → `HTTP 200` + verdict `HOLD` (correct: the
+  counterparty was unknown/thin) + signed `receipt_id`.
+- **On-chain proof:** an ERC-20 `transferWithAuthorization` of **0.001 USDC**
+  (the verdict price), payer → `payTo`, in block **43504014** on Base Sepolia.
+  Gasless — the facilitator sponsored gas (payer held 0 ETH).
+- **Facilitator:** `facilitator.x402.rs` was DOWN at run time; switched to
+  **`https://facilitator.xpay.sh`** (live, supports x402Version 1 / base-sepolia,
+  gas-sponsored).
 
-## To complete a full paid testnet transaction (next, outside this sandbox)
+### Bugs the live run surfaced (that mocked tests missed) — all fixed
 
-The funded-signer client is now built — `clients/x402_pay.py` (see
-`clients/README.md`). It signs a real EIP-3009 authorization with `eth-account`
-(test-only dep) and reads the token's EIP-712 domain on-chain via `--rpc`.
+| Symptom | Root cause | Fix |
+|---|---|---|
+| RPC `--rpc` → 403 | default Python urllib UA | browser UA on client RPC |
+| facilitator → timeout | default urllib UA (Cloudflare tarpit) | browser UA on `HttpFacilitator` |
+| facilitator → `missing_eip712_domain` | 402 omitted the asset EIP-712 domain | emit `extra:{name,version}` in `build_requirements` |
+| (pre-empted) Blockscout ingest | non-browser `DEFAULT_UA` | browser-prefixed UAs across all outbound calls |
 
-1. Fund a **throwaway** Base-Sepolia wallet — testnet USDC (the asset transferred)
-   + a little testnet ETH. Export its key: `export SIGNER_PRIVATE_KEY=0x…`.
-2. Start Blackwall advertising the testnet network/asset (the `--network` flag
-   added with this client; asset defaults to Base-Sepolia USDC):
-   ```sh
-   python blackwall.py --pay-to <your-sepolia-payTo> \
-       --network base-sepolia --facilitator https://facilitator.x402.rs
-   ```
-3. Run the client:
-   ```sh
-   pip install -r clients/requirements.txt
-   python clients/x402_pay.py --url http://localhost:8402/v1/forecast-payment \
-       --counterparty 0x… --amount 5.00 \
-       --network base-sepolia --rpc https://sepolia.base.org
-   ```
-4. Expect: unpaid → 402 → signed retry → facilitator verify+settle succeed →
-   verdict served + real settlement tx on Base Sepolia.
+The lesson: **public endpoints behind Cloudflare reject the default Python UA.**
+All outbound HTTP now sends a browser-prefixed, self-identifying User-Agent.
+
+### Reproduce (operator machine, funded throwaway wallet)
+```sh
+pip install -r clients/requirements.txt
+# server:
+python blackwall.py --pay-to <your-sepolia-payTo> \
+    --network base-sepolia --facilitator https://facilitator.xpay.sh
+# client (separate shell), SIGNER_PRIVATE_KEY = the funded throwaway key:
+python clients/x402_pay.py --url http://localhost:8402/v1/forecast-payment \
+    --counterparty 0x… --amount 5.00 \
+    --network base-sepolia --rpc https://base-sepolia-rpc.publicnode.com
+```
+Verify the settlement on `sepolia.basescan.org` → the `payTo` address →
+Token Transfers (ERC-20).
 
 The full loop (402 → sign → X-PAYMENT → verify+settle → verdict) is verified
 locally against the built-in mock facilitator (see `clients/README.md`); the only

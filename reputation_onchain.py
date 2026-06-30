@@ -37,7 +37,7 @@ from decimal import Decimal
 # Native USDC on Base (not bridged USDbC).
 BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 DEFAULT_BASE_URL = "https://base.blockscout.com"
-DEFAULT_UA = "blackwall-reputation-spike/0.1"
+DEFAULT_UA = "Mozilla/5.0 (compatible; Blackwall-reputation/0.1)"  # browser-prefixed: avoid Cloudflare 403
 # Two timeouts on purpose: /counters is fast and reliable; the transfers page
 # is slow and variable on a free indexer (token-filtered queries can exceed
 # 20s -- see the spike memo), so it is fetched BEST-EFFORT and the lookup
