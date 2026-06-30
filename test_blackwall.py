@@ -623,5 +623,31 @@ class TestDefaultBillingAsset(unittest.TestCase):
                 self.SEP, variant)
 
 
+class TestSanctionsEnabled(unittest.TestCase):
+    """
+    REGRESSION (audit, integrity): screening must only be enabled/advertised when
+    the OFAC list actually loaded addresses. A missing/empty file enabling the
+    wrapper would make the discovery descriptor advertise `screening:
+    ["sanctions-ofac"]` while screening nothing -- claiming a check it doesn't do.
+
+    Mutation notes:
+      - `len(list) >= 0` (always True) -> test_empty_disables FAILS.
+      - `return True` (ignore the list) -> test_empty_disables/test_none FAIL.
+      - `return False` (never enable)  -> test_nonempty_enables FAILS.
+    """
+
+    def test_empty_disables(self):
+        from sanctions import SanctionsList
+        self.assertFalse(bw.sanctions_enabled(SanctionsList()))
+
+    def test_none_disables(self):
+        self.assertFalse(bw.sanctions_enabled(None))
+
+    def test_nonempty_enables(self):
+        from sanctions import SanctionsList
+        sl = SanctionsList(["0x0330070fd38ec3bb94f58fa55d40368271e9e54a"])
+        self.assertTrue(bw.sanctions_enabled(sl))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -660,6 +660,17 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None):
     return verdict, None
 
 
+def sanctions_enabled(sanctions_list):
+    """Whether sanctions screening is REAL and should be advertised.
+
+    Screening only counts if the list actually loaded addresses. A missing or
+    empty file must NOT enable the wrapper -- otherwise the discovery descriptor
+    advertises `screening: ["sanctions-ofac"]` while screening zero addresses,
+    which is an integrity lie (claims a check it doesn't perform).
+    """
+    return sanctions_list is not None and len(sanctions_list) > 0
+
+
 # ===========================================================================
 # HTTP server (POST /v1/forecast-payment) -- localhost only
 # ===========================================================================
@@ -970,10 +981,18 @@ def main(argv=None):
     if args.sanctions:
         from sanctions import SanctionsList, SanctionsScreeningSource
         sl = SanctionsList.from_file(args.sanctions)
-        base = reputation_source or MockReputationSource()
-        reputation_source = SanctionsScreeningSource(base, sl)
-        sys.stdout.write("blackwall: sanctions screening ON (%d addresses)\n"
-                         % len(sl))
+        if sanctions_enabled(sl):
+            base = reputation_source or MockReputationSource()
+            reputation_source = SanctionsScreeningSource(base, sl)
+            sys.stdout.write("blackwall: sanctions screening ON (%d addresses)\n"
+                             % len(sl))
+        else:
+            # Set but empty/missing -> do NOT wrap, so the descriptor honestly
+            # advertises screening OFF instead of claiming a no-op check.
+            sys.stdout.write(
+                "blackwall: WARNING sanctions file %r empty or missing -- "
+                "screening OFF (descriptor will not advertise it)\n"
+                % args.sanctions)
 
     billing = None
     if args.pay_to:
