@@ -884,8 +884,12 @@ def main(argv=None):
                    help="bind address (default 127.0.0.1, localhost-only). Use "
                         "0.0.0.0 ONLY for a hosted/public deploy -- see DEPLOY.md")
     p.add_argument("--port", type=int,
-                   default=int(os.environ.get("BLACKWALL_PORT", "8402")),
-                   help="listen port (default 8402)")
+                   # Honor the standard PORT env (Render/Cloud Run/Heroku set it
+                   # and route to it) as a fallback, so the service binds the port
+                   # the platform expects without per-host config.
+                   default=int(os.environ.get("BLACKWALL_PORT")
+                               or os.environ.get("PORT") or "8402"),
+                   help="listen port (default: $BLACKWALL_PORT, else $PORT, else 8402)")
     p.add_argument("--ledger",
                    default=os.environ.get("BLACKWALL_LEDGER"),
                    help="path to the verdict->outcome ledger (JSONL); enables "
