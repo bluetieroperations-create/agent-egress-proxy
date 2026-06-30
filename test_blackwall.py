@@ -649,5 +649,118 @@ class TestSanctionsEnabled(unittest.TestCase):
         self.assertTrue(bw.sanctions_enabled(sl))
 
 
+class TestComplianceFree(unittest.TestCase):
+    """
+    A sanctioned counterparty's STOP is served FREE (the compliance floor),
+    bypassing the billing gate -- Blackwall is a SUPERSET of the free KYT
+    baseline, so it must never charge to deliver an OFAC STOP. Price/reputation
+    STOPs stay paid.
+
+    Mutation notes:
+      - return True always -> test_clean_not_free / test_no_sanctions FAIL.
+      - return False always -> test_sanctioned_is_free FAILS.
+      - drop the getattr(.., "sanctions") guard -> test_no_sanctions raises/FAILS.
+      - ignore counterparty (screen something else) -> test_clean_not_free FAILS.
+    """
+    SANC = "0x0330070fd38ec3bb94f58fa55d40368271e9e54a"
+
+    def _wrapped(self):
+        from sanctions import SanctionsList, SanctionsScreeningSource
+        class _Inner:
+            def lookup(self, cp): return {}
+        return SanctionsScreeningSource(_Inner(), SanctionsList([self.SANC]))
+
+    def test_sanctioned_is_free(self):
+        src = self._wrapped()
+        self.assertTrue(bw.is_compliance_free(src, {"counterparty": self.SANC}))
+        # case-insensitive: an uppercased sanctioned address is still free-STOP
+        self.assertTrue(bw.is_compliance_free(src, {"counterparty": self.SANC.upper()}))
+
+    def test_clean_not_free(self):
+        src = self._wrapped()
+        self.assertFalse(bw.is_compliance_free(
+            src, {"counterparty": "0x00000000000000000000000000000000deadbeef"}))
+
+    def test_no_sanctions_source(self):
+        # A bare source with no sanctions wrapper must never short-circuit billing.
+        class _Bare:
+            def lookup(self, cp): return {}
+        self.assertFalse(bw.is_compliance_free(_Bare(), {"counterparty": self.SANC}))
+
+    def test_malformed_payload(self):
+        src = self._wrapped()
+        self.assertFalse(bw.is_compliance_free(src, None))
+        self.assertFalse(bw.is_compliance_free(src, {}))  # no counterparty
+
+
+class TestComplianceFreeBypassesBilling(unittest.TestCase):
+    """
+    END-TO-END (regression): with billing ON, a sanctioned counterparty must get
+    its STOP for FREE (200, no 402), while a clean high-stakes request is billed
+    (402). Locks the wiring `billing is not None and not free_stop`.
+
+    Mutation note: drop `and not free_stop` -> sanctioned high-stakes gets 402,
+    test_sanctioned_high_stakes_free FAILS.
+    """
+    SANC = "0x0330070fd38ec3bb94f58fa55d40368271e9e54a"
+
+    def setUp(self):
+        import threading
+        from http.server import ThreadingHTTPServer
+        from sanctions import SanctionsList, SanctionsScreeningSource
+        from x402 import (BillingConfig, BillingGate, MockFacilitator,
+                          PricingPolicy, BASE_USDC)
+        src = SanctionsScreeningSource(bw.MockReputationSource(),
+                                       SanctionsList([self.SANC]))
+        billing = BillingGate(
+            BillingConfig(price="0.001", pay_to="0x000000000000000000000000000000000000dEaD",
+                          network="base", asset=BASE_USDC),
+            facilitator=MockFacilitator(approve=True),
+            pricing=PricingPolicy(free_below="10.00", bps="10",
+                                  min_fee="0.001", max_fee="0.10"))
+        handler = type("_H", (bw._Handler,),
+                       {"reputation_source": src, "billing": billing})
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        self.t = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.t.start()
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def _post(self, cp, amount):
+        import json as _json
+        from urllib.request import Request, urlopen
+        from urllib.error import HTTPError
+        body = _json.dumps({"counterparty": cp, "amount": amount,
+                            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                            "chain": "base"}).encode()
+        req = Request("http://127.0.0.1:%d/v1/forecast-payment" % self.port,
+                      data=body, headers={"Content-Type": "application/json"})
+        try:
+            return urlopen(req, timeout=3).status, None
+        except HTTPError as e:
+            return e.code, _json.loads(e.read() or b"{}")
+
+    def test_sanctioned_high_stakes_free(self):
+        status, _ = self._post(self.SANC, "50.00")
+        self.assertEqual(status, 200)  # FREE STOP, not 402
+
+    def test_sanctioned_uppercased_high_stakes_free(self):
+        status, _ = self._post(self.SANC.upper(), "50.00")
+        self.assertEqual(status, 200)
+
+    def test_clean_high_stakes_billed(self):
+        status, body = self._post(
+            "0x00000000000000000000000000000000deadbeef", "50.00")
+        self.assertEqual(status, 402)  # judgment product still pays
+
+    def test_clean_low_stakes_value_free(self):
+        status, _ = self._post(
+            "0x00000000000000000000000000000000deadbeef", "5.00")
+        self.assertEqual(status, 200)  # value-pricing free under $10
+
+
 if __name__ == "__main__":
     unittest.main()

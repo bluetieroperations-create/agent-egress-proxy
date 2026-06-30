@@ -671,6 +671,30 @@ def sanctions_enabled(sanctions_list):
     return sanctions_list is not None and len(sanctions_list) > 0
 
 
+def is_compliance_free(reputation_source, payload):
+    """A sanctioned counterparty is a hard STOP served FREE -- never behind the
+    paywall.
+
+    Rationale: Blackwall bills itself as a SUPERSET of the free KYT baseline
+    (which declines sanctioned addresses for free). Charging to deliver an OFAC
+    STOP would make it WORSE than free on the compliance axis. So the sanctions
+    screen runs BEFORE billing and, on a hit, the verdict is returned free.
+
+    Only the cheap set-membership lookup runs here -- NOT the billed reputation
+    path (no on-chain ingestion) -- so this doesn't open a pay-bypass for the
+    expensive verdict. Price/reputation STOPs (the judgment you pay for) are
+    unaffected. Fail-safe: any error -> not free (fall back to normal billing).
+    """
+    sanctions = getattr(reputation_source, "sanctions", None)
+    if sanctions is None or not isinstance(payload, dict):
+        return False
+    cp = payload.get("counterparty")
+    try:
+        return bool(cp) and sanctions.is_sanctioned(cp)
+    except Exception:
+        return False
+
+
 # ===========================================================================
 # HTTP server (POST /v1/forecast-payment) -- localhost only
 # ===========================================================================
@@ -763,11 +787,17 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": err})
             return
 
+        # Compliance floor is FREE: a sanctioned counterparty is a hard STOP and
+        # we never charge to deliver it (keeps Blackwall a strict SUPERSET of the
+        # free KYT baseline). Cheap set lookup -- runs before billing, no
+        # reputation ingestion, so it doesn't bypass the paid verdict path.
+        free_stop = is_compliance_free(self.reputation_source, payload)
+
         # x402 billing (opt-in): on the first/unpaid call answer 402; the agent
         # retries with X-PAYMENT (or X-PAYMENT-SESSION). The verdict logic is
         # unchanged -- billing is a gate in front of it.
         remaining = None
-        if self.billing is not None:
+        if self.billing is not None and not free_stop:
             resource = payload.get("resource") or self.path
             result = self.billing.check(
                 resource,
