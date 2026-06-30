@@ -489,6 +489,13 @@ class TestServerHardening(unittest.TestCase):
             "Content-Length: %d\r\nConnection: close\r\n\r\n" % len(body), body)
         self.assertIn("400", status)
 
+    def test_head_healthz_is_200_not_501(self):
+        # REGRESSION: HEAD probes (UptimeRobot/crawlers) must not get 501 ("down").
+        status = self._raw(
+            "HEAD /healthz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        self.assertIn("200", status)
+        self.assertNotIn("501", status)
+
 
 class TestReadinessFailOpen(unittest.TestCase):
     """REGRESSION (audit MED): a raising readiness source must NOT break the core

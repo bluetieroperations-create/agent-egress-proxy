@@ -691,6 +691,18 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._send_json(404, {"error": "not found"})
 
+    def do_HEAD(self):
+        # Health checkers/crawlers (UptimeRobot, etc.) often probe with HEAD;
+        # the stdlib default returns 501, which reads as "service down". Mirror
+        # do_GET's routing but send headers only, no body.
+        code = 200 if self.path in ("/healthz", "/.well-known/x402",
+                                    "/v1/discovery") else 404
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", "0")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
     def _descriptor(self):
         from discovery import build_descriptor, human_price
         from sanctions import SanctionsScreeningSource
