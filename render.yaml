@@ -47,6 +47,8 @@ services:
         sync: false
       - key: BLACKWALL_RECEIPT_KEY
         sync: false
-      # Optional OFAC list path on the volume (fetch with `python sanctions.py`).
+      # OFAC screening ON by default: points at the snapshot baked into the image
+      # (Dockerfile COPY sanctions.txt). Refresh with `python sanctions.py
+      # sanctions.txt` + redeploy, or override to a self-maintained list on /data.
       - key: BLACKWALL_SANCTIONS
-        sync: false
+        value: /app/sanctions.txt

@@ -10,6 +10,11 @@ COPY blackwall.py x402.py ledger.py addresses.py reputation_store.py \
      reputation_onchain.py settlement_watch.py discovery.py mcp_server.py \
      facilitator_sim.py sanctions.py readiness.py ./
 
+# OFAC sanctioned-address snapshot (from the published 0xB10C list). Baked in so
+# screening is ON by default -- Blackwall is a SUPERSET of the free KYT baseline.
+# Refresh periodically with:  python sanctions.py sanctions.txt  (then redeploy).
+COPY sanctions.txt ./
+
 # Persistent state (SQLite reputation store + JSONL ledger) lives on a volume.
 RUN mkdir -p /data && chown -R blackwall /data
 USER blackwall
@@ -22,12 +27,14 @@ VOLUME ["/data"]
 ENV BLACKWALL_HOST=0.0.0.0 \
     BLACKWALL_STORE=/data/reputation.db \
     BLACKWALL_LEDGER=/data/ledger.jsonl \
-    BLACKWALL_INGEST=1
+    BLACKWALL_INGEST=1 \
+    BLACKWALL_SANCTIONS=/app/sanctions.txt
 # Set at deploy time (NOT baked into the image):
 #   BLACKWALL_PAY_TO       -- your funded EVM wallet (turns billing ON)
 #   BLACKWALL_FACILITATOR  -- real x402 facilitator base URL
 #   BLACKWALL_RECEIPT_KEY  -- secret for signing receipts / report tokens
-#   BLACKWALL_SANCTIONS    -- path to an OFAC list on the volume (optional)
+# BLACKWALL_SANCTIONS defaults to the baked-in /app/sanctions.txt above (screening
+# ON). Override to a volume path if you maintain your own list.
 
 EXPOSE 8402
 # Health: GET /healthz  ;  discovery: GET /.well-known/x402

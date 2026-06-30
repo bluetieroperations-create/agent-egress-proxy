@@ -11,6 +11,44 @@ none of the build history, so everything needed to start is here. Snapshot date:
 
 ---
 
+## 0. CORRECTIONS — read first (post-audit 2026-06-30)
+
+A fact-check against the live service caught real overclaims in an earlier draft
+of this handoff. These are the **source-of-truth corrections** — public copy must
+respect them:
+
+- ✅ **Real mainnet x402 settlement is REAL and provable on-chain.** Block
+  **48022757** on Base mainnet: **0.05 USDC** from the test signer
+  `0xc194Bf…EADb` → payTo `0x3ec5…004e1`, tx
+  **`0x9ddec827b762303c6f1f351530239f52901c86bb19df41ea6a02e8d276be9fd7`**. This
+  is the durable proof the service settles real payments on mainnet. Cite the tx.
+- ⚠️ **The demo counterparty's reputation is SEED/DEMO data, not real ingested
+  history.** The "34 settlements / 0% disputes / rep 0.972" figure is for
+  `0x1111…1111`, a synthetic test address. **Do NOT claim "real on-chain
+  settlement history" using those numbers** — a builder who checks BaseScan finds
+  nothing, and that's a worse credibility hit than no demo. The behavioral-reputation
+  engine is a real *capability*; it has **not** yet been demonstrated on real
+  ingested Base data. Frame it as capability, not track record, until real
+  ingestion is shown.
+- ✅ **Price-anomaly STOP is real and reproducible by ANYONE.** Lead with this. The
+  multiplier is **amount-dependent**: vs the demo counterparty's ~$0.50 median, a
+  $50 quote reads as 100×, a $5 quote as 10×; the engine trips at ≥~8×. Say "caught
+  a price gouge → STOP" and, if citing a multiple, tie it to the quoted amount.
+- ✅ **OFAC sanctions screening is now ENABLED on the deploy** (93 addresses from
+  the published OFAC list, baked into the image; descriptor advertises
+  `screening: ["sanctions-ofac"]`; a sanctioned address returns STOP). It is a
+  point-in-time snapshot — refresh with `python sanctions.py sanctions.txt` +
+  redeploy. Verify `screening` in the live descriptor before claiming it.
+
+**Honest launch posture:** lead on (1) the **reproducible price-anomaly STOP**
+anyone can trigger, (2) the **real on-chain settlement tx** as proof it works on
+mainnet, (3) **live OFAC screening**. Do NOT lean on the seed-data reputation
+numbers. The canonical, verified facts come from the **`agent-egress-proxy`
+deployment** (this is the source of truth, not any older positioning in
+`blackwall-mcp-pub`).
+
+---
+
 ## 1. What Blackwall is (use this language)
 
 **Blackwall is a pre-signature payment-risk oracle for AI agents.** Before an
@@ -45,10 +83,11 @@ sanctions, and returns GO / HOLD / STOP — so an agent doesn't blindly sign a
   x402 payments.
 - ✅ **Real mainnet settlement driven end-to-end** (2026-06-30): a real USDC
   payment went 402 → EIP-3009 sign → facilitator verify+settle → verdict.
-- ✅ **Caught a real 100× price gouge** on that live call — returned **STOP**
-  using ingested on-chain reputation (a counterparty with 34 prior settlements,
-  0% dispute rate, rep 0.972) and a payer-weighted median. *This is the money
-  demo — a guardrail that actually fired on live data.*
+  **Provable on-chain** — tx `0x9ddec8…` (see §0). *This is the durable proof.*
+- ✅ **Caught a price gouge → STOP** on that live call, and **anyone can
+  reproduce it** by POSTing an overpriced amount. *(Multiplier is
+  amount-dependent — see §0. The reputation numbers behind the demo counterparty
+  are SEED data, not real history — do not cite them as a track record.)*
 - ✅ **Listed on awesome-x402** (the ecosystem index) as "Live on Base."
 - ✅ **315 tests, adversarially audited, stdlib-only** (no dependency supply-chain
   surface — a credibility point with security-minded devs).
@@ -95,12 +134,16 @@ data worth a paid disk; peer-group price cross-check not built. Don't claim
 > We built the thing that makes them pay *safely*.
 > GO / HOLD / STOP before your agent signs an x402 payment. Live on Base.
 
-**The killer demo tweet (use the real proof):**
+**The killer demo tweet (verified-only — see §0 before editing):**
 
 > Drove a real payment through Blackwall on Base mainnet today.
-> It caught a **100× price gouge** and returned STOP — using the counterparty's
-> real on-chain settlement history (34 prior settlements, 0% disputes).
-> A guardrail that actually fired. 🛡️ [link/screenshot of the verdict JSON]
+> It flagged an overpriced quote and returned **STOP** before signing.
+> Settlement is on-chain (tx 0x9ddec8…), and *you can reproduce the STOP
+> yourself* — POST an inflated amount to the live endpoint. A guardrail that
+> actually fires. 🛡️ [link to verdict JSON + BaseScan tx]
+
+*(Do NOT write "real on-chain settlement history / 34 settlements" — that's seed
+data, see §0. Lead on the reproducible STOP + the real settlement tx instead.)*
 
 **Taglines:** "A circuit breaker for agent payments." · "GO / HOLD / STOP before
 the signature." · "Verdict-only, never custody."
