@@ -15,8 +15,11 @@ RUN mkdir -p /data && chown -R blackwall /data
 USER blackwall
 VOLUME ["/data"]
 
+# NOTE: BLACKWALL_PORT is intentionally NOT set here. Blackwall falls back to the
+# platform's $PORT (Render/Cloud Run/Heroku) when BLACKWALL_PORT is unset, and to
+# 8402 otherwise -- so the image binds whatever port the host routes to. fly.toml
+# sets BLACKWALL_PORT=8402 explicitly; local `docker run` defaults to 8402.
 ENV BLACKWALL_HOST=0.0.0.0 \
-    BLACKWALL_PORT=8402 \
     BLACKWALL_STORE=/data/reputation.db \
     BLACKWALL_LEDGER=/data/ledger.jsonl \
     BLACKWALL_INGEST=1
