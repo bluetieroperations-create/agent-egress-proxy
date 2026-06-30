@@ -559,16 +559,24 @@ def validate_request(payload):
     }, None
 
 
+def normalize_network(network):
+    """Canonicalize a network identifier: strip + lowercase. So 'Base-Sepolia',
+    ' base-sepolia\\n' (env trailing newline), 'BASE-SEPOLIA' all collapse to
+    'base-sepolia' rather than silently falling through to the mainnet branch."""
+    return (network or "").strip().lower()
+
+
 def default_billing_asset(network, explicit, base_usdc, sepolia_usdc):
     """Pick the USDC contract to advertise in the 402 challenge.
 
     An explicit --asset/BLACKWALL_ASSET always wins. Otherwise the asset follows
-    the network: Base-Sepolia USDC for the testnet dry-run, Base mainnet USDC
-    everywhere else (so an operator can't accidentally advertise mainnet USDC on
-    a base-sepolia deploy just by forgetting the asset flag)."""
+    the NORMALIZED network: Base-Sepolia USDC for the testnet dry-run, Base
+    mainnet USDC everywhere else (so an operator can't accidentally advertise
+    mainnet USDC on a base-sepolia deploy just by forgetting the asset flag -- or
+    by a case/whitespace slip in the network string)."""
     if explicit:
         return explicit
-    return sepolia_usdc if network == "base-sepolia" else base_usdc
+    return sepolia_usdc if normalize_network(network) == "base-sepolia" else base_usdc
 
 
 def forecast(payload, reputation_source, ledger=None, readiness_source=None):
@@ -607,9 +615,16 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None):
     )
 
     # Endpoint-readiness enrichment (address-based verdict + URL-based readiness).
+    # FAIL OPEN here, at the consumer: a misbehaving/raising readiness source --
+    # custom, or a malformed injected transport -- must never break the core
+    # verdict. (The shipped sources are internally fail-open too; this enforces
+    # the contract regardless of the source.)
     if readiness_source is not None and clean.get("resource"):
         from readiness import apply_readiness
-        readiness = readiness_source.check(clean["resource"])
+        try:
+            readiness = readiness_source.check(clean["resource"])
+        except Exception:
+            readiness = None
         verdict = apply_readiness(verdict, readiness)
     # The receipt is the ledger's join key, so it must be UNIQUE PER PAYMENT --
     # not just a hash of the verdict content (two counterparties with identical
@@ -919,6 +934,9 @@ def main(argv=None):
                         "call, no query-stream leak). Takes precedence over "
                         "--readiness.")
     args = p.parse_args(argv)
+    # Canonicalize the network so a case/whitespace slip ("Base-Sepolia", an env
+    # var with a trailing newline) doesn't advertise the wrong chain/asset.
+    args.network = normalize_network(args.network) or "base"
 
     led = None
     if args.ledger:
@@ -953,6 +971,14 @@ def main(argv=None):
                 bps=os.environ.get("BLACKWALL_PRICE_BPS", "10"),
                 min_fee=os.environ.get("BLACKWALL_MIN_FEE", "0.001"),
                 max_fee=os.environ.get("BLACKWALL_MAX_FEE", "0.10"))
+        # Fail loud (don't silently advertise mainnet USDC) if the network isn't
+        # one we know an asset for and the operator didn't pin --asset.
+        if args.network not in ("base", "base-sepolia") and not args.asset:
+            sys.stderr.write(
+                "blackwall: WARNING -- unrecognized --network %r; defaulting the "
+                "billing asset to Base mainnet USDC. Pass --asset explicitly if "
+                "that's wrong.\n" % args.network)
+            sys.stderr.flush()
         billing = BillingGate(
             BillingConfig(price=args.price, pay_to=args.pay_to,
                           network=args.network,

@@ -161,12 +161,28 @@ def build_payment(challenge_req, signer_pk, signer_addr, network, rpc_url):
     valid_before = int(time.time()) + max(ttl, 600)
     nonce = os.urandom(32)
 
-    domain, on_chain = token_domain(asset, network, rpc_url)
-    if not on_chain:
-        sys.stderr.write(
-            "x402_pay: WARNING -- EIP-712 domain not verified on-chain "
-            "(name=%r version=%r). Use --rpc for a real run.\n"
-            % (domain["name"], domain["version"]))
+    # Prefer the EIP-712 domain the SERVER advertises in `extra` -- that is the
+    # canonical x402 source and guarantees the client signs the SAME domain the
+    # facilitator verifies against (no client/server divergence, and no --rpc
+    # needed). Fall back to reading it on-chain only when the server omits it.
+    extra = challenge_req.get("extra")
+    if isinstance(extra, dict) and extra.get("name") and extra.get("version"):
+        chain_id = CHAIN_IDS.get(network)
+        if chain_id is None and rpc_url:
+            chain_id = int(_rpc(rpc_url, "eth_chainId", []), 16)
+        if chain_id is None:
+            raise SystemExit("x402_pay: server gave an EIP-712 domain but the "
+                             "chainId for --network %r is unknown; pass --rpc." % network)
+        domain = {"name": extra["name"], "version": extra["version"],
+                  "chainId": chain_id, "verifyingContract": asset}
+        on_chain = True  # authoritative source = the server's challenge
+    else:
+        domain, on_chain = token_domain(asset, network, rpc_url)
+        if not on_chain:
+            sys.stderr.write(
+                "x402_pay: WARNING -- EIP-712 domain not verified on-chain "
+                "(name=%r version=%r). Use --rpc for a real run.\n"
+                % (domain["name"], domain["version"]))
 
     message = {
         "from": signer_addr,

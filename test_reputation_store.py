@@ -104,6 +104,28 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(m["dispute_rate"], 0.05)        # observed, from ledger
         self.assertEqual(len(m["price_history"]), 5)     # longest sample
 
+    def test_price_observations_unioned_preserves_diversity(self):
+        # REGRESSION (audit HIGH): merging by "longest sample" silently dropped
+        # payer diversity and downgraded STOP -> HOLD. The store holds a long but
+        # single-payer sample; the ledger holds a short but diverse one. The
+        # merge must UNION (preserve all distinct payers), not pick the longest.
+        store_rec = {"price_observations":
+                     [{"payer": "0xwash", "amount": "100"}] * 4}   # long, 1 payer
+        ledger_rec = {"price_observations":
+                      [{"payer": "0xp1", "amount": "1"},
+                       {"payer": "0xp2", "amount": "1"},
+                       {"payer": "0xp3", "amount": "1"}]}          # short, 3 payers
+        m = RS.merge_records([store_rec, ledger_rec])
+        med, n = bw.robust_price_median(m["price_observations"], min_payers=3)
+        self.assertEqual(n, 4)                 # all 4 distinct payers survive
+        self.assertEqual(med, Decimal("1"))    # wash payer can't anchor the median
+        # ...and the 8x overcharge that "longest" downgraded to HOLD now STOPs.
+        rec = {"settlement_count": 1000, "confirmed_settlement_count": 1000,
+               "distinct_payers": 4, "dispute_rate": 0.0,
+               "price_observations": m["price_observations"]}
+        v = bw.decide_payment("8", rec, [], counterparty="0x" + "1" * 40)
+        self.assertEqual(v["verdict"], "STOP")
+
     def test_sanctioned_is_or(self):
         m = RS.merge_records([{"sanctioned": False}, {"sanctioned": True}])
         self.assertTrue(m["sanctioned"])

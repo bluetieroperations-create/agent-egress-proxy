@@ -490,6 +490,28 @@ class TestServerHardening(unittest.TestCase):
         self.assertIn("400", status)
 
 
+class TestReadinessFailOpen(unittest.TestCase):
+    """REGRESSION (audit MED): a raising readiness source must NOT break the core
+    verdict -- forecast() must fail open at the consumer."""
+    class _GoodRep:
+        def lookup(self, cp):
+            return {"settlement_count": 1000, "confirmed_settlement_count": 1000,
+                    "distinct_payers": 50, "dispute_rate": 0.0, "price_history": ["1"] * 30}
+
+    class _BoomReadiness:
+        def check(self, url):
+            raise RuntimeError("readiness oracle exploded")
+
+    def test_raising_readiness_does_not_break_verdict(self):
+        req = {"counterparty": "0x" + "1" * 40, "amount": "1.00",
+               "asset": "0xUSDC", "chain": "base", "resource": "https://api.example.com/x"}
+        resp, err = bw.forecast(dict(req), self._GoodRep(),
+                                readiness_source=self._BoomReadiness())
+        self.assertIsNone(err)
+        self.assertIn(resp["verdict"], ("GO", "HOLD", "STOP"))   # a verdict, not a crash
+        self.assertNotIn("endpoint_readiness", resp["signals"])  # readiness simply absent
+
+
 class TestRobustPriceMedian(unittest.TestCase):
     """
     Wash-trade resistance: a counterparty paying ITSELF many times must not be
@@ -584,6 +606,14 @@ class TestDefaultBillingAsset(unittest.TestCase):
         # unknown network is treated as mainnet (conservative, not testnet)
         self.assertEqual(
             bw.default_billing_asset("polygon", None, self.BASE, self.SEP), self.BASE)
+
+    def test_network_normalized(self):
+        # REGRESSION (audit HIGH): a case/whitespace slip on the network must NOT
+        # silently advertise mainnet USDC on a testnet deploy.
+        for variant in ("Base-Sepolia", "BASE-SEPOLIA", " base-sepolia", "base-sepolia\n"):
+            self.assertEqual(
+                bw.default_billing_asset(variant, None, self.BASE, self.SEP),
+                self.SEP, variant)
 
 
 if __name__ == "__main__":

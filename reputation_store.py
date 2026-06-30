@@ -153,10 +153,15 @@ def merge_records(records):
                               if r.get("dispute_rate") is not None), None),
         "price_history": max((r.get("price_history") or [] for r in records),
                              key=len),
-        # Longest payer-attributed sample (not unioned -- avoids double-counting a
-        # settlement seen by both the store and the ledger).
-        "price_observations": max(
-            (r.get("price_observations") or [] for r in records), key=len),
+        # UNION the payer-attributed samples across sources. Unlike price_history
+        # (flat median, double-count-sensitive -> longest), robust_price_median
+        # collapses each distinct payer to ONE representative, so concatenating is
+        # safe against duplicates AND preserves payer diversity. Picking the
+        # "longest" instead silently drops a shorter-but-more-diverse sample,
+        # which defeats the wash-trade defense (a long single-payer sample would
+        # mask a diverse one and downgrade STOP -> HOLD).
+        "price_observations": [o for r in records
+                               for o in (r.get("price_observations") or [])],
         "sanctioned": any(r.get("sanctioned") for r in records),
         "known_bad": any(r.get("known_bad") for r in records),
         "_meta": {
