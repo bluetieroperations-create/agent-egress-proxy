@@ -4,9 +4,13 @@
 #   fly volume create blackwall_data --size 1 --region iad
 #   fly secrets set \
 #       BLACKWALL_PAY_TO=0xYourFundedWallet \
-#       BLACKWALL_FACILITATOR=https://facilitator.x402.rs \
+#       BLACKWALL_FACILITATOR=https://facilitator.xpay.sh \
 #       BLACKWALL_RECEIPT_KEY=$(openssl rand -hex 32)
 #   fly deploy
+#
+# This file defaults to Base MAINNET. For a TESTNET deploy also set:
+#       fly secrets set BLACKWALL_NETWORK=base-sepolia
+# (the asset then auto-selects Base-Sepolia USDC).
 #
 # Non-secret config lives in [env] below; secrets go through `fly secrets`
 # (encrypted, never in this file or the image). State persists on the volume
