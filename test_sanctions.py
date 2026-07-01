@@ -175,5 +175,51 @@ class TestRefreshFromUrlIsBounded(unittest.TestCase):
         self.assertTrue(sl.is_sanctioned("0x" + "b" * 40))
 
 
+class TestBackgroundRefresh(unittest.TestCase):
+    """M-3: the refresh runs OFF the boot path so a slow feed can't block the
+    socket bind / deploy healthcheck. Verifies it merges, fails open, and -- the
+    key property -- returns immediately while a slow refresher is still running."""
+
+    def test_merges_in_background(self):
+        sl = S.SanctionsList()
+        extra = "0x" + "c" * 40
+        def fake(l):
+            l.add(extra)
+            return 1
+        t = S.start_background_refresh(sl, refresher=fake)
+        t.join(5)
+        self.assertFalse(t.is_alive())
+        self.assertTrue(sl.is_sanctioned(extra))
+
+    def test_fail_open_on_error(self):
+        sl = S.SanctionsList([SANC])
+        def boom(l):
+            raise RuntimeError("feed down")
+        t = S.start_background_refresh(sl, refresher=boom)
+        t.join(5)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(len(sl), 1)           # unchanged, no crash
+        self.assertTrue(sl.is_sanctioned(SANC))
+
+    def test_does_not_block_caller(self):
+        # The key M-3 property: the call RETURNS while a slow refresher is still
+        # running -- boot is not blocked. Mutation: run the refresh synchronously
+        # (not in a daemon thread) -> the call blocks on release.wait and this
+        # test hangs / FAILS.
+        import threading
+        started, release = threading.Event(), threading.Event()
+        sl = S.SanctionsList([SANC])
+        def slow(l):
+            started.set()
+            release.wait(5)                    # simulate a slow / drip feed
+            return 0
+        t = S.start_background_refresh(sl, refresher=slow)
+        self.assertTrue(started.wait(2))       # thread ran
+        self.assertTrue(t.is_alive())          # still working -- yet we got here
+        release.set()
+        t.join(5)
+        self.assertFalse(t.is_alive())
+
+
 if __name__ == "__main__":
     unittest.main()

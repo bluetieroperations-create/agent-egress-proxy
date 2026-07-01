@@ -792,7 +792,13 @@ class _Handler(BaseHTTPRequestHandler):
     def _descriptor(self):
         from discovery import build_descriptor, human_price
         from sanctions import SanctionsScreeningSource
-        screening = isinstance(self.reputation_source, SanctionsScreeningSource)
+        rs = self.reputation_source
+        # Advertise sanctions screening iff it is REAL *right now* -- wrapped AND
+        # the list currently non-empty. Checked per request, so a background
+        # refresh that populates an initially-empty list flips screening ON with
+        # no restart, and an empty wrapper never claims a no-op check.
+        screening = (isinstance(rs, SanctionsScreeningSource)
+                     and sanctions_enabled(rs.sanctions))
         readiness = self.readiness_source is not None
         if self.billing is not None:
             cfg = self.billing.cfg
@@ -1077,31 +1083,32 @@ def main(argv=None):
     # Sanctions screening on top of whatever reputation source -- this is what
     # makes Blackwall a SUPERSET of the free facilitator KYT baseline.
     if args.sanctions:
-        from sanctions import SanctionsList, SanctionsScreeningSource
+        from sanctions import (SanctionsList, SanctionsScreeningSource,
+                               start_background_refresh)
         sl = SanctionsList.from_file(args.sanctions)
+        # Wrap ALWAYS. The descriptor advertises screening dynamically -- only
+        # while the list is non-empty (see _descriptor) -- so wrapping an empty
+        # list is honest, and it lets a background refresh flip screening ON with
+        # no restart.
+        base = reputation_source or MockReputationSource()
+        reputation_source = SanctionsScreeningSource(base, sl)
         if args.sanctions_refresh:
-            try:
-                # Short boot cap: a slow feed must not block the socket bind /
-                # deploy healthcheck; on timeout we fail open to the snapshot.
-                added = sl.refresh_from_url(timeout=5)
-                sys.stdout.write(
-                    "blackwall: sanctions refreshed from OFAC list "
-                    "(+%d new, %d total)\n" % (added, len(sl)))
-            except Exception as e:  # fail-open -- keep the baked-in snapshot
-                sys.stdout.write(
-                    "blackwall: sanctions refresh failed (%s); using baked-in "
-                    "snapshot (%d addresses)\n" % (e, len(sl)))
+            # BACKGROUND refresh: the socket binds immediately and serves the
+            # baked-in snapshot; the live OFAC list merges into `sl` when the fetch
+            # returns. A slow / hung / drip-feeding upstream can NEVER block boot
+            # or the deploy healthcheck (a sync refresh could -- socket timeouts
+            # bound per-read inactivity, not total transfer time).
+            start_background_refresh(sl, log=lambda m: sys.stdout.write(m + "\n"))
         if sanctions_enabled(sl):
-            base = reputation_source or MockReputationSource()
-            reputation_source = SanctionsScreeningSource(base, sl)
             sys.stdout.write("blackwall: sanctions screening ON (%d addresses)\n"
                              % len(sl))
+        elif args.sanctions_refresh:
+            sys.stdout.write("blackwall: sanctions screening PENDING background "
+                             "refresh (baked-in snapshot empty)\n")
         else:
-            # Set but empty/missing -> do NOT wrap, so the descriptor honestly
-            # advertises screening OFF instead of claiming a no-op check.
             sys.stdout.write(
-                "blackwall: WARNING sanctions file %r empty or missing -- "
-                "screening OFF (descriptor will not advertise it)\n"
+                "blackwall: WARNING sanctions file %r empty or missing and no "
+                "refresh -- screening advertised OFF (no addresses)\n"
                 % args.sanctions)
 
     billing = None

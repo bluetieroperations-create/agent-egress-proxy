@@ -141,6 +141,40 @@ class SanctionsScreeningSource:
         return rec
 
 
+def start_background_refresh(sanctions_list, url=DEFAULT_OFAC_URL, timeout=15,
+                            refresher=None, log=None):
+    """Refresh `sanctions_list` from the live OFAC feed in a DAEMON thread, so a
+    slow / degraded / drip-feeding upstream can NEVER block startup or the socket
+    bind (a synchronous refresh could: socket timeouts bound per-read inactivity,
+    not total transfer time). The server binds immediately and serves the
+    baked-in snapshot; the live list merges in when the fetch returns.
+
+    The merge is in-place, union-only, grow-only -- CPython set ops are atomic
+    under the GIL, so a concurrent is_sanctioned() read always sees a valid set
+    (at worst it misses a brand-new designation for the few ms of the merge, never
+    corrupts). The descriptor advertises screening dynamically (len-based), so it
+    flips ON on its own once addresses land. Fail-open: any error keeps the
+    current list. Returns the started Thread. `refresher(list)->int` and `log(str)`
+    are injectable for tests."""
+    import threading
+
+    def _run():
+        try:
+            n = (refresher(sanctions_list) if refresher
+                 else sanctions_list.refresh_from_url(url=url, timeout=timeout))
+            if log:
+                log("blackwall: sanctions refreshed from OFAC list "
+                    "(+%d new, %d total)" % (n, len(sanctions_list)))
+        except Exception as e:  # fail-open -- keep whatever is already loaded
+            if log:
+                log("blackwall: sanctions refresh failed (%s); keeping current "
+                    "list (%d addresses)" % (e, len(sanctions_list)))
+
+    t = threading.Thread(target=_run, name="sanctions-refresh", daemon=True)
+    t.start()
+    return t
+
+
 if __name__ == "__main__":
     # Refresh a local sanctions file from the published OFAC list.
     import sys

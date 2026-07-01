@@ -75,5 +75,37 @@ class TestDiscoveryEndpoint(unittest.TestCase):
         self.assertIn("resources", d)
 
 
+class TestSanctionsAdvertisedDynamically(unittest.TestCase):
+    """The descriptor advertises sanctions-ofac iff the wrapped list is currently
+    non-empty -- checked per request, so a background refresh that populates an
+    initially-empty list flips screening ON with no restart, and an empty wrapper
+    never claims a no-op check."""
+
+    def _descriptor_for(self, reputation_source):
+        srv = BlackwallServer(port=0, reputation_source=reputation_source)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        time.sleep(0.3)
+        try:
+            url = "http://127.0.0.1:%d/.well-known/x402" % srv.port
+            with urllib.request.urlopen(url, timeout=3) as r:
+                return json.load(r)
+        finally:
+            srv.shutdown()
+
+    def test_empty_wrapper_off_then_flips_on_when_populated(self):
+        import sanctions as SS
+        from blackwall import MockReputationSource
+        sl = SS.SanctionsList([])
+        rs = SS.SanctionsScreeningSource(MockReputationSource(), sl)
+        # empty wrapped list -> screening NOT advertised (honest)
+        self.assertEqual(self._descriptor_for(rs)["screening"], [])
+        # a background refresh lands addresses -> descriptor flips ON dynamically
+        sl.add("0x000000000000000000000000000000000000dEaD")
+        d = self._descriptor_for(rs)
+        self.assertEqual(d["screening"], ["sanctions-ofac"])
+        self.assertIn("sanctions-ofac", d["signals"])
+
+
 if __name__ == "__main__":
     unittest.main()
