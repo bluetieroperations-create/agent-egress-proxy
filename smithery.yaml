@@ -1,0 +1,48 @@
+# Smithery deployment for the Blackwall MCP server.
+#
+# ⚠️ VERIFY AGAINST CURRENT SMITHERY DOCS BEFORE SUBMITTING. Smithery's config
+# format has changed over time (classic stdio `startCommand` vs. newer container
+# runtimes). This is the classic stdio form and a reasonable starting point; the
+# repo also ships a Dockerfile, so a container runtime is a valid alternative if
+# Smithery's current spec prefers it.
+#
+# The server is stdlib-only Python 3.12 -- no pip install step, `python
+# mcp_server.py` runs it directly. Tools: forecast_payment (always) and
+# report_outcome (only when a ledger path is configured). stdout is pure JSON-RPC;
+# logs go to stderr.
+
+startCommand:
+  type: stdio
+  # Optional runtime config surfaced to users installing the server.
+  configSchema:
+    type: object
+    properties:
+      ledgerPath:
+        type: string
+        description: >-
+          Path to the JSONL ledger. Enables the report_outcome tool (agents can
+          report what a payment actually did, feeding reputation). Omit to run
+          verdict-only.
+      storePath:
+        type: string
+        description: >-
+          Path to a SQLite reputation store. Uses REAL on-chain reputation
+          instead of the built-in mock source. Omit for the mock.
+      ingest:
+        type: boolean
+        default: false
+        description: >-
+          With storePath, self-populate a counterparty's reputation from chain on
+          first sight (first call slow, then cached).
+    required: []
+  # Return the process to launch. Only sets env vars for provided config.
+  commandFunction: |
+    (config) => ({
+      command: 'python',
+      args: ['mcp_server.py'],
+      env: {
+        ...(config.ledgerPath ? { BLACKWALL_LEDGER: config.ledgerPath } : {}),
+        ...(config.storePath ? { BLACKWALL_STORE: config.storePath } : {}),
+        ...(config.ingest ? { BLACKWALL_INGEST: '1' } : {})
+      }
+    })
