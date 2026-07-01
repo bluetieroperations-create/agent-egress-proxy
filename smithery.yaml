@@ -1,5 +1,12 @@
 # Smithery deployment for the Blackwall MCP server.
 #
+# ⚠️ A Smithery listing ALREADY EXISTS: `bluetier-operations/blackwall` (the
+# blackwalltier.com product -- a generalized "pre-action risk check"). This file
+# is for the SEPARATE agent-egress-proxy `forecast_payment` (x402 payment engine)
+# and should only be published if you intend a distinct listing. If
+# agent-egress-proxy is the payment engine BEHIND blackwalltier, do NOT publish a
+# second listing -- see docs/REGISTRIES.md "Reconciliation note".
+#
 # ⚠️ VERIFY AGAINST CURRENT SMITHERY DOCS BEFORE SUBMITTING. Smithery's config
 # format has changed over time (classic stdio `startCommand` vs. newer container
 # runtimes). This is the classic stdio form and a reasonable starting point; the

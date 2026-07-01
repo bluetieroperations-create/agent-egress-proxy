@@ -28,7 +28,14 @@ submitting.** Honest eligibility per target below.
 
 ### ⚙️ Ready with packaging (medium effort)
 4. **Glama.ai MCP directory** — indexes public GitHub MCP servers. Needs: the repo public + a clear MCP section in the README naming the server entry (`python mcp_server.py`, tool `forecast_payment`) and its stdio transport. Then submit the repo URL on glama.ai. *Packaging: add an MCP usage block to the README if not present.*
-5. **Smithery.ai** — hosts/serves MCP servers, incl. stdio, via a `smithery.yaml` (start command + config schema). Needs: author a `smithery.yaml` pointing at `mcp_server.py` and declaring any env/config. *Packaging: write `smithery.yaml` per Smithery's current spec, then connect the repo.*
+5. **Smithery.ai** — ⚠️ **ALREADY PUBLISHED** as `bluetier-operations/blackwall`
+   (the **blackwalltier.com** product; one tool, "pre-action risk check"; 99.86%
+   uptime). **Do NOT double-publish** the `agent-egress-proxy` `forecast_payment`
+   server as a second listing — that fragments your presence. Decide first (see
+   the reconciliation note below): if `agent-egress-proxy` is the payment *engine
+   behind* blackwalltier, there should be ONE Smithery listing, not two. The
+   `smithery.yaml` in this repo is only for a deliberately-separate payment-only
+   listing — otherwise ignore it and update the existing Smithery entry instead.
 6. **mcp.so / PulseMCP / other MCP directories** — directory submissions (form or PR). Reuse the blurb + repo URL + the `forecast_payment` tool description.
 
 ### ⛔ Blocked until MCP-over-HTTP (roadmap)
@@ -46,6 +53,21 @@ submitting.** Honest eligibility per target below.
 4. Author **`smithery.yaml`** and connect **Smithery**.
 5. Directory submissions (mcp.so / PulseMCP).
 6. Defer the HTTP-only MCP registries until MCP-over-HTTP ships.
+
+## ⚠️ Reconciliation note (read before submitting anything MCP)
+There are **two Blackwall MCP surfaces**, and they must not become two competing
+listings:
+- **`blackwalltier.com`** — already on Smithery. A **generalized pre-action risk
+  check** (any high-stakes action: email, payment, SQL, delete, post, API). Broad.
+- **`agent-egress-proxy`** — this repo's **`forecast_payment`**: the deep x402
+  **payment** verdict engine (per-class + peer-group price, OFAC, x402 billing).
+  Narrow but deep.
+
+The clean model is **complementary, not duplicate**: blackwalltier is the broad
+action guardrail; `agent-egress-proxy` is the payment *engine* its "making a
+payment" check should call. Pin that relationship (the recurring two-backend
+reconciliation) **before** publishing a second listing anywhere — otherwise you
+split your Smithery/Glama presence across two half-overlapping entries.
 
 ## Honest notes
 - **I can prep, not submit.** All of the above happen in external repos/accounts I can't reach from this session. The copy + eligibility here is the package; you (or a session scoped to those repos) execute it.
