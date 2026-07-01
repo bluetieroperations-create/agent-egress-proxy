@@ -58,7 +58,8 @@ def payout_payload(payout):
     return payload
 
 
-def screen_payout(payout, reputation_source, ledger=None, readiness_source=None):
+def screen_payout(payout, reputation_source, ledger=None, readiness_source=None,
+                  hold_above=None):
     """Screen a prospective payout; return an AP decision dict:
 
         {action, requires_human, verdict, score, reasons, signals,
@@ -67,9 +68,14 @@ def screen_payout(payout, reputation_source, ledger=None, readiness_source=None)
     `action` is RELEASE / REVIEW / BLOCK; `requires_human` is True only for
     REVIEW. On a validation error the decision FAILS CLOSED to REVIEW -- an
     unscoreable payout must never auto-release.
+
+    `hold_above` raises the amount at which a payout escalates to REVIEW (default
+    $10) -- set it to your treasury auto-release ceiling so routine in-line
+    vendor payments auto-release while sanctions/price-anomaly still BLOCK.
     """
     verdict, err = forecast(payout_payload(payout), reputation_source,
-                            ledger=ledger, readiness_source=readiness_source)
+                            ledger=ledger, readiness_source=readiness_source,
+                            hold_above=hold_above)
     if err is not None:
         return {"action": REVIEW, "requires_human": True, "verdict": None,
                 "score": None, "reasons": [err], "signals": {},

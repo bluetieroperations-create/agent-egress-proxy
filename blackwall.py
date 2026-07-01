@@ -212,7 +212,7 @@ def reputation_score(record):
 
 
 def decide_payment(amount, record, price_history,
-                   counterparty=None, expected_recipient=None):
+                   counterparty=None, expected_recipient=None, hold_above=None):
     """
     The core verdict. Returns a dict:
         {verdict, score, reasons[], signals{...}}
@@ -309,7 +309,13 @@ def decide_payment(amount, record, price_history,
         )
 
     amount_dec = Decimal(str(amount))
-    over_budget = amount_dec > HOLD_AMOUNT_THRESHOLD
+    # Amounts above this escalate to HOLD (hand to a spending-cap/human layer).
+    # Configurable per deployment: agent micropayments want the low default;
+    # treasury/AP raises it so in-line vendor payments can auto-release while
+    # price-anomaly still catches gouges.
+    threshold = (HOLD_AMOUNT_THRESHOLD if hold_above is None
+                 else Decimal(str(hold_above)))
+    over_budget = amount_dec > threshold
 
     # ---- verdict ----
     if stop:
@@ -348,7 +354,7 @@ def decide_payment(amount, record, price_history,
                 reasons.append(
                     "amount %s exceeds the auto-approve threshold %s -- "
                     "hand to spending-cap layer"
-                    % (amount_dec, HOLD_AMOUNT_THRESHOLD)
+                    % (amount_dec, threshold)
                 )
 
     # Bayesian trust score for the response. Hard STOPs (sanction/known-bad/
@@ -579,7 +585,8 @@ def default_billing_asset(network, explicit, base_usdc, sepolia_usdc):
     return sepolia_usdc if normalize_network(network) == "base-sepolia" else base_usdc
 
 
-def forecast(payload, reputation_source, ledger=None, readiness_source=None):
+def forecast(payload, reputation_source, ledger=None, readiness_source=None,
+             hold_above=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
@@ -612,6 +619,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None):
         price_history=price_history,
         counterparty=clean["counterparty"],
         expected_recipient=clean["expected_recipient"],
+        hold_above=hold_above,
     )
 
     # Endpoint-readiness enrichment (address-based verdict + URL-based readiness).
@@ -706,6 +714,7 @@ class _Handler(BaseHTTPRequestHandler):
     ledger = None
     billing = None  # x402.BillingGate, or None to disable billing
     readiness_source = None  # readiness.OntarioReadinessSource, or None
+    hold_above = None  # amount above which the verdict escalates to HOLD (None = default)
 
     def _send_json(self, code, obj, extra_headers=None):
         body = json.dumps(obj, separators=(",", ":")).encode("utf-8")
@@ -812,7 +821,8 @@ class _Handler(BaseHTTPRequestHandler):
             remaining = result.session_remaining
 
         response, err = forecast(payload, self.reputation_source, self.ledger,
-                                 readiness_source=self.readiness_source)
+                                 readiness_source=self.readiness_source,
+                                 hold_above=self.hold_above)
         if err is not None:
             self._send_json(400, {"error": err})
             return
@@ -878,7 +888,8 @@ class BlackwallServer:
     """Localhost-only verdict server. Binds 127.0.0.1; not exposed."""
 
     def __init__(self, host="127.0.0.1", port=8402, reputation_source=None,
-                 ledger=None, billing=None, readiness_source=None):
+                 ledger=None, billing=None, readiness_source=None,
+                 hold_above=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -887,6 +898,7 @@ class BlackwallServer:
         self.ledger = ledger
         self.billing = billing
         self.readiness_source = readiness_source
+        self.hold_above = hold_above
         self._httpd = None
 
     def serve_forever(self):
@@ -894,7 +906,8 @@ class BlackwallServer:
                        {"reputation_source": self.reputation_source,
                         "ledger": self.ledger,
                         "billing": self.billing,
-                        "readiness_source": self.readiness_source})
+                        "readiness_source": self.readiness_source,
+                        "hold_above": self.hold_above})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
         self.port = self._httpd.server_address[1]
         sys.stdout.write(
@@ -984,6 +997,12 @@ def main(argv=None):
                         "snapshot (fail-open: keeps the snapshot if the fetch "
                         "fails). Set on long-running deploys to stay current "
                         "without re-baking the image.")
+    p.add_argument("--hold-above", default=os.environ.get("BLACKWALL_HOLD_ABOVE"),
+                   help="amount (in the asset's units) above which a verdict "
+                        "escalates to HOLD/REVIEW regardless of reputation "
+                        "(default $10). Raise for treasury/AP so in-line vendor "
+                        "payments can auto-release while price-anomaly still "
+                        "catches gouges; price/sanctions checks are unaffected.")
     p.add_argument("--readiness", default=os.environ.get("BLACKWALL_READINESS"),
                    help="base URL of an EXTERNAL endpoint-readiness oracle (e.g. "
                         "Ontario https://ontarioprotocol.com); folds its grade into "
@@ -1090,9 +1109,23 @@ def main(argv=None):
         sys.stdout.write("blackwall: endpoint-readiness enrichment ON "
                          "(external: %s -- reveals query stream)\n" % args.readiness)
 
+    hold_above = None
+    if args.hold_above:
+        try:
+            hold_above = str(Decimal(str(args.hold_above)))  # validate; parsed again downstream
+            sys.stdout.write(
+                "blackwall: HOLD escalation threshold set to %s "
+                "(amounts above this REVIEW/HOLD)\n" % hold_above)
+        except (InvalidOperation, ValueError):
+            sys.stderr.write(
+                "blackwall: WARNING invalid --hold-above %r; using default\n"
+                % args.hold_above)
+            sys.stderr.flush()
+
     server = BlackwallServer(host=args.host, port=args.port, ledger=led,
                              billing=billing, reputation_source=reputation_source,
-                             readiness_source=readiness_source)
+                             readiness_source=readiness_source,
+                             hold_above=hold_above)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

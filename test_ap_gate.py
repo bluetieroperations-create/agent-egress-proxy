@@ -150,6 +150,23 @@ class TestScreenPayout(unittest.TestCase):
                          amount="10000.00"), src)
         self.assertEqual(d["action"], ap_gate.BLOCK)
 
+    def test_hold_above_lets_large_inline_release(self):
+        # raising the auto-release ceiling lets a large, IN-LINE payout to a
+        # trusted vendor auto-release instead of routing to a human
+        src = SanctionsScreeningSource(_StrongRepBig(), SanctionsList())
+        d = ap_gate.screen_payout(
+            self._payout("0x00000000000000000000000000000000deadbeef",
+                         amount="5000.00"), src, hold_above="10000")
+        self.assertEqual(d["action"], ap_gate.RELEASE)
+
+    def test_hold_above_still_blocks_gouge(self):
+        # a raised ceiling must NOT let a price gouge through
+        src = SanctionsScreeningSource(_StrongRep(), SanctionsList())  # $5 history
+        d = ap_gate.screen_payout(
+            self._payout("0x00000000000000000000000000000000deadbeef",
+                         amount="5000.00"), src, hold_above="10000")
+        self.assertEqual(d["action"], ap_gate.BLOCK)  # 1000x over median
+
     def test_invalid_fails_closed(self):
         # missing payee -> forecast validation error -> REVIEW, never RELEASE
         src = SanctionsScreeningSource(_StrongRep(), SanctionsList())

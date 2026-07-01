@@ -693,6 +693,41 @@ class TestComplianceFree(unittest.TestCase):
         self.assertFalse(bw.is_compliance_free(src, {}))  # no counterparty
 
 
+class TestConfigurableHoldThreshold(unittest.TestCase):
+    """
+    `hold_above` raises the amount at which a verdict escalates to HOLD, WITHOUT
+    letting sanctions or price-anomaly through (treasury/AP auto-release).
+
+    Mutation notes:
+      - ignore hold_above (always module default) -> test_raised_allows_go FAILS.
+      - let hold_above bypass the price gouge -> test_does_not_bypass_price FAILS.
+      - let hold_above bypass sanctions -> test_does_not_bypass_sanctions FAILS.
+    """
+    GOOD = {"settlement_count": 1240, "dispute_rate": 0.002}
+    BIG_HISTORY = ["5000", "5000", "4900", "5100"]
+
+    def test_default_threshold_holds_large(self):
+        v = bw.decide_payment("5000", self.GOOD, self.BIG_HISTORY, counterparty="0xA")
+        self.assertEqual(v["verdict"], "HOLD")  # over the $10 default
+
+    def test_raised_allows_go(self):
+        v = bw.decide_payment("5000", self.GOOD, self.BIG_HISTORY,
+                              counterparty="0xA", hold_above="10000")
+        self.assertEqual(v["verdict"], "GO")
+
+    def test_does_not_bypass_price(self):
+        # raising the amount ceiling must NOT let a price gouge through
+        v = bw.decide_payment("5000", self.GOOD, ["0.09", "0.09", "0.088"],
+                              counterparty="0xA", hold_above="10000")
+        self.assertEqual(v["verdict"], "STOP")
+
+    def test_does_not_bypass_sanctions(self):
+        rec = dict(self.GOOD, sanctioned=True)
+        v = bw.decide_payment("5000", rec, self.BIG_HISTORY,
+                              counterparty="0xA", hold_above="10000")
+        self.assertEqual(v["verdict"], "STOP")
+
+
 class TestComplianceFreeBypassesBilling(unittest.TestCase):
     """
     END-TO-END (regression): with billing ON, a sanctioned counterparty must get
