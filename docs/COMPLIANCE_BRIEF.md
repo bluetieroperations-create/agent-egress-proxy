@@ -69,9 +69,11 @@ payout ready ─►  Blackwall  ─►  RELEASE   auto-approve
   a cadence (auto-refresh on service restart; verify freshness for your
   requirements). Non-EVM designations are out of scope.
 - **Config note:** out of the box the engine escalates *any* payout over a low
-  threshold to **REVIEW** (human). That's a safe default; for treasury use you'll
-  want the auto-release threshold tuned to your risk appetite so routine, in-line
-  payouts to trusted vendors can auto-release while anomalies still escalate.
+  threshold to **REVIEW** (human). That's a safe default; for treasury use tune
+  the auto-release ceiling to your risk appetite (`--hold-above` /
+  `BLACKWALL_HOLD_ABOVE`) so routine, in-line payouts to trusted vendors can
+  auto-release — while sanctions and price anomalies still escalate/block
+  regardless of the ceiling.
 
 ## Pilot ask
 

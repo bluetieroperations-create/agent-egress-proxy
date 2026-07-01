@@ -32,18 +32,17 @@ Make treasury/AP real:
 3. ~~**OFAC freshness**~~ **DONE** — startup refresh (`--sanctions-refresh`,
    on by default on the deploy; fail-open).
 
+4. ~~**Configurable auto-release threshold**~~ **DONE** — `--hold-above` /
+   `BLACKWALL_HOLD_ABOVE`, threaded through `decide_payment`/`forecast`/handler
+   and `ap_gate.screen_payout(hold_above=...)`. Raises the amount ceiling only;
+   sanctions + price-anomaly still BLOCK regardless. (`TestConfigurableHoldThreshold`.)
+
 **Remaining for this session:**
 - **Design-partner target list** — stablecoin payout/AP platforms and "AI CFO" /
   agentic-finance tools that already release payments autonomously.
-- **Configurable auto-release threshold (real gap).** The engine's
-  `HOLD_AMOUNT_THRESHOLD` is $10 — so *every* treasury payout (which is
-  $thousands) escalates to REVIEW by default, even in-line payouts to perfect
-  vendors. Auto-release for AP needs a higher, per-caller-configurable threshold
-  (relying on reputation + price rather than a flat cap). See `test_ap_gate.py`
-  `test_large_but_inline_payout_escalates_to_review`.
 - **Wire the REVIEW→human confirmation** to the ElizaOS guardrail's HITL
   (fail-closed, same-origin, strictest-wins) so `ap_gate`'s REVIEW routes to a
-  real approver.
+  real approver. (Needs the eliza/blackwalltier repos in scope.)
 
 ## ⚠️ Blocking cross-cutting issue (surfaces everywhere)
 There are **two Blackwall backends with different schemas**, and an AP buyer must
