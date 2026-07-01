@@ -693,6 +693,71 @@ class TestComplianceFree(unittest.TestCase):
         self.assertFalse(bw.is_compliance_free(src, {}))  # no counterparty
 
 
+class TestPerClassPriceSegmentation(unittest.TestCase):
+    """
+    Per-invoice-class price comparison: an amount is priced against the payee's
+    LIKE-FOR-LIKE history when enough same-`resource` observations exist, else it
+    pools (conservative fallback). Fixes the false-gouge on a first large invoice
+    to a vendor whose overall history is small.
+
+    Mutation notes:
+      - ignore resource / always pool -> test_per_class_avoids_false_gouge FAILS.
+      - use per-class with < MIN_CLASS_OBSERVATIONS -> test_select_pooled_when_sparse FAILS.
+      - report a stale basis (not from the selected set) -> test_decide_per_class FAILS.
+    """
+    # 20 small "api" charges + 3 large "invoice" charges, all DISTINCT payers.
+    OBS = ([{"payer": "0x%040x" % i, "amount": "50", "resource": "api"}
+            for i in range(20)]
+           + [{"payer": "0x%040x" % (100 + i), "amount": "5000",
+               "resource": "invoice"} for i in range(3)])
+    REC = {"settlement_count": 250, "dispute_rate": 0.0,
+           "confirmed_settlement_count": 250, "distinct_payers": 23}
+
+    def _rec(self):
+        return dict(self.REC, price_observations=self.OBS)
+
+    def test_select_per_class_when_enough(self):
+        sel, basis = bw.select_class_observations(self.OBS, "invoice")
+        self.assertEqual(basis, "per-class")
+        self.assertEqual(len(sel), 3)
+
+    def test_select_pooled_when_sparse(self):
+        sel, basis = bw.select_class_observations(self.OBS, "wire")  # 0 members
+        self.assertEqual(basis, "pooled")
+        self.assertEqual(len(sel), len(self.OBS))
+
+    def test_select_pooled_when_no_resource(self):
+        _sel, basis = bw.select_class_observations(self.OBS, None)
+        self.assertEqual(basis, "pooled")
+
+    def test_tuples_never_match(self):
+        _sel, basis = bw.select_class_observations(
+            [("0xp1", "50"), ("0xp2", "50")], "api")
+        self.assertEqual(basis, "pooled")
+
+    def test_per_class_avoids_false_gouge(self):
+        # $5000 invoice vs the $5000 invoice-class median -> ratio ~1 (NOT a gouge)
+        r = bw.price_anomaly_ratio("5000", [], observations=self.OBS,
+                                   resource="invoice")
+        self.assertLess(r, 2.0)
+
+    def test_pooled_flags_the_same_amount(self):
+        # the same $5000 with NO class context -> pooled median ~$50 -> ~100x
+        r = bw.price_anomaly_ratio("5000", [], observations=self.OBS, resource=None)
+        self.assertGreater(r, 8.0)
+
+    def test_decide_per_class_not_stop(self):
+        v = bw.decide_payment("5000", self._rec(), [], counterparty="0xV",
+                              resource="invoice", hold_above="100000")
+        self.assertNotEqual(v["verdict"], "STOP")
+        self.assertEqual(v["signals"]["price_basis"], "per-class")
+
+    def test_decide_pooled_stops_gouge(self):
+        v = bw.decide_payment("5000", self._rec(), [], counterparty="0xV",
+                              resource=None, hold_above="100000")
+        self.assertEqual(v["verdict"], "STOP")
+
+
 class TestConfigurableHoldThreshold(unittest.TestCase):
     """
     `hold_above` raises the amount at which a verdict escalates to HOLD, WITHOUT

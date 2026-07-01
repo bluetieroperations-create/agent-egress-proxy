@@ -131,6 +131,18 @@ class TestAggregate(unittest.TestCase):
         med, n = bw.robust_price_median(obs, min_payers=2)
         self.assertEqual(n, 2)
 
+    def test_price_observations_carry_resource(self):
+        # REGRESSION: the verdict's `resource` must flow into the observation so
+        # the engine can do per-invoice-class price comparison. Mutation: drop the
+        # resource tag in aggregate -> this FAILS (obs has no resource).
+        events = [
+            {"kind": "verdict", "receipt_id": "r1", "counterparty": "0xC",
+             "amount": "5000", "payer": "0xpayerA", "resource": "INV", "ts": "t1"},
+            chain_settled("r1", "0xtx1"),
+        ]
+        rec = L.aggregate_counterparties(events)["0xC"]
+        self.assertEqual(rec["price_observations"][0]["resource"], "INV")
+
     def test_orphan_outcome_ignored(self):
         events = [chain_settled("ghost", "0xtx")]
         self.assertEqual(L.aggregate_counterparties(events), {})

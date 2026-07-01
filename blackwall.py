@@ -50,6 +50,7 @@ _AMOUNT_RE = re.compile(r"\A\d+(\.\d+)?\Z")  # plain decimal money string only
 GO_REPUTATION_MIN = 0.70          # below this trust score, never an automatic GO
 THIN_HISTORY_SETTLEMENTS = 20     # fewer prior settlements => "thin" => cannot GO
 MIN_DISTINCT_PAYERS = 3           # confirmed settlements must span >= N payers (Sybil guard)
+MIN_CLASS_OBSERVATIONS = 3        # same-resource observations needed to trust a per-class median
 HOLD_AMOUNT_THRESHOLD = Decimal("10.00")  # amounts above this escalate (HOLD)
 HOLD_ANOMALY = 0.30               # price-anomaly score at/above this cannot GO
 STOP_ANOMALY_RATIO = 8.0          # charged >= 8x its own median => STOP (wildly off)
@@ -146,30 +147,68 @@ def robust_price_median(observations, min_payers=MIN_DISTINCT_PAYERS):
     return _median_of([_median_of(v) for v in by_payer.values()]), n
 
 
-def price_anomaly_ratio(amount, price_history, observations=None):
+def select_class_observations(observations, resource,
+                              min_class_obs=MIN_CLASS_OBSERVATIONS):
+    """Pure: choose which observations to price an amount against.
+
+    If `resource` is given and at least `min_class_obs` observations share it,
+    return just those (basis "per-class") so a payment is compared to LIKE-FOR-LIKE
+    history -- a $5k invoice to a vendor whose $5k-invoice history is normal is not
+    a gouge. Otherwise return ALL observations (basis "pooled") -- the conservative
+    fallback: an unknown/new class still flags against the full history, so
+    segmentation only ever RELAXES the anomaly when there's enough same-class
+    evidence to justify it, never weakens the check for a novel payment.
+
+    Returns (subset, basis) with basis in {"per-class", "pooled"}. Non-dict
+    observations (legacy (payer, amount) tuples) have no class and never match.
+    """
+    obs = observations or []
+    if resource is not None:
+        same = [o for o in obs
+                if isinstance(o, dict) and o.get("resource") == resource]
+        if len(same) >= min_class_obs:
+            return same, "per-class"
+    return obs, "pooled"
+
+
+def price_median_and_basis(price_history, observations, resource=None):
+    """Pure: the median to price against, plus a label for how it was derived.
+
+    Precedence: per-class payer-weighted -> pooled payer-weighted -> flat median
+    of `price_history` -> None. `basis` is "per-class" | "payer-weighted" |
+    "flat". Single source of truth for both the ratio and the reported basis."""
+    if observations:
+        sel, sel_basis = select_class_observations(observations, resource)
+        m, _n = robust_price_median(sel)
+        if m is not None:
+            return m, ("per-class" if sel_basis == "per-class" else "payer-weighted")
+        # a per-class subset too sparse in DISTINCT payers -> fall back to pooled
+        if sel_basis == "per-class":
+            m, _n = robust_price_median(observations)
+            if m is not None:
+                return m, "payer-weighted"
+    if price_history:
+        return _median_of(Decimal(str(p)) for p in price_history), "flat"
+    return None, "flat"
+
+
+def price_anomaly_ratio(amount, price_history, observations=None, resource=None):
     """
     Ratio of `amount` to the counterparty's own median historical price for
     this resource class.
 
     Returns a float ratio (amount / median), or None when there is no usable
-    history -- "is this endpoint charging me 8x what it charged everyone else"
-    is a different question from "is the signature valid", and with no history
-    it simply cannot be answered (so the caller treats anomaly as UNKNOWN, not
-    as zero-and-fine).
+    history -- with no history the "is this 8x what it charged everyone else"
+    question simply cannot be answered (caller treats anomaly as UNKNOWN, not
+    zero-and-fine).
 
-    When payer-attributed `observations` are supplied and span enough distinct
-    payers, a WASH-TRADE-RESISTANT median (one price per payer; see
-    robust_price_median) is used instead of the flat median -- so a counterparty
-    can't set its own 'normal' price by paying itself. Falls back to the flat
-    median of `price_history` otherwise (unchanged behavior)."""
-    median = None
-    if observations is not None:
-        median, _n = robust_price_median(observations)
-    if median is None:
-        if not price_history:
-            return None
-        median = _median_of(Decimal(str(p)) for p in price_history)
-    if median <= 0:
+    When payer-attributed `observations` are supplied they drive a WASH-TRADE-
+    RESISTANT median (one price per payer; see robust_price_median). When a
+    `resource` is given and enough observations share it, the median is computed
+    PER-CLASS (like-for-like); otherwise it pools all observations, then falls
+    back to the flat median of `price_history` (unchanged legacy behavior)."""
+    median, _basis = price_median_and_basis(price_history, observations, resource)
+    if median is None or median <= 0:
         return None
     return float(Decimal(str(amount)) / median)
 
@@ -212,7 +251,8 @@ def reputation_score(record):
 
 
 def decide_payment(amount, record, price_history,
-                   counterparty=None, expected_recipient=None, hold_above=None):
+                   counterparty=None, expected_recipient=None, hold_above=None,
+                   resource=None):
     """
     The core verdict. Returns a dict:
         {verdict, score, reasons[], signals{...}}
@@ -234,12 +274,13 @@ def decide_payment(amount, record, price_history,
     # Payer-attributed price observations (chain-confirmed) let us use a
     # wash-trade-resistant median; without them we fall back to the flat median.
     observations = record.get("price_observations")
-    ratio = price_anomaly_ratio(amount, price_history, observations=observations)
+    ratio = price_anomaly_ratio(amount, price_history, observations=observations,
+                                resource=resource)
     a_score = anomaly_score(ratio)
-    robust_median = None
-    if observations:
-        robust_median, _ = robust_price_median(observations)
-    price_basis = "payer-weighted" if robust_median is not None else "flat"
+    # Single source of truth for the median AND the basis label (per-class ->
+    # payer-weighted -> flat), so the reported signal matches what was scored.
+    _median, price_basis = price_median_and_basis(price_history, observations,
+                                                  resource)
     # The thin-history gate counts only CONFIRMED settlements -- on-chain
     # (reputation store) or chain-watch-confirmed (ledger). A source that does
     # not distinguish (None) vouches for all of its count (seed/on-chain). The
@@ -620,6 +661,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         counterparty=clean["counterparty"],
         expected_recipient=clean["expected_recipient"],
         hold_above=hold_above,
+        resource=clean.get("resource"),
     )
 
     # Endpoint-readiness enrichment (address-based verdict + URL-based readiness).

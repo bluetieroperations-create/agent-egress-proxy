@@ -91,7 +91,8 @@ def aggregate_counterparties(events):
             if not cp or not rid:
                 continue
             by_receipt[rid] = {"cp": cp, "amount": e.get("amount"),
-                               "payer": e.get("payer")}
+                               "payer": e.get("payer"),
+                               "resource": e.get("resource")}
             a = acc(cp)
             a["verdicts"] += 1
             ts = e.get("ts")
@@ -148,7 +149,10 @@ def aggregate_counterparties(events):
             # (see blackwall.robust_price_median). Needs both a payer and an
             # amount to be usable.
             if amt is not None:
-                a["priced"].append({"payer": payer, "amount": str(amt)})
+                # resource tag enables per-invoice-class price comparison
+                # (blackwall.select_class_observations); None = unclassified.
+                a["priced"].append({"payer": payer, "amount": str(amt),
+                                    "resource": by_receipt[rid].get("resource")})
 
     # Advisory only: self-reports on receipts with no chain confirmation.
     for rid in self_reported:

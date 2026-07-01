@@ -42,11 +42,14 @@ def payout_action(verdict):
 def payout_payload(payout):
     """Pure: translate an AP payout dict into a `forecast()` request.
 
-    payee -> counterparty ; invoice_id -> resource. NOTE: `resource` drives
-    endpoint-readiness enrichment and serves as a request label -- it does NOT
-    yet segment the price comparison. Lookup is by counterparty only, so
-    price-anomaly compares against the payee's FULL history (per-invoice-class /
-    peer-group segmentation is a roadmap item).
+    payee -> counterparty ; invoice_id -> resource. `resource` now drives
+    PER-INVOICE-CLASS price comparison: when the payee has >= MIN_CLASS_OBSERVATIONS
+    same-class observations from DISTINCT payers (via the ledger flywheel), the
+    amount is priced against that class's median instead of the payee's pooled full
+    history -- so a legit first large invoice to a small-history vendor isn't a
+    false gouge. On-chain-only histories (reputation store) carry no class and
+    pool (conservative). Cross-counterparty peer-group comparison is still a
+    roadmap item. `resource` also drives endpoint-readiness enrichment.
     """
     payload = {
         "counterparty": payout.get("payee"),
