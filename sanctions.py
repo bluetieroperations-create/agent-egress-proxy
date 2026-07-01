@@ -56,6 +56,13 @@ class SanctionsList:
     """A set of sanctioned addresses with case-insensitive membership."""
 
     def __init__(self, addresses=None):
+        # Thread-safety contract: `_set` is shared between the background refresh
+        # thread (add) and request threads (membership + len). Under CPython those
+        # are single GIL-atomic ops and safe. Do NOT iterate `_set` (for / sorted
+        # / comprehension / .copy) from a request path while a refresh may run --
+        # that risks `RuntimeError: Set changed size during iteration`; snapshot
+        # via `list(_set)` under a lock if iteration is ever needed. A
+        # free-threaded CPython build would require locking add/in/len too.
         self._set = set()
         for a in (addresses or ()):
             self.add(a)
@@ -74,20 +81,23 @@ class SanctionsList:
 
     @classmethod
     def from_file(cls, path):
-        """Load one address per line; `#` comments and blanks ignored. Missing
-        file -> empty list (screening simply finds nothing)."""
+        """Load addresses from a plain-text file, keeping ONLY tokens that
+        validate as EVM addresses (via parse_sanctioned_addresses -- symmetric
+        with refresh_from_url). Junk can never match a real counterparty, but it
+        would inflate len() and make sanctions_enabled() advertise screening while
+        screening nothing real. `#` comments/blanks ignored; missing file -> empty."""
         s = cls()
         try:
             with open(path, "r", encoding="utf-8") as f:
-                for raw in f:
-                    tok = raw.strip().split("#", 1)[0].strip()
-                    if tok:
-                        s.add(tok.split()[0])
+                text = f.read()
         except OSError:
-            pass
+            return s
+        for addr in parse_sanctioned_addresses(text):
+            s.add(addr)
         return s
 
-    def refresh_from_url(self, url=DEFAULT_OFAC_URL, timeout=15):
+    def refresh_from_url(self, url=DEFAULT_OFAC_URL, timeout=15,
+                         max_bytes=8 * 1024 * 1024):
         """Fetch a plain-text address list and merge in the EVM addresses.
         Returns the count of NEW (previously-unseen) addresses added. Network
         errors propagate to the caller (so the caller can fail-open).
@@ -96,12 +106,23 @@ class SanctionsList:
         or failed fetch can never *weaken* screening. Trade-off: a de-listed
         address persists until the baked-in snapshot is regenerated
         (`python sanctions.py sanctions.txt`). New designations are picked up
-        promptly; de-listings lag to a re-bake (conservative, over-screens)."""
+        promptly; de-listings lag to a re-bake (conservative, over-screens).
+
+        The body is capped at `max_bytes` (default 8MB; the real feed is tens of
+        KB). A hijacked/MITM'd upstream or a CDN error page streaming megabytes
+        would otherwise be read fully into memory and OOM the boot on a small box.
+        We RAISE on overflow (caller fails open to the current list) rather than
+        truncate -- truncation could silently drop real addresses (fail-open)."""
         req = urllib.request.Request(
             url, headers={"User-Agent": "blackwall-sanctions/0.1",
                           "Accept": "text/plain"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            text = r.read().decode("utf-8", "replace")
+            raw = r.read(max_bytes + 1)  # one past the cap to DETECT overflow
+        if len(raw) > max_bytes:
+            raise ValueError(
+                "sanctions feed exceeds %d-byte cap (refusing; keeping current "
+                "list)" % max_bytes)
+        text = raw.decode("utf-8", "replace")
         before = len(self._set)
         for addr in parse_sanctioned_addresses(text):
             self.add(addr)
@@ -125,6 +146,40 @@ class SanctionsScreeningSource:
         if self.sanctions.is_sanctioned(counterparty):
             rec["sanctioned"] = True
         return rec
+
+
+def start_background_refresh(sanctions_list, url=DEFAULT_OFAC_URL, timeout=15,
+                            refresher=None, log=None):
+    """Refresh `sanctions_list` from the live OFAC feed in a DAEMON thread, so a
+    slow / degraded / drip-feeding upstream can NEVER block startup or the socket
+    bind (a synchronous refresh could: socket timeouts bound per-read inactivity,
+    not total transfer time). The server binds immediately and serves the
+    baked-in snapshot; the live list merges in when the fetch returns.
+
+    The merge is in-place, union-only, grow-only -- CPython set ops are atomic
+    under the GIL, so a concurrent is_sanctioned() read always sees a valid set
+    (at worst it misses a brand-new designation for the few ms of the merge, never
+    corrupts). The descriptor advertises screening dynamically (len-based), so it
+    flips ON on its own once addresses land. Fail-open: any error keeps the
+    current list. Returns the started Thread. `refresher(list)->int` and `log(str)`
+    are injectable for tests."""
+    import threading
+
+    def _run():
+        try:
+            n = (refresher(sanctions_list) if refresher
+                 else sanctions_list.refresh_from_url(url=url, timeout=timeout))
+            if log:
+                log("blackwall: sanctions refreshed from OFAC list "
+                    "(+%d new, %d total)" % (n, len(sanctions_list)))
+        except Exception as e:  # fail-open -- keep whatever is already loaded
+            if log:
+                log("blackwall: sanctions refresh failed (%s); keeping current "
+                    "list (%d addresses)" % (e, len(sanctions_list)))
+
+    t = threading.Thread(target=_run, name="sanctions-refresh", daemon=True)
+    t.start()
+    return t
 
 
 if __name__ == "__main__":
