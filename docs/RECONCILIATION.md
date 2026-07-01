@@ -58,10 +58,11 @@ agent action ──► blackwalltier (broad guardrail)
 | `STOP` | hard stop: sanctioned / known-bad / recipient-mismatch (`score == 0`) | `DENY` | `BLOCK` | `[reason]` | none |
 | `STOP` | price gouge (non-hard) | `DENY` | `BLOCK` | `[reason]` | none *(or `CONFIRM` if you want price-gouge to be human-overridable — pick one policy and keep it)* |
 
-Detecting a **hard stop** on the engine side: `score == 0.0` AND a reason contains
-`sanctions list` / `known-bad` / `recipient mismatch`. (Consider adding an explicit
-`hard_stop: bool` to the engine response to make this unambiguous — small change in
-`decide_payment`.)
+Detecting a **hard stop** on the engine side: the response carries an explicit
+**`hard_stop: bool`** (True only for sanctioned / known-bad / recipient-mismatch;
+False for a price-gouge STOP). Map `STOP && hard_stop` → `hard_blocks`; map
+`STOP && !hard_stop` → a deny you *may* let a human override. No reason-string
+sniffing needed.
 
 ### Audit passthrough (don't drop these)
 - Pass the engine's `receipt_id` + `report_token` back through blackwalltier so the
@@ -91,8 +92,9 @@ Recommendation: **start with (1)** to reach verdict parity quickly, then conside
 
 ## Migration checklist (both-repos session)
 - [ ] Confirm the canonical decision above with the owner.
-- [ ] Add an explicit `hard_stop` flag to the engine response (removes reason-string
-      sniffing).
+- [x] ~~Add an explicit `hard_stop` flag to the engine response~~ **DONE** — the
+      verdict now includes `hard_stop: bool` (True only for sanctioned/known-bad/
+      mismatch). Use it directly in the mapping.
 - [ ] Build the **mapping adapter** in blackwalltier (engine verdict → `{recommendation,
       gate, hard_blocks, confirmation}`) per the table.
 - [ ] Route blackwalltier's **payment** branch through the engine (option 1).

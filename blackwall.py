@@ -503,6 +503,11 @@ def decide_payment(amount, record, price_history,
 
     return {
         "verdict": verdict,
+        # hard_stop = a non-negotiable block (sanctioned / known-bad / recipient
+        # mismatch) vs. a judgment STOP (price gouge). Lets a consumer map STOP ->
+        # a hard block vs. a human-overridable deny without sniffing reason strings.
+        # (See docs/RECONCILIATION.md.) Only ever True when verdict == "STOP".
+        "hard_stop": hard_stop,
         "score": round(score, 3),
         "reasons": reasons,
         "signals": signals,

@@ -844,6 +844,52 @@ class TestPeerGroupCrossCheck(unittest.TestCase):
         self.assertEqual(resp["verdict"], "HOLD")  # 5x the peer market
 
 
+class TestHardStopFlag(unittest.TestCase):
+    """
+    `hard_stop` distinguishes a non-negotiable block (sanctioned / known-bad /
+    recipient-mismatch) from a judgment STOP (price gouge) -- so a consumer can map
+    STOP -> hard block vs. human-overridable deny without sniffing reason strings.
+
+    Mutation notes:
+      - always return hard_stop=False -> test_sanctioned_is_hard FAILS.
+      - set hard_stop on a price gouge -> test_price_gouge_not_hard FAILS.
+      - set hard_stop on GO/HOLD -> test_go_and_hold_not_hard FAILS.
+    """
+    GOOD = {"settlement_count": 1240, "dispute_rate": 0.002}
+    STABLE = ["0.09", "0.09", "0.088", "0.092"]
+
+    def test_sanctioned_is_hard(self):
+        v = bw.decide_payment("0.09", dict(self.GOOD, sanctioned=True),
+                              self.STABLE, counterparty="0xA")
+        self.assertEqual(v["verdict"], "STOP")
+        self.assertTrue(v["hard_stop"])
+
+    def test_known_bad_is_hard(self):
+        v = bw.decide_payment("0.09", dict(self.GOOD, known_bad=True),
+                              self.STABLE, counterparty="0xA")
+        self.assertTrue(v["hard_stop"])
+
+    def test_recipient_mismatch_is_hard(self):
+        v = bw.decide_payment("0.09", self.GOOD, self.STABLE,
+                              counterparty="0xATTACKER", expected_recipient="0xLEGIT")
+        self.assertTrue(v["hard_stop"])
+
+    def test_price_gouge_not_hard(self):
+        # $5 vs a ~$0.09 median -> STOP on price, but NOT a hard stop
+        v = bw.decide_payment("5.00", self.GOOD, self.STABLE, counterparty="0xA")
+        self.assertEqual(v["verdict"], "STOP")
+        self.assertFalse(v["hard_stop"])
+
+    def test_go_and_hold_not_hard(self):
+        go = bw.decide_payment("0.09", self.GOOD, self.STABLE, counterparty="0xA")
+        self.assertEqual(go["verdict"], "GO")
+        self.assertFalse(go["hard_stop"])
+        hold = bw.decide_payment("0.09", {"settlement_count": 1, "dispute_rate": 0.0},
+                                 self.STABLE, counterparty="0xA")
+        self.assertEqual(hold["verdict"], "HOLD")
+        self.assertFalse(hold["hard_stop"])
+
+
 class TestConfigurableHoldThreshold(unittest.TestCase):
     """
     `hold_above` raises the amount at which a verdict escalates to HOLD, WITHOUT
