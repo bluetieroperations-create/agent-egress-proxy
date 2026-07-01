@@ -23,17 +23,27 @@ sanctions**. Verdict-only, never custody. Live on Base mainnet. Stdlib-only,
 deterministic, adversarially audited (327 tests).
 
 ## The job for this session
-Make treasury/AP real, in this order:
-1. **One-page compliance brief** — "pre-payout OFAC + counterparty-risk screening,
-   one call, signed receipts, deterministic & auditable." Sales-ready.
-2. **Pilot adapter** — a thin wrapper over the existing `forecast()` call that an
-   AP system invokes at the *approve-&-release* step, returning GO / HOLD(→human)
-   / STOP. **No engine changes** — the payload already maps (`counterparty`=payee,
-   `amount/asset/chain`=payout, `resource`=invoice id). Reuse the **ElizaOS
-   guardrail's human-confirmation flow** (fail-closed, same-origin, strictest-wins)
-   for the HOLD→human path.
-3. **Design-partner target list** — stablecoin payout/AP platforms and "AI CFO" /
-   agentic-finance tools that already release payments autonomously.
+Make treasury/AP real:
+1. ~~**One-page compliance brief**~~ **DONE** — `docs/COMPLIANCE_BRIEF.md`
+   (sales-ready, observe→enforce pilot ask).
+2. ~~**Pilot adapter**~~ **DONE** — `ap_gate.py` (`screen_payout()` →
+   RELEASE/REVIEW/BLOCK; pure `payout_action`/`payout_payload`; fails closed to
+   REVIEW; 13 tests). Reuses `forecast()`, no engine change.
+3. ~~**OFAC freshness**~~ **DONE** — startup refresh (`--sanctions-refresh`,
+   on by default on the deploy; fail-open).
+
+**Remaining for this session:**
+- **Design-partner target list** — stablecoin payout/AP platforms and "AI CFO" /
+  agentic-finance tools that already release payments autonomously.
+- **Configurable auto-release threshold (real gap).** The engine's
+  `HOLD_AMOUNT_THRESHOLD` is $10 — so *every* treasury payout (which is
+  $thousands) escalates to REVIEW by default, even in-line payouts to perfect
+  vendors. Auto-release for AP needs a higher, per-caller-configurable threshold
+  (relying on reputation + price rather than a flat cap). See `test_ap_gate.py`
+  `test_large_but_inline_payout_escalates_to_review`.
+- **Wire the REVIEW→human confirmation** to the ElizaOS guardrail's HITL
+  (fail-closed, same-origin, strictest-wins) so `ap_gate`'s REVIEW routes to a
+  real approver.
 
 ## ⚠️ Blocking cross-cutting issue (surfaces everywhere)
 There are **two Blackwall backends with different schemas**, and an AP buyer must
