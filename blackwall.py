@@ -1081,7 +1081,9 @@ def main(argv=None):
         sl = SanctionsList.from_file(args.sanctions)
         if args.sanctions_refresh:
             try:
-                added = sl.refresh_from_url()
+                # Short boot cap: a slow feed must not block the socket bind /
+                # deploy healthcheck; on timeout we fail open to the snapshot.
+                added = sl.refresh_from_url(timeout=5)
                 sys.stdout.write(
                     "blackwall: sanctions refreshed from OFAC list "
                     "(+%d new, %d total)\n" % (added, len(sl)))

@@ -46,6 +46,22 @@ class TestSanctionsList(unittest.TestCase):
         sl = S.SanctionsList.from_file("/no/such/file")
         self.assertEqual(len(sl), 0)
 
+    def test_from_file_rejects_non_address_junk(self):
+        # H-1: from_file must validate like the refresh path (parse_sanctioned_
+        # addresses), else junk inflates len() and makes sanctions_enabled()
+        # advertise screening that screens nothing real. Mutation: from_file adds
+        # unvalidated tokens -> this FAILS (len would be > 1).
+        path = os.path.join(tempfile.mkdtemp(), "s.txt")
+        with open(path, "w") as f:
+            f.write("%s\n" % SANC)                              # 1 real address
+            f.write("garbage-not-an-address\n")                 # junk
+            f.write("DROP TABLE sanctions\n")                   # junk w/ spaces
+            f.write("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa\n")     # BTC, not EVM
+            f.write("0x%s\n" % ("z" * 40))                      # 0x + non-hex
+        sl = S.SanctionsList.from_file(path)
+        self.assertEqual(len(sl), 1)
+        self.assertTrue(sl.is_sanctioned(SANC))
+
 
 class TestScreeningSource(unittest.TestCase):
     class _Inner:
@@ -122,6 +138,41 @@ class TestParseSanctionedAddresses(unittest.TestCase):
     def test_empty_input(self):
         self.assertEqual(S.parse_sanctioned_addresses(""), [])
         self.assertEqual(S.parse_sanctioned_addresses(None), [])
+
+
+class TestRefreshFromUrlIsBounded(unittest.TestCase):
+    """M-1: the live fetch reads a remote body into memory. A hijacked/MITM'd
+    upstream (or a CDN error page streaming megabytes) must NOT OOM the boot. The
+    cap must RAISE rather than truncate: truncation could silently drop real
+    sanctioned addresses (fail-open on the compliance axis)."""
+    class _Resp:
+        def __init__(self, data):
+            self._d = data
+        def read(self, n=-1):
+            return self._d if n < 0 else self._d[:n]
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    def _patch(self, body):
+        import urllib.request
+        self._orig = urllib.request.urlopen
+        urllib.request.urlopen = lambda req, timeout=15: self._Resp(body)
+        self.addCleanup(lambda: setattr(urllib.request, "urlopen", self._orig))
+
+    def test_oversized_feed_raises(self):
+        # Mutation: no size cap -> huge body accepted, no raise -> this FAILS.
+        huge = ("\n".join(["0x" + "a" * 40] * 200_000)).encode()  # ~8MB
+        self._patch(huge)
+        with self.assertRaises(Exception):
+            S.SanctionsList().refresh_from_url(max_bytes=1_000_000)
+
+    def test_under_cap_feed_loads(self):
+        self._patch(("0x" + "b" * 40 + "\n").encode())
+        sl = S.SanctionsList()
+        self.assertEqual(sl.refresh_from_url(max_bytes=1_000_000), 1)
+        self.assertTrue(sl.is_sanctioned("0x" + "b" * 40))
 
 
 if __name__ == "__main__":
