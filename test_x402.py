@@ -118,9 +118,13 @@ class TestPaymentSatisfies(unittest.TestCase):
         ok, _ = X.payment_satisfies(make_payment(value="1000"), self.req)
         self.assertTrue(ok)
 
-    def test_overpay_ok(self):
-        ok, _ = X.payment_satisfies(make_payment(value="5000"), self.req)
-        self.assertTrue(ok)
+    def test_overpay_rejected_exact(self):
+        # exact scheme (spec 6.1.2) requires value == amount; an overpay is
+        # rejected here rather than dying at the facilitator. Mutation: accept
+        # value >= required -> this FAILS.
+        ok, reason = X.payment_satisfies(make_payment(value="5000"), self.req)
+        self.assertFalse(ok)
+        self.assertEqual(reason, "overpaid")
 
     def test_underpaid(self):
         ok, reason = X.payment_satisfies(make_payment(value="999"), self.req)

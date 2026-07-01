@@ -23,10 +23,13 @@ class TestBuildDescriptor(unittest.TestCase):
         self.assertIsNone(d["resources"][0]["accepts"])
 
     def test_priced_when_billing(self):
-        d = D.build_descriptor(pay_to=PAY_TO, price="0.001")
+        # atomic units + asset contract, mirroring the authoritative 402 (spec 5.1.2)
+        d = D.build_descriptor(pay_to=PAY_TO, price="1000",
+                               asset="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913")
         acc = d["resources"][0]["accepts"][0]
         self.assertEqual(acc["payTo"], PAY_TO)
-        self.assertEqual(acc["amount"], "0.001")             # v2: amount, not maxAmountRequired
+        self.assertEqual(acc["amount"], "1000")              # v2: ATOMIC units
+        self.assertEqual(acc["asset"], "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913")
         self.assertEqual(acc["network"], "eip155:8453")      # v2: CAIP-2
 
     def test_descriptor_is_v2(self):

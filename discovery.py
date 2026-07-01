@@ -69,10 +69,10 @@ def build_descriptor(pay_to=None, price=None, asset="USDC", network="base",
     """
     accepts = None
     if pay_to and price is not None:
-        # v2 PaymentRequirements: CAIP-2 network + `amount` (not the v1
-        # `maxAmountRequired`). NOTE: `price`/`amount` here is a HUMAN decimal
-        # string in the descriptor (e.g. "0.001") for readability -- the runtime
-        # 402 challenge carries the atomic-unit value; the descriptor is metadata.
+        # v2 PaymentRequirements, mirroring the authoritative 402: CAIP-2 network,
+        # `amount` in ATOMIC units (spec 5.1.2, e.g. "1000"), and the asset CONTRACT
+        # address. Callers pass already-atomic price + contract so the descriptor's
+        # accepts is not off by 10^decimals vs the 402 challenge.
         accepts = [{
             "scheme": "exact",
             "network": to_caip2(network),

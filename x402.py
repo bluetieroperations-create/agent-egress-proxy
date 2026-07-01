@@ -329,7 +329,14 @@ def payment_satisfies(payment, req):
         value = int(str(auth.get("value")))
     except (TypeError, ValueError):
         return False, "missing/invalid payment value"
-    if value < int(_req_amount(req)):
+    required = int(_req_amount(req))
+    # `exact` scheme (spec 6.1.2): value must EQUAL the required amount -- an
+    # overpay is a dead-on-arrival acceptance the real facilitator rejects, so we
+    # fail it here with a clear reason. (An `upto` scheme, if added, allows <=.)
+    if req.get("scheme") == "exact":
+        if value != required:
+            return False, "underpaid" if value < required else "overpaid"
+    elif value < required:
         return False, "underpaid"
 
     # A real EIP-3009 authorization always carries a nonce; one without it is

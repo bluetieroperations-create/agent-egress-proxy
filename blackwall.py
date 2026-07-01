@@ -900,7 +900,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _descriptor(self):
-        from discovery import build_descriptor, human_price
+        from discovery import build_descriptor
         from sanctions import SanctionsScreeningSource
         screening = isinstance(self.reputation_source, SanctionsScreeningSource)
         readiness = self.readiness_source is not None
@@ -908,8 +908,11 @@ class _Handler(BaseHTTPRequestHandler):
             cfg = self.billing.cfg
             return build_descriptor(
                 pay_to=cfg.pay_to,
-                price=human_price(cfg.price_atomic, cfg.decimals),
-                asset="USDC", network=cfg.network,
+                # atomic units + asset CONTRACT, mirroring the authoritative 402
+                # (spec 5.1.2: accepts[].amount is atomic) so a consumer reading
+                # the descriptor isn't off by 10^decimals.
+                price=str(cfg.price_atomic),
+                asset=cfg.asset, network=cfg.network,
                 mcp=True, sanctions_screening=screening,
                 endpoint_readiness=readiness)
         return build_descriptor(mcp=True, sanctions_screening=screening,
@@ -991,6 +994,7 @@ class _Handler(BaseHTTPRequestHandler):
         # retries with X-PAYMENT (or X-PAYMENT-SESSION). The verdict logic is
         # unchanged -- billing is a gate in front of it.
         remaining = None
+        settlement_tx = None
         if self.billing is not None and not free_stop:
             resource = payload.get("resource") or self.path
             result = self.billing.check(
@@ -1015,6 +1019,11 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(result.status or 402, result.body, extra_headers=extra)
                 return
             remaining = result.session_remaining
+            # A per-call settlement produced an on-chain tx hash; carry it back in
+            # the v2 PAYMENT-RESPONSE header (base64 SettlementResponse) so the
+            # paying client learns its settlement. Session/free serves carry no
+            # per-call settlement, so no header is emitted for them.
+            settlement_tx = result.settlement
 
         response, err = forecast(payload, self.reputation_source, self.ledger,
                                  readiness_source=self.readiness_source,
@@ -1023,9 +1032,17 @@ class _Handler(BaseHTTPRequestHandler):
         if err is not None:
             self._send_json(400, {"error": err})
             return
-        extra = {"X-PAYMENT-SESSION-REMAINING": str(remaining)} \
-            if remaining is not None else None
-        self._send_json(200, response, extra_headers=extra)
+        extra = {}
+        if remaining is not None:
+            extra["X-PAYMENT-SESSION-REMAINING"] = str(remaining)
+        if settlement_tx:
+            # v2 SettlementResponse: {success, transaction, network}. network is
+            # advertised in CAIP-2 (the same value the 402 challenge carried).
+            from x402 import to_caip2
+            settle_resp = {"success": True, "transaction": settlement_tx,
+                           "network": to_caip2(self.billing.cfg.network)}
+            extra["PAYMENT-RESPONSE"] = _b64_header(settle_resp)
+        self._send_json(200, response, extra_headers=extra or None)
 
     def _do_session(self):
         # Fund-once, many-checks: a payment covering the session price returns a

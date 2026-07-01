@@ -994,5 +994,71 @@ class TestComplianceFreeBypassesBilling(unittest.TestCase):
         self.assertEqual(status, 200)  # value-pricing free under $10
 
 
+class TestPaidResponseCarriesSettlementHeader(unittest.TestCase):
+    """
+    END-TO-END (regression): a per-call PAID forecast (200) MUST return the
+    settlement result in the v2 `PAYMENT-RESPONSE` header (base64 SettlementResponse
+    with the on-chain tx hash), per specs/transports-v2/http.md -- that header is
+    the canonical channel for returning the settlement to the client.
+
+    Mutation note: drop the PAYMENT-RESPONSE emission -> this FAILS (the paying
+    client can never learn its settlement tx hash). A FREE or session-served call
+    carries NO settlement, so no PAYMENT-RESPONSE is emitted there.
+    """
+    PAY_TO = "0x000000000000000000000000000000000000dEaD"
+    ASSET = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+
+    def setUp(self):
+        import threading
+        from http.server import ThreadingHTTPServer
+        from x402 import (BillingConfig, BillingGate, MockFacilitator, BASE_USDC)
+        billing = BillingGate(
+            BillingConfig(price="0.001", pay_to=self.PAY_TO, network="base",
+                          asset=BASE_USDC),
+            facilitator=MockFacilitator(approve=True, settle_ok=True))
+        handler = type("_H", (bw._Handler,),
+                       {"reputation_source": bw.MockReputationSource(),
+                        "billing": billing})
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        self.t = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.t.start()
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def _pay(self, value="1000", nonce="0xpaidnonce1"):
+        import base64 as _b64
+        import json as _json
+        from urllib.request import Request, urlopen
+        pay = {"x402Version": 2,
+               "accepted": {"scheme": "exact", "network": "eip155:8453"},
+               "payload": {"authorization": {"from": "0x" + "a" * 40,
+                                             "to": self.PAY_TO, "value": value,
+                                             "nonce": nonce, "validAfter": "0",
+                                             "validBefore": "99999999999"},
+                           "signature": "0xsig"}}
+        sig = _b64.b64encode(_json.dumps(pay).encode()).decode()
+        body = _json.dumps({"counterparty": "0x" + "c" * 40, "amount": "0.50",
+                            "asset": self.ASSET, "chain": "base"}).encode()
+        req = Request("http://127.0.0.1:%d/v1/forecast-payment" % self.port,
+                      data=body, headers={"Content-Type": "application/json",
+                                          "PAYMENT-SIGNATURE": sig})
+        r = urlopen(req, timeout=3)
+        return r.status, dict(r.headers), r.read()
+
+    def test_paid_call_emits_payment_response_header(self):
+        import base64 as _b64
+        import json as _json
+        status, headers, _ = self._pay()
+        self.assertEqual(status, 200)
+        pr = headers.get("PAYMENT-RESPONSE") or headers.get("Payment-Response")
+        self.assertIsNotNone(pr, "paid 200 must carry a PAYMENT-RESPONSE header")
+        settle = _json.loads(_b64.b64decode(pr))
+        self.assertTrue(settle.get("success"))
+        self.assertEqual(settle.get("transaction"), "0xmocktx")
+
+
 if __name__ == "__main__":
     unittest.main()
