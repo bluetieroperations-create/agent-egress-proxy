@@ -49,6 +49,42 @@ Running `--value-pricing --sanctions <list>`:
 - Sanctioned counterparty at `$0.50` (a *free* call) → still `STOP`,
   *"counterparty is on a sanctions list"* — **safety holds on the free tier.**
 
+## Prepaid credits / committed volume
+
+Per-call value-pricing is the default, but two buyer types want to **pay ahead**
+instead of per-call: **enterprise / treasury-AP** (predictable billing, one
+procurement cycle, a spend cap they control) and **high-frequency agents** (skip
+the per-call signing/latency). The primitive already exists — this just formalizes
+it as a purchasable balance.
+
+**Two forms, same idea (buy N, burn one per verdict):**
+
+- **Off-chain balance (recommended, SaaS side).** A prepaid counter: buy credits
+  (card or USDC), burn one per forecast, top up when low. Simple, no gas,
+  procurement-friendly — how every API company bills. Lives on the API-key side
+  (`blackwalltier.com` freemium keys), not the x402 path.
+- **x402 session (the crypto-native equivalent, already built).** `x402.py` /
+  `/v1/session` — "fund once, many checks": pay once, get a **reusable session
+  token** good for a budget of verdicts. This *is* prepaid mode for on-chain
+  callers; document it as such rather than building a second mechanism.
+
+**The load-bearing rule: credits are NON-TRANSFERABLE — a balance, not an asset.**
+A prepaid balance you can't sell to another party is obviously just prepaid service
+(a gift-card, not a coin). The moment credits become transferable/tradeable you
+re-enter securities/AML territory and invite gaming — the same reason receipts are
+**not** tokenized (see `ROADMAP.md` — attest the *proof*, never mint a tradeable
+token). Keep it a billing model.
+
+**Do NOT** build an on-chain credit *token* (transferable ERC-20) unless a specific
+customer needs on-chain composability — it's more risk (gas, contract, "is it a
+security?") than reward versus an off-chain balance plus the existing x402 session.
+
+**How it composes with value-pricing:** credits are the *packaging*, value-pricing
+is the *rate*. A credit is priced at (or discounted from) the value-aligned fee for
+its stakes tier; committed-volume buyers get a discount for prepaying. Safety
+(OFAC) stays free regardless — a sanctioned counterparty STOPs whether or not a
+credit is spent.
+
 ## What we deliberately do NOT do
 
 - **Do not gate sanctions/safety behind payment.** A free user getting a `GO` on
