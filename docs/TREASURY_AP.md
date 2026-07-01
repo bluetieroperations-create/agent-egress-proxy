@@ -90,7 +90,10 @@ AP payments map cleanly onto the existing request:
 - `counterparty` = the payee address
 - `amount` / `asset` / `chain` = the payout
 - `payer` = the treasury/agent wallet
-- `resource` = the invoice/PO id (lets price-anomaly compare like-for-like)
+- `resource` = the invoice/PO id (readiness enrichment + audit label). NOTE:
+  price-anomaly compares against the payee's *full* history today, not per-invoice
+  class — lookup is by counterparty only. Per-class/peer-group segmentation is a
+  roadmap item.
 
 No engine changes required to pilot.
 

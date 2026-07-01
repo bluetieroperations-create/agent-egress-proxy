@@ -42,8 +42,11 @@ def payout_action(verdict):
 def payout_payload(payout):
     """Pure: translate an AP payout dict into a `forecast()` request.
 
-    payee -> counterparty ; invoice_id -> resource (so price-anomaly compares
-    like invoice classes, not across unrelated payments).
+    payee -> counterparty ; invoice_id -> resource. NOTE: `resource` drives
+    endpoint-readiness enrichment and serves as a request label -- it does NOT
+    yet segment the price comparison. Lookup is by counterparty only, so
+    price-anomaly compares against the payee's FULL history (per-invoice-class /
+    peer-group segmentation is a roadmap item).
     """
     payload = {
         "counterparty": payout.get("payee"),

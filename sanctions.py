@@ -90,7 +90,13 @@ class SanctionsList:
     def refresh_from_url(self, url=DEFAULT_OFAC_URL, timeout=15):
         """Fetch a plain-text address list and merge in the EVM addresses.
         Returns the count of NEW (previously-unseen) addresses added. Network
-        errors propagate to the caller (so the caller can fail-open)."""
+        errors propagate to the caller (so the caller can fail-open).
+
+        Merge is UNION-ONLY -- it never removes. This is deliberate: a truncated
+        or failed fetch can never *weaken* screening. Trade-off: a de-listed
+        address persists until the baked-in snapshot is regenerated
+        (`python sanctions.py sanctions.txt`). New designations are picked up
+        promptly; de-listings lag to a re-bake (conservative, over-screens)."""
         req = urllib.request.Request(
             url, headers={"User-Agent": "blackwall-sanctions/0.1",
                           "Accept": "text/plain"})
