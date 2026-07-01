@@ -758,6 +758,92 @@ class TestPerClassPriceSegmentation(unittest.TestCase):
         self.assertEqual(v["verdict"], "STOP")
 
 
+class TestPeerGroupCrossCheck(unittest.TestCase):
+    """
+    Peer-group cross-check: is a counterparty priced far above COMPARABLE
+    counterparties for the same resource class? Expensive != fraud -> HOLD, never
+    STOP. Sybil-hardened: the market rate is a median across DISTINCT
+    counterparties, so one actor can't define it.
+
+    Mutation notes:
+      - drop the min_counterparties gate -> test_index_needs_distinct_peers FAILS.
+      - let peer_hold set STOP instead of HOLD -> test_peer_outlier_holds_not_stops FAILS.
+      - ignore peer_median in the GO gate -> test_peer_outlier_holds_not_stops FAILS.
+      - use amount instead of the cp's own median as reference -> test_at_market_go FAILS.
+    """
+    # counterparty's own class-"x" history: $500 from 3 distinct payers
+    OBS = [{"payer": "0x%040x" % i, "amount": "500", "resource": "x"}
+           for i in range(3)]
+    REC = {"settlement_count": 250, "dispute_rate": 0.0,
+           "confirmed_settlement_count": 250, "distinct_payers": 3}
+
+    def _rec(self):
+        return dict(self.REC, price_observations=self.OBS)
+
+    # ---- pure pieces ----
+    def test_peer_group_median_needs_min(self):
+        self.assertIsNone(bw.peer_group_median(["1", "2"]))       # < 3 peers
+        self.assertEqual(bw.peer_group_median(["1", "3", "2"]), Decimal("2"))
+
+    def test_index_needs_distinct_peers(self):
+        # 5 observations but ONE counterparty -> no market rate for the class
+        one_cp = [{"counterparty": "0xA", "resource_class": "x", "amount": "500"}
+                  for _ in range(5)]
+        self.assertEqual(bw.build_peer_class_index(one_cp), {})
+
+    def test_index_across_counterparties(self):
+        obs = [{"counterparty": "0x%d" % i, "resource_class": "x", "amount": "100"}
+               for i in range(3)]
+        idx = bw.build_peer_class_index(obs)
+        self.assertEqual(idx["x"], "100")
+
+    def test_peer_anomaly_ratio_none_without_market(self):
+        self.assertIsNone(bw.peer_anomaly_ratio("500", None))
+
+    # ---- verdict integration ----
+    def test_peer_outlier_holds_not_stops(self):
+        # cp median $500 vs $100 market = 5x -> HOLD (would-be GO), NOT STOP
+        v = bw.decide_payment("500", self._rec(), [], counterparty="0xV",
+                              resource="x", hold_above="100000", peer_median="100")
+        self.assertEqual(v["verdict"], "HOLD")
+        self.assertAlmostEqual(v["signals"]["peer_price_ratio"], 5.0, places=1)
+        self.assertTrue(any("peer-group market rate" in r for r in v["reasons"]))
+
+    def test_at_market_go(self):
+        # priced AT the market -> the peer check doesn't block a GO
+        v = bw.decide_payment("500", self._rec(), [], counterparty="0xV",
+                              resource="x", hold_above="100000", peer_median="500")
+        self.assertEqual(v["verdict"], "GO")
+
+    def test_no_peer_median_no_effect(self):
+        v = bw.decide_payment("500", self._rec(), [], counterparty="0xV",
+                              resource="x", hold_above="100000", peer_median=None)
+        self.assertEqual(v["verdict"], "GO")
+        self.assertIsNone(v["signals"]["peer_price_ratio"])
+
+    def test_cold_start_uses_amount(self):
+        # established rep but NO price history -> reference is the quoted amount
+        rec = {"settlement_count": 250, "dispute_rate": 0.0,
+               "confirmed_settlement_count": 250, "distinct_payers": 5}
+        v = bw.decide_payment("300", rec, [], counterparty="0xV",
+                              hold_above="100000", peer_median="100")  # 3x market
+        self.assertEqual(v["verdict"], "HOLD")
+
+    def test_forecast_threads_peer_index(self):
+        class _Src:
+            def lookup(self, cp):
+                return {"settlement_count": 250, "dispute_rate": 0.0,
+                        "confirmed_settlement_count": 250, "distinct_payers": 3,
+                        "price_observations": TestPeerGroupCrossCheck.OBS}
+        payload = {"counterparty": "0xV0000000000000000000000000000000000001",
+                   "amount": "500", "asset": "USDC", "chain": "base",
+                   "resource": "x", "resource_class": "weather-call"}
+        resp, err = bw.forecast(payload, _Src(), hold_above="100000",
+                                peer_index={"weather-call": "100"})
+        self.assertIsNone(err)
+        self.assertEqual(resp["verdict"], "HOLD")  # 5x the peer market
+
+
 class TestConfigurableHoldThreshold(unittest.TestCase):
     """
     `hold_above` raises the amount at which a verdict escalates to HOLD, WITHOUT

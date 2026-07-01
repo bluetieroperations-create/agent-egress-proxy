@@ -51,6 +51,8 @@ GO_REPUTATION_MIN = 0.70          # below this trust score, never an automatic G
 THIN_HISTORY_SETTLEMENTS = 20     # fewer prior settlements => "thin" => cannot GO
 MIN_DISTINCT_PAYERS = 3           # confirmed settlements must span >= N payers (Sybil guard)
 MIN_CLASS_OBSERVATIONS = 3        # same-resource observations needed to trust a per-class median
+MIN_PEER_COUNTERPARTIES = 3       # distinct counterparties needed to define a peer-group market rate
+PEER_HOLD_RATIO = 3.0             # priced >= Nx the peer market for its class => escalate (HOLD)
 HOLD_AMOUNT_THRESHOLD = Decimal("10.00")  # amounts above this escalate (HOLD)
 HOLD_ANOMALY = 0.30               # price-anomaly score at/above this cannot GO
 STOP_ANOMALY_RATIO = 8.0          # charged >= 8x its own median => STOP (wildly off)
@@ -213,6 +215,70 @@ def price_anomaly_ratio(amount, price_history, observations=None, resource=None)
     return float(Decimal(str(amount)) / median)
 
 
+def peer_group_median(counterparty_medians, min_counterparties=MIN_PEER_COUNTERPARTIES):
+    """Pure: the peer-group market median for a class = the median of each
+    counterparty's OWN median price. Median-of-medians so one high-volume (or
+    Sybil) counterparty can't drag the market rate. Requires >= min_counterparties
+    distinct peers; too few -> None (not enough market to compare against)."""
+    vals = []
+    for m in counterparty_medians or []:
+        try:
+            d = Decimal(str(m))
+        except (InvalidOperation, ValueError, TypeError):
+            continue
+        if d.is_finite() and d > 0:
+            vals.append(d)
+    if len(vals) < min_counterparties:
+        return None
+    return _median_of(vals)
+
+
+def build_peer_class_index(class_observations,
+                           min_counterparties=MIN_PEER_COUNTERPARTIES):
+    """Pure: build {resource_class: peer_median} from CROSS-counterparty
+    observations. Each obs is a dict {counterparty, resource_class, amount}. Per
+    class: take each counterparty's median amount, then the peer-group median
+    across DISTINCT counterparties (>= min_counterparties, else the class is
+    omitted -- not enough peers to define a market rate). Values are strings."""
+    by_class = {}  # rc -> counterparty -> [Decimal amounts]
+    for o in class_observations or []:
+        if not isinstance(o, dict):
+            continue
+        rc, cp, amt = o.get("resource_class"), o.get("counterparty"), o.get("amount")
+        if not rc or not cp:
+            continue
+        try:
+            d = Decimal(str(amt))
+        except (InvalidOperation, ValueError, TypeError):
+            continue
+        if not d.is_finite() or d <= 0:
+            continue
+        by_class.setdefault(rc, {}).setdefault(cp, []).append(d)
+    index = {}
+    for rc, cps in by_class.items():
+        pm = peer_group_median([_median_of(v) for v in cps.values()],
+                               min_counterparties)
+        if pm is not None:
+            index[rc] = str(pm)
+    return index
+
+
+def peer_anomaly_ratio(reference_price, peer_median):
+    """Pure: ratio of a counterparty's reference price (its own class median, or
+    the quoted amount at cold-start) to the peer-group market median for that
+    class. None when there is no peer market to compare against."""
+    if peer_median is None:
+        return None
+    try:
+        pm = Decimal(str(peer_median))
+        ref = Decimal(str(reference_price))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    if not pm.is_finite() or pm <= 0 or not ref.is_finite() or ref <= 0:
+        return None
+    return float(ref / pm)
+
+
 def anomaly_score(ratio):
     """
     Map a price ratio to an anomaly score in 0..1 (0 = at/under the median and
@@ -252,7 +318,7 @@ def reputation_score(record):
 
 def decide_payment(amount, record, price_history,
                    counterparty=None, expected_recipient=None, hold_above=None,
-                   resource=None):
+                   resource=None, peer_median=None):
     """
     The core verdict. Returns a dict:
         {verdict, score, reasons[], signals{...}}
@@ -358,6 +424,15 @@ def decide_payment(amount, record, price_history,
                  else Decimal(str(hold_above)))
     over_budget = amount_dec > threshold
 
+    # Peer-group cross-check: is this counterparty priced far above COMPARABLE
+    # counterparties for the same resource class? Reference = its own class median
+    # (structural: "this vendor is expensive"), or the quoted amount at cold-start
+    # (no own history). Being above the market is EXPENSIVE, not fraud -- so it
+    # blocks an automatic GO (escalates to HOLD) but never STOPs on its own.
+    reference_price = _median if _median is not None else amount_dec
+    peer_ratio = peer_anomaly_ratio(reference_price, peer_median)
+    peer_hold = peer_ratio is not None and peer_ratio >= PEER_HOLD_RATIO
+
     # ---- verdict ----
     if stop:
         verdict = "STOP"
@@ -366,7 +441,8 @@ def decide_payment(amount, record, price_history,
               and not thin
               and not sybil_thin
               and a_score < HOLD_ANOMALY
-              and not over_budget)
+              and not over_budget
+              and not peer_hold)
         if go:
             verdict = "GO"
         else:
@@ -397,6 +473,11 @@ def decide_payment(amount, record, price_history,
                     "hand to spending-cap layer"
                     % (amount_dec, threshold)
                 )
+            if peer_hold:
+                reasons.append(
+                    "priced %.1fx the peer-group market rate for this class -- "
+                    "above comparable counterparties" % peer_ratio
+                )
 
     # Bayesian trust score for the response. Hard STOPs (sanction/known-bad/
     # mismatch) floor it to 0 -- there is no "trust" to report. Otherwise it is
@@ -412,6 +493,9 @@ def decide_payment(amount, record, price_history,
         # whether the anomaly baseline is wash-trade-resistant (per-payer) or the
         # flat median -- so the caller knows how trustworthy the price norm is.
         "price_basis": price_basis,
+        # how this counterparty's price compares to comparable counterparties for
+        # its resource class (None = no peer market / no resource_class supplied).
+        "peer_price_ratio": round(peer_ratio, 3) if peer_ratio is not None else None,
         # x402 settlement is on-chain and final.
         "reversibility": "irreversible",
         "blast_radius": "bounded" if not over_budget else "unbounded",
@@ -593,10 +677,15 @@ def validate_request(payload):
     if is_evm_address(counterparty):
         counterparty = counterparty.lower()
 
+    resource_class = payload.get("resource_class")
+    if resource_class is not None and not isinstance(resource_class, str):
+        return None, "resource_class must be a string"
+
     return {
         "agent_id": payload.get("agent_id"),
         "counterparty": counterparty,
         "resource": payload.get("resource"),
+        "resource_class": resource_class,
         "amount": amount,
         "asset": payload["asset"],
         "chain": payload["chain"],
@@ -627,7 +716,7 @@ def default_billing_asset(network, explicit, base_usdc, sepolia_usdc):
 
 
 def forecast(payload, reputation_source, ledger=None, readiness_source=None,
-             hold_above=None):
+             hold_above=None, peer_index=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
@@ -662,6 +751,8 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         expected_recipient=clean["expected_recipient"],
         hold_above=hold_above,
         resource=clean.get("resource"),
+        peer_median=(peer_index.get(clean["resource_class"])
+                     if peer_index and clean.get("resource_class") else None),
     )
 
     # Endpoint-readiness enrichment (address-based verdict + URL-based readiness).
@@ -757,6 +848,7 @@ class _Handler(BaseHTTPRequestHandler):
     billing = None  # x402.BillingGate, or None to disable billing
     readiness_source = None  # readiness.OntarioReadinessSource, or None
     hold_above = None  # amount above which the verdict escalates to HOLD (None = default)
+    peer_index = None  # {resource_class: peer_median} for the peer-group check, or None
 
     def _send_json(self, code, obj, extra_headers=None):
         body = json.dumps(obj, separators=(",", ":")).encode("utf-8")
@@ -864,7 +956,8 @@ class _Handler(BaseHTTPRequestHandler):
 
         response, err = forecast(payload, self.reputation_source, self.ledger,
                                  readiness_source=self.readiness_source,
-                                 hold_above=self.hold_above)
+                                 hold_above=self.hold_above,
+                                 peer_index=self.peer_index)
         if err is not None:
             self._send_json(400, {"error": err})
             return
@@ -931,7 +1024,7 @@ class BlackwallServer:
 
     def __init__(self, host="127.0.0.1", port=8402, reputation_source=None,
                  ledger=None, billing=None, readiness_source=None,
-                 hold_above=None):
+                 hold_above=None, peer_index=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -941,6 +1034,7 @@ class BlackwallServer:
         self.billing = billing
         self.readiness_source = readiness_source
         self.hold_above = hold_above
+        self.peer_index = peer_index
         self._httpd = None
 
     def serve_forever(self):
@@ -949,7 +1043,8 @@ class BlackwallServer:
                         "ledger": self.ledger,
                         "billing": self.billing,
                         "readiness_source": self.readiness_source,
-                        "hold_above": self.hold_above})
+                        "hold_above": self.hold_above,
+                        "peer_index": self.peer_index})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
         self.port = self._httpd.server_address[1]
         sys.stdout.write(

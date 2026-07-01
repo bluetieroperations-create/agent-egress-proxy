@@ -18,15 +18,19 @@ audited (315 tests).
 
 ## Signal depth
 
-### Peer-group price cross-check  *(the unbuilt half of the wash-trade defense)*
-Compare a counterparty's median not just to its *own* history (done) but to a
-**peer-group median** — what comparable services charge for the same resource
+### Peer-group price cross-check  — **engine shipped; self-populating index deferred**
+Compare a counterparty's median not just to its *own* history (per-class, done) but
+to a **peer-group median** — what comparable services charge for the same resource
 class. Catches a counterparty that's an outlier vs peers even if its own history
-looks self-consistent.
-- **Why deferred:** needs cross-counterparty aggregation by resource class — a new
-  index, not just per-counterparty rows.
+looks self-consistent. **The engine is built** (`peer_group_median`,
+`build_peer_class_index`, `peer_anomaly_ratio`, verdict integration — HOLD-only,
+Sybil-bounded; opt-in via a `peer_index` + `resource_class`). See `docs/MARKETPLACE.md`.
+- **Deferred half:** auto-building/refreshing the index from Blackwall's own ledger
+  — needs `resource_class` recorded on verdicts, a cross-counterparty
+  class-observation export, and a periodic rebuild (the rolling-aggregate infra
+  below). Until then, inject a `peer_index` from external market data.
 - **Caveat:** peer grouping is the hard part (what counts as "comparable"?); a bad
-  grouping is worse than none.
+  grouping is worse than none. `resource_class` must be a shared taxonomy.
 
 ### Self-owned readiness calibration
 `LocalReadinessSource` detects a 402 via **GET**, so a POST-only x402 endpoint
