@@ -28,11 +28,15 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   that uses a dep -- `eth-account` -- to sign a real EIP-3009 X-PAYMENT;
   see `clients/README.md`. Deploy: `Dockerfile`, `fly.toml`, `render.yaml`),
   `BLACKWALL.md`, `DISCOVERY.md`, `DEPLOY.md`, `COMPETITIVE.md`, `PRICING.md`,
+  `ap_gate.py` (treasury/AP payout gate -- folds the verdict into a
+  RELEASE/REVIEW/BLOCK decision at the approve-&-release step; see
+  `docs/TREASURY_AP.md`),
   `ROADMAP.md`, `docs/DATA_SOURCE_SPIKE.md`. Tests:
   `test_blackwall.py`, `test_ledger.py`, `test_reputation_onchain.py`,
   `test_settlement_watch.py`, `test_addresses.py`, `test_x402.py`,
   `test_mcp_server.py`, `test_reputation_store.py`, `test_facilitator.py`,
-  `test_discovery.py`, `test_sanctions.py`, `test_readiness.py`.
+  `test_discovery.py`, `test_sanctions.py`, `test_readiness.py`,
+  `test_ap_gate.py`.
 
 Convention: the security/decision-critical logic lives in small **pure functions**
 at the top of each module, unit-tested TDD-first with **mutation notes** (each
@@ -40,7 +44,7 @@ test states the mutation it kills). Keep new code stdlib-only and match this sty
 
 Run all tests:
 ```sh
-python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py
+python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py
 ```
 
 ## Standing working practice: ALWAYS deep audit → eval → verify
