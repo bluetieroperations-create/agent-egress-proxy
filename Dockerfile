@@ -28,7 +28,8 @@ ENV BLACKWALL_HOST=0.0.0.0 \
     BLACKWALL_STORE=/data/reputation.db \
     BLACKWALL_LEDGER=/data/ledger.jsonl \
     BLACKWALL_INGEST=1 \
-    BLACKWALL_SANCTIONS=/app/sanctions.txt
+    BLACKWALL_SANCTIONS=/app/sanctions.txt \
+    BLACKWALL_SANCTIONS_REFRESH=1
 # Set at deploy time (NOT baked into the image):
 #   BLACKWALL_PAY_TO       -- your funded EVM wallet (turns billing ON)
 #   BLACKWALL_FACILITATOR  -- real x402 facilitator base URL

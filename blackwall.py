@@ -977,6 +977,13 @@ def main(argv=None):
     p.add_argument("--sanctions", default=os.environ.get("BLACKWALL_SANCTIONS"),
                    help="path to an OFAC sanctioned-address file; STOPs sanctioned "
                         "counterparties (the free-baseline check, in one call)")
+    p.add_argument("--sanctions-refresh", action="store_true",
+                   default=bool(os.environ.get("BLACKWALL_SANCTIONS_REFRESH")),
+                   help="on startup, best-effort refresh the sanctions list from "
+                        "the published OFAC URL and merge into the baked-in "
+                        "snapshot (fail-open: keeps the snapshot if the fetch "
+                        "fails). Set on long-running deploys to stay current "
+                        "without re-baking the image.")
     p.add_argument("--readiness", default=os.environ.get("BLACKWALL_READINESS"),
                    help="base URL of an EXTERNAL endpoint-readiness oracle (e.g. "
                         "Ontario https://ontarioprotocol.com); folds its grade into "
@@ -1011,6 +1018,16 @@ def main(argv=None):
     if args.sanctions:
         from sanctions import SanctionsList, SanctionsScreeningSource
         sl = SanctionsList.from_file(args.sanctions)
+        if args.sanctions_refresh:
+            try:
+                added = sl.refresh_from_url()
+                sys.stdout.write(
+                    "blackwall: sanctions refreshed from OFAC list "
+                    "(+%d new, %d total)\n" % (added, len(sl)))
+            except Exception as e:  # fail-open -- keep the baked-in snapshot
+                sys.stdout.write(
+                    "blackwall: sanctions refresh failed (%s); using baked-in "
+                    "snapshot (%d addresses)\n" % (e, len(sl)))
         if sanctions_enabled(sl):
             base = reputation_source or MockReputationSource()
             reputation_source = SanctionsScreeningSource(base, sl)

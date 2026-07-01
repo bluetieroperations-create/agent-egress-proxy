@@ -34,6 +34,24 @@ def _normalize(addr):
     return addr.strip().lower() if isinstance(addr, str) else None
 
 
+def parse_sanctioned_addresses(text):
+    """Pure: extract EVM addresses from a plain-text OFAC list.
+
+    One token per line; `#` comments and blank lines ignored; only tokens that
+    validate as EVM addresses are kept (so a header line or a non-EVM chain entry
+    can't poison the list). Returns them in file order (dedup happens in the set).
+    """
+    out = []
+    for line in (text or "").splitlines():
+        tok = line.strip().split("#", 1)[0].strip()
+        if not tok:
+            continue
+        first = tok.split()[0]
+        if is_evm_address(first):
+            out.append(first)
+    return out
+
+
 class SanctionsList:
     """A set of sanctioned addresses with case-insensitive membership."""
 
@@ -71,19 +89,17 @@ class SanctionsList:
 
     def refresh_from_url(self, url=DEFAULT_OFAC_URL, timeout=15):
         """Fetch a plain-text address list and merge in the EVM addresses.
-        Returns the count added. Network errors propagate to the caller."""
+        Returns the count of NEW (previously-unseen) addresses added. Network
+        errors propagate to the caller (so the caller can fail-open)."""
         req = urllib.request.Request(
             url, headers={"User-Agent": "blackwall-sanctions/0.1",
                           "Accept": "text/plain"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
             text = r.read().decode("utf-8", "replace")
-        added = 0
-        for line in text.splitlines():
-            tok = line.strip().split("#", 1)[0].strip()
-            if tok and is_evm_address(tok.split()[0]):
-                self.add(tok.split()[0])
-                added += 1
-        return added
+        before = len(self._set)
+        for addr in parse_sanctioned_addresses(text):
+            self.add(addr)
+        return len(self._set) - before
 
 
 class SanctionsScreeningSource:

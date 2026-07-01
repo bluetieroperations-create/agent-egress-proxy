@@ -86,5 +86,43 @@ class TestDescriptorAdvertisesSuperset(unittest.TestCase):
         self.assertEqual(d2["screening"], [])
 
 
+class TestParseSanctionedAddresses(unittest.TestCase):
+    """
+    The pure parser for a plain-text OFAC list -- shared by from_file and the
+    startup refresh, so a header line or a non-EVM chain entry can't poison the
+    list.
+
+    Mutation notes:
+      - skip the is_evm_address filter -> test_ignores_non_evm FAILS.
+      - stop stripping `#` comments -> test_ignores_comments FAILS.
+      - return [] always -> test_extracts_addresses FAILS.
+    """
+    def test_extracts_addresses(self):
+        text = ("0x0330070fd38ec3bb94f58fa55d40368271e9e54a\n"
+                "0x08723392ed15743cc38513c4925f5e6be5c17243\n")
+        got = S.parse_sanctioned_addresses(text)
+        self.assertEqual(len(got), 2)
+        self.assertIn("0x0330070fd38ec3bb94f58fa55d40368271e9e54a", got)
+
+    def test_ignores_comments_and_blanks(self):
+        text = ("# OFAC EVM addresses -- header\n"
+                "\n"
+                "0x0330070fd38ec3bb94f58fa55d40368271e9e54a  # inline note\n")
+        got = S.parse_sanctioned_addresses(text)
+        self.assertEqual(got, ["0x0330070fd38ec3bb94f58fa55d40368271e9e54a"])
+
+    def test_ignores_non_evm(self):
+        # a bitcoin address / garbage token must not enter an EVM sanctions list
+        text = ("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa\n"
+                "not-an-address\n"
+                "0x0330070fd38ec3bb94f58fa55d40368271e9e54a\n")
+        got = S.parse_sanctioned_addresses(text)
+        self.assertEqual(got, ["0x0330070fd38ec3bb94f58fa55d40368271e9e54a"])
+
+    def test_empty_input(self):
+        self.assertEqual(S.parse_sanctioned_addresses(""), [])
+        self.assertEqual(S.parse_sanctioned_addresses(None), [])
+
+
 if __name__ == "__main__":
     unittest.main()

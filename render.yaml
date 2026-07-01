@@ -52,3 +52,8 @@ services:
       # sanctions.txt` + redeploy, or override to a self-maintained list on /data.
       - key: BLACKWALL_SANCTIONS
         value: /app/sanctions.txt
+      # Best-effort refresh the OFAC list from the published source on each start
+      # (fail-open: falls back to the baked-in snapshot). Keeps screening current
+      # without re-baking the image, since Render restarts pick up the latest.
+      - key: BLACKWALL_SANCTIONS_REFRESH
+        value: "1"
