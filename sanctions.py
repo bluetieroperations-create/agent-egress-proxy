@@ -56,6 +56,13 @@ class SanctionsList:
     """A set of sanctioned addresses with case-insensitive membership."""
 
     def __init__(self, addresses=None):
+        # Thread-safety contract: `_set` is shared between the background refresh
+        # thread (add) and request threads (membership + len). Under CPython those
+        # are single GIL-atomic ops and safe. Do NOT iterate `_set` (for / sorted
+        # / comprehension / .copy) from a request path while a refresh may run --
+        # that risks `RuntimeError: Set changed size during iteration`; snapshot
+        # via `list(_set)` under a lock if iteration is ever needed. A
+        # free-threaded CPython build would require locking add/in/len too.
         self._set = set()
         for a in (addresses or ()):
             self.add(a)
