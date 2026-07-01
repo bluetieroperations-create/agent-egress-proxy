@@ -57,6 +57,20 @@ CHAIN_IDS = {"base": 8453, "base-sepolia": 84532}
 DEFAULT_RPC = {"base": "https://mainnet.base.org",
                "base-sepolia": "https://sepolia.base.org"}
 
+_CAIP2 = {"base": "eip155:8453", "base-mainnet": "eip155:8453",
+          "base-sepolia": "eip155:84532", "ethereum": "eip155:1"}
+
+
+def _to_caip2(network):
+    """Bare/legacy network name -> CAIP-2 (x402 v2). CAIP-2 or unknown names
+    pass through so comparisons stay meaningful."""
+    if not network or not isinstance(network, str):
+        return network
+    n = network.strip()
+    if ":" in n:
+        return n
+    return _CAIP2.get(n.lower(), n)
+
 # Fallback EIP-712 domain (name, version) per token, used ONLY when --rpc is
 # absent. Verify against the chain for a real run -- these are not authoritative.
 FALLBACK_DOMAIN = {
@@ -155,7 +169,8 @@ def build_payment(challenge_req, signer_pk, signer_addr, network, rpc_url):
     EIP-712 domain must use it, not anything client-chosen."""
     pay_to = challenge_req["payTo"]
     asset = challenge_req["asset"]
-    value = int(challenge_req["maxAmountRequired"])
+    # x402 v2 uses `amount`; fall back to v1 `maxAmountRequired` for older servers.
+    value = int(challenge_req.get("amount", challenge_req.get("maxAmountRequired")))
     ttl = int(challenge_req.get("maxTimeoutSeconds", 120))
     valid_after = 0
     valid_before = int(time.time()) + max(ttl, 600)
@@ -222,10 +237,12 @@ def build_payment(challenge_req, signer_pk, signer_addr, network, rpc_url):
         raise SystemExit("x402_pay: signature self-check FAILED (recovered %s, "
                          "expected %s)" % (recovered, signer_addr))
 
+    # x402 v2 PaymentPayload: the chosen requirements go under `accepted`
+    # (echo the server's challenge_req so scheme/network/asset/amount match
+    # exactly), and the EIP-3009 authorization nests under payload.authorization.
     payment = {
-        "x402Version": 1,
-        "scheme": challenge_req.get("scheme", "exact"),
-        "network": network,
+        "x402Version": 2,
+        "accepted": dict(challenge_req),
         "payload": {
             "signature": _to_0x_hex(signed.signature),
             "authorization": {
@@ -291,11 +308,15 @@ def main(argv=None):
         sys.stdout.write("402 had no `accepts` array:\n%s\n" % raw.decode())
         return 1
     req = accepts[0]
+    # v2 uses `amount`; keep the v1 `maxAmountRequired` fallback for display.
+    adv_amount = req.get("amount", req.get("maxAmountRequired"))
     sys.stdout.write("402 challenge: payTo=%s amount=%s network=%s asset=%s\n"
-                     % (req.get("payTo"), req.get("maxAmountRequired"),
+                     % (req.get("payTo"), adv_amount,
                         req.get("network"), req.get("asset")))
 
-    if req.get("network") != args.network:
+    # v2 advertises CAIP-2 networks (eip155:8453); compare in CAIP-2 space so a
+    # bare --network name still matches (base == eip155:8453).
+    if _to_caip2(req.get("network")) != _to_caip2(args.network):
         sys.stderr.write("x402_pay: WARNING -- server advertises network %r but "
                          "--network is %r; signature will be rejected.\n"
                          % (req.get("network"), args.network))

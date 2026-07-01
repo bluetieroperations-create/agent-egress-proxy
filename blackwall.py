@@ -30,6 +30,7 @@ Mutating a threshold or dropping a STOP condition makes a named test FAIL.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import hmac
 import json
@@ -42,6 +43,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from addresses import addresses_equal, is_evm_address, normalize_address
 
 _AMOUNT_RE = re.compile(r"\A\d+(\.\d+)?\Z")  # plain decimal money string only
+
+
+def _b64_header(obj):
+    """Base64-encode a JSON dict for an x402 v2 HTTP transport header
+    (PAYMENT-REQUIRED / PAYMENT-RESPONSE). Header-safe (base64 is ASCII, no
+    newlines from compact separators)."""
+    raw = json.dumps(obj, separators=(",", ":")).encode("utf-8")
+    return base64.b64encode(raw).decode("ascii")
 
 # ---------------------------------------------------------------------------
 # Tunables -- the decision boundary's thresholds. Changing one of these should
@@ -854,6 +863,7 @@ class _Handler(BaseHTTPRequestHandler):
     readiness_source = None  # readiness.OntarioReadinessSource, or None
     hold_above = None  # amount above which the verdict escalates to HOLD (None = default)
     peer_index = None  # {resource_class: peer_median} for the peer-group check, or None
+    openapi_server_url = None  # public origin for the openapi.json servers[] (or None)
 
     def _send_json(self, code, obj, extra_headers=None):
         body = json.dumps(obj, separators=(",", ":")).encode("utf-8")
@@ -871,6 +881,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"status": "ok"})
         elif self.path in ("/.well-known/x402", "/v1/discovery"):
             self._send_json(200, self._descriptor())
+        elif self.path == "/openapi.json":
+            # x402scan probes the origin root for this discovery document.
+            self._send_json(200, self._openapi())
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -879,7 +892,7 @@ class _Handler(BaseHTTPRequestHandler):
         # the stdlib default returns 501, which reads as "service down". Mirror
         # do_GET's routing but send headers only, no body.
         code = 200 if self.path in ("/healthz", "/.well-known/x402",
-                                    "/v1/discovery") else 404
+                                    "/v1/discovery", "/openapi.json") else 404
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", "0")
@@ -887,7 +900,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _descriptor(self):
-        from discovery import build_descriptor, human_price
+        from discovery import build_descriptor
         from sanctions import SanctionsScreeningSource
         screening = isinstance(self.reputation_source, SanctionsScreeningSource)
         readiness = self.readiness_source is not None
@@ -895,12 +908,48 @@ class _Handler(BaseHTTPRequestHandler):
             cfg = self.billing.cfg
             return build_descriptor(
                 pay_to=cfg.pay_to,
-                price=human_price(cfg.price_atomic, cfg.decimals),
-                asset="USDC", network=cfg.network,
+                # atomic units + asset CONTRACT, mirroring the authoritative 402
+                # (spec 5.1.2: accepts[].amount is atomic) so a consumer reading
+                # the descriptor isn't off by 10^decimals.
+                price=str(cfg.price_atomic),
+                asset=cfg.asset, network=cfg.network,
                 mcp=True, sanctions_screening=screening,
                 endpoint_readiness=readiness)
         return build_descriptor(mcp=True, sanctions_screening=screening,
                                 endpoint_readiness=readiness)
+
+    def _openapi(self):
+        """The x402scan OpenAPI discovery document for this origin.
+
+        `priced` mirrors whether billing is on so we never advertise a free
+        oracle as paid (or vice-versa). The public origin URL comes from the
+        BLACKWALL_ORIGIN env when set (a hosted deploy behind a proxy can't infer
+        its own public URL); otherwise it is derived from the Host header, and
+        omitted (relative paths) as a last resort -- x402scan resolves relative
+        paths against the probed origin, so discovery still works."""
+        from discovery import build_openapi
+        server_url = self.openapi_server_url
+        if not server_url:
+            host = self.headers.get("Host")
+            if host:
+                # We serve plain HTTP locally, but a hosted deploy is fronted by
+                # HTTPS (Render/Fly terminate TLS). Advertise https for any
+                # non-localhost host so the discovered URL is reachable.
+                scheme = "http" if host.split(":")[0] in (
+                    "127.0.0.1", "localhost", "::1") else "https"
+                server_url = "%s://%s" % (scheme, host)
+        priced = self.billing is not None
+        kwargs = {}
+        if priced:
+            # Reflect the live value-aligned band into the advertised price.
+            pricing = getattr(self.billing, "pricing", None)
+            if pricing is not None:
+                # Advertise the real FEE band [min_fee, max_fee] -- NOT
+                # free_below (that is an amount-at-risk threshold, not a fee, and
+                # would produce an inverted min>max band).
+                kwargs["min_fee"] = str(pricing.min_fee)
+                kwargs["max_fee"] = str(pricing.max_fee)
+        return build_openapi(server_url=server_url, priced=priced, **kwargs)
 
     def _read_json_body(self):
         """Return (payload, None) or (None, error_string). Bounded + guarded."""
@@ -945,19 +994,36 @@ class _Handler(BaseHTTPRequestHandler):
         # retries with X-PAYMENT (or X-PAYMENT-SESSION). The verdict logic is
         # unchanged -- billing is a gate in front of it.
         remaining = None
+        settlement_tx = None
         if self.billing is not None and not free_stop:
             resource = payload.get("resource") or self.path
             result = self.billing.check(
                 resource,
-                x_payment=self.headers.get("X-PAYMENT"),
+                # v2 canonical header is PAYMENT-SIGNATURE; keep X-PAYMENT for
+                # v1/CDP-client compatibility. Prefer PAYMENT-SIGNATURE if both.
+                x_payment=(self.headers.get("PAYMENT-SIGNATURE")
+                           or self.headers.get("X-PAYMENT")),
                 x_session=self.headers.get("X-PAYMENT-SESSION"),
                 # value-aligned pricing: the fee tracks the payment being forecast.
                 amount_at_risk=(payload.get("amount") if isinstance(payload, dict)
                                 else None))
             if not result.paid:
-                self._send_json(result.status or 402, result.body)
+                extra = None
+                # v2 HTTP transport: mirror the PaymentRequired body into the
+                # base64 PAYMENT-REQUIRED header (canonical location). The JSON
+                # body is kept too (x402scan's probe parses either; legacy
+                # clients read the body). Only for real 402s carrying accepts.
+                if (result.status or 402) == 402 and isinstance(result.body, dict) \
+                        and "accepts" in result.body:
+                    extra = {"PAYMENT-REQUIRED": _b64_header(result.body)}
+                self._send_json(result.status or 402, result.body, extra_headers=extra)
                 return
             remaining = result.session_remaining
+            # A per-call settlement produced an on-chain tx hash; carry it back in
+            # the v2 PAYMENT-RESPONSE header (base64 SettlementResponse) so the
+            # paying client learns its settlement. Session/free serves carry no
+            # per-call settlement, so no header is emitted for them.
+            settlement_tx = result.settlement
 
         response, err = forecast(payload, self.reputation_source, self.ledger,
                                  readiness_source=self.readiness_source,
@@ -966,9 +1032,17 @@ class _Handler(BaseHTTPRequestHandler):
         if err is not None:
             self._send_json(400, {"error": err})
             return
-        extra = {"X-PAYMENT-SESSION-REMAINING": str(remaining)} \
-            if remaining is not None else None
-        self._send_json(200, response, extra_headers=extra)
+        extra = {}
+        if remaining is not None:
+            extra["X-PAYMENT-SESSION-REMAINING"] = str(remaining)
+        if settlement_tx:
+            # v2 SettlementResponse: {success, transaction, network}. network is
+            # advertised in CAIP-2 (the same value the 402 challenge carried).
+            from x402 import to_caip2
+            settle_resp = {"success": True, "transaction": settlement_tx,
+                           "network": to_caip2(self.billing.cfg.network)}
+            extra["PAYMENT-RESPONSE"] = _b64_header(settle_resp)
+        self._send_json(200, response, extra_headers=extra or None)
 
     def _do_session(self):
         # Fund-once, many-checks: a payment covering the session price returns a
@@ -1029,7 +1103,7 @@ class BlackwallServer:
 
     def __init__(self, host="127.0.0.1", port=8402, reputation_source=None,
                  ledger=None, billing=None, readiness_source=None,
-                 hold_above=None, peer_index=None):
+                 hold_above=None, peer_index=None, openapi_server_url=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -1040,6 +1114,7 @@ class BlackwallServer:
         self.readiness_source = readiness_source
         self.hold_above = hold_above
         self.peer_index = peer_index
+        self.openapi_server_url = openapi_server_url
         self._httpd = None
 
     def serve_forever(self):
@@ -1049,7 +1124,8 @@ class BlackwallServer:
                         "billing": self.billing,
                         "readiness_source": self.readiness_source,
                         "hold_above": self.hold_above,
-                        "peer_index": self.peer_index})
+                        "peer_index": self.peer_index,
+                        "openapi_server_url": self.openapi_server_url})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
         self.port = self._httpd.server_address[1]
         sys.stdout.write(
@@ -1118,6 +1194,10 @@ def main(argv=None):
     p.add_argument("--network", default=os.environ.get("BLACKWALL_NETWORK", "base"),
                    help="x402 settlement network advertised in the 402 challenge "
                         "(default 'base'; use 'base-sepolia' for the testnet dry-run)")
+    p.add_argument("--origin", default=os.environ.get("BLACKWALL_ORIGIN"),
+                   help="public origin URL (e.g. https://agent-egress-proxy."
+                        "onrender.com) advertised in GET /openapi.json for "
+                        "x402scan discovery; defaults to the request Host header")
     p.add_argument("--asset", default=os.environ.get("BLACKWALL_ASSET"),
                    help="USDC contract advertised in the 402 challenge; defaults to "
                         "Base mainnet USDC, or Base-Sepolia USDC when --network is "
@@ -1264,10 +1344,16 @@ def main(argv=None):
                 % args.hold_above)
             sys.stderr.flush()
 
+    # Public origin for the openapi.json servers[] block. A hosted deploy behind
+    # a TLS-terminating proxy can't infer its own https URL, so it's set via
+    # BLACKWALL_ORIGIN (or --origin). When unset the handler falls back to the
+    # Host header, so discovery still works without config.
+    origin = args.origin or os.environ.get("BLACKWALL_ORIGIN") or None
     server = BlackwallServer(host=args.host, port=args.port, ledger=led,
                              billing=billing, reputation_source=reputation_source,
                              readiness_source=readiness_source,
-                             hold_above=hold_above)
+                             hold_above=hold_above,
+                             openapi_server_url=origin)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

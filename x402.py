@@ -7,9 +7,25 @@ funds a session of many forecasts). The elegant symmetry -- the service that
 judges x402 payments is itself paid via x402.
 
     Agent -> POST /v1/forecast-payment            (no payment)
-    Blackwall -> 402 { accepts:[{price, asset, chain, payTo}], ... }
-    Agent -> retry with `X-PAYMENT: <base64 payload>`
+    Blackwall -> 402 { x402Version:2, resource, accepts:[{amount, asset, network, payTo}], ... }
+    Agent -> retry with `X-PAYMENT` / `PAYMENT-SIGNATURE: <base64 payload>`
     Blackwall -> verify (FACILITATOR) + match + anti-replay -> serve verdict
+
+PROTOCOL VERSION: x402 v2 (x402Version == 2). The v2 wire format (per the
+x402-foundation spec, specs/x402-specification-v2.md + transports-v2/http.md):
+
+  * networks are CAIP-2 (`eip155:8453` for Base mainnet, `eip155:84532` for
+    Base Sepolia), not the bare `base` / `base-sepolia` string.
+  * each `accepts[]` entry uses `amount` (atomic units), NOT `maxAmountRequired`;
+    `resource`/`description`/`mimeType` move OUT of each accept into a top-level
+    `resource` ResourceInfo object on the PaymentRequired body.
+  * the payment payload is `{x402Version:2, accepted:{<the chosen requirements>},
+    payload:{signature, authorization:{from,to,value,validAfter,validBefore,
+    nonce}}}` -- the EIP-3009 authorization nests under `payload.authorization`
+    exactly as v1, so the replay/match core is unchanged.
+  * the facilitator envelope stays `{x402Version, paymentPayload,
+    paymentRequirements}` and its responses (`isValid`/`invalidReason`,
+    `success`/`transaction`/`errorReason`) are version-independent.
 
 DIVISION OF LABOR (spec 5.4): the FACILITATOR does signature + balance + on-chain
 replay for free, so we DO NOT rebuild those -- they sit behind the `Facilitator`
@@ -36,10 +52,35 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from addresses import addresses_equal, is_evm_address
 
-X402_VERSION = 1
+X402_VERSION = 2
 DEFAULT_SCHEME = "exact"          # EIP-3009 transferWithAuthorization
 BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"          # Base mainnet
 BASE_SEPOLIA_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"  # Base Sepolia (Circle testnet)
+
+# CAIP-2 network identifiers (x402 v2 requires CAIP-2, not the bare chain name).
+# The billing layer keeps the human name internally ("base"/"base-sepolia") and
+# converts to CAIP-2 at the protocol edge (the 402 challenge + payment matching).
+_CAIP2 = {
+    "base": "eip155:8453",
+    "base-mainnet": "eip155:8453",
+    "base-sepolia": "eip155:84532",
+    "ethereum": "eip155:1",
+    "mainnet": "eip155:1",
+}
+
+
+def to_caip2(network):
+    """Map a human/legacy network name to its CAIP-2 id. A value that already
+    looks like CAIP-2 (`namespace:reference`) is passed through unchanged, so an
+    operator can pin an exotic chain directly. Unknown bare names are returned
+    as-is (fail-visible: the facilitator will reject `invalid_network` rather
+    than us silently mislabeling the chain)."""
+    if not network or not isinstance(network, str):
+        return network
+    n = network.strip()
+    if ":" in n:                       # already CAIP-2 (e.g. eip155:8453)
+        return n
+    return _CAIP2.get(n.lower(), n)
 
 # EIP-712 domain (name, version) of each supported asset -- read on-chain from
 # the token's name()/version(). The "exact" scheme carries this in the 402's
@@ -49,6 +90,24 @@ EIP712_DOMAINS = {
     BASE_USDC.lower():         {"name": "USD Coin", "version": "2"},
     BASE_SEPOLIA_USDC.lower(): {"name": "USDC", "version": "2"},
 }
+
+# The forecast endpoint's input schema + output example, embedded in the v2 402
+# challenge's Bazaar extension so x402scan can INVOKE the endpoint (a missing
+# input schema => the resource is marked non-invocable / skipped). Mirrors the
+# openapi.json requestBody and the MCP tool's args.
+DEFAULT_FORECAST_INPUT_SCHEMA = {
+    "type": "object",
+    "required": ["counterparty", "amount", "asset", "chain"],
+    "properties": {
+        "counterparty": {"type": "string"},
+        "amount": {"type": "string"},
+        "asset": {"type": "string"},
+        "chain": {"type": "string"},
+        "payer": {"type": "string"},
+        "resource": {"type": "string"},
+    },
+}
+DEFAULT_FORECAST_OUTPUT_EXAMPLE = {"verdict": "GO", "receipt_id": "..."}
 
 
 # ===========================================================================
@@ -72,20 +131,24 @@ def to_atomic(amount, decimals=6):
 # ===========================================================================
 # PURE protocol core (unit-tested)
 # ===========================================================================
-def build_requirements(price_atomic, pay_to, resource, asset=BASE_USDC,
+def build_requirements(price_atomic, pay_to, resource=None, asset=BASE_USDC,
                        network="base", scheme=DEFAULT_SCHEME,
-                       max_timeout_seconds=120, description="Blackwall payment forecast"):
-    """One entry of the 402 `accepts` array (x402 payment requirements)."""
+                       max_timeout_seconds=120, description=None):
+    """One entry of the v2 `accepts` array (x402 v2 PaymentRequirements).
+
+    v2 vs v1: amount is `amount` (was `maxAmountRequired`); `network` is CAIP-2;
+    the resource/description/mimeType are NOT here (they live in the top-level
+    ResourceInfo on the PaymentRequired body -- see make_402_body). `resource`
+    and `description` remain accepted args for call-site compatibility but are
+    ignored at this level.
+    """
     req = {
         "scheme": scheme,
-        "network": network,
-        "maxAmountRequired": str(price_atomic),
-        "resource": resource,
-        "description": description,
-        "mimeType": "application/json",
+        "network": to_caip2(network),
+        "amount": str(price_atomic),
+        "asset": asset,
         "payTo": pay_to,
         "maxTimeoutSeconds": max_timeout_seconds,
-        "asset": asset,
     }
     # `extra` carries the asset's EIP-712 domain for the exact scheme; the
     # facilitator needs it to verify the EIP-3009 signature (else it rejects with
@@ -97,11 +160,77 @@ def build_requirements(price_atomic, pay_to, resource, asset=BASE_USDC,
     return req
 
 
-def make_402_body(requirements_list, error=None):
-    """The JSON body of a 402 Payment Required response."""
-    body = {"x402Version": X402_VERSION, "accepts": requirements_list}
+MAX_RESOURCE_URL = 2048  # cap the (attacker-controlled) resource url
+
+
+def build_resource_info(url, description="Blackwall payment forecast",
+                        mime_type="application/json", service_name="Blackwall",
+                        tags=None):
+    """The v2 top-level ResourceInfo object describing the protected resource.
+
+    `serviceName` is capped at 32 printable-ASCII chars and `tags` at 5 entries
+    (each <=32 chars) per the v2 spec, so a mis-set config can't produce a body
+    a strict validator (x402scan) rejects.
+
+    The `url` is the request's `resource` field, which is ATTACKER-CONTROLLED
+    (the client sends it). It flows into the base64 PAYMENT-REQUIRED response
+    header, so an unbounded url produces an oversized header that some proxies /
+    clients silently drop (the discovery library warns HEADERS_OVERFLOW above
+    16 KB). Cap it at MAX_RESOURCE_URL (the v2 iconUrl bound) so a crafted
+    resource can't bloat the header."""
+    if isinstance(url, str) and len(url) > MAX_RESOURCE_URL:
+        url = url[:MAX_RESOURCE_URL]
+    info = {"url": url}
+    if description:
+        info["description"] = description
+    if mime_type:
+        info["mimeType"] = mime_type
+    if service_name:
+        info["serviceName"] = str(service_name)[:32]
+    if tags:
+        info["tags"] = [str(t)[:32] for t in list(tags)[:5]]
+    return info
+
+
+def build_bazaar_extension(input_schema=None, output_example=None):
+    """The `extensions.bazaar` block that makes a v2 402 challenge INVOCABLE.
+
+    x402scan's v2 validator (validatePaymentRequiredDetailed) reads the endpoint's
+    input schema from a SPECIFIC nested path and, if it's absent, raises
+    SCHEMA_INPUT_MISSING and marks the resource `skipped` (non-invocable). The
+    exact path it reads (verified against @agentcash/discovery 1.7.5,
+    src/core/protocols/x402/v2/schema.ts::extractSchemas2):
+
+        extensions.bazaar.schema.properties.input.properties.body   -> input JSON schema
+        extensions.bazaar.schema.properties.output.properties.example -> output example
+
+    So the input schema must be nested under `.input.properties.body`, not just
+    `.input`. This function builds that exact shape."""
+    props = {}
+    if input_schema is not None:
+        props["input"] = {"properties": {"body": input_schema}}
+    if output_example is not None:
+        props["output"] = {"properties": {"example": output_example}}
+    return {"bazaar": {"schema": {"properties": props}}}
+
+
+def make_402_body(requirements_list, error=None, resource=None, extensions=None):
+    """The JSON body of a v2 402 Payment Required response (PaymentRequired).
+
+    v2 shape: {x402Version:2, error?, resource:{ResourceInfo}, accepts:[...],
+    extensions:{}}. `resource` is a ResourceInfo dict (build_resource_info); when
+    omitted it is derived from the first requirement's `resource`-less accept and
+    a bare url so the body still validates. `extensions` carries the Bazaar
+    input/output schema (build_bazaar_extension) so the endpoint is INVOCABLE
+    rather than skipped by x402scan.
+    """
+    body = {"x402Version": X402_VERSION}
     if error:
         body["error"] = error
+    if resource is not None:
+        body["resource"] = resource
+    body["accepts"] = requirements_list
+    body["extensions"] = extensions if isinstance(extensions, dict) else {}
     return body
 
 
@@ -141,20 +270,47 @@ def _authorization(payment):
     return auth if isinstance(auth, dict) else {}
 
 
+def _accepted(payment):
+    """The v2 chosen-requirements object (`accepted`), type-safely -> dict.
+
+    v2 carries the client's chosen PaymentRequirements under `accepted`; v1 put
+    scheme/network at the payment's top level. Return {} for a non-dict so
+    scheme/network reads below can't raise on a crafted payload."""
+    if not isinstance(payment, dict):
+        return {}
+    acc = payment.get("accepted")
+    return acc if isinstance(acc, dict) else {}
+
+
+def _req_amount(req):
+    """The required atomic amount from a requirements dict, v2 (`amount`) with a
+    v1 (`maxAmountRequired`) fallback so a mixed call site still works."""
+    if "amount" in req:
+        return req["amount"]
+    return req.get("maxAmountRequired")
+
+
 def payment_satisfies(payment, req):
     """
-    PURE: does this decoded payment satisfy the requirements *at the protocol
+    PURE: does this decoded v2 payment satisfy the requirements *at the protocol
     level*? Returns (ok, reason). This is Blackwall's job; the cryptographic
     validity (signature/balance) is the facilitator's and is NOT checked here.
 
-    Checks: scheme, network, recipient (payTo) and amount (>= maxAmountRequired),
-    and asset when the payment declares one.
+    Checks: scheme, network, recipient (payTo) and amount (>= required amount),
+    and asset when the payment declares one. v2 reads scheme/network/asset from
+    the payment's `accepted` block, falling back to the v1 top-level fields.
     """
     if not isinstance(payment, dict):
         return False, "payment is not an object"
-    if payment.get("scheme") != req["scheme"]:
+
+    acc = _accepted(payment)
+    scheme = acc.get("scheme", payment.get("scheme"))
+    network = acc.get("network", payment.get("network"))
+    if scheme != req["scheme"]:
         return False, "scheme mismatch"
-    if payment.get("network") != req["network"]:
+    # Match networks in CAIP-2 space so a client that (legally) sends the bare
+    # name still matches a CAIP-2 requirement, and vice-versa.
+    if to_caip2(network) != to_caip2(req["network"]):
         return False, "network mismatch"
 
     auth = _authorization(payment)
@@ -162,8 +318,10 @@ def payment_satisfies(payment, req):
     if not pay_to or not addresses_equal(pay_to, req["payTo"]):
         return False, "recipient (payTo) mismatch"
 
-    # asset, if the payment declares it, must match.
-    asset = payment.get("asset") or (payment.get("payload") or {}).get("asset")
+    # asset, if the payment declares it, must match. v2: accepted.asset;
+    # v1 fallbacks: top-level asset or payload.asset.
+    asset = (acc.get("asset") or payment.get("asset")
+             or (payment.get("payload") or {}).get("asset"))
     if asset is not None and not addresses_equal(asset, req["asset"]):
         return False, "asset mismatch"
 
@@ -171,7 +329,14 @@ def payment_satisfies(payment, req):
         value = int(str(auth.get("value")))
     except (TypeError, ValueError):
         return False, "missing/invalid payment value"
-    if value < int(req["maxAmountRequired"]):
+    required = int(_req_amount(req))
+    # `exact` scheme (spec 6.1.2): value must EQUAL the required amount -- an
+    # overpay is a dead-on-arrival acceptance the real facilitator rejects, so we
+    # fail it here with a clear reason. (An `upto` scheme, if added, allows <=.)
+    if req.get("scheme") == "exact":
+        if value != required:
+            return False, "underpaid" if value < required else "overpaid"
+    elif value < required:
         return False, "underpaid"
 
     # A real EIP-3009 authorization always carries a nonce; one without it is
@@ -408,9 +573,22 @@ class PricingPolicy:
 class BillingConfig:
     def __init__(self, price="0.001", asset=BASE_USDC, network="base",
                  pay_to=None, decimals=6, session_credits=1000,
-                 session_price=None, session_ttl=86400):
+                 session_price=None, session_ttl=86400,
+                 service_name="Blackwall",
+                 resource_description="Blackwall payment forecast",
+                 resource_tags=("x402", "payments", "risk"),
+                 input_schema=None, output_example=None):
         if not is_evm_address(pay_to or ""):
             raise ValueError("BillingConfig.pay_to must be a valid EVM address")
+        self.service_name = service_name
+        self.resource_description = resource_description
+        self.resource_tags = resource_tags
+        # The forecast input schema (for the Bazaar extension on the 402 body) so
+        # x402scan can invoke the endpoint. Defaults to the forecast request shape.
+        self.input_schema = (input_schema if input_schema is not None
+                             else DEFAULT_FORECAST_INPUT_SCHEMA)
+        self.output_example = (output_example if output_example is not None
+                              else DEFAULT_FORECAST_OUTPUT_EXAMPLE)
         self.price_atomic = to_atomic(price, decimals)
         if self.price_atomic is None or self.price_atomic <= 0:
             raise ValueError("invalid price")
@@ -458,9 +636,23 @@ class BillingGate:
             self.cfg.pay_to, resource, asset=self.cfg.asset, network=self.cfg.network)
 
     def _challenge(self, resource, error=None, price_atomic=None):
+        # v2: the resource/description/mimeType live in a top-level ResourceInfo,
+        # not inside each accept. Build it from the resource URL being paid for.
+        info = build_resource_info(
+            resource,
+            description=self.cfg.resource_description,
+            service_name=self.cfg.service_name,
+            tags=self.cfg.resource_tags)
+        # Bazaar input/output schema -> the challenge is INVOCABLE (x402scan does
+        # not mark it `skipped` for a missing input schema).
+        ext = None
+        if self.cfg.input_schema is not None:
+            ext = build_bazaar_extension(self.cfg.input_schema,
+                                         self.cfg.output_example)
         return BillingResult(
             False, status=402,
-            body=make_402_body([self._requirements(resource, price_atomic)], error))
+            body=make_402_body([self._requirements(resource, price_atomic)],
+                               error, resource=info, extensions=ext))
 
     def check(self, resource, x_payment=None, x_session=None, amount_at_risk=None,
               price_atomic=None):

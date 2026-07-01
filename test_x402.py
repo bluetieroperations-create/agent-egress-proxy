@@ -9,6 +9,9 @@ orchestration with a mock facilitator. Each class notes the mutation it kills.
 """
 import base64
 import json
+import os
+import shutil
+import subprocess
 import unittest
 
 import x402 as X
@@ -19,11 +22,16 @@ USDC = X.BASE_USDC
 
 def make_payment(to=PAY_TO, value="1000", scheme="exact", network="base",
                  nonce="0xnonce1", asset=None):
-    p = {"x402Version": 1, "scheme": scheme, "network": network,
-         "payload": {"authorization": {"to": to, "value": value, "nonce": nonce},
-                     "signature": "0xsig"}}
+    # x402 v2 PaymentPayload: the chosen requirements go under `accepted`; the
+    # EIP-3009 authorization nests under `payload.authorization` (unchanged).
+    accepted = {"scheme": scheme, "network": X.to_caip2(network)}
     if asset is not None:
-        p["asset"] = asset
+        accepted["asset"] = asset
+    p = {"x402Version": 2, "accepted": accepted,
+         "payload": {"authorization": {"from": "0x" + "a" * 40, "to": to,
+                                       "value": value, "nonce": nonce,
+                                       "validAfter": "0", "validBefore": "99999999999"},
+                     "signature": "0xsig"}}
     return p
 
 
@@ -110,9 +118,13 @@ class TestPaymentSatisfies(unittest.TestCase):
         ok, _ = X.payment_satisfies(make_payment(value="1000"), self.req)
         self.assertTrue(ok)
 
-    def test_overpay_ok(self):
-        ok, _ = X.payment_satisfies(make_payment(value="5000"), self.req)
-        self.assertTrue(ok)
+    def test_overpay_rejected_exact(self):
+        # exact scheme (spec 6.1.2) requires value == amount; an overpay is
+        # rejected here rather than dying at the facilitator. Mutation: accept
+        # value >= required -> this FAILS.
+        ok, reason = X.payment_satisfies(make_payment(value="5000"), self.req)
+        self.assertFalse(ok)
+        self.assertEqual(reason, "overpaid")
 
     def test_underpaid(self):
         ok, reason = X.payment_satisfies(make_payment(value="999"), self.req)
@@ -266,7 +278,7 @@ class TestBillingGate(unittest.TestCase):
         # The unpaid 402 must quote the per-resource override price, not the base
         # price -- else the agent pays the quote and is rejected as underpaid.
         r = self.gate.check("https://r", price_atomic=100000)
-        self.assertEqual(r.body["accepts"][0]["maxAmountRequired"], "100000")
+        self.assertEqual(r.body["accepts"][0]["amount"], "100000")
 
 
 class TestPricingPolicy(unittest.TestCase):
@@ -320,7 +332,7 @@ class TestValueAlignedGate(unittest.TestCase):
     def test_large_gets_priced_402(self):
         r = self.gate.check("https://r", amount_at_risk="50")
         self.assertFalse(r.paid)
-        self.assertEqual(r.body["accepts"][0]["maxAmountRequired"], "50000")
+        self.assertEqual(r.body["accepts"][0]["amount"], "50000")
 
     def test_pay_the_value_aligned_price(self):
         r = self.gate.check("https://r", amount_at_risk="50",
@@ -344,6 +356,116 @@ class TestValueAlignedGate(unittest.TestCase):
         self.assertEqual(store.consume(tok)[1], 3)  # 5 -> consumed 2 here -> 3
 
 
+class TestV2WireFormat(unittest.TestCase):
+    """x402 v2 wire-format conformance (specs/x402-specification-v2.md).
+
+    Mutation notes:
+      - X402_VERSION back to 1 -> test_version_is_2 FAILS.
+      - emit `maxAmountRequired` instead of `amount` -> test_accept_uses_amount FAILS.
+      - keep the bare network name -> test_network_is_caip2 FAILS.
+      - drop the top-level ResourceInfo -> test_body_has_resource_info FAILS.
+    """
+    def test_version_is_2(self):
+        self.assertEqual(X.X402_VERSION, 2)
+
+    def test_caip2_mapping(self):
+        self.assertEqual(X.to_caip2("base"), "eip155:8453")
+        self.assertEqual(X.to_caip2("base-sepolia"), "eip155:84532")
+        # already-CAIP-2 passes through; unknown bare name is left visible.
+        self.assertEqual(X.to_caip2("eip155:8453"), "eip155:8453")
+        self.assertEqual(X.to_caip2("weirdchain"), "weirdchain")
+
+    def test_accept_uses_amount(self):
+        r = X.build_requirements(1000, PAY_TO, "https://r", asset=USDC)
+        self.assertEqual(r["amount"], "1000")
+        self.assertNotIn("maxAmountRequired", r)
+
+    def test_network_is_caip2(self):
+        r = X.build_requirements(1000, PAY_TO, "https://r", network="base")
+        self.assertEqual(r["network"], "eip155:8453")
+
+    def test_accept_has_no_resource_fields(self):
+        # v2 moves resource/description/mimeType OUT of each accept.
+        r = X.build_requirements(1000, PAY_TO, "https://r")
+        for k in ("resource", "description", "mimeType"):
+            self.assertNotIn(k, r)
+
+    def test_body_has_resource_info(self):
+        info = X.build_resource_info("https://r", service_name="Blackwall")
+        body = X.make_402_body([X.build_requirements(1000, PAY_TO)], resource=info)
+        self.assertEqual(body["x402Version"], 2)
+        self.assertEqual(body["resource"]["url"], "https://r")
+        self.assertEqual(body["resource"]["serviceName"], "Blackwall")
+        self.assertIn("accepts", body)
+        self.assertIn("extensions", body)
+
+    def test_resource_info_caps(self):
+        # serviceName capped at 32 chars, tags capped at 5 entries / 32 chars.
+        info = X.build_resource_info("https://r", service_name="x" * 50,
+                                     tags=["a"] * 9)
+        self.assertEqual(len(info["serviceName"]), 32)
+        self.assertEqual(len(info["tags"]), 5)
+
+    def test_v2_payment_satisfies(self):
+        req = X.build_requirements(1000, PAY_TO, "https://r", asset=USDC, network="base")
+        ok, reason = X.payment_satisfies(make_payment(value="1000"), req)
+        self.assertTrue(ok, reason)
+
+    def test_v2_gate_402_body_shape(self):
+        gate = X.BillingGate(X.BillingConfig(price="0.001", pay_to=PAY_TO),
+                             facilitator=X.MockFacilitator())
+        r = gate.check("https://r")
+        self.assertEqual(r.body["x402Version"], 2)
+        self.assertEqual(r.body["resource"]["url"], "https://r")
+        acc = r.body["accepts"][0]
+        self.assertEqual(acc["amount"], "1000")
+        self.assertEqual(acc["network"], "eip155:8453")
+        self.assertEqual(acc["payTo"], PAY_TO)
+
+    def test_402_body_has_bazaar_input_schema(self):
+        # x402scan marks a 402 challenge non-invocable ("skipped") if it lacks an
+        # input schema at extensions.bazaar.schema.properties.input.properties.body.
+        # Mutation: drop the bazaar extension -> this FAILS -> endpoint skipped.
+        gate = X.BillingGate(X.BillingConfig(price="0.001", pay_to=PAY_TO),
+                             facilitator=X.MockFacilitator())
+        body = gate.check("https://r").body
+        inp = (body["extensions"]["bazaar"]["schema"]["properties"]
+               ["input"]["properties"]["body"])
+        self.assertEqual(inp["type"], "object")
+        self.assertIn("counterparty", inp["properties"])
+
+    def test_resource_url_capped(self):
+        # The resource url is attacker-controlled and flows into the base64
+        # PAYMENT-REQUIRED header; an unbounded url bloats the header. Mutation:
+        # drop the url cap -> this FAILS (header/body oversize).
+        info = X.build_resource_info("https://x/" + "a" * 100000)
+        self.assertLessEqual(len(info["url"]), X.MAX_RESOURCE_URL)
+
+    def test_build_bazaar_extension_shape(self):
+        ext = X.build_bazaar_extension({"type": "object"}, {"verdict": "GO"})
+        self.assertEqual(ext["bazaar"]["schema"]["properties"]["input"]
+                         ["properties"]["body"], {"type": "object"})
+        self.assertEqual(ext["bazaar"]["schema"]["properties"]["output"]
+                         ["properties"]["example"], {"verdict": "GO"})
+
+    def test_facilitator_envelope_is_v2(self):
+        # The facilitator POST envelope must carry x402Version: 2.
+        captured = {}
+
+        class _CaptureFac(X.HttpFacilitator):
+            def _post(self, path, payment, requirements):
+                captured["path"] = path
+                captured["body"] = {"x402Version": X.X402_VERSION,
+                                    "paymentPayload": payment,
+                                    "paymentRequirements": requirements}
+                return {"isValid": True, "success": True, "transaction": "0xtx"}
+
+        fac = _CaptureFac("http://unused")
+        req = X.build_requirements(1000, PAY_TO, "https://r")
+        fac.verify(make_payment(), req)
+        self.assertEqual(captured["body"]["x402Version"], 2)
+
+
 class TestBillingConfig(unittest.TestCase):
     def test_requires_valid_pay_to(self):
         with self.assertRaises(ValueError):
@@ -352,6 +474,47 @@ class TestBillingConfig(unittest.TestCase):
     def test_rejects_bad_price(self):
         with self.assertRaises(ValueError):
             X.BillingConfig(price="0", pay_to=PAY_TO)
+
+
+# Optional live conformance: run our generated 402 body through the REAL
+# published x402scan validator (@agentcash/discovery). Skipped unless node + the
+# installed validator project are present (set X402SCAN_VALIDATE_DIR to the dir
+# holding a node project with @agentcash/discovery). This pins the wire format
+# against ground truth, not our reading of the spec.
+_VALIDATE_DIR = os.environ.get(
+    "X402SCAN_VALIDATE_DIR",
+    os.path.join(os.path.dirname(__file__), "..", "scratch-x402spec", "validate"))
+
+
+class TestX402ScanConformance(unittest.TestCase):
+    def setUp(self):
+        if shutil.which("node") is None:
+            self.skipTest("node not available")
+        if not os.path.isdir(os.path.join(_VALIDATE_DIR, "node_modules",
+                                          "@agentcash", "discovery")):
+            self.skipTest("@agentcash/discovery not installed in validate dir")
+
+    def _validate(self, body):
+        script = (
+            "const D=require('@agentcash/discovery');"
+            "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{"
+            "const v=D.validatePaymentRequiredDetailed(JSON.parse(s));"
+            "process.stdout.write(JSON.stringify(v.summary||{}));});")
+        p = subprocess.run(["node", "-e", script], input=json.dumps(body),
+                           capture_output=True, text=True, cwd=_VALIDATE_DIR,
+                           timeout=30)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        return json.loads(p.stdout)
+
+    def test_generated_402_body_passes_real_validator(self):
+        gate = X.BillingGate(
+            X.BillingConfig(price="0.05", pay_to=PAY_TO, network="base"),
+            facilitator=X.MockFacilitator())
+        body = gate.check("https://blackwall.example/v1/forecast-payment",
+                          amount_at_risk="50").body
+        summary = self._validate(body)
+        # 0 errors == invocable + accepted by x402scan's v2 validator.
+        self.assertEqual(summary.get("errorCount"), 0, summary)
 
 
 if __name__ == "__main__":
