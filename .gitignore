@@ -7,3 +7,6 @@ __pycache__/
 .env
 .env.*
 verify-*.log
+.blackwall-creds
+*.blackwall-creds
+*.env

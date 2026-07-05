@@ -24,8 +24,10 @@ import urllib.error
 import urllib.request
 
 from cdp_auth import build_cdp_jwt
+from creds_local import load_creds
 from x402 import CDP_FACILITATOR_URL, X402_VERSION, build_requirements
 
+load_creds()  # auto-load ~/.blackwall-creds so setting env vars by hand is optional
 KEY_ID = os.environ.get("CDP_API_KEY_ID")
 SECRET = os.environ.get("CDP_API_KEY_SECRET")
 

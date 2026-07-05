@@ -30,6 +30,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "clients"))
 
+from creds_local import load_creds  # noqa: E402
 from x402 import BASE_USDC, CdpFacilitator, build_requirements  # noqa: E402
 
 # Public: Blackwall's payTo (recipient). Overridable, defaults to the live one.
@@ -44,6 +45,7 @@ except ValueError:
 
 
 def main():
+    load_creds()  # auto-load ~/.blackwall-creds so setting env vars by hand is optional
     cdp_id = os.environ.get("CDP_API_KEY_ID")
     cdp_secret = os.environ.get("CDP_API_KEY_SECRET")
     burner = os.environ.get("BAZAAR_WALLET_KEY")
