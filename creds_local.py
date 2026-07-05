@@ -28,7 +28,7 @@ def load_creds(path=CREDS_PATH):
     """
     loaded = []
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             lines = f.readlines()
     except OSError:
         return loaded
