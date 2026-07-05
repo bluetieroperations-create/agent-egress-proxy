@@ -15,6 +15,9 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `addresses.py` (EVM address validation/normalization),
   `x402.py` (Blackwall's own x402 billing: 402 challenge, facilitator seam,
   replay guard, sessions),
+  `cdp_auth.py` (pure-Python Ed25519 (RFC 8032) + CDP Bearer-JWT, so the
+  `CdpFacilitator` in x402.py can settle through the authenticated Coinbase CDP
+  facilitator -- the one whose settlements Bazaar catalogs),
   `mcp_server.py` (MCP stdio server wrapping the verdict engine),
   `reputation_store.py` (SQLite indexed reputation store + record merging),
   `facilitator_sim.py` (reference x402 facilitator for the HttpFacilitator path),
@@ -44,7 +47,7 @@ test states the mutation it kills). Keep new code stdlib-only and match this sty
 
 Run all tests:
 ```sh
-python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py
+python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py
 ```
 
 ## Standing working practice: ALWAYS deep audit → eval → verify

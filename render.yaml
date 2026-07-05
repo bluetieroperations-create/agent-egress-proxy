@@ -47,6 +47,18 @@ services:
         sync: false
       - key: BLACKWALL_RECEIPT_KEY
         sync: false
+      # CDP (Coinbase Developer Platform) facilitator credentials. When BOTH are
+      # set, the service settles through the authenticated CDP facilitator --
+      # required for Coinbase Bazaar to catalog the endpoint on its first settled
+      # payment. Leave BLACKWALL_FACILITATOR unset and these two set to use the
+      # canonical CDP mainnet URL; set BLACKWALL_FACILITATOR only to override it.
+      # Without these, settlement falls back to the keyless community facilitator
+      # in BLACKWALL_FACILITATOR (settles on-chain but does NOT list on Bazaar).
+      # CDP_API_KEY_SECRET is the base64 Ed25519 secret from the CDP portal.
+      - key: CDP_API_KEY_ID
+        sync: false
+      - key: CDP_API_KEY_SECRET
+        sync: false
       # OFAC screening ON by default: points at the snapshot baked into the image
       # (Dockerfile COPY sanctions.txt). Refresh with `python sanctions.py
       # sanctions.txt` + redeploy, or override to a self-maintained list on /data.

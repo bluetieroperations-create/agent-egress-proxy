@@ -1294,8 +1294,17 @@ def main(argv=None):
     billing = None
     if args.pay_to:
         from x402 import (BASE_SEPOLIA_USDC, BASE_USDC, BillingConfig,
-                          BillingGate, HttpFacilitator, PricingPolicy)
-        facilitator = HttpFacilitator(args.facilitator) if args.facilitator else None
+                          BillingGate, PricingPolicy, choose_facilitator)
+        # CDP facilitator (authenticated) when CDP creds are present -- this is
+        # the path that gets settlements catalogued by Coinbase Bazaar. Community
+        # facilitators (keyless) settle on-chain but never list. The selection
+        # (and the guard against misrouting a CDP token to a community URL) lives
+        # in choose_facilitator so it can be unit-tested.
+        facilitator, fac_note = choose_facilitator(
+            args.facilitator, os.environ.get("CDP_API_KEY_ID"),
+            os.environ.get("CDP_API_KEY_SECRET"))
+        sys.stderr.write("blackwall: %s\n" % fac_note)
+        sys.stderr.flush()
         pricing = None
         if args.value_pricing:
             pricing = PricingPolicy(

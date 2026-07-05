@@ -6,7 +6,7 @@ RUN useradd -m -u 10001 blackwall
 WORKDIR /app
 
 # Source (stdlib only -- nothing to pip install).
-COPY blackwall.py x402.py ledger.py addresses.py reputation_store.py \
+COPY blackwall.py x402.py cdp_auth.py ledger.py addresses.py reputation_store.py \
      reputation_onchain.py settlement_watch.py discovery.py mcp_server.py \
      facilitator_sim.py sanctions.py readiness.py ./
 

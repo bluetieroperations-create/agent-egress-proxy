@@ -390,6 +390,12 @@ class HttpFacilitator:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
+    def _auth_headers(self, path):
+        """Per-request auth headers -- empty for a keyless facilitator. Subclasses
+        that authenticate (CdpFacilitator) override this; `path` is passed so the
+        token can bind to the exact endpoint (/verify vs /settle)."""
+        return {}
+
     def _post(self, path, payment, requirements):
         import urllib.error
         import urllib.request
@@ -398,11 +404,12 @@ class HttpFacilitator:
                            "paymentRequirements": requirements}).encode("utf-8")
         # Some facilitators sit behind Cloudflare, which tarpits/blocks the
         # default Python-urllib UA (manifests as a timeout). Send a browser UA.
-        req = urllib.request.Request(
-            self.base_url + path, data=body,
-            headers={"Content-Type": "application/json",
-                     "Accept": "application/json",
-                     "User-Agent": "Mozilla/5.0 (Blackwall x402 facilitator client)"})
+        headers = {"Content-Type": "application/json",
+                   "Accept": "application/json",
+                   "User-Agent": "Mozilla/5.0 (Blackwall x402 facilitator client)"}
+        headers.update(self._auth_headers(path))
+        req = urllib.request.Request(self.base_url + path, data=body,
+                                     headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 return json.loads(r.read().decode("utf-8"))
@@ -432,6 +439,87 @@ class HttpFacilitator:
         return {"success": bool(resp.get("success")),
                 "transaction": resp.get("transaction"),
                 "reason": resp.get("errorReason") or "ok"}
+
+
+# CDP (Coinbase Developer Platform) mainnet facilitator.
+CDP_FACILITATOR_URL = "https://api.cdp.coinbase.com/platform/v2/x402"
+_CDP_HOST_SUFFIX = "cdp.coinbase.com"
+
+
+def _is_cdp_host(url):
+    """
+    True iff `url`'s REGISTRABLE HOST is cdp.coinbase.com or a subdomain of it.
+
+    This is the security boundary for choose_facilitator: it decides whether a
+    CDP-authenticated Bearer JWT may be minted for and sent to `url`. It must be
+    a real hostname parse -- a substring test ("cdp.coinbase.com" in url) is
+    bypassable by suffix hosts (cdp.coinbase.com.evil.com), userinfo tricks
+    (cdp.coinbase.com@evil.com), and substrings in the path/query, any of which
+    would leak an auth token to an attacker-controlled host.
+    """
+    from urllib.parse import urlsplit
+    host = (urlsplit(url).hostname or "").lower()
+    return host == _CDP_HOST_SUFFIX or host.endswith("." + _CDP_HOST_SUFFIX)
+
+
+class CdpFacilitator(HttpFacilitator):
+    """
+    The CDP-hosted facilitator. Same verify/settle contract as HttpFacilitator,
+    but every request carries a per-call `Authorization: Bearer <JWT>` (EdDSA,
+    bound to METHOD+host+path, 120s TTL -- see cdp_auth.build_cdp_jwt). This is
+    the ONLY facilitator whose settlements Coinbase Bazaar catalogs, so it is what
+    turns a settled payment into a marketplace listing; keyless community
+    facilitators settle on Base mainnet but never list.
+
+    Credentials come from CDP_API_KEY_ID / CDP_API_KEY_SECRET (Ed25519 secret,
+    base64). If either is missing the token can't be minted and requests fail
+    CLOSED (verify/settle return valid/success False via the base class's
+    exception handling) rather than hitting CDP unauthenticated.
+    """
+
+    def __init__(self, key_id, key_secret, base_url=CDP_FACILITATOR_URL,
+                 timeout=20.0):
+        super().__init__(base_url, timeout=timeout)
+        self.key_id = key_id
+        self.key_secret = key_secret
+
+    def _auth_headers(self, path):
+        # Import here so the module has no hard dependency on cdp_auth unless the
+        # CDP path is actually used.
+        from cdp_auth import build_cdp_jwt
+        token = build_cdp_jwt(self.key_id, self.key_secret, "POST",
+                              self.base_url + path)
+        return {"Authorization": "Bearer " + token}
+
+
+def choose_facilitator(facilitator_url, cdp_id, cdp_secret):
+    """
+    Pick the facilitator from config, returning (facilitator_or_None, note).
+
+    When CDP creds are present we use the AUTHENTICATED CdpFacilitator and route
+    it to the CDP endpoint -- even if BLACKWALL_FACILITATOR still holds a stale
+    community URL. Sending a CDP Bearer JWT to a community facilitator would both
+    misroute settlement and leak an auth token, so a non-CDP `facilitator_url` is
+    explicitly ignored (with a note) rather than silently honored. An explicit
+    CDP host in `facilitator_url` (e.g. a staging endpoint) IS honored.
+    """
+    if cdp_id and cdp_secret:
+        if facilitator_url and _is_cdp_host(facilitator_url):
+            url = facilitator_url
+            note = "CDP facilitator (authenticated) at %s -- Bazaar-eligible" % url
+        else:
+            url = CDP_FACILITATOR_URL
+            if facilitator_url:
+                note = ("CDP creds set -- using CDP facilitator %s and IGNORING "
+                        "non-CDP BLACKWALL_FACILITATOR=%s" % (url, facilitator_url))
+            else:
+                note = "CDP facilitator (authenticated) at %s -- Bazaar-eligible" % url
+        return CdpFacilitator(cdp_id, cdp_secret, base_url=url), note
+    if facilitator_url:
+        return (HttpFacilitator(facilitator_url),
+                "HTTP facilitator at %s (keyless -- settles but NOT Bazaar-listed)"
+                % facilitator_url)
+    return None, "built-in mock facilitator (no --facilitator, no CDP creds)"
 
 
 # ===========================================================================

@@ -517,5 +517,109 @@ class TestX402ScanConformance(unittest.TestCase):
         self.assertEqual(summary.get("errorCount"), 0, summary)
 
 
+class TestCdpFacilitator(unittest.TestCase):
+    """The authenticated CDP facilitator adds a per-request Bearer JWT bound to
+    the exact endpoint, and fails CLOSED when creds can't mint a token."""
+
+    KEY_ID = "11111111-2222-3333-4444-555555555555"
+    SECRET = base64.b64encode(bytes(range(64))).decode()
+
+    def _uri_claim(self, header_value):
+        token = header_value.split(" ", 1)[1]
+        claims_b64 = token.split(".")[1]
+        pad = claims_b64 + "=" * (-len(claims_b64) % 4)
+        return json.loads(base64.urlsafe_b64decode(pad))["uri"]
+
+    def test_auth_header_binds_to_settle_and_verify_paths(self):
+        # Kills a token reused across endpoints -- CDP rejects a JWT whose `uri`
+        # claim doesn't match the exact METHOD+host+path of the call.
+        fac = X.CdpFacilitator(self.KEY_ID, self.SECRET)
+        h_settle = fac._auth_headers("/settle")
+        h_verify = fac._auth_headers("/verify")
+        self.assertTrue(h_settle["Authorization"].startswith("Bearer "))
+        self.assertEqual(self._uri_claim(h_settle["Authorization"]),
+                         "POST api.cdp.coinbase.com/platform/v2/x402/settle")
+        self.assertEqual(self._uri_claim(h_verify["Authorization"]),
+                         "POST api.cdp.coinbase.com/platform/v2/x402/verify")
+
+    def test_default_base_url_is_cdp_mainnet(self):
+        self.assertEqual(X.CdpFacilitator(self.KEY_ID, self.SECRET).base_url,
+                         X.CDP_FACILITATOR_URL)
+
+    def test_missing_secret_fails_closed(self):
+        # Kills a path that would hit CDP unauthenticated (or crash): a bad/empty
+        # secret must make verify/settle return valid/success False, not raise.
+        fac = X.CdpFacilitator(self.KEY_ID, "")  # empty secret -> can't mint JWT
+        req = X.build_requirements(1000, PAY_TO, "https://r")
+        self.assertFalse(fac.verify(make_payment(), req)["valid"])
+        self.assertFalse(fac.settle(make_payment(), req)["success"])
+
+
+class TestChooseFacilitator(unittest.TestCase):
+    SECRET = base64.b64encode(bytes(range(64))).decode()
+
+    def test_cdp_creds_select_cdp_at_cdp_url(self):
+        fac, note = X.choose_facilitator(None, "kid", self.SECRET)
+        self.assertIsInstance(fac, X.CdpFacilitator)
+        self.assertEqual(fac.base_url, X.CDP_FACILITATOR_URL)
+        self.assertIn("Bazaar", note)
+
+    def test_cdp_creds_ignore_stale_community_url(self):
+        # THE FOOTGUN: a leftover community BLACKWALL_FACILITATOR must NOT receive
+        # CDP-authenticated requests -- route to CDP and say so, don't misroute.
+        fac, note = X.choose_facilitator("https://facilitator.x402.rs",
+                                         "kid", self.SECRET)
+        self.assertIsInstance(fac, X.CdpFacilitator)
+        self.assertEqual(fac.base_url, X.CDP_FACILITATOR_URL)
+        self.assertIn("IGNORING", note)
+
+    def test_cdp_creds_honor_explicit_cdp_override(self):
+        url = "https://api.cdp.coinbase.com/platform/v2/x402"
+        fac, _ = X.choose_facilitator(url, "kid", self.SECRET)
+        self.assertEqual(fac.base_url, url)
+
+    def test_no_cdp_creds_uses_keyless_http(self):
+        fac, note = X.choose_facilitator("https://facilitator.x402.rs", None, None)
+        self.assertIsInstance(fac, X.HttpFacilitator)
+        self.assertNotIsInstance(fac, X.CdpFacilitator)
+        self.assertIn("NOT Bazaar", note)
+
+    def test_nothing_configured_is_none(self):
+        fac, _ = X.choose_facilitator(None, None, None)
+        self.assertIsNone(fac)
+
+    def test_partial_cdp_creds_do_not_select_cdp(self):
+        # Only one of the pair set -> not CDP (would fail to mint a token).
+        fac, _ = X.choose_facilitator("https://facilitator.x402.rs", "kid", None)
+        self.assertNotIsInstance(fac, X.CdpFacilitator)
+
+    def test_cdp_host_guard_rejects_lookalike_urls(self):
+        # THE TOKEN-LEAK BUG: the "is this a CDP host?" test must be a real
+        # hostname check, not a substring match. A stale/typo'd/hostile
+        # BLACKWALL_FACILITATOR whose STRING merely CONTAINS "cdp.coinbase.com"
+        # must NOT cause a CDP Bearer JWT to be minted for and sent to that host.
+        # Each of these has a non-CDP registrable host -> route to canonical CDP.
+        spoofs = [
+            "https://cdp.coinbase.com.evil.com/x402",   # suffix attack
+            "https://evil.com/?x=cdp.coinbase.com",     # substring in query
+            "https://evil.com/cdp.coinbase.com/path",   # substring in path
+            "http://cdp.coinbase.com@evil.com/x402",    # userinfo @ trick
+            "https://notcdp.coinbase.com.attacker.net", # lookalike
+        ]
+        for url in spoofs:
+            fac, _ = X.choose_facilitator(url, "kid", self.SECRET)
+            # It stays a CdpFacilitator (creds are present) but must be pointed at
+            # the CANONICAL CDP url -- never at the spoofed host.
+            self.assertEqual(fac.base_url, X.CDP_FACILITATOR_URL,
+                             "leaked CDP token target: %s" % url)
+
+    def test_cdp_host_guard_honors_real_cdp_subdomains(self):
+        # The strict check must still allow genuine CDP hosts (api./staging.).
+        for url in ("https://api.cdp.coinbase.com/platform/v2/x402",
+                    "https://staging.cdp.coinbase.com/x402"):
+            fac, _ = X.choose_facilitator(url, "kid", self.SECRET)
+            self.assertEqual(fac.base_url, url)
+
+
 if __name__ == "__main__":
     unittest.main()
