@@ -37,6 +37,7 @@ import json
 import os
 import re
 import sys
+import time
 from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -796,6 +797,27 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     })
     verdict["receipt_id"] = sign_receipt(receipt_payload)
 
+    # Public, third-party-verifiable Ed25519 signature over the attested
+    # decision. The receipt_id above is a keyed HMAC (private audit trail); this
+    # `signed_receipt` is what ANYONE can verify with only our published public
+    # key, Blackwall out of the loop. FAIL-OPEN: a signing error must never break
+    # the verdict -- the caller still gets the decision, just without the
+    # portable proof.
+    try:
+        from receipt_sig import build_signed_receipt
+        verdict["signed_receipt"] = build_signed_receipt(
+            receipt_id=verdict["receipt_id"],
+            counterparty=clean["counterparty"],
+            amount=str(clean["amount"]),
+            asset=clean["asset"],
+            chain=clean["chain"],
+            verdict=verdict["verdict"],
+            score=verdict["score"],
+            ts=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        )
+    except Exception:
+        pass
+
     if ledger is not None:
         # The caller gets a capability token to later report this payment's
         # outcome -- only the party that received the verdict can report on it.
@@ -887,8 +909,40 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, self._openapi())
         elif self.path == "/v1/stats":
             self._handle_stats()
+        elif self.path == "/.well-known/blackwall-receipt-key.json":
+            self._handle_receipt_key()
         else:
             self._send_json(404, {"error": "not found"})
+
+    def _handle_receipt_key(self):
+        """Publish the Ed25519 PUBLIC key that signs receipts, so any third party
+        can verify a `signed_receipt` without contacting us. Public by design --
+        it is a public key. Fail-closed to 503 only if signing is unavailable."""
+        try:
+            from receipt_sig import public_key_hex, key_id, is_dev_key
+            pub = public_key_hex()
+            self._send_json(200, {
+                "algo": "ed25519",
+                "key_id": key_id(pub),
+                "public_key": pub,
+                # True => this server signs with the PUBLIC dev seed; its receipts
+                # are forgeable. A verifier should refuse to trust dev-key receipts.
+                "dev_key": is_dev_key(),
+                "signed_fields": ["v", "receipt_id", "counterparty", "amount",
+                                  "asset", "chain", "verdict", "score", "ts",
+                                  "key_id"],
+                "canonicalization": "JSON, keys sorted lexicographically by "
+                                    "UTF-16 code unit (Python sort_keys), item "
+                                    "separator ',', key/value separator ':', no "
+                                    "insignificant whitespace, non-ASCII emitted "
+                                    "as raw UTF-8 bytes (NOT \\uXXXX-escaped), "
+                                    "then UTF-8 encoded. Sign/verify over the "
+                                    "signed-receipt object MINUS its 'sig' field. "
+                                    "'amount' is a decimal string; 'score' is a "
+                                    "JSON number in shortest round-trip form.",
+            })
+        except Exception:
+            self._send_json(503, {"error": "receipt signing unavailable"})
 
     def _handle_stats(self):
         """Operator-only usage metrics over the ledger (measure the funnel).

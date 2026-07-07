@@ -1163,5 +1163,87 @@ class TestStatsEndpoint(unittest.TestCase):
         self.assertEqual(body["distinct_payers"], 2)
 
 
+class TestSignedReceiptForecast(unittest.TestCase):
+    """forecast() attaches a third-party-verifiable Ed25519 signed_receipt."""
+
+    def setUp(self):
+        self.src = bw.MockReputationSource()
+        self.payload = {"counterparty": "0xKNOWNGOOD000000000000000000000000000001",
+                        "amount": "0.09", "asset": "USDC", "chain": "base"}
+
+    def test_signed_receipt_present_and_verifies(self):
+        import receipt_sig
+        resp, err = bw.forecast(self.payload, self.src)
+        self.assertIsNone(err)
+        sr = resp.get("signed_receipt")
+        self.assertIsNotNone(sr)
+        # mutation: emitting a receipt that does not actually verify.
+        self.assertTrue(receipt_sig.verify_signed_receipt(sr, receipt_sig.public_key_hex()))
+        # mutation: signing an identity/decision that differs from what was returned.
+        self.assertEqual(sr["verdict"], resp["verdict"])
+        self.assertEqual(sr["counterparty"], self.payload["counterparty"])
+        self.assertEqual(sr["receipt_id"], resp["receipt_id"])
+
+    def test_signed_receipt_binds_verdict(self):
+        # mutation: signing a subset that omits the verdict -- flipping it must break verify.
+        import receipt_sig
+        resp, _ = bw.forecast(self.payload, self.src)
+        sr = dict(resp["signed_receipt"])
+        sr["verdict"] = "STOP" if sr["verdict"] != "STOP" else "GO"
+        self.assertFalse(receipt_sig.verify_signed_receipt(sr, receipt_sig.public_key_hex()))
+
+    def test_fail_open_when_signing_unavailable(self):
+        # mutation: letting a signing error break the verdict. Signing is a
+        # best-effort add-on; the decision must still be returned.
+        import receipt_sig
+        from unittest import mock
+        with mock.patch.object(receipt_sig, "build_signed_receipt",
+                               side_effect=RuntimeError("boom")):
+            resp, err = bw.forecast(self.payload, self.src)
+        self.assertIsNone(err)
+        self.assertEqual(resp["verdict"], "GO")
+        self.assertNotIn("signed_receipt", resp)  # omitted, not crashed
+
+
+class TestReceiptKeyEndpoint(unittest.TestCase):
+    """GET /.well-known/blackwall-receipt-key.json publishes the verify key."""
+
+    def _serve(self):
+        import threading
+        from http.server import ThreadingHTTPServer
+        handler = type("_H", (bw._Handler,),
+                       {"reputation_source": bw.MockReputationSource()})
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        port = httpd.server_address[1]
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        return port
+
+    def _get(self, port, path):
+        from urllib.request import urlopen
+        r = urlopen("http://127.0.0.1:%d%s" % (port, path), timeout=3)
+        return r.status, json.loads(r.read())
+
+    def test_publishes_key_that_verifies_a_real_receipt(self):
+        # The full third-party flow: fetch the published key over HTTP, then use
+        # it to verify a receipt the server actually produced.
+        # mutation: publishing a key that cannot verify our own receipts.
+        import receipt_sig
+        port = self._serve()
+        status, body = self._get(port, "/.well-known/blackwall-receipt-key.json")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["algo"], "ed25519")
+        self.assertEqual(body["public_key"], receipt_sig.public_key_hex())
+        # mutation: not surfacing whether the forgeable dev key is in use.
+        self.assertEqual(body["dev_key"], receipt_sig.is_dev_key())
+        resp, _ = bw.forecast(
+            {"counterparty": "0xKNOWNGOOD000000000000000000000000000001",
+             "amount": "0.09", "asset": "USDC", "chain": "base"},
+            bw.MockReputationSource())
+        self.assertTrue(receipt_sig.verify_signed_receipt(
+            resp["signed_receipt"], body["public_key"]))
+
+
 if __name__ == "__main__":
     unittest.main()
