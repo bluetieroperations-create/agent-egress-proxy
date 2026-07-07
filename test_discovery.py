@@ -45,6 +45,16 @@ class TestBuildDescriptor(unittest.TestCase):
         self.assertEqual(d["resources"][0]["outputVerdicts"], ["GO", "HOLD", "STOP"])
         self.assertEqual(d["mcp"]["tool"], "forecast_payment")
 
+    def test_advertises_verifiable_receipts(self):
+        # Mutation: dropping the receipts block (or claiming issuer-only
+        # verification) hides that verdicts are third-party verifiable.
+        d = D.build_descriptor()
+        r = d["receipts"]
+        self.assertTrue(r["signed"])
+        self.assertEqual(r["scheme"], "ed25519")
+        self.assertEqual(r["verifiable"], "third-party")
+        self.assertEqual(r["publicKeyUrl"], "/.well-known/blackwall-receipt-key.json")
+
     def test_json_serializable(self):
         json.dumps(D.build_descriptor(pay_to=PAY_TO, price="0.001"))
 

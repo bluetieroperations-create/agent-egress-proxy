@@ -83,7 +83,8 @@ def build_descriptor(pay_to=None, price=None, asset="USDC", network="base",
     resource = {
         "method": "POST",
         "path": "/v1/forecast-payment",
-        "description": "Forecast a payment: GO / HOLD / STOP + signed receipt.",
+        "description": ("Forecast a payment: GO / HOLD / STOP + a "
+                        "third-party-verifiable Ed25519 signed receipt."),
         "input": _FORECAST_INPUT,
         "outputVerdicts": ["GO", "HOLD", "STOP"],
         "accepts": accepts,
@@ -106,6 +107,15 @@ def build_descriptor(pay_to=None, price=None, asset="USDC", network="base",
                  "base", "usdc"],
         "signals": signals,
         "screening": (["sanctions-ofac"] if sanctions_screening else []),
+        # Every verdict carries an Ed25519 signature ANYONE can verify with the
+        # published public key -- neutral proof of what Blackwall attested,
+        # without trusting (or contacting) Blackwall to check it.
+        "receipts": {
+            "signed": True,
+            "scheme": "ed25519",
+            "verifiable": "third-party",
+            "publicKeyUrl": "/.well-known/blackwall-receipt-key.json",
+        },
         "resources": [resource],
         "mcp": ({"transport": "stdio", "tool": "forecast_payment"}
                 if mcp else None),
