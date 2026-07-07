@@ -244,5 +244,46 @@ class TestFlywheel(unittest.TestCase):
         self.assertEqual(resp3["verdict"], "GO")
 
 
+class TestUsageStats(unittest.TestCase):
+    """usage_stats: operator funnel metrics over the event stream."""
+
+    EVENTS = [
+        {"kind": "verdict", "ts": "2026-07-07T01:00:00Z", "counterparty": "0xA",
+         "agent_id": "did:1", "payer": "0xP1", "resource": "r1", "verdict": "GO"},
+        {"kind": "verdict", "ts": "2026-07-07T02:00:00Z", "counterparty": "0xB",
+         "agent_id": "did:1", "payer": "0xP2", "resource": "r1", "verdict": "STOP"},
+        {"kind": "verdict", "ts": "2026-07-07T03:00:00Z", "counterparty": "0xA",
+         "agent_id": "did:2", "payer": "0xP2", "resource": "r2", "verdict": "HOLD"},
+        {"kind": "outcome", "ts": "2026-07-07T04:00:00Z", "outcome": "settled"},  # not a verdict
+    ]
+
+    def test_counts_and_mix(self):
+        # mutation: counting outcome events, or miscounting the verdict mix
+        s = L.usage_stats(self.EVENTS)
+        self.assertEqual(s["verdicts_total"], 3)                    # outcome excluded
+        self.assertEqual(s["by_verdict"], {"GO": 1, "STOP": 1, "HOLD": 1})
+
+    def test_distinct_callers_deduped(self):
+        # mutation: counting rows instead of DISTINCT identifiers
+        s = L.usage_stats(self.EVENTS)
+        self.assertEqual(s["distinct_counterparties"], 2)          # 0xA twice -> 1
+        self.assertEqual(s["distinct_agents"], 2)
+        self.assertEqual(s["distinct_payers"], 2)                  # 0xP2 twice -> 1
+        self.assertEqual(s["distinct_resources"], 2)
+
+    def test_time_bounds(self):
+        s = L.usage_stats(self.EVENTS)
+        self.assertEqual(s["first_verdict"], "2026-07-07T01:00:00Z")
+        self.assertEqual(s["last_verdict"], "2026-07-07T03:00:00Z")
+
+    def test_empty_and_missing_fields(self):
+        # no events, and a verdict missing identifiers -> no crash, zeros
+        self.assertEqual(L.usage_stats([])["verdicts_total"], 0)
+        s = L.usage_stats([{"kind": "verdict", "verdict": "GO"}])
+        self.assertEqual(s["verdicts_total"], 1)
+        self.assertEqual(s["distinct_payers"], 0)
+        self.assertIsNone(s["first_verdict"])
+
+
 if __name__ == "__main__":
     unittest.main()

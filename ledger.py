@@ -191,6 +191,47 @@ def aggregate_counterparties(events):
     return records
 
 
+def usage_stats(events):
+    """PURE: fold the event stream into OPERATOR usage stats -- how much the
+    service is being called, and the verdict mix.
+
+    Intended for an operator-AUTHENTICATED endpoint (measure the funnel), NOT a
+    public counter: pre-traffic, a public count advertises emptiness. Counts only
+    identifiers already in the ledger (counterparty / agent_id / payer); emits no
+    amounts or per-caller detail. Distinct `payer`/`agent_id` are the best proxy
+    for distinct callers (an agent binds its wallet as `payer`)."""
+    total = 0
+    by_verdict = {}
+    counterparties, agents, payers, resources = set(), set(), set(), set()
+    first_ts = last_ts = None
+    for e in events:
+        if e.get("kind") != "verdict":
+            continue
+        total += 1
+        v = e.get("verdict")
+        if v:
+            by_verdict[v] = by_verdict.get(v, 0) + 1
+        for key, bucket in (("counterparty", counterparties), ("agent_id", agents),
+                            ("payer", payers), ("resource", resources)):
+            val = e.get(key)
+            if val:
+                bucket.add(val)
+        ts = e.get("ts")
+        if ts:
+            first_ts = min(first_ts, ts) if first_ts else ts
+            last_ts = max(last_ts, ts) if last_ts else ts
+    return {
+        "verdicts_total": total,
+        "by_verdict": by_verdict,
+        "distinct_counterparties": len(counterparties),
+        "distinct_agents": len(agents),
+        "distinct_payers": len(payers),
+        "distinct_resources": len(resources),
+        "first_verdict": first_ts,
+        "last_verdict": last_ts,
+    }
+
+
 # ===========================================================================
 # Append-only event store
 # ===========================================================================

@@ -864,6 +864,7 @@ class _Handler(BaseHTTPRequestHandler):
     hold_above = None  # amount above which the verdict escalates to HOLD (None = default)
     peer_index = None  # {resource_class: peer_median} for the peer-group check, or None
     openapi_server_url = None  # public origin for the openapi.json servers[] (or None)
+    stats_token = None  # operator token for GET /v1/stats; None => endpoint disabled (404)
 
     def _send_json(self, code, obj, extra_headers=None):
         body = json.dumps(obj, separators=(",", ":")).encode("utf-8")
@@ -884,8 +885,43 @@ class _Handler(BaseHTTPRequestHandler):
         elif self.path == "/openapi.json":
             # x402scan probes the origin root for this discovery document.
             self._send_json(200, self._openapi())
+        elif self.path == "/v1/stats":
+            self._handle_stats()
         else:
             self._send_json(404, {"error": "not found"})
+
+    def _handle_stats(self):
+        """Operator-only usage metrics over the ledger (measure the funnel).
+
+        PRIVATE by design: disabled with a 404 unless BLACKWALL_STATS_TOKEN is set
+        (so it never exists in the open, and a pre-traffic count is never leaked),
+        then gated on a constant-time Bearer check. Read-only; emits counts only,
+        never amounts or per-caller rows."""
+        token = self.stats_token
+        if not token:
+            self._send_json(404, {"error": "not found"})
+            return
+        auth = self.headers.get("Authorization", "") or ""
+        presented = auth[7:] if auth.startswith("Bearer ") else ""
+        # Compare as bytes: hmac.compare_digest raises TypeError on non-ASCII
+        # str inputs, and `presented` is attacker-controlled (Authorization
+        # header). Bytes comparison is always safe + constant-time, so any
+        # mismatch -- including a non-ASCII presented token -- is a plain 401,
+        # never an unhandled crash.
+        if not hmac.compare_digest(presented.encode("utf-8"), token.encode("utf-8")):
+            self._send_json(401, {"error": "unauthorized"})
+            return
+        if self.ledger is None:
+            self._send_json(200, {"verdicts_total": 0, "by_verdict": {},
+                                  "distinct_counterparties": 0, "distinct_agents": 0,
+                                  "distinct_payers": 0, "distinct_resources": 0,
+                                  "first_verdict": None, "last_verdict": None})
+            return
+        from ledger import usage_stats
+        try:
+            self._send_json(200, usage_stats(self.ledger.read_events()))
+        except Exception:
+            self._send_json(500, {"error": "stats unavailable"})
 
     def do_HEAD(self):
         # Health checkers/crawlers (UptimeRobot, etc.) often probe with HEAD;
@@ -1109,7 +1145,8 @@ class BlackwallServer:
 
     def __init__(self, host="127.0.0.1", port=8402, reputation_source=None,
                  ledger=None, billing=None, readiness_source=None,
-                 hold_above=None, peer_index=None, openapi_server_url=None):
+                 hold_above=None, peer_index=None, openapi_server_url=None,
+                 stats_token=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -1121,6 +1158,7 @@ class BlackwallServer:
         self.hold_above = hold_above
         self.peer_index = peer_index
         self.openapi_server_url = openapi_server_url
+        self.stats_token = stats_token
         self._httpd = None
 
     def serve_forever(self):
@@ -1131,7 +1169,8 @@ class BlackwallServer:
                         "readiness_source": self.readiness_source,
                         "hold_above": self.hold_above,
                         "peer_index": self.peer_index,
-                        "openapi_server_url": self.openapi_server_url})
+                        "openapi_server_url": self.openapi_server_url,
+                        "stats_token": self.stats_token})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
         self.port = self._httpd.server_address[1]
         sys.stdout.write(
@@ -1371,7 +1410,8 @@ def main(argv=None):
                              billing=billing, reputation_source=reputation_source,
                              readiness_source=readiness_source,
                              hold_above=hold_above,
-                             openapi_server_url=origin)
+                             openapi_server_url=origin,
+                             stats_token=os.environ.get("BLACKWALL_STATS_TOKEN") or None)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -1060,5 +1060,108 @@ class TestPaidResponseCarriesSettlementHeader(unittest.TestCase):
         self.assertEqual(settle.get("transaction"), "0xmocktx")
 
 
+class TestStatsEndpoint(unittest.TestCase):
+    """GET /v1/stats: operator-only, token-gated funnel metrics."""
+
+    def _serve(self, stats_token, ledger=None):
+        import threading
+        from http.server import ThreadingHTTPServer
+        handler = type("_H", (bw._Handler,),
+                       {"reputation_source": bw.MockReputationSource(),
+                        "ledger": ledger, "stats_token": stats_token})
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        port = httpd.server_address[1]
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        return port
+
+    def _get(self, port, auth=None):
+        from urllib.request import Request, urlopen
+        from urllib.error import HTTPError
+        req = Request("http://127.0.0.1:%d/v1/stats" % port)
+        if auth:
+            req.add_header("Authorization", auth)
+        try:
+            r = urlopen(req, timeout=3)
+            return r.status, json.loads(r.read())
+        except HTTPError as e:
+            return e.code, None
+
+    def test_disabled_without_token_is_404(self):
+        # mutation: exposing the endpoint when no operator token is configured
+        self.assertEqual(self._get(self._serve(stats_token=None), "Bearer x")[0], 404)
+
+    def test_wrong_or_missing_token_is_401(self):
+        # mutation: accepting a missing or mismatched bearer token
+        port = self._serve(stats_token="s3cret")
+        self.assertEqual(self._get(port, None)[0], 401)
+        self.assertEqual(self._get(port, "Bearer nope")[0], 401)
+
+    def _raw_get(self, port, auth_bytes=None):
+        """Send a request with an arbitrary (possibly non-ASCII) Authorization
+        header via a raw socket, since urllib rejects non-token header values.
+        Returns (status_int_or_None, body_str)."""
+        import socket
+        s = socket.create_connection(("127.0.0.1", port), timeout=3)
+        hdr = (b"Authorization: Bearer " + auth_bytes + b"\r\n") if auth_bytes is not None else b""
+        s.sendall(b"GET /v1/stats HTTP/1.1\r\nHost: x\r\n" + hdr + b"Connection: close\r\n\r\n")
+        s.settimeout(3)
+        data = b""
+        try:
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+        except socket.timeout:
+            pass
+        s.close()
+        if not data:
+            return None, ""  # broken connection -> handler thread crashed
+        line = data.split(b"\r\n", 1)[0].decode(errors="replace")
+        try:
+            status = int(line.split()[1])
+        except (IndexError, ValueError):
+            status = None
+        body = data.split(b"\r\n\r\n", 1)[1].decode(errors="replace") if b"\r\n\r\n" in data else ""
+        return status, body
+
+    def test_non_ascii_bearer_is_clean_401_not_crash(self):
+        # mutation: hmac.compare_digest on str raises TypeError for non-ASCII;
+        # an attacker-supplied non-ASCII bearer must be a plain mismatch (401),
+        # never an unhandled crash (empty/broken response + traceback to logs).
+        port = self._serve(stats_token="asciitoken123")
+        status, body = self._raw_get(port, "éattacker".encode("utf-8"))
+        self.assertEqual(status, 401, "non-ASCII bearer must reject with 401, got %r" % status)
+        self.assertNotIn("Traceback", body)
+
+    def test_non_ascii_configured_token_still_authenticates(self):
+        # a non-ASCII operator token must not brick the endpoint: the matching
+        # token authenticates (200), a mismatch is 401 -- no TypeError either way.
+        # (http.server decodes header bytes as latin-1, so the client must put
+        # the token on the wire the same way for the bytes to round-trip; this
+        # is inherent to HTTP header charset, not to the auth check.)
+        port = self._serve(stats_token="sécret", ledger=None)
+        status_ok, body = self._raw_get(port, "sécret".encode("iso-8859-1"))
+        self.assertEqual(status_ok, 200, "matching non-ASCII token must auth, got %r" % status_ok)
+        self.assertNotIn("Traceback", body)
+        status_bad, _ = self._raw_get(port, b"wrong")
+        self.assertEqual(status_bad, 401)
+
+    def test_authed_returns_stats(self):
+        import os
+        import tempfile
+        import ledger as L
+        led = L.EventLedger(os.path.join(tempfile.mkdtemp(), "l.jsonl"))
+        led.record_verdict("r1", "0xA", "0.09", "GO", payer="0xP1")
+        led.record_verdict("r2", "0xB", "0.09", "STOP", payer="0xP2")
+        code, body = self._get(self._serve(stats_token="s3cret", ledger=led), "Bearer s3cret")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["verdicts_total"], 2)
+        self.assertEqual(body["by_verdict"], {"GO": 1, "STOP": 1})
+        self.assertEqual(body["distinct_payers"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()
