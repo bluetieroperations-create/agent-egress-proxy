@@ -1288,5 +1288,91 @@ class TestVelocityAggregate(unittest.TestCase):
         self.assertIsNone(v["signals"]["counterparty_flow"])
 
 
+class TestPayerOutflow(unittest.TestCase):
+    """decide_payment payer-side fan-out (SYBIL complement): high TOTAL outflow AND
+    high DISTINCT-payee count escalates GO->HOLD -- the distributed drain that
+    splitting across fresh addresses (which defeats the per-counterparty velocity)
+    actually makes MORE visible."""
+
+    def _good_record(self):
+        return {"settlement_count": 100, "dispute_rate": 0.0,
+                "confirmed_settlement_count": 100, "distinct_payers": 10}
+
+    def test_fanout_escalates_go_to_hold(self):
+        # Kills: not gating GO on payer fan-out -- the whole sybil complement.
+        # +this = 104 across a 5th distinct payee -> trips.
+        flow = {"total_amount": Decimal("99"), "count": 4, "distinct_counterparties": 5}
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                              counterparty="0xNEW", payer_flow=flow)
+        self.assertEqual(v["verdict"], "HOLD")
+        self.assertTrue(any("distinct counterparties" in r for r in v["reasons"]))
+        self.assertEqual(v["signals"]["payer_outflow"]["distinct_counterparties"], 5)
+        self.assertEqual(v["signals"]["payer_outflow"]["window_total"], "104")
+
+    def test_high_spend_low_fanout_does_not_trip(self):
+        # Kills: turning this into a raw spend cap. A legit agent paying a FEW known
+        # vendors a lot has high outflow but LOW fan-out -- must NOT trip here (that's
+        # the per-counterparty / over_budget case).
+        flow = {"total_amount": Decimal("500"), "count": 50, "distinct_counterparties": 2}
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                              counterparty="0xNEW", payer_flow=flow)
+        self.assertEqual(v["verdict"], "GO")
+
+    def test_high_fanout_low_total_does_not_trip(self):
+        # Kills: tripping on fan-out alone. Many tiny payments to many payees under
+        # the total threshold is normal micro-payment behavior, not a drain.
+        flow = {"total_amount": Decimal("20"), "count": 10, "distinct_counterparties": 10}
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                              counterparty="0xNEW", payer_flow=flow)
+        self.assertEqual(v["verdict"], "GO")
+
+    def test_no_payer_flow_is_fail_open(self):
+        # Kills: crashing / mis-signalling when no ledger supplies a payer flow.
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                              counterparty="0xNEW", payer_flow=None)
+        self.assertEqual(v["verdict"], "GO")
+        self.assertIsNone(v["signals"]["payer_outflow"])
+
+    def test_trips_exactly_at_total_threshold(self):
+        # Kills: off-by-one on the outflow threshold (>= -> >). At EXACTLY $100
+        # window-total (99 history + 1 this payment) with 5 distinct payees the
+        # gate must trip; a `>` mutation would let the boundary payment through.
+        flow = {"total_amount": Decimal("99"), "count": 4, "distinct_counterparties": 5}
+        v = bw.decide_payment(Decimal("1"), self._good_record(), [],
+                              counterparty="0xNEW", payer_flow=flow)
+        self.assertEqual(v["signals"]["payer_outflow"]["window_total"], "100")
+        self.assertEqual(v["verdict"], "HOLD")
+
+    def test_just_under_total_threshold_stays_go(self):
+        # Kills: off-by-one the other way. Under $100 window-total with 5 payees
+        # must NOT trip -- pins the boundary from below so HOLD is exactly at $100.
+        flow = {"total_amount": Decimal("94.99"), "count": 4, "distinct_counterparties": 5}
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                              counterparty="0xNEW", payer_flow=flow)
+        self.assertEqual(v["signals"]["payer_outflow"]["window_total"], "99.99")
+        self.assertEqual(v["verdict"], "GO")
+
+    def test_trips_exactly_at_distinct_threshold(self):
+        # Kills: off-by-one on the distinct-payee count. Exactly MIN distinct (5)
+        # with over-threshold total must trip; 4 distinct must not.
+        over = {"total_amount": Decimal("200"), "count": 10, "distinct_counterparties": 5}
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                              counterparty="0xNEW", payer_flow=over)
+        self.assertEqual(v["verdict"], "HOLD")
+        under = {"total_amount": Decimal("200"), "count": 10, "distinct_counterparties": 4}
+        v2 = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                               counterparty="0xNEW", payer_flow=under)
+        self.assertEqual(v2["verdict"], "GO")
+
+    def test_velocity_and_payer_are_independent_gates(self):
+        # Neither trips alone here (velocity: few payments; payer: low fan-out), so GO.
+        # Confirms the two escalators don't accidentally alias each other.
+        vel = {"total_amount": Decimal("500"), "count": 1}
+        pay = {"total_amount": Decimal("500"), "count": 50, "distinct_counterparties": 2}
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                              counterparty="0xNEW", velocity_flow=vel, payer_flow=pay)
+        self.assertEqual(v["verdict"], "GO")
+
+
 if __name__ == "__main__":
     unittest.main()

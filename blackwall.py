@@ -72,6 +72,16 @@ STOP_ANOMALY_RATIO = 8.0          # charged >= 8x its own median => STOP (wildly
 VELOCITY_WINDOW_SECONDS = 3600            # look-back window for cumulative flow (1h)
 VELOCITY_AMOUNT_THRESHOLD = Decimal("100.00")  # cumulative flow in the window that escalates
 MIN_VELOCITY_COUNT = 5            # only trips on MANY payments (a single big one is the over_budget case)
+# Payer-side outflow -- the SYBIL complement to the per-counterparty velocity above.
+# A drainer defeats a per-payee aggregate by SPLITTING the drain across many fresh
+# addresses; but splitting drives up the number of DISTINCT payees THIS payer hit in
+# the window, which is the tell. Trip GO->HOLD on high TOTAL outflow AND high FAN-OUT
+# (distinct counterparties) -- the distributed-drain signature. Deliberately keys on
+# fan-out, not raw spend, so a legit agent paying a FEW known vendors a lot does NOT
+# trip here (that's the per-counterparty / over_budget case).
+PAYER_OUTFLOW_WINDOW_SECONDS = 3600            # look-back window for payer outflow (1h)
+PAYER_OUTFLOW_THRESHOLD = Decimal("100.00")    # cumulative outflow from ONE payer in the window
+MIN_PAYER_DISTINCT_COUNTERPARTIES = 5          # spread across >= N distinct payees (the fan-out tell)
 MAX_BODY_BYTES = 64 * 1024        # request-body cap (oversize guard)
 
 # Receipts are signed so the agent can keep a tamper-evident audit trail. This
@@ -334,7 +344,8 @@ def reputation_score(record):
 
 def decide_payment(amount, record, price_history,
                    counterparty=None, expected_recipient=None, hold_above=None,
-                   resource=None, peer_median=None, velocity_flow=None):
+                   resource=None, peer_median=None, velocity_flow=None,
+                   payer_flow=None):
     """
     The core verdict. Returns a dict:
         {verdict, score, reasons[], signals{...}}
@@ -467,6 +478,24 @@ def decide_payment(amount, record, price_history,
         velocity_hold = (velocity_window_total >= VELOCITY_AMOUNT_THRESHOLD
                          and velocity_count >= MIN_VELOCITY_COUNT)
 
+    # Payer-side outflow / fan-out (SYBIL complement): would THIS payment push the
+    # payer's cumulative recent outflow over the threshold AND across enough DISTINCT
+    # payees to look like a distributed drain (splitting to dodge the per-counterparty
+    # aggregate)? `payer_flow` is the payer's HISTORICAL outflow in the window; this
+    # payment adds its amount. `distinct_counterparties` is the count from history --
+    # a conservative LOWER bound (we don't pre-add this payment's payee, so a brand
+    # new payee is counted on the NEXT call, never over-blocking on the strength of
+    # the current one).
+    payer_hold = False
+    payer_window_total = None
+    payer_distinct = None
+    if payer_flow is not None:
+        p_hist_total = payer_flow.get("total_amount") or Decimal(0)
+        payer_window_total = p_hist_total + amount_dec
+        payer_distinct = payer_flow.get("distinct_counterparties") or 0
+        payer_hold = (payer_window_total >= PAYER_OUTFLOW_THRESHOLD
+                      and payer_distinct >= MIN_PAYER_DISTINCT_COUNTERPARTIES)
+
     # ---- verdict ----
     if stop:
         verdict = "STOP"
@@ -477,7 +506,8 @@ def decide_payment(amount, record, price_history,
               and a_score < HOLD_ANOMALY
               and not over_budget
               and not peer_hold
-              and not velocity_hold)
+              and not velocity_hold
+              and not payer_hold)
         if go:
             verdict = "GO"
         else:
@@ -521,6 +551,14 @@ def decide_payment(amount, record, price_history,
                     % (velocity_window_total, velocity_count,
                        VELOCITY_AMOUNT_THRESHOLD, MIN_VELOCITY_COUNT)
                 )
+            if payer_hold:
+                reasons.append(
+                    "payer sent %s across %d distinct counterparties in the window "
+                    "(>= %s over %d payees) -- distributed-drain / address-split "
+                    "pattern; escalating"
+                    % (payer_window_total, payer_distinct,
+                       PAYER_OUTFLOW_THRESHOLD, MIN_PAYER_DISTINCT_COUNTERPARTIES)
+                )
 
     # Bayesian trust score for the response. Hard STOPs (sanction/known-bad/
     # mismatch) floor it to 0 -- there is no "trust" to report. Otherwise it is
@@ -548,6 +586,13 @@ def decide_payment(amount, record, price_history,
         "counterparty_flow": ({"window_total": str(velocity_window_total),
                                "count": velocity_count}
                               if velocity_flow is not None else None),
+        # Payer-side fan-out: this payer's cumulative outflow INCLUDING this payment
+        # and the number of DISTINCT payees it hit in the window (None when no
+        # ledger/window supplied). The distributed drain the per-counterparty view
+        # can't see. distinct_counterparties is a conservative history-only count.
+        "payer_outflow": ({"window_total": str(payer_window_total),
+                           "distinct_counterparties": payer_distinct}
+                          if payer_flow is not None else None),
     }
 
     return {
@@ -797,19 +842,30 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     # agent supplied in context (its prior quotes for this resource).
     price_history = record.get("price_history") or clean["price_history"]
 
-    # Aggregate/velocity: the counterparty's cumulative recent flow from the ledger,
-    # so decide_payment can catch a drain built from many sub-cap payments to the
-    # same payee. FAIL-OPEN: a ledger read error must never break the verdict.
+    # Aggregate signals from the ledger: the per-counterparty cumulative flow
+    # (velocity -- concentrated drain) AND the per-payer outflow/fan-out (SYBIL
+    # complement -- distributed drain across split addresses). Both fold into
+    # decide_payment as GO-gate escalators. FAIL-OPEN: a ledger read error must
+    # never break the verdict. Materialize the event stream ONCE and derive both
+    # from it (read_events() is a one-shot generator; a single O(n) scan feeds both).
     velocity_flow = None
+    payer_flow_sig = None
     if ledger is not None:
         try:
-            from ledger import counterparty_flow
+            from ledger import counterparty_flow, payer_flow
             now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            all_events = list(ledger.read_events())
             velocity_flow = counterparty_flow(
-                ledger.read_events(), clean["counterparty"],
+                all_events, clean["counterparty"],
                 now_iso, VELOCITY_WINDOW_SECONDS)
+            # Only meaningful when we know who is paying.
+            if clean.get("payer"):
+                payer_flow_sig = payer_flow(
+                    all_events, clean["payer"],
+                    now_iso, PAYER_OUTFLOW_WINDOW_SECONDS)
         except Exception:
             velocity_flow = None
+            payer_flow_sig = None
 
     verdict = decide_payment(
         amount=clean["amount"],
@@ -822,6 +878,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         peer_median=(peer_index.get(clean["resource_class"])
                      if peer_index and clean.get("resource_class") else None),
         velocity_flow=velocity_flow,
+        payer_flow=payer_flow_sig,
     )
 
     # Endpoint-readiness enrichment (address-based verdict + URL-based readiness).

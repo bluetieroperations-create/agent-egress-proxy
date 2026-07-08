@@ -251,34 +251,29 @@ def _parse_ts(ts):
     return dt
 
 
-def counterparty_flow(events, counterparty, now_ts, window_seconds):
-    """PURE: cumulative amount + count of VERDICT events to `counterparty` within
-    the last `window_seconds` up to `now_ts` (inclusive).
+def _windowed_verdict_flow(events, match_field, target, now_ts, window_seconds,
+                           distinct_field=None):
+    """PURE core for the windowed-flow signals (counterparty_flow / payer_flow).
 
-    This is the aggregate/velocity signal a per-payment view CANNOT give: a drain
-    isn't one $500 mistake, it's a hundred sub-cap $5 payments to the SAME
-    counterparty -- each individually fine, each under a spending cap and under a
-    single-call verdict's radar. Summing recent flow to one counterparty catches
-    the accumulation that neither a cap nor a stateless per-call check sees.
+    Sums the amount + count of VERDICT events whose `match_field` equals `target`
+    (case-insensitive) within the last `window_seconds` up to `now_ts` (inclusive).
+    When `distinct_field` is given, also counts the DISTINCT non-empty values of
+    that field among the matched events (the fan-out signal).
 
-    Fail-safe: a non-dict event, a non-verdict kind, a different counterparty, an
-    unparseable/out-of-window ts, or a missing/garbage amount are skipped -- it
-    never invents flow and never raises. Counterparty match is case-insensitive
-    (EVM addresses).
-    Returns {"total_amount": Decimal, "count": int}.
-
-    KNOWN LIMITS (not fixed here): (1) SYBIL -- a payee splitting across N distinct
-    addresses evades a per-counterparty aggregate; this catches a repeated-address
-    drain, not a spread-out one (same sybil class as the reputation signals).
-    (2) O(n) -- scans the whole event stream per call; fine at current volume, but
-    a hot path over a large ledger will want an indexed/rolling window."""
+    Fail-safe: a non-dict event, a non-verdict kind, a mismatched target, an
+    unparseable/out-of-window ts, or a missing/garbage/non-positive amount are
+    skipped -- it never invents flow and never raises.
+    Returns {"total_amount": Decimal, "count": int, "distinct": int}."""
     now = _parse_ts(now_ts)
-    if now is None or window_seconds is None or window_seconds < 0:
-        return {"total_amount": Decimal(0), "count": 0}
+    target = str(target or "").strip().lower()
+    # Empty target matches nothing (an absent counterparty/payer must NOT sum the
+    # whole ledger). Bad/absent window or now -> no flow.
+    if now is None or window_seconds is None or window_seconds < 0 or not target:
+        return {"total_amount": Decimal(0), "count": 0, "distinct": 0}
     cutoff = now - timedelta(seconds=window_seconds)
-    target = str(counterparty or "").strip().lower()
     total = Decimal(0)
     count = 0
+    distinct = set()
     for e in events:
         # read_events() yields anything json.loads() returns -- a valid-JSON line
         # that isn't an object (42, "str", null, [...]) has no .get() and must be
@@ -287,7 +282,7 @@ def counterparty_flow(events, counterparty, now_ts, window_seconds):
             continue
         if e.get("kind") != "verdict":
             continue
-        if str(e.get("counterparty") or "").strip().lower() != target or not target:
+        if str(e.get(match_field) or "").strip().lower() != target:
             continue
         t = _parse_ts(e.get("ts"))
         if t is None or t < cutoff or t > now:
@@ -299,7 +294,61 @@ def counterparty_flow(events, counterparty, now_ts, window_seconds):
         if amt.is_finite() and amt > 0:
             total += amt
             count += 1
-    return {"total_amount": total, "count": count}
+            if distinct_field is not None:
+                dv = str(e.get(distinct_field) or "").strip().lower()
+                if dv:
+                    distinct.add(dv)
+    return {"total_amount": total, "count": count, "distinct": len(distinct)}
+
+
+def counterparty_flow(events, counterparty, now_ts, window_seconds):
+    """PURE: cumulative amount + count of VERDICT events to `counterparty` within
+    the last `window_seconds` up to `now_ts` (inclusive).
+
+    This is the aggregate/velocity signal a per-payment view CANNOT give: a drain
+    isn't one $500 mistake, it's a hundred sub-cap $5 payments to the SAME
+    counterparty -- each individually fine, each under a spending cap and under a
+    single-call verdict's radar. Summing recent flow to one counterparty catches
+    the accumulation that neither a cap nor a stateless per-call check sees.
+
+    Fail-safe: skips non-dict / non-verdict / mismatched / bad-ts / bad-amount
+    events; never raises. Counterparty match is case-insensitive (EVM addresses).
+    Returns {"total_amount": Decimal, "count": int}.
+
+    KNOWN LIMITS: (1) SYBIL -- a payee splitting across N distinct addresses
+    evades THIS per-counterparty aggregate; that distributed drain is caught
+    instead by payer_flow (fan-out on the payer side). (2) O(n) -- scans the whole
+    event stream per call; fine at current volume, but a hot path over a large
+    ledger will want an indexed/rolling window."""
+    r = _windowed_verdict_flow(events, "counterparty", counterparty,
+                               now_ts, window_seconds)
+    return {"total_amount": r["total_amount"], "count": r["count"]}
+
+
+def payer_flow(events, payer, now_ts, window_seconds):
+    """PURE: cumulative OUTFLOW from `payer` across ALL counterparties within the
+    window, plus the number of DISTINCT counterparties it paid (the fan-out).
+
+    The SYBIL complement to counterparty_flow. A drainer defeats the per-payee
+    aggregate by SPLITTING the drain across many fresh addresses -- but splitting
+    is itself the tell: it drives up the number of DISTINCT payees this one payer
+    hit in the window. High total outflow AND high distinct-counterparty count is
+    the distributed-drain signature. (A legit agent paying a few known vendors a
+    lot has high outflow but LOW fan-out, so it is not flagged here -- that is the
+    per-counterparty / over-budget case.)
+
+    Fail-safe: skips non-dict / non-verdict / mismatched / bad-ts / bad-amount
+    events; never raises. Payer + counterparty matches are case-insensitive.
+    Returns {"total_amount": Decimal, "count": int, "distinct_counterparties": int}.
+
+    KNOWN LIMITS: (1) a payer using multiple SOURCE wallets splits its own outflow
+    below this per-payer view (mitigated only by on-chain funding-graph clustering,
+    a separate pipeline). (2) O(n) full-ledger scan per call (shared with
+    counterparty_flow; see there)."""
+    r = _windowed_verdict_flow(events, "payer", payer, now_ts, window_seconds,
+                               distinct_field="counterparty")
+    return {"total_amount": r["total_amount"], "count": r["count"],
+            "distinct_counterparties": r["distinct"]}
 
 
 # ===========================================================================
