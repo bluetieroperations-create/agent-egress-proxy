@@ -107,7 +107,21 @@ DEFAULT_FORECAST_INPUT_SCHEMA = {
         "resource": {"type": "string"},
     },
 }
-DEFAULT_FORECAST_OUTPUT_EXAMPLE = {"verdict": "GO", "receipt_id": "..."}
+DEFAULT_FORECAST_OUTPUT_EXAMPLE = {
+    "verdict": "GO", "score": 0.99,
+    "reasons": ["reputable counterparty", "price within norms"],
+    "receipt_id": "bw_...",
+}
+
+# A CONCRETE example request body -- Coinbase CDP Bazaar's discovery extension
+# (`bazaar.info`) wants example values, not a JSON Schema. x402scan reads the
+# schema; CDP reads this example. We emit both (see build_bazaar_extension).
+DEFAULT_FORECAST_INPUT_EXAMPLE = {
+    "counterparty": "0x0000000000000000000000000000000000000abc",
+    "amount": "2.50",
+    "asset": "USDC",
+    "chain": "base",
+}
 
 
 # ===========================================================================
@@ -192,26 +206,43 @@ def build_resource_info(url, description="Blackwall payment forecast",
     return info
 
 
-def build_bazaar_extension(input_schema=None, output_example=None):
-    """The `extensions.bazaar` block that makes a v2 402 challenge INVOCABLE.
+def build_bazaar_extension(input_schema=None, output_example=None,
+                           input_example=None):
+    """The `extensions.bazaar` block that makes a v2 402 challenge discoverable.
 
-    x402scan's v2 validator (validatePaymentRequiredDetailed) reads the endpoint's
-    input schema from a SPECIFIC nested path and, if it's absent, raises
-    SCHEMA_INPUT_MISSING and marks the resource `skipped` (non-invocable). The
-    exact path it reads (verified against @agentcash/discovery 1.7.5,
-    src/core/protocols/x402/v2/schema.ts::extractSchemas2):
+    TWO ecosystems read this block in DIFFERENT shapes, so we emit BOTH:
 
-        extensions.bazaar.schema.properties.input.properties.body   -> input JSON schema
+    1. x402scan (@agentcash/discovery 1.7.5, extractSchemas2) reads a JSON SCHEMA:
+        extensions.bazaar.schema.properties.input.properties.body   -> input schema
         extensions.bazaar.schema.properties.output.properties.example -> output example
+       Missing it -> SCHEMA_INPUT_MISSING, resource marked `skipped`.
 
-    So the input schema must be nested under `.input.properties.body`, not just
-    `.input`. This function builds that exact shape."""
+    2. Coinbase CDP Bazaar (declareDiscoveryExtension) reads a CONCRETE EXAMPLE:
+        extensions.bazaar.info.input  = {type:"http", method, bodyType, body:<example>}
+        extensions.bazaar.info.output = {example:<example>}
+       Missing it -> CDP will NOT catalog the endpoint even after a settlement.
+       (This is why a settled endpoint with only `.schema` never lists on Bazaar.)
+
+    We build both under one `bazaar` key so a single 402 satisfies both catalogs."""
+    bazaar = {}
+    # --- x402scan: JSON Schema ---
     props = {}
     if input_schema is not None:
         props["input"] = {"properties": {"body": input_schema}}
     if output_example is not None:
         props["output"] = {"properties": {"example": output_example}}
-    return {"bazaar": {"schema": {"properties": props}}}
+    if props:
+        bazaar["schema"] = {"properties": props}
+    # --- CDP Bazaar: concrete example ---
+    info = {}
+    if input_example is not None:
+        info["input"] = {"type": "http", "method": "POST",
+                         "bodyType": "json", "body": input_example}
+    if output_example is not None:
+        info["output"] = {"example": output_example}
+    if info:
+        bazaar["info"] = info
+    return {"bazaar": bazaar}
 
 
 def make_402_body(requirements_list, error=None, resource=None, extensions=None):
@@ -665,18 +696,20 @@ class BillingConfig:
                  service_name="Blackwall",
                  resource_description="Blackwall payment forecast",
                  resource_tags=("x402", "payments", "risk"),
-                 input_schema=None, output_example=None):
+                 input_schema=None, output_example=None, input_example=None):
         if not is_evm_address(pay_to or ""):
             raise ValueError("BillingConfig.pay_to must be a valid EVM address")
         self.service_name = service_name
         self.resource_description = resource_description
         self.resource_tags = resource_tags
-        # The forecast input schema (for the Bazaar extension on the 402 body) so
-        # x402scan can invoke the endpoint. Defaults to the forecast request shape.
+        # The forecast input schema (x402scan) + a concrete input example (CDP
+        # Bazaar) for the 402's discovery extension, so BOTH catalogs can invoke.
         self.input_schema = (input_schema if input_schema is not None
                              else DEFAULT_FORECAST_INPUT_SCHEMA)
         self.output_example = (output_example if output_example is not None
                               else DEFAULT_FORECAST_OUTPUT_EXAMPLE)
+        self.input_example = (input_example if input_example is not None
+                             else DEFAULT_FORECAST_INPUT_EXAMPLE)
         self.price_atomic = to_atomic(price, decimals)
         if self.price_atomic is None or self.price_atomic <= 0:
             raise ValueError("invalid price")
@@ -736,7 +769,8 @@ class BillingGate:
         ext = None
         if self.cfg.input_schema is not None:
             ext = build_bazaar_extension(self.cfg.input_schema,
-                                         self.cfg.output_example)
+                                         self.cfg.output_example,
+                                         self.cfg.input_example)
         return BillingResult(
             False, status=402,
             body=make_402_body([self._requirements(resource, price_atomic)],
