@@ -45,6 +45,11 @@ services:
         value: "300"
       - key: BLACKWALL_WATCH_BATCH
         value: "25"
+      # Retire a never-settled GO from the confirmation scan after 24h so stale
+      # test/abandoned verdicts can't permanently consume the per-pass batch and
+      # starve newer real settlements. x402 settles atomically, so 24h is generous.
+      - key: BLACKWALL_WATCH_MAX_AGE
+        value: "86400"
       # Pricing posture (see PRICING.md): value-aligned / freemium-on-stakes.
       # Low-stakes verdicts free (incl. sanctions safety); high-stakes pay.
       - key: BLACKWALL_VALUE_PRICING

@@ -999,6 +999,7 @@ class _Handler(BaseHTTPRequestHandler):
     peer_index = None  # {resource_class: peer_median} for the peer-group check, or None
     openapi_server_url = None  # public origin for the openapi.json servers[] (or None)
     stats_token = None  # operator token for GET /v1/stats; None => endpoint disabled (404)
+    watch_stats = None  # WatchStats for the settlement-watch loop, or None if off
 
     def _send_json(self, code, obj, extra_headers=None):
         body = json.dumps(obj, separators=(",", ":")).encode("utf-8")
@@ -1077,15 +1078,20 @@ class _Handler(BaseHTTPRequestHandler):
         if not hmac.compare_digest(presented.encode("utf-8"), token.encode("utf-8")):
             self._send_json(401, {"error": "unauthorized"})
             return
+        # Settlement-watch liveness: present when the loop is running (else a flag
+        # noting it's off), so an operator can confirm the flywheel is turning.
+        watch = (self.watch_stats.snapshot() if self.watch_stats is not None
+                 else {"settlement_watch_enabled": False})
         if self.ledger is None:
             self._send_json(200, {"verdicts_total": 0, "by_verdict": {},
                                   "distinct_counterparties": 0, "distinct_agents": 0,
                                   "distinct_payers": 0, "distinct_resources": 0,
-                                  "first_verdict": None, "last_verdict": None})
+                                  "first_verdict": None, "last_verdict": None,
+                                  **watch})
             return
         from ledger import usage_stats
         try:
-            self._send_json(200, usage_stats(self.ledger.read_events()))
+            self._send_json(200, {**usage_stats(self.ledger.read_events()), **watch})
         except Exception:
             self._send_json(500, {"error": "stats unavailable"})
 
@@ -1312,7 +1318,7 @@ class BlackwallServer:
     def __init__(self, host="127.0.0.1", port=8402, reputation_source=None,
                  ledger=None, billing=None, readiness_source=None,
                  hold_above=None, peer_index=None, openapi_server_url=None,
-                 stats_token=None):
+                 stats_token=None, watch_stats=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -1325,6 +1331,7 @@ class BlackwallServer:
         self.peer_index = peer_index
         self.openapi_server_url = openapi_server_url
         self.stats_token = stats_token
+        self.watch_stats = watch_stats
         self._httpd = None
 
     def serve_forever(self):
@@ -1336,7 +1343,8 @@ class BlackwallServer:
                         "hold_above": self.hold_above,
                         "peer_index": self.peer_index,
                         "openapi_server_url": self.openapi_server_url,
-                        "stats_token": self.stats_token})
+                        "stats_token": self.stats_token,
+                        "watch_stats": self.watch_stats})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
         self.port = self._httpd.server_address[1]
         sys.stdout.write(
@@ -1388,7 +1396,45 @@ def _env_int(name, default):
         return default
 
 
-def run_watch_loop(watcher, interval_s, batch, stop_event, log=None):
+class WatchStats:
+    """Thread-safe liveness/telemetry for the settlement-watch loop, surfaced on
+    GET /v1/stats. Lets an operator answer "is the flywheel actually turning?"
+    without reading logs -- the watcher is a daemon thread, so a silent death
+    would otherwise be invisible (the web server keeps serving 200 either way)."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.passes = 0
+        self.confirmations_total = 0
+        self.last_pass_ts = None
+        self.last_confirmed = 0
+        self.last_error = None
+
+    def record_pass(self, confirmed, ts, error=None):
+        with self._lock:
+            self.passes += 1
+            self.last_pass_ts = ts
+            if error is None:
+                self.confirmations_total += int(confirmed or 0)
+                self.last_confirmed = int(confirmed or 0)
+                self.last_error = None
+            else:
+                self.last_error = str(error)
+
+    def snapshot(self):
+        with self._lock:
+            return {
+                "settlement_watch_enabled": True,
+                "settlement_watch_passes": self.passes,
+                "settlement_watch_confirmations_total": self.confirmations_total,
+                "settlement_watch_last_pass_ts": self.last_pass_ts,
+                "settlement_watch_last_confirmed": self.last_confirmed,
+                "settlement_watch_last_error": self.last_error,
+            }
+
+
+def run_watch_loop(watcher, interval_s, batch, stop_event, log=None, stats=None,
+                   now_fn=None):
     """Background settlement-confirmation loop. Repeatedly asks `watcher` to
     chain-confirm pending GO settlements from Base, sleeping `interval_s` between
     passes, until `stop_event` is set.
@@ -1414,15 +1460,25 @@ def run_watch_loop(watcher, interval_s, batch, stop_event, log=None):
         except Exception:
             pass
 
+    now_fn = now_fn or (lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     interval_s = max(1, int(interval_s or 0))
     passes = 0
     while not stop_event.is_set():
         passes += 1
         try:
             n = watcher.confirm_pending(limit=batch)
+            if stats is not None:
+                stats.record_pass(n, now_fn())
             if n:
                 log("settlement-watch: chain-confirmed %d settlement(s)" % n)
         except Exception as e:  # never let a bad pass kill the loop or the process
+            # Record the failure too (so a persistently-failing watcher is visible
+            # on /v1/stats), but a stats/logging error must not escape either.
+            if stats is not None:
+                try:
+                    stats.record_pass(0, now_fn(), error=e)
+                except Exception:
+                    pass
             log("settlement-watch: pass failed (%s: %s) -- skipping"
                 % (type(e).__name__, e))
         stop_event.wait(interval_s)
@@ -1464,6 +1520,13 @@ def main(argv=None):
                    default=_env_int("BLACKWALL_WATCH_BATCH", 25),
                    help="max pending settlements to confirm per watch pass "
                         "(default 25; bounds the free-indexer call volume per pass)")
+    p.add_argument("--watch-max-age", type=int,
+                   default=_env_int("BLACKWALL_WATCH_MAX_AGE", 86400),
+                   help="seconds after a GO verdict to keep trying to confirm it "
+                        "on-chain (default 86400 = 24h). Past this, a never-settled "
+                        "GO is retired from the scan so stale test/abandoned verdicts "
+                        "can't permanently consume the per-pass batch and starve real "
+                        "settlements. x402 settles atomically, so this is generous.")
     p.add_argument("--pay-to", default=os.environ.get("BLACKWALL_PAY_TO"),
                    help="Blackwall's EVM wallet; enabling it turns ON x402 "
                         "billing (402 challenge + POST /v1/session)")
@@ -1653,6 +1716,7 @@ def main(argv=None):
     # thread so it can never block boot or the healthcheck; the loop is internally
     # fail-safe (a chain outage is logged and skipped, never touches the verdict).
     watch_stop = threading.Event()
+    watch_stats = None
     if args.settlement_watch:
         if led is None:
             sys.stderr.write("blackwall: WARNING --settlement-watch set but no "
@@ -1666,14 +1730,18 @@ def main(argv=None):
                 sys.stdout.write(m + "\n")
                 sys.stdout.flush()
 
-            watcher = SettlementWatcher(BlockscoutChain(), led)
+            watch_stats = WatchStats()
+            watcher = SettlementWatcher(BlockscoutChain(), led,
+                                        max_age_seconds=args.watch_max_age)
             threading.Thread(
                 target=run_watch_loop,
                 args=(watcher, args.watch_interval, args.watch_batch,
-                      watch_stop, _watch_log),
+                      watch_stop, _watch_log, watch_stats),
                 daemon=True, name="settlement-watch").start()
             sys.stdout.write("blackwall: settlement-watch ON (interval %ds, "
-                             "batch %d)\n" % (args.watch_interval, args.watch_batch))
+                             "batch %d, max-age %ds)\n"
+                             % (args.watch_interval, args.watch_batch,
+                                args.watch_max_age))
             sys.stdout.flush()
 
     server = BlackwallServer(host=args.host, port=args.port, ledger=led,
@@ -1681,7 +1749,8 @@ def main(argv=None):
                              readiness_source=readiness_source,
                              hold_above=hold_above,
                              openapi_server_url=origin,
-                             stats_token=os.environ.get("BLACKWALL_STATS_TOKEN") or None)
+                             stats_token=os.environ.get("BLACKWALL_STATS_TOKEN") or None,
+                             watch_stats=watch_stats)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

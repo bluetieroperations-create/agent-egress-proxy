@@ -1064,12 +1064,13 @@ class TestPaidResponseCarriesSettlementHeader(unittest.TestCase):
 class TestStatsEndpoint(unittest.TestCase):
     """GET /v1/stats: operator-only, token-gated funnel metrics."""
 
-    def _serve(self, stats_token, ledger=None):
+    def _serve(self, stats_token, ledger=None, watch_stats=None):
         import threading
         from http.server import ThreadingHTTPServer
         handler = type("_H", (bw._Handler,),
                        {"reputation_source": bw.MockReputationSource(),
-                        "ledger": ledger, "stats_token": stats_token})
+                        "ledger": ledger, "stats_token": stats_token,
+                        "watch_stats": watch_stats})
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         port = httpd.server_address[1]
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
@@ -1162,6 +1163,25 @@ class TestStatsEndpoint(unittest.TestCase):
         self.assertEqual(body["verdicts_total"], 2)
         self.assertEqual(body["by_verdict"], {"GO": 1, "STOP": 1})
         self.assertEqual(body["distinct_payers"], 2)
+
+    def test_stats_reports_watch_liveness_when_running(self):
+        # The daemon watcher is otherwise invisible (web serves 200 either way).
+        # /v1/stats must surface its liveness so an operator can confirm it's alive.
+        ws = bw.WatchStats()
+        ws.record_pass(2, "2026-07-08T12:00:00Z")   # one pass, 2 confirmed
+        code, body = self._get(
+            self._serve(stats_token="s3cret", watch_stats=ws), "Bearer s3cret")
+        self.assertEqual(code, 200)
+        self.assertTrue(body["settlement_watch_enabled"])
+        self.assertEqual(body["settlement_watch_passes"], 1)
+        self.assertEqual(body["settlement_watch_confirmations_total"], 2)
+        self.assertEqual(body["settlement_watch_last_pass_ts"], "2026-07-08T12:00:00Z")
+
+    def test_stats_reports_watch_disabled_when_off(self):
+        # Mutation: claiming the flywheel is on when no watcher is wired.
+        code, body = self._get(self._serve(stats_token="s3cret"), "Bearer s3cret")
+        self.assertEqual(code, 200)
+        self.assertFalse(body["settlement_watch_enabled"])
 
 
 class TestSignedReceiptForecast(unittest.TestCase):
@@ -1458,6 +1478,71 @@ class TestRunWatchLoop(unittest.TestCase):
 
         passes = bw.run_watch_loop(w, 1, 25, ev, log=bad_log)  # must NOT raise
         self.assertEqual(w.calls, 2)
+        self.assertEqual(passes, 2)
+
+
+class TestWatchStats(unittest.TestCase):
+    """WatchStats: the settlement-watch liveness surfaced on /v1/stats."""
+
+    def test_records_passes_and_confirmations(self):
+        ws = bw.WatchStats()
+        ws.record_pass(2, "t1")
+        ws.record_pass(0, "t2")
+        ws.record_pass(3, "t3")
+        snap = ws.snapshot()
+        self.assertEqual(snap["settlement_watch_passes"], 3)
+        self.assertEqual(snap["settlement_watch_confirmations_total"], 5)  # 2+0+3
+        self.assertEqual(snap["settlement_watch_last_pass_ts"], "t3")
+        self.assertEqual(snap["settlement_watch_last_confirmed"], 3)
+        self.assertTrue(snap["settlement_watch_enabled"])
+
+    def test_error_pass_does_not_inflate_confirmations(self):
+        # Kills: counting a failed pass as confirmations, or not surfacing the error.
+        # NOTE: passes a NON-ZERO `confirmed` alongside the error so the test also
+        # kills the mutation "add confirmed even when error is set" -- a
+        # confirmed=0 error pass can't distinguish that mutation.
+        ws = bw.WatchStats()
+        ws.record_pass(2, "t1")
+        ws.record_pass(5, "t2", error=RuntimeError("chain down"))  # nonzero + error
+        snap = ws.snapshot()
+        self.assertEqual(snap["settlement_watch_passes"], 2)
+        self.assertEqual(snap["settlement_watch_confirmations_total"], 2)  # NOT 7
+        self.assertEqual(snap["settlement_watch_last_confirmed"], 2)  # not clobbered
+        self.assertIn("chain down", snap["settlement_watch_last_error"])
+
+    def test_loop_updates_stats_each_pass(self):
+        # Kills: the loop not feeding the liveness stat (flywheel invisible).
+        ev = threading.Event()
+        w = _FakeWatcher(stop_after=2, stop_event=ev, ret=1)
+        ws = bw.WatchStats()
+        ticks = iter(["ts1", "ts2", "ts3", "ts4"])
+        bw.run_watch_loop(w, 1, 25, ev, stats=ws, now_fn=lambda: next(ticks))
+        snap = ws.snapshot()
+        self.assertEqual(snap["settlement_watch_passes"], 2)
+        self.assertEqual(snap["settlement_watch_confirmations_total"], 2)  # 1+1
+        self.assertEqual(snap["settlement_watch_last_pass_ts"], "ts2")
+
+    def test_loop_records_error_pass_to_stats(self):
+        ev = threading.Event()
+        w = _FakeWatcher(stop_after=1, stop_event=ev, raise_on={1})
+        ws = bw.WatchStats()
+        bw.run_watch_loop(w, 1, 25, ev, stats=ws, now_fn=lambda: "t")
+        snap = ws.snapshot()
+        self.assertEqual(snap["settlement_watch_passes"], 1)
+        self.assertEqual(snap["settlement_watch_confirmations_total"], 0)
+        self.assertIsNotNone(snap["settlement_watch_last_error"])
+
+    def test_failing_stats_does_not_kill_loop(self):
+        # Kills: letting a stats-update error escape the fail-safe boundary.
+        ev = threading.Event()
+        w = _FakeWatcher(stop_after=2, stop_event=ev, ret=1)
+
+        class BadStats:
+            def record_pass(self, *a, **k):
+                raise RuntimeError("stats broken")
+
+        passes = bw.run_watch_loop(w, 1, 25, ev, stats=BadStats(),
+                                   now_fn=lambda: "t")  # must NOT raise
         self.assertEqual(passes, 2)
 
 
