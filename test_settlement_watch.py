@@ -10,6 +10,7 @@ with NO self-reports involved.
 """
 import os
 import tempfile
+import threading
 import unittest
 
 import blackwall as bw
@@ -241,6 +242,38 @@ class TestTrustlessFlywheel(unittest.TestCase):
         rec = src.lookup(cp)
         self.assertEqual(rec["distinct_payers"], 1)
         self.assertEqual(bw.forecast(payload, src, ledger=led)[0]["verdict"], "HOLD")
+
+
+class TestWatchLoopClosesFlywheel(unittest.TestCase):
+    """The wiring: run_watch_loop driving a real watcher confirms a pending GO
+    from the chain and writes a chain-confirmed outcome -- the loop, not a direct
+    confirm_by_tx call, closes the moat's read-back."""
+
+    def test_loop_confirms_pending_go(self):
+        led = L.EventLedger(os.path.join(tempfile.mkdtemp(), "loop.jsonl"))
+        payer = "0x" + "a" * 40
+        led.record_verdict("bw_1", "0xCP", "0.09", "GO", payer=payer,
+                           ts="2026-06-27T04:00:00Z")
+        chain = FakeChain(inbound_map={"0xCP": [
+            xfer("0xCP", "90000", frm=payer, ts="2026-06-27T05:00:00Z")]})
+        watcher = sw.SettlementWatcher(chain, led)
+
+        # Drive it through the real loop; the watcher stops the loop after its
+        # first pass so this is deterministic and fast.
+        ev = threading.Event()
+
+        class OneShot:
+            def confirm_pending(self, limit=None):
+                n = watcher.confirm_pending(limit=limit)
+                ev.set()
+                return n
+
+        passes = bw.run_watch_loop(OneShot(), 1, 25, ev)
+        self.assertEqual(passes, 1)
+        recs = led.aggregate()
+        self.assertEqual(recs["0xCP"]["settlement_count"], 1)
+        self.assertTrue(recs["0xCP"]["_meta"]["known"])
+        self.assertEqual(recs["0xCP"]["_meta"]["chain_confirmed_settlements"], 1)
 
 
 if __name__ == "__main__":

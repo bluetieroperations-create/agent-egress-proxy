@@ -37,6 +37,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1368,6 +1369,67 @@ class BlackwallServer:
 
 
 # ===========================================================================
+# Settlement-watch background loop (the moat's trustless read-back)
+# ===========================================================================
+def _env_int(name, default):
+    """Parse an int env var, falling back to `default` on missing/garbage (with a
+    warning). Tolerant on purpose: a typo in a tuning var must NOT crash boot --
+    especially since these configure a feature that is dormant by default, so a
+    stray value would otherwise take down a service that isn't even using it."""
+    v = os.environ.get(name)
+    if v is None or v == "":
+        return default
+    try:
+        return int(v)
+    except ValueError:
+        sys.stderr.write("blackwall: WARNING %s=%r is not an integer; using %d\n"
+                         % (name, v, default))
+        sys.stderr.flush()
+        return default
+
+
+def run_watch_loop(watcher, interval_s, batch, stop_event, log=None):
+    """Background settlement-confirmation loop. Repeatedly asks `watcher` to
+    chain-confirm pending GO settlements from Base, sleeping `interval_s` between
+    passes, until `stop_event` is set.
+
+    FAIL-SAFE by contract: every pass is wrapped so a chain/indexer outage
+    (timeout, HTTP error, malformed JSON, ANY exception) is logged and skipped --
+    the loop, and the verdict service it runs beside, NEVER crash on a bad pass.
+    Runs in a daemon thread; `stop_event.wait(interval)` (not time.sleep) makes
+    shutdown immediate instead of sleeping out the whole interval. A non-positive
+    interval is floored to a small positive value so a misconfig can't busy-spin.
+    Returns the number of passes run (so a test can bound it with a stop_event)."""
+    _log = log or (lambda m: None)
+
+    def log(m):
+        # Logging itself must NEVER kill the loop: the live deploy writes to
+        # sys.stdout, and a broken/closed stream (broken pipe, stream closed
+        # during shutdown or log-rotation) makes the write raise. An unguarded
+        # log() -- on the success path OR inside the except handler -- would
+        # escape and silently kill the daemon thread, stopping settlement
+        # confirmation with no crash the operator sees. Swallow log failures.
+        try:
+            _log(m)
+        except Exception:
+            pass
+
+    interval_s = max(1, int(interval_s or 0))
+    passes = 0
+    while not stop_event.is_set():
+        passes += 1
+        try:
+            n = watcher.confirm_pending(limit=batch)
+            if n:
+                log("settlement-watch: chain-confirmed %d settlement(s)" % n)
+        except Exception as e:  # never let a bad pass kill the loop or the process
+            log("settlement-watch: pass failed (%s: %s) -- skipping"
+                % (type(e).__name__, e))
+        stop_event.wait(interval_s)
+    return passes
+
+
+# ===========================================================================
 # CLI
 # ===========================================================================
 def main(argv=None):
@@ -1388,6 +1450,20 @@ def main(argv=None):
                    default=os.environ.get("BLACKWALL_LEDGER"),
                    help="path to the verdict->outcome ledger (JSONL); enables "
                         "POST /v1/report-outcome and self-learned reputation")
+    p.add_argument("--settlement-watch", action="store_true",
+                   default=bool(os.environ.get("BLACKWALL_SETTLEMENT_WATCH")),
+                   help="run the on-chain settlement-confirmation loop in a "
+                        "background thread (needs --ledger): confirms GO "
+                        "settlements from Base and writes CHAIN-CONFIRMED outcomes "
+                        "-- the moat's trustless read-back. Fail-safe: a chain/"
+                        "indexer outage never touches the verdict path.")
+    p.add_argument("--watch-interval", type=int,
+                   default=_env_int("BLACKWALL_WATCH_INTERVAL", 300),
+                   help="seconds between settlement-watch passes (default 300)")
+    p.add_argument("--watch-batch", type=int,
+                   default=_env_int("BLACKWALL_WATCH_BATCH", 25),
+                   help="max pending settlements to confirm per watch pass "
+                        "(default 25; bounds the free-indexer call volume per pass)")
     p.add_argument("--pay-to", default=os.environ.get("BLACKWALL_PAY_TO"),
                    help="Blackwall's EVM wallet; enabling it turns ON x402 "
                         "billing (402 challenge + POST /v1/session)")
@@ -1571,6 +1647,35 @@ def main(argv=None):
     # BLACKWALL_ORIGIN (or --origin). When unset the handler falls back to the
     # Host header, so discovery still works without config.
     origin = args.origin or os.environ.get("BLACKWALL_ORIGIN") or None
+
+    # Settlement-watch background loop (the moat's trustless read-back). Only when
+    # explicitly enabled AND a ledger exists to confirm against. Runs on a daemon
+    # thread so it can never block boot or the healthcheck; the loop is internally
+    # fail-safe (a chain outage is logged and skipped, never touches the verdict).
+    watch_stop = threading.Event()
+    if args.settlement_watch:
+        if led is None:
+            sys.stderr.write("blackwall: WARNING --settlement-watch set but no "
+                             "--ledger; settlement confirmation DISABLED "
+                             "(nothing to confirm against)\n")
+            sys.stderr.flush()
+        else:
+            from settlement_watch import BlockscoutChain, SettlementWatcher
+
+            def _watch_log(m):
+                sys.stdout.write(m + "\n")
+                sys.stdout.flush()
+
+            watcher = SettlementWatcher(BlockscoutChain(), led)
+            threading.Thread(
+                target=run_watch_loop,
+                args=(watcher, args.watch_interval, args.watch_batch,
+                      watch_stop, _watch_log),
+                daemon=True, name="settlement-watch").start()
+            sys.stdout.write("blackwall: settlement-watch ON (interval %ds, "
+                             "batch %d)\n" % (args.watch_interval, args.watch_batch))
+            sys.stdout.flush()
+
     server = BlackwallServer(host=args.host, port=args.port, ledger=led,
                              billing=billing, reputation_source=reputation_source,
                              readiness_source=readiness_source,
@@ -1581,6 +1686,7 @@ def main(argv=None):
         server.serve_forever()
     except KeyboardInterrupt:
         sys.stdout.write("\nblackwall: shutting down (Ctrl-C)\n")
+        watch_stop.set()   # signal the watch loop to stop sleeping and exit
         server.shutdown()
         return 0
     return 0

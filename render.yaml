@@ -33,6 +33,18 @@ services:
         value: /data/ledger.jsonl
       - key: BLACKWALL_INGEST
         value: "1"
+      # Settlement-watch: the moat's trustless read-back. When ON, a background
+      # thread confirms GO settlements from Base (Blockscout) and writes
+      # CHAIN-CONFIRMED outcomes, so on-chain settlements graduate into confirmed
+      # reputation (not just the seeded store). Shipped DORMANT ("0") -- flip to
+      # "1" after the live end-to-end confirmation passes. Fail-safe: a chain/
+      # indexer outage is logged and skipped, never touching the verdict path.
+      - key: BLACKWALL_SETTLEMENT_WATCH
+        value: "0"
+      - key: BLACKWALL_WATCH_INTERVAL
+        value: "300"
+      - key: BLACKWALL_WATCH_BATCH
+        value: "25"
       # Pricing posture (see PRICING.md): value-aligned / freemium-on-stakes.
       # Low-stakes verdicts free (incl. sanctions safety); high-stakes pay.
       - key: BLACKWALL_VALUE_PRICING

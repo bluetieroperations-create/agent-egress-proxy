@@ -8,6 +8,7 @@ reputation_score, decide_payment) ARE the boundary; tests are TDD-first. Each
 class notes the mutation it kills.
 """
 import json
+import threading
 import unittest
 from decimal import Decimal
 
@@ -1372,6 +1373,125 @@ class TestPayerOutflow(unittest.TestCase):
         v = bw.decide_payment(Decimal("5"), self._good_record(), [],
                               counterparty="0xNEW", velocity_flow=vel, payer_flow=pay)
         self.assertEqual(v["verdict"], "GO")
+
+
+class _FakeWatcher:
+    """confirm_pending stub that stops the loop after `stop_after` calls and can
+    be told to raise on specific call numbers (to prove fail-safe)."""
+    def __init__(self, stop_after, stop_event, raise_on=None, ret=0):
+        self.calls = 0
+        self.limits = []
+        self.stop_after = stop_after
+        self.stop_event = stop_event
+        self.raise_on = set(raise_on or ())
+        self.ret = ret
+
+    def confirm_pending(self, limit=None):
+        self.calls += 1
+        self.limits.append(limit)
+        if self.calls >= self.stop_after:
+            self.stop_event.set()   # let the loop exit after this pass
+        if self.calls in self.raise_on:
+            raise RuntimeError("chain indexer down")
+        return self.ret
+
+
+class TestRunWatchLoop(unittest.TestCase):
+    """run_watch_loop: the settlement-watch background loop -- must keep running
+    across bad passes and stop promptly when signalled."""
+
+    def test_runs_until_stop_and_passes_batch(self):
+        # Kills: not looping / not honoring the stop_event / not passing the batch
+        # limit through to confirm_pending.
+        ev = threading.Event()
+        w = _FakeWatcher(stop_after=2, stop_event=ev)
+        passes = bw.run_watch_loop(w, 1, 25, ev)
+        self.assertEqual(w.calls, 2)
+        self.assertEqual(passes, 2)
+        self.assertTrue(all(l == 25 for l in w.limits))  # batch forwarded
+
+    def test_exception_in_pass_is_swallowed_not_fatal(self):
+        # Kills: letting a chain/indexer outage crash the loop (and the process it
+        # runs beside). Pass 1 raises; the loop must continue to pass 2.
+        ev = threading.Event()
+        w = _FakeWatcher(stop_after=2, stop_event=ev, raise_on={1})
+        passes = bw.run_watch_loop(w, 1, 25, ev)  # must NOT raise
+        self.assertEqual(w.calls, 2)
+        self.assertEqual(passes, 2)
+
+    def test_already_stopped_runs_zero_passes(self):
+        # Kills: running a pass even when told to stop before starting.
+        ev = threading.Event()
+        ev.set()
+        w = _FakeWatcher(stop_after=99, stop_event=ev)
+        passes = bw.run_watch_loop(w, 1, 25, ev)
+        self.assertEqual(passes, 0)
+        self.assertEqual(w.calls, 0)
+
+    def test_failing_log_on_error_path_does_not_kill_loop(self):
+        # Kills: leaving the except-branch log() UNGUARDED. The live deploy logs
+        # to sys.stdout; a broken/closed stdout (broken pipe, stream closed during
+        # shutdown or log-rotation) makes log() raise. If that raise escapes, the
+        # daemon thread dies SILENTLY and settlement confirmation stops with no
+        # crash the operator sees -- worse than a loud failure for a trustless
+        # read-back. The loop must survive a logging failure on the ERROR path.
+        ev = threading.Event()
+        w = _FakeWatcher(stop_after=2, stop_event=ev, raise_on={1})
+
+        def bad_log(_m):
+            raise BrokenPipeError("stdout gone")
+
+        passes = bw.run_watch_loop(w, 1, 25, ev, log=bad_log)  # must NOT raise
+        self.assertEqual(w.calls, 2)
+        self.assertEqual(passes, 2)
+
+    def test_failing_log_on_success_path_does_not_kill_loop(self):
+        # Kills: leaving the success-branch log() unguarded. A confirmation pass
+        # succeeds (n>0) and logs; if that log() raises it is caught by the
+        # except, which logs AGAIN and re-raises -> thread dies. The loop must
+        # survive a logging failure on the SUCCESS path too.
+        ev = threading.Event()
+        w = _FakeWatcher(stop_after=2, stop_event=ev, ret=3)  # n>0 -> logs
+
+        def bad_log(_m):
+            raise BrokenPipeError("stdout gone")
+
+        passes = bw.run_watch_loop(w, 1, 25, ev, log=bad_log)  # must NOT raise
+        self.assertEqual(w.calls, 2)
+        self.assertEqual(passes, 2)
+
+
+class TestEnvInt(unittest.TestCase):
+    """_env_int: tolerant int env parse -- a typo must not crash boot (esp. for a
+    dormant feature's tuning vars)."""
+
+    def setUp(self):
+        import os
+        self._os = os
+        self._saved = os.environ.get("BW_TEST_INT")
+
+    def tearDown(self):
+        if self._saved is None:
+            self._os.environ.pop("BW_TEST_INT", None)
+        else:
+            self._os.environ["BW_TEST_INT"] = self._saved
+
+    def test_missing_uses_default(self):
+        self._os.environ.pop("BW_TEST_INT", None)
+        self.assertEqual(bw._env_int("BW_TEST_INT", 300), 300)
+
+    def test_valid_parsed(self):
+        self._os.environ["BW_TEST_INT"] = "42"
+        self.assertEqual(bw._env_int("BW_TEST_INT", 300), 42)
+
+    def test_garbage_falls_back_not_raises(self):
+        # Kills: an eager int() that crashes boot on a non-numeric tuning var.
+        self._os.environ["BW_TEST_INT"] = "not-a-number"
+        self.assertEqual(bw._env_int("BW_TEST_INT", 25), 25)
+
+    def test_empty_uses_default(self):
+        self._os.environ["BW_TEST_INT"] = ""
+        self.assertEqual(bw._env_int("BW_TEST_INT", 25), 25)
 
 
 if __name__ == "__main__":
