@@ -696,9 +696,16 @@ class BillingConfig:
                  service_name="Blackwall",
                  resource_description="Blackwall payment forecast",
                  resource_tags=("x402", "payments", "risk"),
-                 input_schema=None, output_example=None, input_example=None):
+                 input_schema=None, output_example=None, input_example=None,
+                 resource_url=None):
         if not is_evm_address(pay_to or ""):
             raise ValueError("BillingConfig.pay_to must be a valid EVM address")
+        # Canonical URL of THIS paid endpoint (e.g. the forecast-payment URL). When
+        # set, it is injected as paymentPayload.resource on the verify/settle call
+        # so the CDP facilitator knows which resource to catalog in the Bazaar
+        # (x402 v2 moved `resource` out of paymentRequirements, so the facilitator
+        # sees it nowhere else). None => no injection (unchanged behavior).
+        self.resource_url = resource_url or None
         self.service_name = service_name
         self.resource_description = resource_description
         self.resource_tags = resource_tags
@@ -812,6 +819,15 @@ class BillingGate:
         if payment is None:
             return self._challenge(resource, error="malformed X-PAYMENT header",
                                   price_atomic=price_atomic)
+        # CDP Bazaar catalogs the PAID endpoint from paymentPayload.resource on the
+        # verify/settle call (v2 moved `resource` out of paymentRequirements, so the
+        # facilitator never sees it otherwise). Inject our canonical endpoint URL so
+        # a CDP settlement lists THIS service; community facilitators ignore it. NB:
+        # NOT the `resource` arg -- that is the agent-supplied thing they're paying
+        # ABOUT, not the endpoint being paid for. `resource` is metadata, not part
+        # of the signed EIP-3009 authorization, so setting it can't break the sig.
+        if self.cfg.resource_url:
+            payment["resource"] = self.cfg.resource_url
         ok, reason = payment_satisfies(payment, req)
         if not ok:
             return self._challenge(resource, error=reason, price_atomic=price_atomic)

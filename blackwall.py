@@ -1663,11 +1663,29 @@ def main(argv=None):
                 "billing asset to Base mainnet USDC. Pass --asset explicitly if "
                 "that's wrong.\n" % args.network)
             sys.stderr.flush()
+        # Canonical URL of THIS paid endpoint, injected as paymentPayload.resource
+        # on verify/settle so the CDP facilitator can catalog us in the Bazaar (v2
+        # moved `resource` out of paymentRequirements -- see x402.BillingConfig).
+        # Explicit BLACKWALL_RESOURCE_URL wins; else derive from the public origin.
+        _origin = args.origin or os.environ.get("BLACKWALL_ORIGIN")
+        resource_url = (os.environ.get("BLACKWALL_RESOURCE_URL")
+                        or ((_origin.rstrip("/") + "/v1/forecast-payment")
+                            if _origin else None))
+        if resource_url:
+            sys.stdout.write("blackwall: x402 resource_url=%s (Bazaar cataloging)\n"
+                             % resource_url)
+            sys.stdout.flush()
+        else:
+            sys.stderr.write("blackwall: WARNING no BLACKWALL_RESOURCE_URL/ORIGIN -- "
+                             "settlements will NOT carry paymentPayload.resource, so "
+                             "CDP Bazaar cannot catalog this endpoint.\n")
+            sys.stderr.flush()
         billing = BillingGate(
             BillingConfig(price=args.price, pay_to=args.pay_to,
                           network=args.network,
                           asset=default_billing_asset(args.network, args.asset,
-                                                       BASE_USDC, BASE_SEPOLIA_USDC)),
+                                                       BASE_USDC, BASE_SEPOLIA_USDC),
+                          resource_url=resource_url),
             facilitator=facilitator, pricing=pricing)
 
     # Public bind is a deliberate posture change (the service is localhost-only
