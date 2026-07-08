@@ -44,6 +44,9 @@ class TestBuildDescriptor(unittest.TestCase):
         d = D.build_descriptor()
         self.assertEqual(d["resources"][0]["outputVerdicts"], ["GO", "HOLD", "STOP"])
         self.assertEqual(d["mcp"]["tool"], "forecast_payment")
+        # Mutation: dropping the hosted remote MCP hides the zero-install URL.
+        self.assertEqual(d["mcp"]["remote"]["url"], "https://mcp.blackwalltier.com")
+        self.assertEqual(d["mcp"]["remote"]["transport"], "streamable-http")
 
     def test_advertises_verifiable_receipts(self):
         # Mutation: dropping the receipts block (or claiming issuer-only

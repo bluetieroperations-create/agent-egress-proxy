@@ -117,8 +117,13 @@ def build_descriptor(pay_to=None, price=None, asset="USDC", network="base",
             "publicKeyUrl": "/.well-known/blackwall-receipt-key.json",
         },
         "resources": [resource],
-        "mcp": ({"transport": "stdio", "tool": "forecast_payment"}
-                if mcp else None),
+        "mcp": ({
+            # Hosted remote MCP -- add the URL as an MCP server, no install.
+            "remote": {"transport": "streamable-http",
+                       "url": "https://mcp.blackwalltier.com"},
+            "transport": "stdio",  # local self-serve option also available
+            "tool": "forecast_payment",
+        } if mcp else None),
         "custody": False,  # verdict, not custody -- the clean regulatory posture
     }
     return descriptor
