@@ -1245,5 +1245,48 @@ class TestReceiptKeyEndpoint(unittest.TestCase):
             resp["signed_receipt"], body["public_key"]))
 
 
+class TestVelocityAggregate(unittest.TestCase):
+    """decide_payment velocity signal: cumulative flow to ONE payee escalates GO->HOLD
+    -- the drain-by-many-small-payments a per-call verdict and a per-invoice cap miss."""
+
+    def _good_record(self):
+        return {"settlement_count": 100, "dispute_rate": 0.0,
+                "confirmed_settlement_count": 100, "distinct_payers": 10}
+
+    def test_baseline_goes_without_velocity(self):
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [], counterparty="0xGOOD")
+        self.assertEqual(v["verdict"], "GO")
+
+    def test_velocity_escalates_go_to_hold(self):
+        # Kills: not gating GO on cumulative flow -- the whole feature.
+        flow = {"total_amount": Decimal("98"), "count": 5}   # +this = 103 across 6 payments
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                              counterparty="0xGOOD", velocity_flow=flow)
+        self.assertEqual(v["verdict"], "HOLD")
+        self.assertTrue(any("cumulative flow" in r for r in v["reasons"]))
+        self.assertEqual(v["signals"]["counterparty_flow"]["count"], 6)
+
+    def test_velocity_needs_the_pattern_not_just_total(self):
+        # Kills: tripping on total alone -- a single big payment is the over_budget
+        # case, not a velocity drain. High total + few payments must NOT trip velocity.
+        flow = {"total_amount": Decimal("500"), "count": 1}   # +this = 505 but only 2 payments
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                              counterparty="0xGOOD", velocity_flow=flow)
+        self.assertEqual(v["verdict"], "GO")
+
+    def test_under_threshold_goes(self):
+        flow = {"total_amount": Decimal("10"), "count": 5}    # +this = 15 < threshold
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                              counterparty="0xGOOD", velocity_flow=flow)
+        self.assertEqual(v["verdict"], "GO")
+
+    def test_no_velocity_flow_is_fail_open(self):
+        # Kills: crashing / mis-signalling when no ledger supplies a flow.
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                              counterparty="0xGOOD", velocity_flow=None)
+        self.assertEqual(v["verdict"], "GO")
+        self.assertIsNone(v["signals"]["counterparty_flow"])
+
+
 if __name__ == "__main__":
     unittest.main()

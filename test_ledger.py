@@ -10,6 +10,7 @@ NEXT verdict.
 import os
 import tempfile
 import unittest
+from decimal import Decimal
 
 import blackwall as bw
 import ledger as L
@@ -283,6 +284,91 @@ class TestUsageStats(unittest.TestCase):
         self.assertEqual(s["verdicts_total"], 1)
         self.assertEqual(s["distinct_payers"], 0)
         self.assertIsNone(s["first_verdict"])
+
+
+class TestCounterpartyFlow(unittest.TestCase):
+    """counterparty_flow: aggregate/velocity -- cumulative flow to ONE payee in a window."""
+
+    def _v(self, cp, amount, ts):
+        return {"kind": "verdict", "counterparty": cp, "amount": str(amount), "ts": ts}
+
+    def test_sums_recent_flow_to_same_counterparty(self):
+        # The velocity scenario: many individually-fine sub-cap payments summing up.
+        ev = [self._v("0xBAD", "5.00", "2026-07-08T04:00:00Z"),
+              self._v("0xBAD", "5.00", "2026-07-08T04:10:00Z"),
+              self._v("0xBAD", "5.00", "2026-07-08T04:20:00Z")]
+        r = L.counterparty_flow(ev, "0xBAD", "2026-07-08T04:25:00Z", 3600)
+        # Kills: not accumulating across payments -- the whole point of the signal.
+        self.assertEqual(r["count"], 3)
+        self.assertEqual(r["total_amount"], Decimal("15.00"))
+
+    def test_excludes_out_of_window(self):
+        # Kills: ignoring the window -> stale flow counted forever.
+        ev = [self._v("0xBAD", "5.00", "2026-07-08T01:00:00Z"),   # >1h old
+              self._v("0xBAD", "5.00", "2026-07-08T04:20:00Z")]
+        r = L.counterparty_flow(ev, "0xBAD", "2026-07-08T04:25:00Z", 3600)
+        self.assertEqual(r["count"], 1)
+        self.assertEqual(r["total_amount"], Decimal("5.00"))
+
+    def test_excludes_other_counterparties(self):
+        ev = [self._v("0xBAD", "5.00", "2026-07-08T04:20:00Z"),
+              self._v("0xG00D", "5.00", "2026-07-08T04:21:00Z")]
+        r = L.counterparty_flow(ev, "0xBAD", "2026-07-08T04:25:00Z", 3600)
+        self.assertEqual(r["count"], 1)
+
+    def test_counterparty_match_is_case_insensitive(self):
+        # Kills: exact-case match -> a checksummed vs lowercase address splits flow,
+        # letting an attacker dodge the aggregate by varying case.
+        ev = [self._v("0xAbCd", "5.00", "2026-07-08T04:20:00Z")]
+        self.assertEqual(L.counterparty_flow(ev, "0xabcd", "2026-07-08T04:25:00Z", 3600)["count"], 1)
+
+    def test_skips_non_verdict_and_garbage_amounts(self):
+        # Kills: counting outcome events / garbage / non-positive amounts as flow.
+        ev = [{"kind": "outcome", "counterparty": "0xBAD", "amount": "99", "ts": "2026-07-08T04:20:00Z"},
+              self._v("0xBAD", "notanumber", "2026-07-08T04:21:00Z"),
+              self._v("0xBAD", "0", "2026-07-08T04:22:00Z"),
+              self._v("0xBAD", "5.00", "2026-07-08T04:23:00Z")]
+        r = L.counterparty_flow(ev, "0xBAD", "2026-07-08T04:25:00Z", 3600)
+        self.assertEqual(r["count"], 1)
+        self.assertEqual(r["total_amount"], Decimal("5.00"))
+
+    def test_bad_now_empty_or_no_counterparty_is_zero(self):
+        ev = [self._v("0xBAD", "5.00", "2026-07-08T04:20:00Z")]
+        self.assertEqual(L.counterparty_flow(ev, "0xBAD", "not-a-ts", 3600)["count"], 0)
+        self.assertEqual(L.counterparty_flow([], "0xBAD", "2026-07-08T04:25:00Z", 3600)["count"], 0)
+        self.assertEqual(L.counterparty_flow(ev, "", "2026-07-08T04:25:00Z", 3600)["count"], 0)
+
+    def test_naive_timestamp_does_not_crash(self):
+        # Regression (AUDIT-FOUND): a ledger ts without a Z/offset parses naive;
+        # comparing it to the aware window boundary raised TypeError and crashed the
+        # whole flow mid-verdict. Naive is now treated as UTC.
+        ev = [self._v("0xBAD", "5.00", "2026-07-08T04:20:00")]  # no Z
+        r = L.counterparty_flow(ev, "0xBAD", "2026-07-08T04:25:00Z", 3600)
+        self.assertEqual(r["count"], 1)
+        self.assertEqual(r["total_amount"], Decimal("5.00"))
+
+    def test_cutoff_inclusive_and_future_excluded(self):
+        # Kills: an off-by-one window boundary, or counting future-dated events.
+        ev = [self._v("0xB", "5.00", "2026-07-08T04:00:00Z"),   # exactly now-window -> included
+              self._v("0xB", "5.00", "2026-07-08T05:30:00Z")]   # future -> excluded
+        r = L.counterparty_flow(ev, "0xB", "2026-07-08T05:00:00Z", 3600)
+        self.assertEqual(r["count"], 1)
+        self.assertEqual(r["total_amount"], Decimal("5.00"))
+
+    def test_non_dict_event_does_not_crash(self):
+        # Regression (AUDIT-FOUND): read_events() yields anything json.loads()
+        # returns, including a valid-JSON line that is NOT an object (e.g. a bare
+        # `42`, `"str"`, `null`, `[...]`). e.get() on such a value raised
+        # AttributeError, violating the "never raises" contract and (via forecast's
+        # try/except) SILENTLY disabling the velocity signal for the whole verdict
+        # once a single such row exists in the ledger. Non-dict events must be
+        # skipped, not crash.
+        ev = [self._v("0xBAD", "5.00", "2026-07-08T04:20:00Z"),
+              42, "junk", None, ["not", "a", "dict"],
+              self._v("0xBAD", "5.00", "2026-07-08T04:21:00Z")]
+        r = L.counterparty_flow(ev, "0xBAD", "2026-07-08T04:25:00Z", 3600)
+        self.assertEqual(r["count"], 2)
+        self.assertEqual(r["total_amount"], Decimal("10.00"))
 
 
 if __name__ == "__main__":

@@ -66,6 +66,12 @@ PEER_HOLD_RATIO = 3.0             # priced >= Nx the peer market for its class =
 HOLD_AMOUNT_THRESHOLD = Decimal("10.00")  # amounts above this escalate (HOLD)
 HOLD_ANOMALY = 0.30               # price-anomaly score at/above this cannot GO
 STOP_ANOMALY_RATIO = 8.0          # charged >= 8x its own median => STOP (wildly off)
+# Aggregate/velocity: cumulative recent flow to ONE counterparty that a per-payment
+# view (and a per-invoice cap) can't see -- a drain built from many individually-fine
+# sub-cap payments to the same payee. Escalates GO->HOLD only on the PATTERN.
+VELOCITY_WINDOW_SECONDS = 3600            # look-back window for cumulative flow (1h)
+VELOCITY_AMOUNT_THRESHOLD = Decimal("100.00")  # cumulative flow in the window that escalates
+MIN_VELOCITY_COUNT = 5            # only trips on MANY payments (a single big one is the over_budget case)
 MAX_BODY_BYTES = 64 * 1024        # request-body cap (oversize guard)
 
 # Receipts are signed so the agent can keep a tamper-evident audit trail. This
@@ -328,7 +334,7 @@ def reputation_score(record):
 
 def decide_payment(amount, record, price_history,
                    counterparty=None, expected_recipient=None, hold_above=None,
-                   resource=None, peer_median=None):
+                   resource=None, peer_median=None, velocity_flow=None):
     """
     The core verdict. Returns a dict:
         {verdict, score, reasons[], signals{...}}
@@ -443,6 +449,24 @@ def decide_payment(amount, record, price_history,
     peer_ratio = peer_anomaly_ratio(reference_price, peer_median)
     peer_hold = peer_ratio is not None and peer_ratio >= PEER_HOLD_RATIO
 
+    # Aggregate/velocity: would THIS payment push cumulative recent flow to this
+    # counterparty over the threshold across many payments? `velocity_flow` is the
+    # counterparty's HISTORICAL flow in the window (ledger.counterparty_flow);
+    # this payment adds one more. Trips HOLD only on the PATTERN (>= MIN_VELOCITY_COUNT
+    # payments), so a single large payment stays the over_budget case, not this one.
+    # A drain-by-many-small-payments each individually fine is exactly what a
+    # per-call verdict and a per-invoice cap both miss.
+    velocity_hold = False
+    velocity_window_total = None
+    velocity_count = None
+    if velocity_flow is not None:
+        hist_total = velocity_flow.get("total_amount") or Decimal(0)
+        hist_count = velocity_flow.get("count") or 0
+        velocity_window_total = hist_total + amount_dec
+        velocity_count = hist_count + 1
+        velocity_hold = (velocity_window_total >= VELOCITY_AMOUNT_THRESHOLD
+                         and velocity_count >= MIN_VELOCITY_COUNT)
+
     # ---- verdict ----
     if stop:
         verdict = "STOP"
@@ -452,7 +476,8 @@ def decide_payment(amount, record, price_history,
               and not sybil_thin
               and a_score < HOLD_ANOMALY
               and not over_budget
-              and not peer_hold)
+              and not peer_hold
+              and not velocity_hold)
         if go:
             verdict = "GO"
         else:
@@ -488,6 +513,14 @@ def decide_payment(amount, record, price_history,
                     "priced %.1fx the peer-group market rate for this class -- "
                     "above comparable counterparties" % peer_ratio
                 )
+            if velocity_hold:
+                reasons.append(
+                    "cumulative flow to this counterparty is %s across %d recent "
+                    "payments (>= %s over %d) -- possible drain by many small "
+                    "payments; escalating"
+                    % (velocity_window_total, velocity_count,
+                       VELOCITY_AMOUNT_THRESHOLD, MIN_VELOCITY_COUNT)
+                )
 
     # Bayesian trust score for the response. Hard STOPs (sanction/known-bad/
     # mismatch) floor it to 0 -- there is no "trust" to report. Otherwise it is
@@ -509,6 +542,12 @@ def decide_payment(amount, record, price_history,
         # x402 settlement is on-chain and final.
         "reversibility": "irreversible",
         "blast_radius": "bounded" if not over_budget else "unbounded",
+        # Aggregate/velocity: cumulative recent flow to this counterparty INCLUDING
+        # this payment (None when no ledger/window supplied). The drain a per-call
+        # view can't see.
+        "counterparty_flow": ({"window_total": str(velocity_window_total),
+                               "count": velocity_count}
+                              if velocity_flow is not None else None),
     }
 
     return {
@@ -758,6 +797,20 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     # agent supplied in context (its prior quotes for this resource).
     price_history = record.get("price_history") or clean["price_history"]
 
+    # Aggregate/velocity: the counterparty's cumulative recent flow from the ledger,
+    # so decide_payment can catch a drain built from many sub-cap payments to the
+    # same payee. FAIL-OPEN: a ledger read error must never break the verdict.
+    velocity_flow = None
+    if ledger is not None:
+        try:
+            from ledger import counterparty_flow
+            now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            velocity_flow = counterparty_flow(
+                ledger.read_events(), clean["counterparty"],
+                now_iso, VELOCITY_WINDOW_SECONDS)
+        except Exception:
+            velocity_flow = None
+
     verdict = decide_payment(
         amount=clean["amount"],
         record=record,
@@ -768,6 +821,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         resource=clean.get("resource"),
         peer_median=(peer_index.get(clean["resource_class"])
                      if peer_index and clean.get("resource_class") else None),
+        velocity_flow=velocity_flow,
     )
 
     # Endpoint-readiness enrichment (address-based verdict + URL-based readiness).

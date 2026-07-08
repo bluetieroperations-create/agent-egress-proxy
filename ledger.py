@@ -30,6 +30,8 @@ import json
 import os
 import threading
 import time
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 
 # Outcome taxonomy. The two axes Blackwall cares about: did it SETTLE (money
 # moved) and did it DELIVER (the agent got what it paid for).
@@ -230,6 +232,74 @@ def usage_stats(events):
         "first_verdict": first_ts,
         "last_verdict": last_ts,
     }
+
+
+def _parse_ts(ts):
+    """Parse an RFC3339 timestamp as the ledger emits it (e.g.
+    '2026-07-08T04:22:29Z'). ALWAYS returns a timezone-AWARE datetime (naive input
+    is treated as UTC), or None -- never raises, and never returns a naive value
+    that would blow up an aware/naive comparison downstream (a real crash a single
+    malformed ledger row could otherwise trigger in the middle of a verdict)."""
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def counterparty_flow(events, counterparty, now_ts, window_seconds):
+    """PURE: cumulative amount + count of VERDICT events to `counterparty` within
+    the last `window_seconds` up to `now_ts` (inclusive).
+
+    This is the aggregate/velocity signal a per-payment view CANNOT give: a drain
+    isn't one $500 mistake, it's a hundred sub-cap $5 payments to the SAME
+    counterparty -- each individually fine, each under a spending cap and under a
+    single-call verdict's radar. Summing recent flow to one counterparty catches
+    the accumulation that neither a cap nor a stateless per-call check sees.
+
+    Fail-safe: a non-dict event, a non-verdict kind, a different counterparty, an
+    unparseable/out-of-window ts, or a missing/garbage amount are skipped -- it
+    never invents flow and never raises. Counterparty match is case-insensitive
+    (EVM addresses).
+    Returns {"total_amount": Decimal, "count": int}.
+
+    KNOWN LIMITS (not fixed here): (1) SYBIL -- a payee splitting across N distinct
+    addresses evades a per-counterparty aggregate; this catches a repeated-address
+    drain, not a spread-out one (same sybil class as the reputation signals).
+    (2) O(n) -- scans the whole event stream per call; fine at current volume, but
+    a hot path over a large ledger will want an indexed/rolling window."""
+    now = _parse_ts(now_ts)
+    if now is None or window_seconds is None or window_seconds < 0:
+        return {"total_amount": Decimal(0), "count": 0}
+    cutoff = now - timedelta(seconds=window_seconds)
+    target = str(counterparty or "").strip().lower()
+    total = Decimal(0)
+    count = 0
+    for e in events:
+        # read_events() yields anything json.loads() returns -- a valid-JSON line
+        # that isn't an object (42, "str", null, [...]) has no .get() and must be
+        # skipped, not crash the whole flow mid-verdict.
+        if not isinstance(e, dict):
+            continue
+        if e.get("kind") != "verdict":
+            continue
+        if str(e.get("counterparty") or "").strip().lower() != target or not target:
+            continue
+        t = _parse_ts(e.get("ts"))
+        if t is None or t < cutoff or t > now:
+            continue
+        try:
+            amt = Decimal(str(e.get("amount")))
+        except (InvalidOperation, ValueError, TypeError):
+            continue
+        if amt.is_finite() and amt > 0:
+            total += amt
+            count += 1
+    return {"total_amount": total, "count": count}
 
 
 # ===========================================================================
