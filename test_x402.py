@@ -459,7 +459,9 @@ class TestV2WireFormat(unittest.TestCase):
         info = ext["bazaar"]["info"]
         self.assertEqual(info["input"]["method"], "POST")
         self.assertEqual(info["input"]["bodyType"], "json")
-        self.assertEqual(info["input"]["type"], "http")
+        # type is the SDK's query-vs-body discriminator: "body" for a POST (not our
+        # old made-up "http", which the CDP discovery parser doesn't recognize).
+        self.assertEqual(info["input"]["type"], "body")
         self.assertEqual(info["input"]["body"]["asset"], "USDC")   # concrete example, not a schema
         self.assertEqual(info["output"]["example"], {"verdict": "GO"})
         # And the x402scan schema is still there (both catalogs satisfied).

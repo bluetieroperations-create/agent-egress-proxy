@@ -218,10 +218,16 @@ def build_bazaar_extension(input_schema=None, output_example=None,
        Missing it -> SCHEMA_INPUT_MISSING, resource marked `skipped`.
 
     2. Coinbase CDP Bazaar (declareDiscoveryExtension) reads a CONCRETE EXAMPLE:
-        extensions.bazaar.info.input  = {type:"http", method, bodyType, body:<example>}
+        extensions.bazaar.info.input  = {type:"body", method, bodyType, body:<example>}
         extensions.bazaar.info.output = {example:<example>}
        Missing it -> CDP will NOT catalog the endpoint even after a settlement.
        (This is why a settled endpoint with only `.schema` never lists on Bazaar.)
+
+       `input.type` is the query-vs-body DISCRIMINATOR the SDK's declareDiscoveryExtension
+       emits: "query" for GET/HEAD/DELETE (uses queryParams), "body" for POST/PUT/PATCH
+       (uses bodyType + body). We are POST, so "body". (Previously "http" -- our own
+       invention, a value the CDP discovery parser does not recognize, so it could not
+       read our info block; a likely reason a settled endpoint never listed.)
 
     We build both under one `bazaar` key so a single 402 satisfies both catalogs."""
     bazaar = {}
@@ -236,7 +242,7 @@ def build_bazaar_extension(input_schema=None, output_example=None,
     # --- CDP Bazaar: concrete example ---
     info = {}
     if input_example is not None:
-        info["input"] = {"type": "http", "method": "POST",
+        info["input"] = {"type": "body", "method": "POST",
                          "bodyType": "json", "body": input_example}
     if output_example is not None:
         info["output"] = {"example": output_example}
