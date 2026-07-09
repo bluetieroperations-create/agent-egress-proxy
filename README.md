@@ -186,6 +186,27 @@ the allowlist entry `example.com`.
 
 ---
 
+## Trust, security & compliance
+
+BlackWall is a security control, so its own trustworthiness is documented and
+independently verified — not just asserted:
+
+- **[TRUST.md](TRUST.md)** — buyer-facing trust page: what data BlackWall can and
+  cannot see, where it lives, and honest limits.
+- **[THREAT_MODEL.md](THREAT_MODEL.md)** — adversary model, in-scope threats with
+  code-linked mitigations, and explicit non-goals.
+- **[AUDIT.md](AUDIT.md)** + **[audit_claims.py](audit_claims.py)** — an
+  independent, re-runnable **live-traffic audit** that drives the real proxy and
+  confirms each security claim holds end-to-end (`python audit_claims.py`).
+- **[SECURITY.md](SECURITY.md)** — vulnerability disclosure policy.
+- **[COMPLIANCE.md](COMPLIANCE.md)** — vendor security self-assessment
+  (SIG/CAIQ-style), framework mapping, and a costed certification roadmap.
+
+Both the unit tests and the live audit run on every push via
+[CI](.github/workflows/verify.yml).
+
+---
+
 ## HONEST LIMITS
 
 - This governs the **normal `requests` / proxy-respecting path** and logs it.
