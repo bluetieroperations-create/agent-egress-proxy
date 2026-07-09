@@ -1218,6 +1218,37 @@ class TestCORS(unittest.TestCase):
         r = urlopen("http://127.0.0.1:%d/healthz" % port, timeout=3)
         self.assertEqual(r.headers.get("Access-Control-Allow-Origin"), "*")
 
+    def test_preflight_allows_the_request_headers_the_service_actually_reads(self):
+        """A browser wallet's cross-origin paid call sends the x402 REQUEST headers
+        the server consumes: X-PAYMENT (single-shot), X-PAYMENT-SESSION (session
+        reuse), and PAYMENT-SIGNATURE (v2 canonical). All three MUST be in
+        Access-Control-Allow-Headers or the browser blocks the request at the
+        preflight -- defeating the whole point of adding CORS.
+        Kills: Allow-Headers advertising a phantom `X-SESSION` while omitting the
+        real X-PAYMENT-SESSION / PAYMENT-SIGNATURE names."""
+        from urllib.request import Request, urlopen
+        port = self._serve()
+        r = urlopen(Request("http://127.0.0.1:%d/v1/forecast-payment" % port,
+                            method="OPTIONS"), timeout=3)
+        allow = r.headers.get("Access-Control-Allow-Headers", "").lower()
+        for h in ("x-payment", "x-payment-session", "payment-signature"):
+            self.assertIn(h, allow,
+                          "Allow-Headers must include %r (the service reads it)" % h)
+
+    def test_preflight_exposes_the_response_headers_browser_js_must_read(self):
+        """The paid-call RESPONSE carries x402 headers browser JS needs to read
+        back (the settlement tx in PAYMENT-RESPONSE, the session balance in
+        X-PAYMENT-SESSION-REMAINING). Without Access-Control-Expose-Headers the
+        browser hides them from JS.
+        Kills: no Access-Control-Expose-Headers on the CORS set."""
+        from urllib.request import urlopen
+        port = self._serve()
+        r = urlopen("http://127.0.0.1:%d/healthz" % port, timeout=3)
+        expose = r.headers.get("Access-Control-Expose-Headers", "").lower()
+        for h in ("payment-response", "x-payment-session-remaining"):
+            self.assertIn(h, expose,
+                          "Expose-Headers must include %r (browser JS reads it)" % h)
+
 
 class TestSignedReceiptForecast(unittest.TestCase):
     """forecast() attaches a third-party-verifiable Ed25519 signed_receipt."""

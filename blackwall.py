@@ -1010,7 +1010,20 @@ class _Handler(BaseHTTPRequestHandler):
     _CORS = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, X-PAYMENT, X-SESSION, Authorization",
+        # Allow the x402 REQUEST headers the service actually reads: X-PAYMENT
+        # (single-shot / v1-CDP), PAYMENT-SIGNATURE (v2 canonical), and
+        # X-PAYMENT-SESSION (session reuse). Authorization for the token-gated
+        # /v1/stats. A browser strips any request header not listed here at the
+        # preflight, so an omission silently blocks that paid flow.
+        "Access-Control-Allow-Headers": (
+            "Content-Type, X-PAYMENT, PAYMENT-SIGNATURE, X-PAYMENT-SESSION, "
+            "Authorization"),
+        # Expose the x402 RESPONSE headers browser JS must read back: the
+        # settlement tx (PAYMENT-RESPONSE), the 402 challenge (PAYMENT-REQUIRED),
+        # and the session balance (X-PAYMENT-SESSION-REMAINING). Without this the
+        # browser hides them from script even though the body is readable.
+        "Access-Control-Expose-Headers": (
+            "PAYMENT-RESPONSE, PAYMENT-REQUIRED, X-PAYMENT-SESSION-REMAINING"),
         "Access-Control-Max-Age": "600",
     }
 
