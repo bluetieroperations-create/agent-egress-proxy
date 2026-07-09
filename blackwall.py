@@ -1001,16 +1001,42 @@ class _Handler(BaseHTTPRequestHandler):
     stats_token = None  # operator token for GET /v1/stats; None => endpoint disabled (404)
     watch_stats = None  # WatchStats for the settlement-watch loop, or None if off
 
+    # CORS: the verdict endpoint is a PUBLIC API, so allow browser clients (e.g. a
+    # Farcaster mini-app) to call it cross-origin. Responses carry only a verdict +
+    # a public-key-verifiable receipt -- no secrets -- so `*` WITHOUT credentials
+    # exposes nothing the endpoint doesn't already serve to any caller. X-PAYMENT is
+    # allowed so a browser wallet can make the paid call; Authorization is allowed so
+    # the (separately token-gated) /v1/stats stays callable from a browser tool.
+    _CORS = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, X-PAYMENT, X-SESSION, Authorization",
+        "Access-Control-Max-Age": "600",
+    }
+
     def _send_json(self, code, obj, extra_headers=None):
         body = json.dumps(obj, separators=(",", ":")).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Connection", "close")
+        for k, v in self._CORS.items():
+            self.send_header(k, v)
         for k, v in (extra_headers or {}).items():
             self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
+
+    def do_OPTIONS(self):
+        # CORS preflight: a browser sends OPTIONS before a cross-origin POST that
+        # carries a JSON body (or an X-PAYMENT header). Answer 204 with the CORS
+        # headers so the real request is allowed to proceed.
+        self.send_response(204)
+        for k, v in self._CORS.items():
+            self.send_header(k, v)
+        self.send_header("Content-Length", "0")
+        self.send_header("Connection", "close")
+        self.end_headers()
 
     def do_GET(self):
         if self.path == "/healthz":
@@ -1105,6 +1131,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", "0")
         self.send_header("Connection", "close")
+        for k, v in self._CORS.items():
+            self.send_header(k, v)
         self.end_headers()
 
     def _descriptor(self):

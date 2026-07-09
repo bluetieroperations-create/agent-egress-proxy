@@ -1184,6 +1184,41 @@ class TestStatsEndpoint(unittest.TestCase):
         self.assertFalse(body["settlement_watch_enabled"])
 
 
+class TestCORS(unittest.TestCase):
+    """The verdict endpoint is a public API; a browser client (e.g. the Farcaster
+    mini-app) needs CORS or its cross-origin fetch is blocked at the preflight.
+    Kills: no do_OPTIONS handler (501 preflight) / missing Access-Control-Allow-Origin."""
+
+    def _serve(self):
+        import threading
+        from http.server import ThreadingHTTPServer
+        handler = type("_H", (bw._Handler,),
+                       {"reputation_source": bw.MockReputationSource()})
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        port = httpd.server_address[1]
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        return port
+
+    def test_options_preflight_allows_cross_origin_post(self):
+        from urllib.request import Request, urlopen
+        port = self._serve()
+        req = Request("http://127.0.0.1:%d/v1/forecast-payment" % port,
+                      method="OPTIONS")
+        r = urlopen(req, timeout=3)
+        self.assertIn(r.status, (200, 204))   # NOT 501 (the stdlib default)
+        self.assertEqual(r.headers.get("Access-Control-Allow-Origin"), "*")
+        self.assertIn("POST", r.headers.get("Access-Control-Allow-Methods", ""))
+        self.assertIn("X-PAYMENT", r.headers.get("Access-Control-Allow-Headers", ""))
+
+    def test_json_response_carries_cors_header(self):
+        from urllib.request import urlopen
+        port = self._serve()
+        r = urlopen("http://127.0.0.1:%d/healthz" % port, timeout=3)
+        self.assertEqual(r.headers.get("Access-Control-Allow-Origin"), "*")
+
+
 class TestSignedReceiptForecast(unittest.TestCase):
     """forecast() attaches a third-party-verifiable Ed25519 signed_receipt."""
 
