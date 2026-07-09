@@ -9,8 +9,7 @@ expect.
 Please report suspected vulnerabilities **privately** — do not open a public
 issue for a security bug.
 
-- **Email:** security@blackwalltier.com *(replace with your monitored security
-  inbox before publishing)*
+- **Email:** bluetier.operations@gmail.com
 - **Or:** open a private [GitHub Security Advisory](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability)
   on this repository ("Security" tab → "Report a vulnerability").
 

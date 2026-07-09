@@ -106,7 +106,7 @@ startup-discount programs via AWS/GCP/Azure/YC often cut platform + audit costs
 | **0 — Now (free)** | Trust page, threat model, self-assessment, live audit, disclosure policy, CI verification | **$0** | ✅ Done in this repo |
 | **0.5 — Free signals** | Publish a CSA CAIQ self-assessment to the STAR registry; keep a SIG Lite on file | **$0** | When first enterprise asks |
 | **1 — Product assurance** | Independent third-party **penetration test / code audit** (most on-point for a security tool) | **~$4k–$15k** | Before/at first enterprise deal |
-| **2 — Supply-chain integrity** | Signed releases + build **provenance attestation** (Sigstore / GitHub artifact attestations); publish an SBOM (trivial — stdlib only) | **~$0–$2k** | Alongside phase 1 |
+| **2 — Supply-chain integrity** | ✅ **Implemented** — [release workflow](.github/workflows/release.yml) cuts signed releases with **build-provenance attestation** (keyless Sigstore via GitHub) + a generated [CycloneDX SBOM](sbom.json) + SHA-256 checksums | **$0** | Done in this repo |
 | **3 — SOC 2 Type II** | AICPA attestation over dev/build/corp security (scope: **Security** criterion only). Note: covers *our* SDLC & org, not "hosted data" (we host none) | **~$15k lean / ~$30k with platform**; ~$15k–$25k/yr ongoing | When a US enterprise names it |
 | **4 — ISO/IEC 27001** | ISMS certification (base management system) | **~$15k–$40k first year** | When selling internationally |
 | **5 — ISO/IEC 42001** | AI Management System — the differentiator for an AI-governance product; cheapest layered on 27001 | **~$8k–$20k as 27001 add-on** | After 27001 |
@@ -128,4 +128,4 @@ tool.
 
 Need a specific questionnaire completed (SIG Full, CAIQ v4, a customer template),
 a framework mapping, or a copy of the pen-test report once available? Contact
-**security@blackwalltier.com**.
+**bluetier.operations@gmail.com**.

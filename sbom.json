@@ -1,0 +1,65 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-07-09T00:00:00Z",
+    "tools": [
+      {
+        "vendor": "BlueTier Operations",
+        "name": "gen_sbom.py",
+        "version": "1.0"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "bom-ref": "pkg:generic/blackwall@0.1.0",
+      "name": "blackwall",
+      "version": "0.1.0",
+      "description": "Localhost-only egress-control forward proxy for AI agents.",
+      "publisher": "BlueTier Operations",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "15ff6dfafb69c702e0b88a3ed25f8e4cc7e358353608445566220c74495ca9ff"
+        }
+      ],
+      "properties": [
+        {
+          "name": "blackwall:dependencies",
+          "value": "0 (Python standard library only)"
+        },
+        {
+          "name": "blackwall:build",
+          "value": "none (interpreted single-file source, no build step)"
+        },
+        {
+          "name": "blackwall:python_requires",
+          "value": ">=3.8"
+        },
+        {
+          "name": "blackwall:evidence:test_egress_proxy.py:sha256",
+          "value": "034dcd957f5d1838e731a085596153257219ba180feb0a3123149255ff2f82f2"
+        },
+        {
+          "name": "blackwall:evidence:audit_claims.py:sha256",
+          "value": "2636ea79794bea12a686195f64c144e430f907af7ca503476b3394e844fd37d6"
+        }
+      ]
+    }
+  },
+  "components": [],
+  "dependencies": [
+    {
+      "ref": "pkg:generic/blackwall@0.1.0",
+      "dependsOn": []
+    }
+  ]
+}

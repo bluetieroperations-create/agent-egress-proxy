@@ -201,9 +201,15 @@ independently verified — not just asserted:
 - **[SECURITY.md](SECURITY.md)** — vulnerability disclosure policy.
 - **[COMPLIANCE.md](COMPLIANCE.md)** — vendor security self-assessment
   (SIG/CAIQ-style), framework mapping, and a costed certification roadmap.
+- **[sbom.json](sbom.json)** — CycloneDX SBOM (zero third-party dependencies),
+  generated from source by [scripts/gen_sbom.py](scripts/gen_sbom.py).
 
 Both the unit tests and the live audit run on every push via
-[CI](.github/workflows/verify.yml).
+[CI](.github/workflows/verify.yml). Tagged releases are cut by a
+[signed-release workflow](.github/workflows/release.yml) that gates on those
+checks and publishes **build-provenance attestations**, an SBOM, and SHA-256
+checksums — so a downloaded artifact can be cryptographically verified back to
+this repo and commit (`gh attestation verify <artifact> --repo <owner>/<repo>`).
 
 ---
 

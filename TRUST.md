@@ -157,7 +157,7 @@ We would rather tell you the boundaries than have you discover them.
 
 ## Reporting a vulnerability
 
-Found a security issue? Please contact **security@blackwalltier.com** (or open a
+Found a security issue? Please contact **bluetier.operations@gmail.com** (or open a
 private security advisory on the repository). We aim to acknowledge within two
 business days. Please do not disclose publicly until we've had a chance to
 respond.

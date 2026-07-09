@@ -1,0 +1,101 @@
+name: release
+
+# Cut a verifiable, signed release when a version tag (vX.Y.Z) is pushed.
+#
+# What makes the release trustworthy:
+#   * The unit suite AND the live-traffic security audit must pass first — a
+#     release can only be cut from code whose security claims are verified.
+#   * A CycloneDX SBOM is generated from the shipped source (stdlib-only, so it
+#     is a real inventory, not a claim).
+#   * SHA-256 checksums are published for every artifact.
+#   * Build-provenance attestations are generated for the tarball, the single
+#     source file, and the SBOM — so a downloader can cryptographically verify
+#     the artifacts were built by THIS workflow from THIS repo/commit:
+#         gh attestation verify blackwall-<ver>.tar.gz --repo <owner>/<repo>
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (e.g. v0.1.0) when run manually"
+        required: true
+        default: "v0.0.0-manual"
+
+permissions:
+  contents: write        # create the GitHub Release
+  id-token: write        # keyless signing for provenance
+  attestations: write    # write build-provenance attestations
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # --- gate: never release unverified code ---
+      - name: Unit tests
+        run: python -m unittest test_egress_proxy.py -v
+
+      - name: Live-traffic security audit
+        run: python audit_claims.py
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            V="${{ github.event.inputs.version }}"
+          else
+            V="${GITHUB_REF_NAME}"
+          fi
+          echo "version=${V#v}" >> "$GITHUB_OUTPUT"
+          echo "tag=${V}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate SBOM
+        run: |
+          python scripts/gen_sbom.py \
+            --version "${{ steps.ver.outputs.version }}" \
+            --timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > sbom.json
+          cat sbom.json
+
+      - name: Assemble release tarball
+        id: pkg
+        run: |
+          NAME="blackwall-${{ steps.ver.outputs.version }}"
+          mkdir -p "dist/${NAME}"
+          cp egress_proxy.py test_egress_proxy.py audit_claims.py \
+             README.md LICENSE allowlist.txt.example \
+             TRUST.md THREAT_MODEL.md AUDIT.md SECURITY.md COMPLIANCE.md \
+             sbom.json "dist/${NAME}/"
+          tar -czf "dist/${NAME}.tar.gz" -C dist "${NAME}"
+          ( cd dist && sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256" )
+          sha256sum egress_proxy.py > "dist/egress_proxy.py.sha256"
+          cp egress_proxy.py sbom.json dist/
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/${{ steps.pkg.outputs.name }}.tar.gz
+            dist/egress_proxy.py
+            dist/sbom.json
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: BlackWall ${{ steps.ver.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            dist/${{ steps.pkg.outputs.name }}.tar.gz
+            dist/${{ steps.pkg.outputs.name }}.tar.gz.sha256
+            dist/egress_proxy.py
+            dist/egress_proxy.py.sha256
+            dist/sbom.json
