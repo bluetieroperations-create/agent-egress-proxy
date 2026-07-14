@@ -67,6 +67,8 @@ PEER_HOLD_RATIO = 3.0             # priced >= Nx the peer market for its class =
 HOLD_AMOUNT_THRESHOLD = Decimal("10.00")  # amounts above this escalate (HOLD)
 HOLD_ANOMALY = 0.30               # price-anomaly score at/above this cannot GO
 STOP_ANOMALY_RATIO = 8.0          # charged >= 8x its own median => STOP (wildly off)
+FLAT_STOP_MIN_OBS = 3             # a FLAT (unattributed) median needs >= N samples...
+FLAT_STOP_SPREAD = 3.0            # ...that cluster within Nx (max <= N*min) to hard-STOP
 # Aggregate/velocity: cumulative recent flow to ONE counterparty that a per-payment
 # view (and a per-invoice cap) can't see -- a drain built from many individually-fine
 # sub-cap payments to the same payee. Escalates GO->HOLD only on the PATTERN.
@@ -217,7 +219,26 @@ def price_median_and_basis(price_history, observations, resource=None):
             if m is not None:
                 return m, "payer-weighted"
     if price_history:
-        return _median_of(Decimal(str(p)) for p in price_history), "flat"
+        # Filter to positive, finite, numeric entries -- the SAME junk that
+        # robust_price_median and flat_stop_trustworthy drop. Otherwise $0
+        # (free-tier) or garbage entries would deflate/None the median that
+        # produces the anomaly ratio, so the ratio would judge a DIFFERENT
+        # distribution than flat_stop_trustworthy validates: a $0-laced history
+        # both suppresses a real gouge (median->0->ratio None->GO) and
+        # false-STOPs a legit payment (median deflated->ratio inflated) while the
+        # trust gate, which filters the zeros, blesses it. A non-numeric entry
+        # would also raise straight up into a 500. Coerce/filter here so both
+        # judge the SAME distribution.
+        flat_vals = []
+        for p in price_history:
+            try:
+                d = Decimal(str(p))
+            except (InvalidOperation, ValueError, TypeError):
+                continue
+            if d.is_finite() and d > 0:
+                flat_vals.append(d)
+        if flat_vals:
+            return _median_of(flat_vals), "flat"
     return None, "flat"
 
 
@@ -240,6 +261,30 @@ def price_anomaly_ratio(amount, price_history, observations=None, resource=None)
     if median is None or median <= 0:
         return None
     return float(Decimal(str(amount)) / median)
+
+
+def flat_stop_trustworthy(price_history):
+    """Is a FLAT median (raw amounts, no payer attribution) reliable enough to
+    drive a hard price-STOP?
+
+    Only when the history is both DENSE and TIGHT: >= FLAT_STOP_MIN_OBS positive
+    observations that cluster within FLAT_STOP_SPREAD (max <= N x min). A sparse
+    history (too few points) or a dispersed one (a normal wallet's varied
+    receipts) yields a median that is not a trustworthy price reference, so an 8x
+    ratio off it must NOT hard-STOP -- it downgrades to HOLD. Robust (per-class /
+    payer-weighted) medians never route through here. Pure; returns bool."""
+    vals = []
+    for p in price_history or []:
+        try:
+            d = Decimal(str(p))
+        except (InvalidOperation, ValueError, TypeError):
+            continue
+        if d.is_finite() and d > 0:
+            vals.append(d)
+    if len(vals) < FLAT_STOP_MIN_OBS:
+        return False
+    lo, hi = min(vals), max(vals)
+    return lo > 0 and (hi / lo) <= Decimal(str(FLAT_STOP_SPREAD))
 
 
 def peer_group_median(counterparty_medians, min_counterparties=MIN_PEER_COUNTERPARTIES):
@@ -416,7 +461,17 @@ def decide_payment(amount, record, price_history,
     if record.get("known_bad"):
         stop = hard_stop = True
         reasons.append("counterparty is a known-bad address")
-    if ratio is not None and ratio >= STOP_ANOMALY_RATIO:
+    # Hard-STOP on a price gouge only when the median is TRUSTWORTHY. A robust /
+    # wash-resistant basis (per-class or payer-weighted) always qualifies. A
+    # "flat" median (raw amounts, no payer attribution) qualifies ONLY when it is
+    # both DENSE and TIGHT (flat_stop_trustworthy): a sparse or dispersed history
+    # -- a normal wallet's varied receipts -- yields an unreliable median, and an
+    # 8x ratio off it is NOT the unambiguous gouge STOP is reserved for; it would
+    # false-STOP a legitimate payment (the live "62x its own median" STOP on
+    # active addresses). Untrusted-flat anomalies still fail the GO gate (high
+    # anomaly_score) and land in HOLD for a human -- the correct verdict.
+    if (ratio is not None and ratio >= STOP_ANOMALY_RATIO
+            and (price_basis != "flat" or flat_stop_trustworthy(price_history))):
         stop = True
         reasons.append(
             "quoted amount is %.1fx the counterparty's own median -- price wildly off"

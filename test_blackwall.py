@@ -190,10 +190,32 @@ class TestDecidePayment(unittest.TestCase):
         self.assertNotEqual(v["verdict"], "STOP")
 
     def test_stop_price_wildly_off(self):
-        # 8x the median -> STOP, not merely HOLD.
+        # 8x the counterparty's OWN median -> STOP. STABLE_HISTORY is DENSE (4
+        # obs) and TIGHT (all ~0.09), so even the flat median is trustworthy
+        # enough (flat_stop_trustworthy) to hard-STOP. Mutation: drop the
+        # `>= STOP_ANOMALY_RATIO` -> HOLD (not STOP).
         v = bw.decide_payment("0.72", self.GOOD, self.STABLE_HISTORY,
                               counterparty="0xA")
         self.assertEqual(v["verdict"], "STOP")
+
+    def test_flat_anomaly_untrustworthy_holds_not_stops(self):
+        # REGRESSION (live false-STOP): an 8x+ anomaly off an UNTRUSTWORTHY flat
+        # median must NOT hard-STOP -- it downgrades to HOLD (fails the GO gate,
+        # routed to a human). This is the "62x its own median" false STOP on
+        # active wallets (exchange addresses, vitalik.eth) whose sparse/dispersed
+        # on-chain receipts make the flat median a meaningless reference. Two ways
+        # a flat median is untrustworthy; BOTH must HOLD, not STOP.
+        # (a) TOO SPARSE (< FLAT_STOP_MIN_OBS observations):
+        thin = bw.decide_payment("0.72", self.GOOD, ["0.09", "0.09"],
+                                 counterparty="0xA")
+        self.assertEqual(thin["signals"]["price_basis"], "flat")
+        self.assertEqual(thin["verdict"], "HOLD")
+        # (b) TOO DISPERSED (max/min > FLAT_STOP_SPREAD -- a wallet's varied receipts):
+        noisy = bw.decide_payment("8.20", self.GOOD, ["0.01", "0.09", "1.0"],
+                                  counterparty="0xA")
+        self.assertEqual(noisy["signals"]["price_basis"], "flat")
+        self.assertEqual(noisy["verdict"], "HOLD")
+        # Mutation: drop the flat_stop_trustworthy guard -> both become STOP.
 
     def test_hold_thin_history(self):
         thin = {"settlement_count": 3, "dispute_rate": 0.0}
@@ -582,6 +604,57 @@ class TestRobustPriceMedian(unittest.TestCase):
         rec2 = dict(rec); rec2.pop("price_observations")
         v2 = bw.decide_payment("1.00", rec2, ["1"] * 5, counterparty="0x" + "1" * 40)
         self.assertEqual(v2["signals"]["price_basis"], "flat")
+
+
+class TestFlatMedianFiltering(unittest.TestCase):
+    """The FLAT median (price_median_and_basis) must drop the SAME junk that
+    robust_price_median and flat_stop_trustworthy drop: non-positive, non-finite,
+    and non-numeric entries. Otherwise the median that produces the anomaly RATIO
+    judges a different distribution than the trustworthiness gate, and $0/garbage
+    entries silently blind or distort the price-anomaly check.
+
+    Mutation notes:
+      - keep non-positive entries in the flat median -> test_zero_entries_do_not_
+        suppress_anomaly FAILS (a gouge auto-GOes) and test_zero_deflation_no_
+        false_stop FAILS (a legit payment false-STOPs).
+      - keep non-numeric entries -> test_garbage_entry_does_not_crash FAILS (500).
+    """
+    GOOD = {"settlement_count": 1240, "dispute_rate": 0.002}
+
+    def test_flat_median_drops_nonpositive(self):
+        # $0 free-tier quotes mixed with the real $0.09 price. The flat median
+        # must be the positive subset's median (0.09), NOT 0 (which nukes the
+        # ratio to None and suppresses the anomaly entirely).
+        m, basis = bw.price_median_and_basis(["0", "0", "0.09"], None)
+        self.assertEqual(basis, "flat")
+        self.assertEqual(m, Decimal("0.09"))
+
+    def test_zero_entries_do_not_suppress_anomaly(self):
+        # REGRESSION (gouge bypass): a counterparty whose history mixes $0
+        # (free-tier) and $0.09 quotes must NOT get a clean GO on a $10 charge --
+        # that is 111x its real median. Zeros pulling the flat median to 0 (ratio
+        # None, anomaly 0.0) previously auto-approved the overcharge.
+        v = bw.decide_payment("10.00", self.GOOD, ["0", "0", "0.09"],
+                              counterparty="0xA")
+        self.assertNotEqual(v["verdict"], "GO")
+        self.assertGreater(v["signals"]["price_anomaly"], 0.0)
+
+    def test_zero_deflation_no_false_stop(self):
+        # REGRESSION (false STOP): zeros deflating a NON-zero flat median inflate
+        # the ratio while flat_stop_trustworthy (which filters the zeros) sees a
+        # tight positive subset and blesses the STOP. True median is 0.09, $0.36
+        # is only 4x -> must HOLD, never STOP.
+        v = bw.decide_payment("0.36", self.GOOD,
+                              ["0", "0", "0", "0", "0.09", "0.09", "0.09", "0.09"],
+                              counterparty="0xA")
+        self.assertNotEqual(v["verdict"], "STOP")
+
+    def test_garbage_entry_does_not_crash(self):
+        # A non-numeric entry in agent-supplied quoted_price_history must be
+        # dropped, not raise InvalidOperation up into a 500.
+        v = bw.decide_payment("0.50", self.GOOD, ["abc", "0.09", "0.09"],
+                              counterparty="0xA")
+        self.assertIn(v["verdict"], ("GO", "HOLD", "STOP"))
 
 
 class TestDefaultBillingAsset(unittest.TestCase):
