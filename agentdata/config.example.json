@@ -1,0 +1,26 @@
+{
+  "//": "agentdata platform config. Copy to config.json and edit. See README.",
+
+  "pay_to": "0xYOUR_SELLER_WALLET",
+  "network": "base",
+  "asset": "USDC",
+  "asset_decimals": 6,
+
+  "//facilitator": "mock = offline dev (no keys, no network). coinbase/cloudflare = real; also set facilitator_url.",
+  "facilitator": "mock",
+  "facilitator_url": "",
+
+  "//require_payment": "true = enforce the x402 gate. false = FREE dev mode to iterate on data logic without paying.",
+  "require_payment": true,
+
+  "db_path": "agentdata_cache.sqlite",
+  "log_path": "agentdata_sales.log",
+
+  "host": "127.0.0.1",
+  "port": 8402,
+
+  "//enricher": "stub = deterministic offline. claude = Claude API (needs ANTHROPIC_API_KEY).",
+  "enricher": "stub",
+
+  "resource_base": "https://api.yourdomain.com"
+}

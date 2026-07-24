@@ -5,3 +5,8 @@ __pycache__/
 .env
 .env.*
 verify-*.log
+
+# agentdata runtime artifacts
+agentdata_cache.sqlite
+agentdata_sales.log
+agentdata/config.json
