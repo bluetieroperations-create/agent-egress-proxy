@@ -1,0 +1,33 @@
+{
+  "//": "Example x402 budget policy for the money lock. See docs/budget-proxy-design.md.",
+  "//amounts": "All limit amounts are human decimals in `asset`; converted to atomic units once at load. NO FLOATS in the decision path.",
+
+  "asset": "USDC",
+  "unit_decimals": 6,
+  "networks": ["base"],
+
+  "//asset_addresses": "Optional. If set, an offer's `asset` (token contract) must be one of these, else the payment is blocked (no FX, no conversion).",
+  "asset_addresses": [],
+
+  "limits": {
+    "per_call_max":      "0.10",
+    "per_session_total": "2.00",
+    "per_day_total":     "10.00",
+    "prompt_above":      "0.50"
+  },
+
+  "per_host": {
+    "api.example.com": { "per_call_max": "0.25", "per_day_total": "5.00" }
+  },
+
+  "per_tool": {
+    "/tool/search":  { "per_call_max": "0.02" },
+    "/tool/deepgen": { "per_call_max": "0.40", "prompt_above": "0.20" }
+  },
+
+  "//block_if_unlimited": "true (default, fail-closed): a resource with no applicable per_call_max is BLOCKED. Set false to allow unlimited per-call spend where no cap is set.",
+  "block_if_unlimited": true,
+
+  "on_over_budget": "block",
+  "unknown_offer":  "block"
+}
