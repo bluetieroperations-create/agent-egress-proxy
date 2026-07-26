@@ -70,9 +70,30 @@ The response contains the signed envelope and a `verify_url`. Then:
 * `GET /verify/{receipt_id}` — re-checks the signature and the seller's whole
   chain, returns a PASS/FAIL report.
 * `GET /receipts/{receipt_id}` — the raw signed envelope.
+* `GET /receipts/{receipt_id}/invoice.pdf` — the receipt rendered as a
+  human-facing **A4 invoice PDF** (the artifact an accountant files).
 * `GET /chain/{seller_id}` — full-chain integrity check.
 * `GET /jwks.json` — issuer public keys, for **offline** verification with any
   JOSE/Ed25519 library. No SDK required.
+
+### Invoice PDF
+
+The invoice is a *projection* of the signed JSON — the JSON stays the
+canonical, verifiable record. It lays out the seller entity, the purchase,
+the on-chain settlement (tx, payer, payee), the total in USDC, and a
+verification footer (issuer key id + verify URL). When the receipt's
+`commerce.seller_entity` carries a `vat_rate` (percent), a VAT breakdown is
+computed with `Decimal` — never float — treating the amount as VAT-inclusive:
+
+```
+commerce.seller_entity = {
+  "name": "Example Data GmbH", "vat_id": "DE123456789",
+  "country": "DE", "vat_rate": "19"
+}
+```
+
+The renderer writes a valid PDF/1.4 by hand using the built-in Helvetica
+fonts — **no new dependencies**, in keeping with the rest of the service.
 
 For real operation: `--settlement rpc` (the default) verifies the claimed
 transfer against a Base RPC node (`--rpc-url` to override the public default)
@@ -211,19 +232,19 @@ receipt.
 ## Roadmap
 
 Done since v0.1: **seller/payee binding**, **signature-checked chain
-verification**, and the **real facilitator gate with payer binding**
-(`--gate facilitator --bind-payer`) — the receipt-fraud findings from the
-adversarial audit are closed.
+verification**, the **real facilitator gate with payer binding**
+(`--gate facilitator --bind-payer`) — closing the audit's receipt-fraud
+findings — and **A4 invoice PDF rendering** with VAT breakdown.
 
 Still ahead:
 
 * **Merkle batch anchoring** — publish a periodic Merkle root of issued
   receipts on-chain (certificate-transparency style) so existence-by-time is
   provable without trusting the issuer at all.
-* **PDF/HTML rendering** — human-facing invoice documents (VAT fields,
-  entity details) generated from the signed payload.
 * **Facilitator failover + key rotation JWKS history** — publish retired
   public keys so receipts verify years after a rotation.
+* **QR verification code** on the invoice (scan → `/verify`), once a
+  dependency-free QR encoder is in.
 * **Alignment with the x402 receipt-extension discussion**
   ([x402#2357](https://github.com/x402-foundation/x402/issues/2357)) as it
   evolves.

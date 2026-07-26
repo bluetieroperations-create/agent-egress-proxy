@@ -27,6 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from urllib.parse import unquote, urlsplit
 
+from .invoice import render_invoice
 from .ledger import Ledger
 from .schema import build_receipt, receipt_hash, validate_commerce, validate_settlement
 from .settlement import USDC_CONTRACTS, make_verifier
@@ -227,6 +228,20 @@ class App:
     def chain_report(self, seller_id: str) -> list[str]:
         return self.ledger.verify_chain(seller_id, self._envelope_verifier())
 
+    def invoice_pdf(self, receipt_id: str):
+        """Render the stored receipt as an invoice PDF. Returns
+        (bytes, filename) or (None, None) if unknown."""
+        envelope = self.ledger.get(receipt_id)
+        if envelope is None:
+            return None, None
+        payload = envelope["payload"]
+        pdf = render_invoice(
+            payload,
+            verify_url=f"{self.base_url}/verify/{receipt_id}",
+            issuer_kid=envelope.get("protected", {}).get("kid"),
+        )
+        return pdf, f"{receipt_id}.pdf"
+
     def verify_report(self, receipt_id: str) -> tuple[int, dict]:
         envelope = self.ledger.get(receipt_id)
         if envelope is None:
@@ -263,6 +278,15 @@ def make_handler(app: App):
             self.end_headers()
             self.wfile.write(data)
 
+        def _send_pdf(self, data: bytes, filename: str):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Disposition",
+                             f'inline; filename="{filename}"')
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
         def do_GET(self):
             # Strip query string, then percent-decode the path segment so
             # /verify/rcpt_x?foo=1 and /chain/a%2Eb resolve correctly.
@@ -271,6 +295,12 @@ def make_handler(app: App):
                 return self._send(200, {"ok": True, "gate": app.gate, "chain": app.chain})
             if path == "/jwks.json":
                 return self._send(200, app._jwks())
+            if path.startswith("/receipts/") and path.endswith("/invoice.pdf"):
+                rid = unquote(path[len("/receipts/"):-len("/invoice.pdf")])
+                pdf, filename = app.invoice_pdf(rid)
+                if pdf is None:
+                    return self._send(404, {"error": "unknown receipt_id"})
+                return self._send_pdf(pdf, filename)
             if path.startswith("/receipts/"):
                 envelope = app.ledger.get(unquote(path[len("/receipts/"):]))
                 if envelope is None:

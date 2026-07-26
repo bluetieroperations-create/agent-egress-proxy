@@ -423,6 +423,25 @@ class TestService(unittest.TestCase):
         jwks = self._get("/jwks.json")[1]
         verify_envelope(env, jwks)  # offline verification with published keys
 
+    def test_invoice_pdf_endpoint(self):
+        body = self.request_body()
+        body["settlement"]["tx_hash"] = "0x" + "1a" * 32  # unique to this test
+        code, obj = self._post("/receipts", body, headers={"X-PAYMENT": "dev-token"})
+        self.assertIn(code, (200, 201), obj)
+        rid = obj["receipt"]["payload"]["receipt_id"]
+        with urllib.request.urlopen(self._url(f"/receipts/{rid}/invoice.pdf")) as r:
+            self.assertEqual(r.headers["Content-Type"], "application/pdf")
+            data = r.read()
+        assert_valid_pdf(self, data)
+        self.assertIn(rid.encode(), data)
+
+    def test_invoice_pdf_unknown_404(self):
+        try:
+            urllib.request.urlopen(self._url("/receipts/rcpt_nope/invoice.pdf"))
+            self.fail("expected 404")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 404)
+
     def test_bad_body_400(self):
         code, obj = self._post("/receipts", {"nope": 1},
                                headers={"X-PAYMENT": "dev-token"})
@@ -478,6 +497,81 @@ class TestService(unittest.TestCase):
         self.assertEqual(results.count(201), 16, results)
         code, chain = self._get("/chain/concurrent.example.com")
         self.assertEqual(chain["chain"], "intact")
+
+
+from receipts.invoice import render_invoice, usdc, vat_breakdown
+
+
+def assert_valid_pdf(testcase, data: bytes):
+    """Structural PDF check without a PDF library: header, trailer, and every
+    xref offset must land on an 'N 0 obj' header."""
+    testcase.assertTrue(data.startswith(b"%PDF-1."), "missing PDF header")
+    testcase.assertIn(b"%%EOF", data)
+    idx = data.rfind(b"startxref")
+    testcase.assertNotEqual(idx, -1, "no startxref")
+    xref_off = int(data[idx + len("startxref"):].split()[0])
+    testcase.assertEqual(data[xref_off:xref_off + 4], b"xref", "startxref mispoints")
+    # parse the xref table entries and confirm each in-use offset points at 'obj'
+    body = data[xref_off:].split(b"\n")
+    # body[0]='xref', body[1]='0 N', then N entries of 20 bytes each
+    count = int(body[1].split()[1])
+    entries = body[2:2 + count]
+    used = 0
+    for e in entries:
+        parts = e.split()
+        if len(parts) >= 3 and parts[2] == b"n":
+            off = int(parts[0])
+            seg = data[off:off + 24]
+            testcase.assertRegex(seg, rb"^\d+ 0 obj", f"xref offset {off} not an object")
+            used += 1
+    testcase.assertGreaterEqual(used, 5)
+
+
+class TestInvoicePDF(unittest.TestCase):
+    def test_usdc_formatting_no_float(self):
+        self.assertEqual(usdc("5000"), "0.005000")
+        self.assertEqual(usdc("1"), "0.000001")
+        self.assertEqual(usdc("1000000"), "1.000000")
+
+    def test_vat_breakdown_inclusive(self):
+        net, vat, gross = vat_breakdown("1190000", "19")  # 1.19 USDC incl 19%
+        self.assertEqual(gross, "1.190000")
+        self.assertEqual(net, "1.000000")
+        self.assertEqual(vat, "0.190000")
+
+    def test_vat_breakdown_bad_rate_none(self):
+        self.assertIsNone(vat_breakdown("1000000", "not-a-number"))
+
+    def test_render_is_valid_pdf(self):
+        pdf = render_invoice(sample_receipt(), verify_url="https://r/verify/x",
+                             issuer_kid="deadbeef")
+        assert_valid_pdf(self, pdf)
+
+    def test_pdf_contains_key_fields_as_text(self):
+        p = sample_receipt(seq=7)
+        pdf = render_invoice(p, verify_url="https://r/verify/x")
+        # content stream text is present as literal PDF strings
+        self.assertIn(p["receipt_id"].encode(), pdf)
+        self.assertIn(p["seller_id"].encode(), pdf)
+        self.assertIn(p["settlement"]["tx_hash"].encode(), pdf)
+        self.assertIn(b"0.005000 USDC", pdf)  # 5000 base units formatted
+
+    def test_render_with_seller_entity_and_vat(self):
+        p = sample_receipt(commerce=sample_commerce(seller_entity={
+            "name": "Example GmbH", "vat_id": "DE123456789",
+            "country": "DE", "vat_rate": "19"}))
+        pdf = render_invoice(p)
+        assert_valid_pdf(self, pdf)
+        self.assertIn(b"Example GmbH", pdf)
+        self.assertIn(b"DE123456789", pdf)
+
+    def test_parens_in_description_are_escaped(self):
+        # unescaped ( ) would corrupt the PDF string syntax
+        p = sample_receipt(commerce=sample_commerce(
+            description="query (batch) for prices (v2)"))
+        pdf = render_invoice(p)
+        assert_valid_pdf(self, pdf)
+        self.assertIn(rb"query \(batch\) for prices \(v2\)", pdf)
 
 
 def make_xpayment(payer, value="2000", network="base-sepolia"):
