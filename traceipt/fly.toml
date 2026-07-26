@@ -15,7 +15,7 @@ primary_region = "iad"         # pick one near you: iad, lhr, fra, sjc, ...
   X402_GATE = "dev"
   RECEIPTS_SETTLEMENT = "mock"
   # IMPORTANT: set this to your public URL so verify links + QR resolve.
-  RECEIPTS_BASE_URL = "https://traceipt-demo.fly.dev"
+  RECEIPTS_BASE_URL = "https://api.traceipt.xyz"
 
 [http_service]
   internal_port = 8402

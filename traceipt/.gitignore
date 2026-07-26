@@ -2,3 +2,8 @@
 *.pem
 *.db
 __pycache__/
+
+# node / wrangler (site tooling)
+node_modules/
+.wrangler/
+package-lock.json

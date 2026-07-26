@@ -1,0 +1,6 @@
+# Cloudflare Pages config for the Traceipt marketing site (static).
+# The API service is separate (see Dockerfile / fly.toml / render.yaml) — a
+# Python app can't run on Pages; this is just the landing page at traceipt.xyz.
+name = "traceipt"
+pages_build_output_dir = "site"
+compatibility_date = "2025-01-01"

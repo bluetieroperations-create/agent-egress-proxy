@@ -1,7 +1,56 @@
 # Deploying Traceipt
 
-Two paths here: a **free-tier testnet demo** (for showing people and validating
-demand), and the **production** hardening on top of it. Start with the demo.
+Two moving parts, deployed separately:
+
+- **The website** (`site/`) — a static marketing page, hosted on **Cloudflare
+  Pages** at `traceipt.xyz`. Section 0 below.
+- **The API service** (the Python app) — a **free-tier testnet demo** on
+  Fly/Render at `api.traceipt.xyz`, then production hardening. Sections 1–2.
+
+---
+
+## 0. The website (Cloudflare Pages → traceipt.xyz)
+
+The site is plain static HTML in `site/`. `wrangler.toml` names the project
+`traceipt` (no dashes) and points at `site/`.
+
+**One-time auth** (uses your Cloudflare account, not stored in the repo):
+
+```sh
+cd traceipt
+npm install                 # installs wrangler locally
+npx wrangler login          # opens a browser once; OR set CLOUDFLARE_API_TOKEN
+```
+
+For a headless/CI deploy instead of `login`, create a token in the Cloudflare
+dashboard (My Profile → API Tokens → template **"Edit Cloudflare Pages"**) and
+export it:
+
+```sh
+export CLOUDFLARE_API_TOKEN=...      # Pages:Edit
+export CLOUDFLARE_ACCOUNT_ID=...     # from the dashboard URL / Workers page
+```
+
+**Deploy:**
+
+```sh
+npm run deploy      # = wrangler pages deploy site --project-name=traceipt
+```
+
+**Attach the domain** (once): Cloudflare dashboard → Workers & Pages →
+`traceipt` → Custom domains → add `traceipt.xyz`. Since the domain is already
+in your Cloudflare account, DNS is wired automatically. Re-running
+`npm run deploy` publishes updates to the same site.
+
+> Keep the apex `traceipt.xyz` for the site and use `api.traceipt.xyz` for the
+> service (section 1), so the two never collide.
+
+---
+
+## The API service
+
+A **free-tier testnet demo** (for showing people and validating demand), then
+**production** hardening on top of it. Start with the demo.
 
 The service binds `127.0.0.1` by default. In a container you set
 `RECEIPTS_HOST=0.0.0.0` so the platform's HTTPS edge can reach it — the

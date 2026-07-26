@@ -23,7 +23,7 @@ services:
       # Set this to the URL Render assigns (or your custom domain) so verify
       # links and the invoice QR resolve to the right place.
       - key: RECEIPTS_BASE_URL
-        value: https://traceipt-demo.onrender.com
+        value: https://api.traceipt.xyz
     # Persistent disk for the ledger DB + issuer key.
     disk:
       name: traceipt-data
