@@ -1,5 +1,5 @@
 """
-x402-receipts HTTP service (stdlib http.server, threaded).
+Traceipt HTTP service (stdlib http.server, threaded).
 
 Endpoints:
   POST /receipts        (x402-gated) verify settlement -> sign -> chain -> return envelope
@@ -315,7 +315,7 @@ class App:
 
 def make_handler(app: App):
     class Handler(BaseHTTPRequestHandler):
-        server_version = "x402-receipts/0.1"
+        server_version = "Traceipt/0.1"
         timeout = BODY_READ_TIMEOUT  # cap a slow client holding a worker thread
 
         def _send(self, code: int, obj: dict):
@@ -437,7 +437,8 @@ def make_handler(app: App):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description="x402-receipts service")
+    p = argparse.ArgumentParser(description="Traceipt — verifiable receipts "
+                                "for x402 machine payments")
     p.add_argument("--port", type=int, default=int(os.environ.get("RECEIPTS_PORT", "8402")))
     p.add_argument("--db", default=os.environ.get("RECEIPTS_DB", "receipts.db"))
     p.add_argument("--key", default=os.environ.get("RECEIPTS_KEY", "issuer_ed25519.pem"))
@@ -505,7 +506,7 @@ def main(argv=None):
         admin_token=args.admin_token,
     )
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(app))
-    print(f"x402-receipts listening on 127.0.0.1:{args.port} "
+    print(f"Traceipt listening on 127.0.0.1:{args.port} "
           f"(gate={args.gate}, chain={args.chain}, settlement={args.settlement}, "
           f"bind_payer={app.bind_payer}, kid={app.signer.kid})")
     try:

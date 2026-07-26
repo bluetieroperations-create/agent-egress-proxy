@@ -1,4 +1,4 @@
-"""Tests for x402-receipts. The security boundary — canonicalization,
+"""Tests for Traceipt. The security boundary — canonicalization,
 signing, hash chain, settlement matching — is tested first and hardest."""
 import json
 import os
@@ -9,15 +9,15 @@ import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 
-from receipts.canonical import GENESIS_HASH, canonical_json, hash_obj
-from receipts.ledger import Ledger
-from receipts.schema import build_receipt, receipt_hash
-from receipts.settlement import (
+from traceipt.canonical import GENESIS_HASH, canonical_json, hash_obj
+from traceipt.ledger import Ledger
+from traceipt.schema import build_receipt, receipt_hash
+from traceipt.settlement import (
     TRANSFER_TOPIC, USDC_CONTRACTS, MockVerifier, RpcVerifier,
 )
-from receipts.service import App, make_handler
-from receipts.signing import Signer, verify_envelope
-from receipts.x402_gate import (
+from traceipt.service import App, make_handler
+from traceipt.signing import Signer, verify_envelope
+from traceipt.x402_gate import (
     Facilitator, decode_payment_header, encode_payment_response,
     gate_verify, payer_from_payload,
 )
@@ -271,8 +271,8 @@ class TestLedger(unittest.TestCase):
         for _ in range(3):
             self._append_next("victim")
         import sqlite3
-        from receipts.canonical import GENESIS_HASH
-        from receipts.schema import receipt_hash as rh
+        from traceipt.canonical import GENESIS_HASH
+        from traceipt.schema import receipt_hash as rh
         con = sqlite3.connect(os.path.join(self.dir.name, "l.db"))
         con.row_factory = sqlite3.Row
         rows = con.execute("SELECT * FROM receipts WHERE seller_id='victim' "
@@ -497,7 +497,7 @@ class TestService(unittest.TestCase):
 
         # and the standalone proof endpoint returns a checkable proof
         _, proof = self._get(f"/receipts/{rid}/proof")
-        from receipts.merkle import verify_inclusion as _vi
+        from traceipt.merkle import verify_inclusion as _vi
         self.assertTrue(_vi(proof["leaf_index"], proof["tree_size"],
                             proof["leaf_data"].encode(),
                             [bytes.fromhex(h) for h in proof["audit_path"]],
@@ -560,8 +560,8 @@ class TestService(unittest.TestCase):
         self.assertEqual(chain["chain"], "intact")
 
 
-from receipts.invoice import render_invoice, usdc, vat_breakdown
-from receipts.merkle import (
+from traceipt.invoice import render_invoice, usdc, vat_breakdown
+from traceipt.merkle import (
     inclusion_proof, merkle_root, verify_inclusion,
 )
 
@@ -632,7 +632,7 @@ class TestQR(unittest.TestCase):
             return None
 
     def test_matches_segno_across_versions_and_masks(self):
-        from receipts import qr
+        from traceipt import qr
         segno = self._segno()
         if segno is None:
             self.skipTest("segno not installed (oracle unavailable)")
@@ -666,13 +666,13 @@ class TestQR(unittest.TestCase):
         self.assertGreater(checked, 0)
 
     def test_encode_output_is_square_binary(self):
-        from receipts import qr
+        from traceipt import qr
         m = qr.encode("https://r.example/verify/rcpt_x")
         self.assertTrue(all(len(row) == len(m) for row in m))
         self.assertTrue(all(v in (0, 1) for row in m for v in row))
 
     def test_too_long_raises(self):
-        from receipts import qr
+        from traceipt import qr
         with self.assertRaises(ValueError):
             qr.encode("x" * 200)
 

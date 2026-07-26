@@ -1,4 +1,4 @@
-# Compliance context for x402-receipts
+# Compliance context for Traceipt
 
 > **This is engineering documentation, not legal advice.** Whether a given
 > deployment is in scope of the regulations below — and whether these
@@ -82,6 +82,6 @@ supervision expects.
 
 ## The one-sentence positioning
 
-x402 settles the money; **x402-receipts produces the record a regulated
+x402 settles the money; **Traceipt produces the record a regulated
 business needs to have kept** — automatically, per transaction, in a form
 that is still verifiable years later without trusting anyone's database.

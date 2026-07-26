@@ -1,6 +1,10 @@
-# x402-receipts
+# Traceipt
 
-**Signed, verifiable, chain-anchored receipts for x402 machine payments.**
+**Verifiable receipts for x402 machine payments** — signed, chain-anchored,
+and permanently checkable.
+
+> _Traceipt_ = **trace** + **receipt**: an auditable trail for every payment
+> an agent makes.
 
 Every x402 settlement moves money between machines and leaves nothing a
 human can file: no invoice, no expense record, no proof of what was bought.
@@ -38,9 +42,9 @@ Python 3.8+; only non-stdlib dependency is [`cryptography`](https://pypi.org/pro
 ## Quick start
 
 ```sh
-cd x402-receipts
+cd traceipt
 pip install cryptography
-python3 -m receipts.service --gate dev --settlement mock --chain base-sepolia
+python3 -m traceipt.service --gate dev --settlement mock --chain base-sepolia
 ```
 
 Issue a receipt (dev gate: any `X-PAYMENT` header is accepted; `--settlement
@@ -170,7 +174,7 @@ $0.005). Floats are rejected everywhere — see *Design choices*.
 for their own receiving address. Configure both:
 
 ```sh
-python3 -m receipts.service --settlement rpc --chain base \
+python3 -m traceipt.service --settlement rpc --chain base \
   --pay-to 0xYourReceivingAddress --seller-id your.domain
 ```
 
@@ -189,7 +193,7 @@ With that config the service enforces, before signing:
 third-party-claim gap cryptographically:
 
 ```sh
-python3 -m receipts.service --settlement rpc --chain base \
+python3 -m traceipt.service --settlement rpc --chain base \
   --pay-to 0xYourReceivingAddress --seller-id your.domain \
   --gate facilitator --facilitator-url https://facilitator.example --bind-payer
 ```
