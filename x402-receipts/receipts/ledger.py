@@ -106,8 +106,11 @@ class Ledger:
 
     def find_by_settlement(self, seller_id: str, tx_hash: str) -> dict | None:
         """The receipt already issued for this seller+settlement, if any.
-        One settlement, one receipt — this is what makes issuance idempotent
-        and receipt farming impossible."""
+        One (seller_id, tx_hash), one receipt — issuance is idempotent per
+        seller. NOTE: this alone does not stop the SAME tx being claimed
+        under different seller_id strings; the service prevents that by
+        pinning seller_id and binding payee==pay_to (seller-hosted mode).
+        See the service layer and the README threat model."""
         con = self._connect()
         try:
             row = con.execute(
@@ -128,12 +131,18 @@ class Ledger:
             con.close()
         return json.loads(row["envelope"]) if row else None
 
-    def verify_chain(self, seller_id: str) -> list[str]:
+    def verify_chain(self, seller_id: str, verify_envelope_fn=None) -> list[str]:
         """Re-derive the whole chain for a seller from stored envelopes.
 
         Returns a list of problems (empty = chain intact). Detects: gaps in
-        sequence, broken prev links, and stored-hash rows that don't match
-        the recomputed hash of their envelope payload (i.e. row tampering).
+        sequence, broken prev links, stored-hash rows that don't match the
+        recomputed payload hash, and — when verify_envelope_fn is supplied —
+        any envelope whose Ed25519 SIGNATURE does not verify.
+
+        The signature check is the only tamper detection that survives an
+        attacker with database write access: the hash chain uses a keyless
+        SHA-256, so a rehash-consistent rewrite passes the hash checks alone.
+        Callers that care about tamper-evidence MUST pass verify_envelope_fn.
         """
         problems: list[str] = []
         con = self._connect()
@@ -148,7 +157,13 @@ class Ledger:
         expected_prev = GENESIS_HASH
         expected_seq = 1
         for row in rows:
-            payload = json.loads(row["envelope"])["payload"]
+            envelope = json.loads(row["envelope"])
+            payload = envelope["payload"]
+            if verify_envelope_fn is not None:
+                try:
+                    verify_envelope_fn(envelope)
+                except Exception as e:
+                    problems.append(f"seq {row['sequence']}: signature INVALID ({e})")
             if row["sequence"] != expected_seq:
                 problems.append(f"gap: expected seq {expected_seq}, found {row['sequence']}")
                 expected_seq = row["sequence"]

@@ -25,12 +25,15 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from urllib.parse import unquote, urlsplit
+
 from .ledger import Ledger
-from .schema import build_receipt, receipt_hash
+from .schema import build_receipt, receipt_hash, validate_commerce, validate_settlement
 from .settlement import USDC_CONTRACTS, make_verifier
 from .signing import load_or_create_signer, verify_envelope
 
 MAX_BODY = 64 * 1024
+BODY_READ_TIMEOUT = 15.0  # seconds a worker will wait on a slow client
 
 
 def utc_now() -> str:
@@ -41,7 +44,8 @@ class App:
     """Holds config + collaborators; the handler delegates here."""
 
     def __init__(self, *, signer, ledger: Ledger, verifier, gate: str,
-                 price_base_units: str, pay_to: str, chain: str, base_url: str):
+                 price_base_units: str, pay_to: str, chain: str, base_url: str,
+                 seller_id: str | None = None):
         self.signer = signer
         self.ledger = ledger
         self.verifier = verifier
@@ -50,6 +54,15 @@ class App:
         self.pay_to = pay_to
         self.chain = chain
         self.base_url = base_url.rstrip("/")
+        # Seller-hosted model: the operator IS the payee. When seller_id is
+        # configured, the caller cannot spoof another identity — the receipt
+        # is always issued under the operator's id.
+        self.seller_id = seller_id
+        # The zero address is the "unconfigured" sentinel; a real pay_to
+        # switches on payee binding.
+        self._pay_to_configured = (
+            pay_to and pay_to.lower() != "0x" + "0" * 40
+        )
         # Serializes the read-head -> build -> sign -> append critical section.
         # The server is threaded; without this, two concurrent issuances for
         # the same seller both read the same chain head and one dies on a
@@ -84,12 +97,47 @@ class App:
 
     # -- core operation ----------------------------------------------------
     def issue(self, body: dict) -> tuple[int, dict]:
-        for field in ("seller_id", "settlement", "commerce"):
+        for field in ("settlement", "commerce"):
             if field not in body:
                 return 400, {"error": f"missing field {field!r}"}
+        # Seller identity: operator config wins. If the service pins a
+        # seller_id, the caller cannot write into a different seller's chain.
+        if self.seller_id is not None:
+            seller_id = self.seller_id
+        elif "seller_id" in body:
+            seller_id = body["seller_id"]
+        else:
+            return 400, {"error": "missing field 'seller_id'"}
+
         settlement = dict(body["settlement"])
-        settlement.setdefault("asset", "USDC")
-        settlement.setdefault("asset_contract", USDC_CONTRACTS.get(self.chain, ""))
+        settlement["asset"] = "USDC"
+        # Do NOT trust a caller-supplied chain/contract: the service verifies
+        # against exactly one chain, so the receipt must record that chain.
+        if "chain" in settlement and settlement["chain"] != self.chain:
+            return 400, {"error": f"settlement.chain must be {self.chain!r} "
+                                  "(this service only verifies that chain)"}
+        settlement["chain"] = self.chain
+        settlement["asset_contract"] = USDC_CONTRACTS[self.chain]
+
+        # Validate structure BEFORE touching the chain, so a malformed request
+        # is a clean 400 — never a 500 from an unguarded field access.
+        try:
+            _pre = dict(settlement)
+            _pre.setdefault("verified", False)
+            _pre.setdefault("verification_method", "unverified")
+            validate_settlement(_pre)
+            validate_commerce(body["commerce"])
+        except ValueError as e:
+            return 400, {"error": str(e)}
+
+        # Seller-hosted binding: the settlement must have been paid TO the
+        # operator. Without this, a caller could mint a receipt for any
+        # third party's transfer. (Payer binding still requires the caller
+        # to prove control of the payer address — see THREAT MODEL in README.)
+        if self._pay_to_configured and \
+                settlement.get("payee", "").lower() != self.pay_to.lower():
+            return 403, {"error": "settlement.payee does not match this "
+                                  "service's configured pay_to address"}
 
         result = self.verifier.verify(settlement)
         if not result.ok:
@@ -97,7 +145,6 @@ class App:
         settlement["verified"] = True
         settlement["verification_method"] = result.method
 
-        seller_id = body["seller_id"]
         tx_hash = settlement.get("tx_hash", "")
         with self._issue_lock:
             # One settlement, one receipt: re-submitting the same tx returns
@@ -128,14 +175,25 @@ class App:
             "verify_url": f"{self.base_url}/verify/{payload['receipt_id']}",
         }
 
+    def _jwks(self) -> dict:
+        return {"keys": [self.signer.jwk()]}
+
+    def _envelope_verifier(self):
+        """A callback that raises unless an envelope's signature verifies
+        against this issuer's published keys."""
+        jwks = self._jwks()
+        return lambda env: verify_envelope(env, jwks)
+
+    def chain_report(self, seller_id: str) -> list[str]:
+        return self.ledger.verify_chain(seller_id, self._envelope_verifier())
+
     def verify_report(self, receipt_id: str) -> tuple[int, dict]:
         envelope = self.ledger.get(receipt_id)
         if envelope is None:
             return 404, {"error": "unknown receipt_id"}
         report = {"receipt_id": receipt_id}
-        jwks = {"keys": [self.signer.jwk()]}
         try:
-            payload = verify_envelope(envelope, jwks)
+            payload = verify_envelope(envelope, self._jwks())
             report["signature"] = "valid"
         except ValueError as e:
             return 200, {**report, "signature": f"INVALID: {e}", "verdict": "FAIL"}
@@ -144,7 +202,9 @@ class App:
         report["receipt_hash"] = receipt_hash(payload)
         report["settlement_tx"] = payload["settlement"]["tx_hash"]
         report["settlement_verification"] = payload["settlement"]["verification_method"]
-        problems = self.ledger.verify_chain(payload["seller_id"])
+        # Chain verdict includes a signature check on every receipt in the
+        # chain, not just a keyless hash re-derivation.
+        problems = self.chain_report(payload["seller_id"])
         report["chain"] = "intact" if not problems else problems
         report["verdict"] = "PASS" if not problems else "FAIL"
         return 200, report
@@ -153,6 +213,7 @@ class App:
 def make_handler(app: App):
     class Handler(BaseHTTPRequestHandler):
         server_version = "x402-receipts/0.1"
+        timeout = BODY_READ_TIMEOUT  # cap a slow client holding a worker thread
 
         def _send(self, code: int, obj: dict):
             data = json.dumps(obj, ensure_ascii=False, indent=2).encode("utf-8")
@@ -163,25 +224,28 @@ def make_handler(app: App):
             self.wfile.write(data)
 
         def do_GET(self):
-            if self.path == "/health":
+            # Strip query string, then percent-decode the path segment so
+            # /verify/rcpt_x?foo=1 and /chain/a%2Eb resolve correctly.
+            path = urlsplit(self.path).path
+            if path == "/health":
                 return self._send(200, {"ok": True, "gate": app.gate, "chain": app.chain})
-            if self.path == "/jwks.json":
-                return self._send(200, {"keys": [app.signer.jwk()]})
-            if self.path.startswith("/receipts/"):
-                envelope = app.ledger.get(self.path[len("/receipts/"):])
+            if path == "/jwks.json":
+                return self._send(200, app._jwks())
+            if path.startswith("/receipts/"):
+                envelope = app.ledger.get(unquote(path[len("/receipts/"):]))
                 if envelope is None:
                     return self._send(404, {"error": "unknown receipt_id"})
                 return self._send(200, envelope)
-            if self.path.startswith("/verify/"):
-                code, obj = app.verify_report(self.path[len("/verify/"):])
+            if path.startswith("/verify/"):
+                code, obj = app.verify_report(unquote(path[len("/verify/"):]))
                 return self._send(code, obj)
-            if self.path.startswith("/chain/"):
-                problems = app.ledger.verify_chain(self.path[len("/chain/"):])
+            if path.startswith("/chain/"):
+                problems = app.chain_report(unquote(path[len("/chain/"):]))
                 return self._send(200, {"chain": "intact" if not problems else problems})
             return self._send(404, {"error": "not found"})
 
         def do_POST(self):
-            if self.path != "/receipts":
+            if urlsplit(self.path).path != "/receipts":
                 return self._send(404, {"error": "not found"})
             if not app.gate_allows(self.headers):
                 return self._send(402, app.payment_required_body(self.path))
@@ -222,7 +286,12 @@ def main(argv=None):
     p.add_argument("--rpc-url", default=os.environ.get("RECEIPTS_RPC_URL"))
     p.add_argument("--price", default=os.environ.get("RECEIPTS_PRICE_BASE_UNITS", "2000"))
     p.add_argument("--pay-to", default=os.environ.get("RECEIPTS_PAY_TO",
-                   "0x0000000000000000000000000000000000000000"))
+                   "0x0000000000000000000000000000000000000000"),
+                   help="operator's USDC receiving address; when set, only "
+                        "settlements paid to it can be receipted")
+    p.add_argument("--seller-id", default=os.environ.get("RECEIPTS_SELLER_ID"),
+                   help="pin the seller identity (seller-hosted mode); "
+                        "callers cannot then spoof another seller_id")
     args = p.parse_args(argv)
 
     app = App(
@@ -234,6 +303,7 @@ def main(argv=None):
         pay_to=args.pay_to,
         chain=args.chain,
         base_url=f"http://127.0.0.1:{args.port}",
+        seller_id=args.seller_id,
     )
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(app))
     print(f"x402-receipts listening on 127.0.0.1:{args.port} "

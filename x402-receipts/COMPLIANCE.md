@@ -30,14 +30,21 @@ whose actions need exactly that traceability. Mapping:
 | Automatic recording of events | A receipt is generated per settlement, machine-to-machine, no human step |
 | Traceability of each event | `settlement.tx_hash` links to the on-chain transfer; `commerce.resource` + `request_hash`/`response_hash` link to what was bought and delivered |
 | Records that cover the lifetime | Per-seller dense `sequence` + `prev_receipt_hash` chain — gaps and deletions are detectable, not silent |
-| Integrity of the record | Ed25519 signature over canonical JSON; any alteration invalidates the envelope |
+| Integrity of the record | Ed25519 signature over canonical JSON; altering a receipt invalidates its signature, and the chain-verification path checks every receipt's signature (not just its hash) |
 | Independent verifiability | `GET /jwks.json` + any JOSE library verifies offline; no dependency on this service being reachable |
 
 **Honest limits:** Article 12 concerns the *system's* logging capability
 broadly — receipts cover the *payment* events, not every internal system
 event. Receipts are one component of an Article 12 posture, not the whole of
 it. Whether a given agent is "high-risk" under the Act is a legal
-determination.
+determination. The record's integrity rests on the **signature**: the keyless
+hash chain alone catches a naive row edit but not a rehash-consistent
+rewrite, so integrity claims assume the signature check is run (it is, on the
+`/verify` and `/chain` paths) and that the issuer key is not compromised.
+Crucially, a receipt attests *that a settlement occurred and how it was
+labelled* — in v0.1's seller-hosted mode it is bound to the operator's own
+receiving address, but it does **not yet** cryptographically prove the
+*payer's* identity (see the README threat model).
 
 ## MiCA — record-keeping (Article 76 and related CASP duties)
 
@@ -52,8 +59,8 @@ in the payment path):
 
 | Record-keeping need | Receipt mechanism |
 |---|---|
-| Link a commercial event to its executed transaction | The receipt is precisely that binding: quoted price + resource ↔ settled on-chain transfer, in one signed object |
-| Sequential, complete records | Dense per-seller sequence numbers; hash chain makes omission tamper-evident |
+| Link a commercial event to its executed transaction | The receipt is precisely that binding: quoted price + resource ↔ settled on-chain transfer, in one signed object (the transfer's existence and, in seller-hosted mode, its payee are verified; the payer identity is not yet proven) |
+| Sequential, complete records | Dense per-seller sequence numbers; omission or reordering is detectable, and the signature check makes payload tampering detectable |
 | Multi-year retention | Receipts are small JSON documents with offline-verifiable signatures — retention is a storage decision, verification does not decay |
 | Supervisor-usable | Human-readable JSON, exportable, verifiable with published keys |
 

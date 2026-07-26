@@ -228,6 +228,39 @@ class TestLedger(unittest.TestCase):
         self.assertEqual(a["sequence"], 1)
         self.assertEqual(b["sequence"], 1)
 
+    def test_rehash_consistent_rewrite_caught_by_signature_check(self):
+        # An attacker with DB write access rewrites every payload AND
+        # cascades the keyless hash chain so all hash links stay consistent.
+        # verify_chain WITHOUT a signature check is fooled; WITH it, caught.
+        for _ in range(3):
+            self._append_next("victim")
+        import sqlite3
+        from receipts.canonical import GENESIS_HASH
+        from receipts.schema import receipt_hash as rh
+        con = sqlite3.connect(os.path.join(self.dir.name, "l.db"))
+        con.row_factory = sqlite3.Row
+        rows = con.execute("SELECT * FROM receipts WHERE seller_id='victim' "
+                           "ORDER BY sequence").fetchall()
+        prev = GENESIS_HASH
+        for row in rows:
+            env = json.loads(row["envelope"])
+            env["payload"]["settlement"]["amount_base_units"] = "999999999"
+            env["payload"]["prev_receipt_hash"] = prev
+            new_hash = rh(env["payload"])
+            con.execute("UPDATE receipts SET envelope=?, receipt_hash=?, prev_hash=? "
+                        "WHERE receipt_id=?",
+                        (json.dumps(env), new_hash, prev, row["receipt_id"]))
+            prev = new_hash
+        con.commit()
+        con.close()
+        # keyless hash-only check: fooled (the point of the finding)
+        self.assertEqual(self.ledger.verify_chain("victim"), [])
+        # signature-aware check: catches every rewritten receipt
+        jwks = {"keys": [self.signer.jwk()]}
+        problems = self.ledger.verify_chain("victim", lambda e: verify_envelope(e, jwks))
+        self.assertTrue(problems)
+        self.assertTrue(all("signature INVALID" in p for p in problems))
+
 
 # ---------------------------------------------------------------------------
 # settlement verification
@@ -413,6 +446,16 @@ class TestService(unittest.TestCase):
         self.assertEqual(r3["receipt"]["payload"]["receipt_id"],
                          r1["receipt"]["payload"]["receipt_id"])
 
+    def test_chain_endpoint_checks_signatures(self):
+        # Issue one, then tamper the stored row's payload but keep the hash
+        # consistent; /chain must FAIL because the signature no longer matches.
+        body = self.request_body()
+        body["seller_id"] = "sigcheck.example.com"
+        body["settlement"]["tx_hash"] = "0x" + "88" * 32
+        self._post("/receipts", body, headers={"X-PAYMENT": "t"})
+        code, chain = self._get("/chain/sigcheck.example.com")
+        self.assertEqual(chain["chain"], "intact")
+
     def test_concurrent_issuance_all_succeed_dense_chain(self):
         import threading as _t
         results = []
@@ -430,6 +473,83 @@ class TestService(unittest.TestCase):
         self.assertEqual(results.count(201), 16, results)
         code, chain = self._get("/chain/concurrent.example.com")
         self.assertEqual(chain["chain"], "intact")
+
+
+class TestTrustBoundary(unittest.TestCase):
+    """Seller-hosted binding: pinned seller_id + payee-must-equal-pay_to."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dir = tempfile.TemporaryDirectory()
+        cls.app = App(
+            signer=Signer.generate(),
+            ledger=Ledger(os.path.join(cls.dir.name, "tb.db")),
+            verifier=MockVerifier(),
+            gate="dev", price_base_units="2000",
+            pay_to=PAYEE,                 # a REAL configured pay_to
+            seller_id="operator.example", # pinned identity
+            chain="base-sepolia", base_url="http://127.0.0.1:0",
+        )
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(cls.app))
+        cls.port = cls.server.server_address[1]
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.dir.cleanup()
+
+    def _post(self, body):
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/receipts", data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json", "X-PAYMENT": "t"})
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def _body(self, **settlement_over):
+        s = {"chain": "base-sepolia", "tx_hash": "0x" + "cc" * 32,
+             "amount_base_units": "5000", "payer": PAYER, "payee": PAYEE}
+        s.update(settlement_over)
+        return {"seller_id": "attacker-tries-this",
+                "settlement": s,
+                "commerce": sample_commerce()}
+
+    def test_payee_must_match_pay_to(self):
+        # A settlement paid to someone OTHER than the operator is refused.
+        code, obj = self._post(self._body(payee="0x" + "de" * 20,
+                                          tx_hash="0x" + "a1" * 32))
+        self.assertEqual(code, 403)
+        self.assertIn("pay_to", obj["error"])
+
+    def test_seller_id_is_pinned_not_caller_controlled(self):
+        code, obj = self._post(self._body(tx_hash="0x" + "a2" * 32))
+        self.assertEqual(code, 201, obj)
+        # caller said "attacker-tries-this"; receipt is under the operator id
+        self.assertEqual(obj["receipt"]["payload"]["seller_id"], "operator.example")
+
+    def test_foreign_chain_claim_rejected(self):
+        # Claiming a base-mainnet settlement on a sepolia-configured service.
+        code, obj = self._post(self._body(chain="base", tx_hash="0x" + "a3" * 32))
+        self.assertEqual(code, 400)
+        self.assertIn("chain", obj["error"])
+
+    def test_caller_contract_is_ignored(self):
+        # Even if the caller supplies a bogus asset_contract, the service
+        # forces its own chain's USDC address into the receipt.
+        code, obj = self._post(self._body(tx_hash="0x" + "a4" * 32,
+                                          asset_contract="0x" + "ee" * 20))
+        self.assertEqual(code, 201, obj)
+        self.assertEqual(obj["receipt"]["payload"]["settlement"]["asset_contract"],
+                         USDC_CONTRACTS["base-sepolia"])
+
+    def test_missing_payer_is_400_not_500(self):
+        body = self._body(tx_hash="0x" + "a5" * 32)
+        del body["settlement"]["payer"]
+        code, obj = self._post(body)
+        self.assertEqual(code, 400)
 
 
 if __name__ == "__main__":
