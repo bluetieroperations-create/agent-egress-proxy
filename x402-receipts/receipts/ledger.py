@@ -18,6 +18,7 @@ import sqlite3
 import threading
 
 from .canonical import GENESIS_HASH
+from .merkle import inclusion_proof, merkle_root
 from .schema import receipt_hash
 
 _SCHEMA = """
@@ -30,10 +31,22 @@ CREATE TABLE IF NOT EXISTS receipts (
     prev_hash   TEXT NOT NULL,
     issued_at   TEXT NOT NULL,
     envelope    TEXT NOT NULL,
+    anchor_id   INTEGER,
+    anchor_pos  INTEGER,
     UNIQUE (seller_id, sequence),
     UNIQUE (seller_id, tx_hash)
 );
 CREATE INDEX IF NOT EXISTS idx_receipts_seller ON receipts (seller_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_receipts_anchor ON receipts (anchor_id, anchor_pos);
+
+CREATE TABLE IF NOT EXISTS anchors (
+    anchor_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at       TEXT NOT NULL,
+    leaf_count       INTEGER NOT NULL,
+    root             TEXT NOT NULL,
+    onchain_network  TEXT,
+    onchain_tx       TEXT
+);
 """
 
 
@@ -175,3 +188,92 @@ class Ledger:
             expected_prev = recomputed
             expected_seq += 1
         return problems
+
+    # -- Merkle anchoring --------------------------------------------------
+    def create_anchor(self, created_at: str, publisher=None) -> dict | None:
+        """Seal all not-yet-anchored receipts into a Merkle batch.
+
+        `publisher`, if given, is called with the hex root and returns
+        (network, tx_hash) for the on-chain publication, or None. Returns the
+        anchor summary, or None if there is nothing to anchor.
+        """
+        with self._lock:
+            con = self._connect()
+            try:
+                rows = con.execute(
+                    "SELECT receipt_id, receipt_hash FROM receipts "
+                    "WHERE anchor_id IS NULL ORDER BY rowid ASC"
+                ).fetchall()
+                if not rows:
+                    return None
+                leaves = [r["receipt_hash"].encode("utf-8") for r in rows]
+                root_hex = merkle_root(leaves).hex()
+                onchain = publisher(root_hex) if publisher else None
+                network, tx = onchain if onchain else (None, None)
+                cur = con.execute(
+                    "INSERT INTO anchors (created_at, leaf_count, root, "
+                    "onchain_network, onchain_tx) VALUES (?,?,?,?,?)",
+                    (created_at, len(leaves), root_hex, network, tx),
+                )
+                anchor_id = cur.lastrowid
+                for pos, r in enumerate(rows):
+                    con.execute(
+                        "UPDATE receipts SET anchor_id = ?, anchor_pos = ? "
+                        "WHERE receipt_id = ?",
+                        (anchor_id, pos, r["receipt_id"]),
+                    )
+                con.commit()
+            finally:
+                con.close()
+            return {"anchor_id": anchor_id, "leaf_count": len(leaves),
+                    "root": root_hex, "onchain_network": network,
+                    "onchain_tx": tx, "created_at": created_at}
+
+    def list_anchors(self) -> list[dict]:
+        con = self._connect()
+        try:
+            rows = con.execute(
+                "SELECT anchor_id, created_at, leaf_count, root, "
+                "onchain_network, onchain_tx FROM anchors ORDER BY anchor_id ASC"
+            ).fetchall()
+        finally:
+            con.close()
+        return [dict(r) for r in rows]
+
+    def inclusion_for(self, receipt_id: str) -> dict | None:
+        """Merkle inclusion proof for a receipt, or None if it is not yet
+        anchored / unknown. The proof lets anyone recompute the anchor root
+        offline (see receipts.merkle.verify_inclusion)."""
+        con = self._connect()
+        try:
+            row = con.execute(
+                "SELECT anchor_id, anchor_pos, receipt_hash FROM receipts "
+                "WHERE receipt_id = ?", (receipt_id,)
+            ).fetchone()
+            if row is None or row["anchor_id"] is None:
+                return None
+            anchor = con.execute(
+                "SELECT created_at, leaf_count, root, onchain_network, onchain_tx "
+                "FROM anchors WHERE anchor_id = ?", (row["anchor_id"],)
+            ).fetchone()
+            leaf_rows = con.execute(
+                "SELECT receipt_hash FROM receipts WHERE anchor_id = ? "
+                "ORDER BY anchor_pos ASC", (row["anchor_id"],)
+            ).fetchall()
+        finally:
+            con.close()
+        leaves = [r["receipt_hash"].encode("utf-8") for r in leaf_rows]
+        m = row["anchor_pos"]
+        proof = inclusion_proof(leaves, m)
+        return {
+            "receipt_id": receipt_id,
+            "anchor_id": row["anchor_id"],
+            "leaf_index": m,
+            "tree_size": len(leaves),
+            "leaf_data": row["receipt_hash"],
+            "audit_path": [h.hex() for h in proof],
+            "root": anchor["root"],
+            "onchain_network": anchor["onchain_network"],
+            "onchain_tx": anchor["onchain_tx"],
+            "anchored_at": anchor["created_at"],
+        }

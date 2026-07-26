@@ -29,6 +29,7 @@ from urllib.parse import unquote, urlsplit
 
 from .invoice import render_invoice
 from .ledger import Ledger
+from .merkle import verify_inclusion
 from .schema import build_receipt, receipt_hash, validate_commerce, validate_settlement
 from .settlement import USDC_CONTRACTS, make_verifier
 from .signing import load_or_create_signer, verify_envelope
@@ -51,7 +52,8 @@ class App:
     def __init__(self, *, signer, ledger: Ledger, verifier, gate: str,
                  price_base_units: str, pay_to: str, chain: str, base_url: str,
                  seller_id: str | None = None, facilitator=None,
-                 bind_payer: bool = False):
+                 bind_payer: bool = False, extra_public_jwks=None,
+                 admin_token: str | None = None):
         self.signer = signer
         self.ledger = ledger
         self.verifier = verifier
@@ -60,6 +62,13 @@ class App:
         self.pay_to = pay_to
         self.chain = chain
         self.base_url = base_url.rstrip("/")
+        # Retired public keys, still published so receipts signed before a key
+        # rotation keep verifying. The active signer signs new receipts.
+        self.extra_public_jwks = list(extra_public_jwks or [])
+        # Optional bearer token gating admin ops (POST /anchor). When unset,
+        # admin ops are open — acceptable behind a private reverse proxy, but
+        # production should set it.
+        self.admin_token = admin_token
         # Facilitator client for the real x402 gate (None in off/dev modes).
         self.facilitator = facilitator
         # When on, the wallet that pays for the receipt (verified by the
@@ -217,7 +226,15 @@ class App:
         }
 
     def _jwks(self) -> dict:
-        return {"keys": [self.signer.jwk()]}
+        # Active key first, then any retired keys (dedup by kid) so receipts
+        # signed before a rotation still verify.
+        keys = [self.signer.jwk()]
+        seen = {keys[0]["kid"]}
+        for jwk in self.extra_public_jwks:
+            if jwk.get("kid") not in seen:
+                keys.append(jwk)
+                seen.add(jwk.get("kid"))
+        return {"keys": keys}
 
     def _envelope_verifier(self):
         """A callback that raises unless an envelope's signature verifies
@@ -227,6 +244,17 @@ class App:
 
     def chain_report(self, seller_id: str) -> list[str]:
         return self.ledger.verify_chain(seller_id, self._envelope_verifier())
+
+    def admin_ok(self, headers) -> bool:
+        if self.admin_token is None:
+            return True
+        return headers.get("Authorization", "") == f"Bearer {self.admin_token}"
+
+    def create_anchor(self) -> tuple[int, dict]:
+        anchor = self.ledger.create_anchor(utc_now())
+        if anchor is None:
+            return 200, {"anchored": 0, "message": "nothing to anchor"}
+        return 201, {"anchored": anchor["leaf_count"], "anchor": anchor}
 
     def invoice_pdf(self, receipt_id: str):
         """Render the stored receipt as an invoice PDF. Returns
@@ -261,6 +289,26 @@ class App:
         # chain, not just a keyless hash re-derivation.
         problems = self.chain_report(payload["seller_id"])
         report["chain"] = "intact" if not problems else problems
+        # Anchor status: if the receipt has been Merkle-anchored, re-verify
+        # its inclusion proof against the recorded root.
+        proof = self.ledger.inclusion_for(receipt_id)
+        if proof is None:
+            report["anchor"] = "not yet anchored"
+        else:
+            ok = verify_inclusion(
+                proof["leaf_index"], proof["tree_size"],
+                proof["leaf_data"].encode("utf-8"),
+                [bytes.fromhex(h) for h in proof["audit_path"]],
+                bytes.fromhex(proof["root"]),
+            )
+            report["anchor"] = {
+                "anchor_id": proof["anchor_id"],
+                "root": proof["root"],
+                "onchain_tx": proof["onchain_tx"],
+                "inclusion": "verified" if ok else "FAILED",
+            }
+            if not ok:
+                problems = list(problems) + ["anchor inclusion proof failed"]
         report["verdict"] = "PASS" if not problems else "FAIL"
         return 200, report
 
@@ -295,12 +343,20 @@ def make_handler(app: App):
                 return self._send(200, {"ok": True, "gate": app.gate, "chain": app.chain})
             if path == "/jwks.json":
                 return self._send(200, app._jwks())
+            if path == "/anchors":
+                return self._send(200, {"anchors": app.ledger.list_anchors()})
             if path.startswith("/receipts/") and path.endswith("/invoice.pdf"):
                 rid = unquote(path[len("/receipts/"):-len("/invoice.pdf")])
                 pdf, filename = app.invoice_pdf(rid)
                 if pdf is None:
                     return self._send(404, {"error": "unknown receipt_id"})
                 return self._send_pdf(pdf, filename)
+            if path.startswith("/receipts/") and path.endswith("/proof"):
+                rid = unquote(path[len("/receipts/"):-len("/proof")])
+                proof = app.ledger.inclusion_for(rid)
+                if proof is None:
+                    return self._send(404, {"error": "unknown or not-yet-anchored receipt"})
+                return self._send(200, proof)
             if path.startswith("/receipts/"):
                 envelope = app.ledger.get(unquote(path[len("/receipts/"):]))
                 if envelope is None:
@@ -328,6 +384,13 @@ def make_handler(app: App):
 
         def do_POST(self):
             resource = urlsplit(self.path).path
+            if resource == "/anchor":
+                # Admin op: seal a Merkle batch. In production this must be
+                # authenticated / run by the operator, not exposed publicly.
+                if not app.admin_ok(self.headers):
+                    return self._send(403, {"error": "admin token required"})
+                code, obj = app.create_anchor()
+                return self._send(code, obj)
             if resource != "/receipts":
                 return self._send(404, {"error": "not found"})
 
@@ -400,7 +463,25 @@ def main(argv=None):
     p.add_argument("--seller-id", default=os.environ.get("RECEIPTS_SELLER_ID"),
                    help="pin the seller identity (seller-hosted mode); "
                         "callers cannot then spoof another seller_id")
+    p.add_argument("--jwks-history", default=os.environ.get("RECEIPTS_JWKS_HISTORY"),
+                   help="JSON file {\"keys\":[...]} of RETIRED public JWKs to keep "
+                        "publishing so pre-rotation receipts still verify")
+    p.add_argument("--admin-token", default=os.environ.get("RECEIPTS_ADMIN_TOKEN"),
+                   help="bearer token required for admin ops (POST /anchor)")
+    p.add_argument("--print-jwk", action="store_true",
+                   help="print the active key's PUBLIC JWK and exit (capture "
+                        "this into --jwks-history before rotating --key)")
     args = p.parse_args(argv)
+
+    signer = load_or_create_signer(args.key)
+    if args.print_jwk:
+        print(json.dumps(signer.jwk(), indent=2))
+        return
+
+    extra_public_jwks = []
+    if args.jwks_history:
+        with open(args.jwks_history) as f:
+            extra_public_jwks = json.load(f).get("keys", [])
 
     facilitator = None
     if args.gate == "facilitator":
@@ -409,7 +490,7 @@ def main(argv=None):
         facilitator = Facilitator(args.facilitator_url)
 
     app = App(
-        signer=load_or_create_signer(args.key),
+        signer=signer,
         ledger=Ledger(args.db),
         verifier=make_verifier(args.settlement, args.chain, args.rpc_url),
         gate=args.gate,
@@ -420,6 +501,8 @@ def main(argv=None):
         seller_id=args.seller_id,
         facilitator=facilitator,
         bind_payer=args.bind_payer,
+        extra_public_jwks=extra_public_jwks,
+        admin_token=args.admin_token,
     )
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(app))
     print(f"x402-receipts listening on 127.0.0.1:{args.port} "

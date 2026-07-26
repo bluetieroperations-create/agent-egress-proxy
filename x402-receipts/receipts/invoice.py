@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from decimal import Decimal, ROUND_HALF_UP
 
+from . import qr
+
 # A4 in PostScript points (1/72").
 PAGE_W, PAGE_H = 595.28, 841.89
 MARGIN = 56.0
@@ -71,6 +73,23 @@ class _Canvas:
             f"{gray:.2f} G {width:.2f} w {x0:.2f} {PAGE_H - y0:.2f} m "
             f"{x1:.2f} {PAGE_H - y1:.2f} l S"
         )
+
+    def fill_rect(self, x, y, w, h):
+        """Filled black rectangle; (x, y) is the top-left corner."""
+        self._ops.append(
+            f"0 g {x:.2f} {PAGE_H - (y + h):.2f} {w:.2f} {h:.2f} re f"
+        )
+
+    def qr(self, x, y, matrix, module=1.9):
+        """Draw a QR matrix with top-left at (x, y). The page is white, which
+        serves as the required quiet zone as long as callers leave a margin."""
+        for r, row in enumerate(matrix):
+            for c, dark in enumerate(row):
+                if dark:
+                    # +0.1 overlap avoids hairline seams between modules
+                    self.fill_rect(x + c * module, y + r * module,
+                                   module + 0.1, module + 0.1)
+        return len(matrix) * module
 
     def stream(self) -> bytes:
         return "\n".join(self._ops).encode("latin-1", "replace")
@@ -197,9 +216,22 @@ def render_invoice(payload: dict, *, verify_url: str | None = None,
             y += 14
 
     # -- verification footer --
-    y = PAGE_H - MARGIN - 66
-    cv.line(MARGIN, y, PAGE_W - MARGIN, y, width=0.6, gray=0.5)
-    y += 14
+    fy = PAGE_H - MARGIN - 70
+    cv.line(MARGIN, fy, PAGE_W - MARGIN, fy, width=0.6, gray=0.5)
+
+    # QR to the verify URL, bottom-right (page white = quiet zone).
+    if verify_url:
+        try:
+            matrix = qr.encode(verify_url)
+            qsize = len(matrix) * 1.9
+            qx = PAGE_W - MARGIN - qsize
+            qy = fy + 16
+            cv.qr(qx, qy, matrix, module=1.9)
+            cv.text(qx, qy - 4, "Scan to verify", size=7)
+        except ValueError:
+            pass  # URL too long for supported QR versions: skip, text remains
+
+    y = fy + 14
     cv.text(MARGIN, y, "Cryptographically signed (Ed25519).", size=8, bold=True)
     y += 12
     if issuer_kid:

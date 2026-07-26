@@ -234,17 +234,37 @@ receipt.
 Done since v0.1: **seller/payee binding**, **signature-checked chain
 verification**, the **real facilitator gate with payer binding**
 (`--gate facilitator --bind-payer`) — closing the audit's receipt-fraud
-findings — and **A4 invoice PDF rendering** with VAT breakdown.
+findings — **A4 invoice PDF rendering** with VAT breakdown and a scannable
+**QR verify code**, **Merkle batch anchoring** for trustless timestamping,
+and **key-rotation JWKS history**.
+
+### Merkle anchoring
+
+`POST /anchor` (admin) seals every not-yet-anchored receipt into an RFC 6962
+Merkle batch and records the root; a `publisher` hook can put that root
+on-chain in one transaction per thousands of receipts. Each receipt then has
+an inclusion proof (`GET /receipts/{id}/proof`) that anyone can check offline
+with `receipts.merkle.verify_inclusion`, and `GET /verify/{id}` re-verifies
+the proof against the recorded root. This proves a receipt existed by the
+anchor's time **without trusting the issuer's database**. `GET /anchors`
+lists batches.
+
+> The on-chain publish is a pluggable hook; v0.x records the root locally
+> (`onchain_tx` is null until a publisher is wired to a funded wallet). The
+> Merkle proofs are real and verifiable regardless.
+
+### Key rotation
+
+The active key signs new receipts; retired **public** keys stay published in
+the JWKS so pre-rotation receipts keep verifying. Capture the current key
+before rotating with `--print-jwk`, append it to a `--jwks-history` file,
+then point `--key` at a new key. `GET /verify/{id}` and `/chain` verify
+against the full published key set.
 
 Still ahead:
 
-* **Merkle batch anchoring** — publish a periodic Merkle root of issued
-  receipts on-chain (certificate-transparency style) so existence-by-time is
-  provable without trusting the issuer at all.
-* **Facilitator failover + key rotation JWKS history** — publish retired
-  public keys so receipts verify years after a rotation.
-* **QR verification code** on the invoice (scan → `/verify`), once a
-  dependency-free QR encoder is in.
+* **On-chain anchor publisher** wired to a facilitator/funded wallet.
+* **Facilitator failover** across multiple providers.
 * **Alignment with the x402 receipt-extension discussion**
   ([x402#2357](https://github.com/x402-foundation/x402/issues/2357)) as it
   evolves.

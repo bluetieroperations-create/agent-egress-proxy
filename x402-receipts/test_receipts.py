@@ -233,6 +233,37 @@ class TestLedger(unittest.TestCase):
         self.assertEqual(a["sequence"], 1)
         self.assertEqual(b["sequence"], 1)
 
+    def test_anchor_seals_batch_and_proofs_verify(self):
+        ids = [self._append_next("s1")["receipt_id"] for _ in range(5)]
+        anchor = self.ledger.create_anchor("2026-07-26T00:00:00Z")
+        self.assertEqual(anchor["leaf_count"], 5)
+        for rid in ids:
+            pr = self.ledger.inclusion_for(rid)
+            self.assertIsNotNone(pr)
+            self.assertTrue(verify_inclusion(
+                pr["leaf_index"], pr["tree_size"], pr["leaf_data"].encode(),
+                [bytes.fromhex(h) for h in pr["audit_path"]],
+                bytes.fromhex(pr["root"])))
+
+    def test_anchor_is_incremental_and_empty_returns_none(self):
+        self._append_next("s1")
+        a1 = self.ledger.create_anchor("t1")
+        self.assertEqual(a1["leaf_count"], 1)
+        # nothing new to anchor
+        self.assertIsNone(self.ledger.create_anchor("t2"))
+        # new receipt -> next anchor picks up only it
+        self._append_next("s1")
+        a2 = self.ledger.create_anchor("t3")
+        self.assertEqual(a2["leaf_count"], 1)
+        self.assertNotEqual(a1["anchor_id"], a2["anchor_id"])
+
+    def test_onchain_publisher_hook_records_tx(self):
+        self._append_next("s1")
+        anchor = self.ledger.create_anchor(
+            "t1", publisher=lambda root_hex: ("base", "0x" + "ab" * 32))
+        self.assertEqual(anchor["onchain_tx"], "0x" + "ab" * 32)
+        self.assertEqual(anchor["onchain_network"], "base")
+
     def test_rehash_consistent_rewrite_caught_by_signature_check(self):
         # An attacker with DB write access rewrites every payload AND
         # cascades the keyless hash chain so all hash links stay consistent.
@@ -442,6 +473,36 @@ class TestService(unittest.TestCase):
         except urllib.error.HTTPError as e:
             self.assertEqual(e.code, 404)
 
+    def test_anchor_flow_and_verify_reports_inclusion(self):
+        body = self.request_body()
+        body["seller_id"] = "anchor.example.com"
+        body["settlement"]["tx_hash"] = "0x" + "5a" * 32
+        code, obj = self._post("/receipts", body, headers={"X-PAYMENT": "t"})
+        self.assertEqual(code, 201, obj)
+        rid = obj["receipt"]["payload"]["receipt_id"]
+
+        # before anchoring, verify reports "not yet anchored"
+        _, report = self._get(f"/verify/{rid}")
+        self.assertEqual(report["anchor"], "not yet anchored")
+
+        # seal a batch
+        code, aobj = self._post("/anchor", {}, headers={})
+        self.assertEqual(code, 201, aobj)
+        self.assertGreaterEqual(aobj["anchored"], 1)
+
+        # now verify reports a verified inclusion proof
+        _, report = self._get(f"/verify/{rid}")
+        self.assertEqual(report["anchor"]["inclusion"], "verified")
+        self.assertEqual(report["verdict"], "PASS")
+
+        # and the standalone proof endpoint returns a checkable proof
+        _, proof = self._get(f"/receipts/{rid}/proof")
+        from receipts.merkle import verify_inclusion as _vi
+        self.assertTrue(_vi(proof["leaf_index"], proof["tree_size"],
+                            proof["leaf_data"].encode(),
+                            [bytes.fromhex(h) for h in proof["audit_path"]],
+                            bytes.fromhex(proof["root"])))
+
     def test_bad_body_400(self):
         code, obj = self._post("/receipts", {"nope": 1},
                                headers={"X-PAYMENT": "dev-token"})
@@ -500,6 +561,37 @@ class TestService(unittest.TestCase):
 
 
 from receipts.invoice import render_invoice, usdc, vat_breakdown
+from receipts.merkle import (
+    inclusion_proof, merkle_root, verify_inclusion,
+)
+
+
+class TestMerkle(unittest.TestCase):
+    def test_root_stable_and_proofs_verify_across_sizes(self):
+        for n in (1, 2, 3, 5, 8, 13, 100):
+            leaves = [f"r{i}".encode() for i in range(n)]
+            root = merkle_root(leaves)
+            for m in range(n):
+                proof = inclusion_proof(leaves, m)
+                self.assertTrue(verify_inclusion(m, n, leaves[m], proof, root),
+                                f"n={n} m={m}")
+
+    def test_tampered_leaf_fails(self):
+        leaves = [f"r{i}".encode() for i in range(10)]
+        root = merkle_root(leaves)
+        proof = inclusion_proof(leaves, 3)
+        self.assertFalse(verify_inclusion(3, 10, b"forged", proof, root))
+
+    def test_tampered_proof_fails(self):
+        leaves = [f"r{i}".encode() for i in range(10)]
+        root = merkle_root(leaves)
+        proof = inclusion_proof(leaves, 3)
+        proof[0] = bytes(b ^ 1 for b in proof[0])
+        self.assertFalse(verify_inclusion(3, 10, leaves[3], proof, root))
+
+    def test_domain_separation_leaf_vs_node(self):
+        # a single-leaf root must not equal a two-leaf root of the same bytes
+        self.assertNotEqual(merkle_root([b"a" + b"b"]), merkle_root([b"a", b"b"]))
 
 
 def assert_valid_pdf(testcase, data: bytes):
@@ -525,6 +617,64 @@ def assert_valid_pdf(testcase, data: bytes):
             testcase.assertRegex(seg, rb"^\d+ 0 obj", f"xref offset {off} not an object")
             used += 1
     testcase.assertGreaterEqual(used, 5)
+
+
+class TestQR(unittest.TestCase):
+    """The QR encoder is validated against the `segno` reference library when
+    it is importable (test-only). Where segno is absent, structural checks
+    still run. segno is never a runtime dependency."""
+
+    def _segno(self):
+        try:
+            import segno  # noqa: F401
+            return segno
+        except ImportError:
+            return None
+
+    def test_matches_segno_across_versions_and_masks(self):
+        from receipts import qr
+        segno = self._segno()
+        if segno is None:
+            self.skipTest("segno not installed (oracle unavailable)")
+        cases = ["hello", "x402",
+                 "https://receipts.example.com/verify/rcpt_9be51ff385fc77069cf1"]
+        # add lengths that push into each supported version
+        for n in (10, 30, 55, 80, 100):
+            cases.append("https://x.io/v/" + "a" * n)
+        checked = 0
+        for data in cases:
+            try:
+                v = qr._choose_version(len(data.encode()))
+            except ValueError:
+                continue  # beyond v6 capacity — not in scope
+            cw = qr._interleave(qr._encode_data_codewords(data.encode(), v), v)
+            bits = []
+            for c in cw:
+                bits.extend(int(b) for b in format(c, "08b"))
+            for mask in range(8):
+                base = qr._new_matrix(17 + 4 * v)
+                qr._place_function_patterns(base, v)
+                res = qr._reserved(base, v)
+                qr._place_data(base, res, bits)
+                m = qr._apply_mask(base, res, mask)
+                qr._place_format(m, mask)
+                mine = [[0 if x is None else x for x in row] for row in m]
+                ref = [list(r) for r in segno.make(
+                    data, error="m", version=v, mask=mask, boost_error=False).matrix]
+                self.assertEqual(mine, ref, f"data={data[:20]!r} v={v} mask={mask}")
+                checked += 1
+        self.assertGreater(checked, 0)
+
+    def test_encode_output_is_square_binary(self):
+        from receipts import qr
+        m = qr.encode("https://r.example/verify/rcpt_x")
+        self.assertTrue(all(len(row) == len(m) for row in m))
+        self.assertTrue(all(v in (0, 1) for row in m for v in row))
+
+    def test_too_long_raises(self):
+        from receipts import qr
+        with self.assertRaises(ValueError):
+            qr.encode("x" * 200)
 
 
 class TestInvoicePDF(unittest.TestCase):
@@ -732,6 +882,66 @@ class TestFacilitatorService(unittest.TestCase):
                                   xpayment=make_xpayment(PAYER))
         self.assertEqual(code, 201)
         self.assertIn("settlement_warning", obj)
+
+
+class TestKeyRotation(unittest.TestCase):
+    """A receipt signed by a now-retired key must still verify after the
+    operator rotates to a new active key, as long as the old PUBLIC key is
+    kept in the published JWKS history."""
+
+    def test_retired_key_receipt_still_verifies(self):
+        d = tempfile.mkdtemp()
+        old = Signer.generate()
+        # issue a receipt under the OLD key
+        app_old = App(signer=old, ledger=Ledger(os.path.join(d, "k.db")),
+                      verifier=MockVerifier(), gate="dev", price_base_units="2000",
+                      pay_to=PAYEE, seller_id="op", chain="base-sepolia",
+                      base_url="http://x")
+        code, obj = app_old.issue({
+            "settlement": {k: v for k, v in sample_settlement().items()
+                           if k not in ("verified", "verification_method")},
+            "commerce": sample_commerce()})
+        self.assertEqual(code, 201)
+        rid = obj["receipt"]["payload"]["receipt_id"]
+
+        # ROTATE: new active key, old key's PUBLIC jwk kept in history,
+        # same ledger/db.
+        new = Signer.generate()
+        app_new = App(signer=new, ledger=Ledger(os.path.join(d, "k.db")),
+                      verifier=MockVerifier(), gate="dev", price_base_units="2000",
+                      pay_to=PAYEE, seller_id="op", chain="base-sepolia",
+                      base_url="http://x", extra_public_jwks=[old.jwk()])
+
+        # jwks now publishes both keys
+        kids = {k["kid"] for k in app_new._jwks()["keys"]}
+        self.assertIn(old.kid, kids)
+        self.assertIn(new.kid, kids)
+
+        # the old-key receipt still verifies and its chain is intact
+        code, report = app_new.verify_report(rid)
+        self.assertEqual(report["signature"], "valid")
+        self.assertEqual(report["verdict"], "PASS")
+
+    def test_without_history_retired_key_fails(self):
+        d = tempfile.mkdtemp()
+        old = Signer.generate()
+        app_old = App(signer=old, ledger=Ledger(os.path.join(d, "k2.db")),
+                      verifier=MockVerifier(), gate="dev", price_base_units="2000",
+                      pay_to=PAYEE, seller_id="op", chain="base-sepolia",
+                      base_url="http://x")
+        _, obj = app_old.issue({
+            "settlement": {k: v for k, v in sample_settlement().items()
+                           if k not in ("verified", "verification_method")},
+            "commerce": sample_commerce()})
+        rid = obj["receipt"]["payload"]["receipt_id"]
+        new = Signer.generate()
+        # rotate WITHOUT keeping the old public key -> old receipt no longer verifies
+        app_new = App(signer=new, ledger=Ledger(os.path.join(d, "k2.db")),
+                      verifier=MockVerifier(), gate="dev", price_base_units="2000",
+                      pay_to=PAYEE, seller_id="op", chain="base-sepolia",
+                      base_url="http://x")
+        _, report = app_new.verify_report(rid)
+        self.assertTrue(report["signature"].startswith("INVALID"))
 
 
 class TestTrustBoundary(unittest.TestCase):
