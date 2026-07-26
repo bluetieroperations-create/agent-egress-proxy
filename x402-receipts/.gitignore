@@ -1,0 +1,4 @@
+# runtime artifacts — never commit keys or ledgers
+*.pem
+*.db
+__pycache__/
