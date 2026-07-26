@@ -1,0 +1,31 @@
+# Render.com deployment (alternative to Fly). Render terminates HTTPS and
+# forwards to the container port; the app binds 0.0.0.0.
+# New > Blueprint > point at this repo.
+services:
+  - type: web
+    name: traceipt-demo
+    runtime: docker
+    rootDir: traceipt
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: RECEIPTS_HOST
+        value: "0.0.0.0"
+      - key: RECEIPTS_PORT
+        value: "8402"
+      - key: RECEIPTS_CHAIN
+        value: base-sepolia
+      - key: X402_GATE
+        value: dev
+      - key: RECEIPTS_SETTLEMENT
+        value: mock
+      # Set this to the URL Render assigns (or your custom domain) so verify
+      # links and the invoice QR resolve to the right place.
+      - key: RECEIPTS_BASE_URL
+        value: https://traceipt-demo.onrender.com
+    # Persistent disk for the ledger DB + issuer key.
+    disk:
+      name: traceipt-data
+      mountPath: /data
+      sizeGB: 1

@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.db
+*.pem
+test_receipts.py
+site/
+*.md
+.git

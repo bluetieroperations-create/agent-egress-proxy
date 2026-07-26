@@ -440,6 +440,14 @@ def main(argv=None):
     p = argparse.ArgumentParser(description="Traceipt — verifiable receipts "
                                 "for x402 machine payments")
     p.add_argument("--port", type=int, default=int(os.environ.get("RECEIPTS_PORT", "8402")))
+    p.add_argument("--host", default=os.environ.get("RECEIPTS_HOST", "127.0.0.1"),
+                   help="bind address. Default 127.0.0.1 (safe). Use 0.0.0.0 ONLY "
+                        "behind a TLS reverse proxy / platform edge that terminates "
+                        "HTTPS and forwards to this port.")
+    p.add_argument("--base-url", default=os.environ.get("RECEIPTS_BASE_URL"),
+                   help="public HTTPS base URL embedded in verify links, the 402 "
+                        "resource, and invoice QR (e.g. https://traceipt.xyz). "
+                        "Defaults to http://<host>:<port> for local dev.")
     p.add_argument("--db", default=os.environ.get("RECEIPTS_DB", "receipts.db"))
     p.add_argument("--key", default=os.environ.get("RECEIPTS_KEY", "issuer_ed25519.pem"))
     p.add_argument("--gate", choices=["off", "dev", "facilitator"],
@@ -490,6 +498,7 @@ def main(argv=None):
             p.error("--gate facilitator requires --facilitator-url")
         facilitator = Facilitator(args.facilitator_url)
 
+    base_url = args.base_url or f"http://{args.host}:{args.port}"
     app = App(
         signer=signer,
         ledger=Ledger(args.db),
@@ -498,17 +507,18 @@ def main(argv=None):
         price_base_units=args.price,
         pay_to=args.pay_to,
         chain=args.chain,
-        base_url=f"http://127.0.0.1:{args.port}",
+        base_url=base_url,
         seller_id=args.seller_id,
         facilitator=facilitator,
         bind_payer=args.bind_payer,
         extra_public_jwks=extra_public_jwks,
         admin_token=args.admin_token,
     )
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(app))
-    print(f"Traceipt listening on 127.0.0.1:{args.port} "
-          f"(gate={args.gate}, chain={args.chain}, settlement={args.settlement}, "
-          f"bind_payer={app.bind_payer}, kid={app.signer.kid})")
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(app))
+    print(f"Traceipt listening on {args.host}:{args.port} "
+          f"(public={base_url}, gate={args.gate}, chain={args.chain}, "
+          f"settlement={args.settlement}, bind_payer={app.bind_payer}, "
+          f"kid={app.signer.kid})")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
