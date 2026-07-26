@@ -31,6 +31,10 @@ from .ledger import Ledger
 from .schema import build_receipt, receipt_hash, validate_commerce, validate_settlement
 from .settlement import USDC_CONTRACTS, make_verifier
 from .signing import load_or_create_signer, verify_envelope
+from .x402_gate import (
+    Facilitator, GateDecision, _proceed, _reject, encode_payment_response,
+    gate_settle, gate_verify,
+)
 
 MAX_BODY = 64 * 1024
 BODY_READ_TIMEOUT = 15.0  # seconds a worker will wait on a slow client
@@ -45,7 +49,8 @@ class App:
 
     def __init__(self, *, signer, ledger: Ledger, verifier, gate: str,
                  price_base_units: str, pay_to: str, chain: str, base_url: str,
-                 seller_id: str | None = None):
+                 seller_id: str | None = None, facilitator=None,
+                 bind_payer: bool = False):
         self.signer = signer
         self.ledger = ledger
         self.verifier = verifier
@@ -54,6 +59,12 @@ class App:
         self.pay_to = pay_to
         self.chain = chain
         self.base_url = base_url.rstrip("/")
+        # Facilitator client for the real x402 gate (None in off/dev modes).
+        self.facilitator = facilitator
+        # When on, the wallet that pays for the receipt (verified by the
+        # facilitator) must equal the settlement's payer — cryptographic
+        # payer binding. Only meaningful with the facilitator gate.
+        self.bind_payer = bind_payer
         # Seller-hosted model: the operator IS the payee. When seller_id is
         # configured, the caller cannot spoof another identity — the receipt
         # is always issued under the operator's id.
@@ -70,33 +81,54 @@ class App:
         self._issue_lock = threading.Lock()
 
     # -- x402 gate ---------------------------------------------------------
+    def requirements(self, resource: str) -> dict:
+        """The single x402 `accepts` entry this service advertises."""
+        return {
+            "scheme": "exact",
+            "network": self.chain,
+            "maxAmountRequired": self.price_base_units,
+            "asset": USDC_CONTRACTS[self.chain],
+            "payTo": self.pay_to,
+            "resource": self.base_url + resource,
+            "description": "issue one signed x402 receipt",
+            "mimeType": "application/json",
+            "maxTimeoutSeconds": 60,
+        }
+
     def payment_required_body(self, resource: str) -> dict:
         """x402-shaped payment requirements for the 402 response."""
         return {
             "x402Version": 1,
             "error": "X-PAYMENT header is required",
-            "accepts": [{
-                "scheme": "exact",
-                "network": self.chain,
-                "maxAmountRequired": self.price_base_units,
-                "asset": USDC_CONTRACTS[self.chain],
-                "payTo": self.pay_to,
-                "resource": self.base_url + resource,
-                "description": "issue one signed x402 receipt",
-                "mimeType": "application/json",
-                "maxTimeoutSeconds": 60,
-            }],
+            "accepts": [self.requirements(resource)],
         }
 
-    def gate_allows(self, headers) -> bool:
+    def gate_payment(self, headers, resource: str) -> GateDecision:
+        """Decide whether this request may proceed, and identify the payer.
+
+        Returns a GateDecision: ok=True carries the verified payer (or None);
+        ok=False carries the exact code/body to return to the client.
+        """
         if self.gate == "off":
-            return True
+            return _proceed()
         if self.gate == "dev":
-            return bool(headers.get("X-PAYMENT", "").strip())
+            if headers.get("X-PAYMENT", "").strip():
+                return _proceed()
+            return _reject(402, self.payment_required_body(resource))
+        if self.gate == "facilitator":
+            return gate_verify(
+                self.facilitator, headers, self.requirements(resource),
+                self.payment_required_body(resource),
+            )
         raise ValueError(f"unknown gate mode {self.gate!r}")
 
+    def settle_payment(self, payment: dict, resource: str):
+        """Settle a verified payment after issuance. Returns
+        (ok, settle_response, error)."""
+        return gate_settle(self.facilitator, payment, self.requirements(resource))
+
     # -- core operation ----------------------------------------------------
-    def issue(self, body: dict) -> tuple[int, dict]:
+    def issue(self, body: dict, gate_payer: str | None = None) -> tuple[int, dict]:
         for field in ("settlement", "commerce"):
             if field not in body:
                 return 400, {"error": f"missing field {field!r}"}
@@ -132,12 +164,20 @@ class App:
 
         # Seller-hosted binding: the settlement must have been paid TO the
         # operator. Without this, a caller could mint a receipt for any
-        # third party's transfer. (Payer binding still requires the caller
-        # to prove control of the payer address — see THREAT MODEL in README.)
+        # third party's transfer.
         if self._pay_to_configured and \
                 settlement.get("payee", "").lower() != self.pay_to.lower():
             return 403, {"error": "settlement.payee does not match this "
                                   "service's configured pay_to address"}
+
+        # Payer binding: the wallet that paid for THIS receipt (verified by
+        # the facilitator gate) must be the settlement's payer. This is the
+        # cryptographic proof that the caller is a party to the payment they
+        # are documenting — closing the third-party-claim gap.
+        if self.bind_payer and gate_payer is not None and \
+                settlement.get("payer", "").lower() != gate_payer.lower():
+            return 403, {"error": "settlement.payer does not match the wallet "
+                                  "that paid for this receipt (payer binding)"}
 
         result = self.verifier.verify(settlement)
         if not result.ok:
@@ -244,11 +284,29 @@ def make_handler(app: App):
                 return self._send(200, {"chain": "intact" if not problems else problems})
             return self._send(404, {"error": "not found"})
 
+        def _send_with_payment_response(self, code, obj, settle_response):
+            # x402 echoes the settle result back in an X-PAYMENT-RESPONSE header.
+            data = json.dumps(obj, ensure_ascii=False, indent=2).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            if settle_response:
+                self.send_header("X-PAYMENT-RESPONSE",
+                                 encode_payment_response(settle_response))
+            self.end_headers()
+            self.wfile.write(data)
+
         def do_POST(self):
-            if urlsplit(self.path).path != "/receipts":
+            resource = urlsplit(self.path).path
+            if resource != "/receipts":
                 return self._send(404, {"error": "not found"})
-            if not app.gate_allows(self.headers):
-                return self._send(402, app.payment_required_body(self.path))
+
+            # 1. Gate: verify payment (does NOT move money yet).
+            decision = app.gate_payment(self.headers, resource)
+            if not decision.ok:
+                return self._send(decision.code, decision.body)
+
+            # 2. Read + parse the request body.
             try:
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError:
@@ -259,11 +317,24 @@ def make_handler(app: App):
                 body = json.loads(self.rfile.read(length).decode("utf-8"))
             except (ValueError, UnicodeDecodeError):
                 return self._send(400, {"error": "body must be valid JSON"})
+
+            # 3. Issue the receipt (payer binding uses the gate's payer).
             try:
-                code, obj = app.issue(body)
+                code, obj = app.issue(body, gate_payer=decision.payer)
             except Exception as e:
-                # Never let an exception kill the connection without a response.
                 return self._send(500, {"error": f"internal error: {type(e).__name__}"})
+            if code != 201:
+                # Issuance failed → do NOT settle. The caller is not charged.
+                return self._send(code, obj)
+
+            # 4. Settle the payment now that the receipt exists.
+            if decision.payment is not None:
+                ok, settle_response, err = app.settle_payment(decision.payment, resource)
+                if not ok:
+                    obj = {**obj, "settlement_warning":
+                           f"receipt issued but payment settlement failed: {err}"}
+                    return self._send_with_payment_response(201, obj, settle_response or None)
+                return self._send_with_payment_response(201, obj, settle_response)
             return self._send(code, obj)
 
         def log_message(self, fmt, *args):  # quiet; the ledger is the record
@@ -277,8 +348,15 @@ def main(argv=None):
     p.add_argument("--port", type=int, default=int(os.environ.get("RECEIPTS_PORT", "8402")))
     p.add_argument("--db", default=os.environ.get("RECEIPTS_DB", "receipts.db"))
     p.add_argument("--key", default=os.environ.get("RECEIPTS_KEY", "issuer_ed25519.pem"))
-    p.add_argument("--gate", choices=["off", "dev"],
+    p.add_argument("--gate", choices=["off", "dev", "facilitator"],
                    default=os.environ.get("X402_GATE", "dev"))
+    p.add_argument("--facilitator-url",
+                   default=os.environ.get("RECEIPTS_FACILITATOR_URL"),
+                   help="x402 facilitator base URL (required for --gate facilitator)")
+    p.add_argument("--bind-payer", action="store_true",
+                   default=os.environ.get("RECEIPTS_BIND_PAYER", "") not in ("", "0"),
+                   help="require the wallet paying for the receipt to equal the "
+                        "settlement's payer (facilitator gate only)")
     p.add_argument("--chain", choices=["base", "base-sepolia"],
                    default=os.environ.get("RECEIPTS_CHAIN", "base-sepolia"))
     p.add_argument("--settlement", choices=["rpc", "mock"],
@@ -294,6 +372,12 @@ def main(argv=None):
                         "callers cannot then spoof another seller_id")
     args = p.parse_args(argv)
 
+    facilitator = None
+    if args.gate == "facilitator":
+        if not args.facilitator_url:
+            p.error("--gate facilitator requires --facilitator-url")
+        facilitator = Facilitator(args.facilitator_url)
+
     app = App(
         signer=load_or_create_signer(args.key),
         ledger=Ledger(args.db),
@@ -304,11 +388,13 @@ def main(argv=None):
         chain=args.chain,
         base_url=f"http://127.0.0.1:{args.port}",
         seller_id=args.seller_id,
+        facilitator=facilitator,
+        bind_payer=args.bind_payer,
     )
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(app))
     print(f"x402-receipts listening on 127.0.0.1:{args.port} "
           f"(gate={args.gate}, chain={args.chain}, settlement={args.settlement}, "
-          f"kid={app.signer.kid})")
+          f"bind_payer={app.bind_payer}, kid={app.signer.kid})")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -21,14 +21,14 @@ The receipt itself is issued over x402: callers hit `POST /receipts`, get a
 eats its own dog food.
 
 > **Read [the threat model](#security-model--threat-model) before deploying.**
-> v0.1 is designed for the **seller-hosted** deployment (the operator runs
-> the service for their *own* receiving address). In that mode the on-chain
-> `payee` is bound to the operator's configured `pay_to` and the seller
-> identity is pinned, so a caller cannot mint receipts for payments made to
-> anyone else. The **neutral multi-tenant** deployment (issuing receipts on
-> behalf of arbitrary third parties) additionally requires caller
-> authentication that binds the `payer`, which is **not yet implemented** —
-> see the threat model.
+> Two binding mechanisms defend against receipt fraud. **Seller-hosted**:
+> the on-chain `payee` is bound to the operator's configured `pay_to` and the
+> seller identity is pinned, so a caller cannot mint receipts for payments
+> made to anyone else. **Payer binding** (`--bind-payer`, facilitator gate):
+> the wallet that pays for the receipt — verified by the x402 facilitator —
+> must equal the settlement's `payer`, so a caller cannot document a payment
+> they did not make. With payer binding on, neither the payer nor the payee
+> of a receipted settlement can be spoofed.
 
 Python 3.8+; only non-stdlib dependency is [`cryptography`](https://pypi.org/project/cryptography/)
 (Ed25519).
@@ -163,23 +163,39 @@ With that config the service enforces, before signing:
 | `asset_contract` forced from `--chain` | caller-supplied contract is ignored |
 | structure validated **before** RPC | a malformed body is a clean `400`, never a `500` |
 
-**What v0.1 does NOT defend against — do not deploy as a neutral,
-multi-tenant issuer yet:**
+**Payer binding (the facilitator gate).** Run with `--gate facilitator
+--facilitator-url <url> --bind-payer` and the service closes the
+third-party-claim gap cryptographically:
 
-* **Payer is not authenticated.** The service confirms a matching on-chain
-  transfer exists and (in seller-hosted mode) that it was paid to the
-  operator — but it does **not** verify that the *caller* is the payer.
-  Within seller-hosted mode the practical residual risk is a third party
-  spamming the operator's *own* chain with real-payments-to-operator plus
-  fabricated commerce; the operator is the beneficiary and the `(seller_id,
-  tx_hash)` uniqueness bounds it, but it is a real gap. Closing it fully —
-  and enabling safe multi-tenant issuance — requires the caller to prove
-  control of the `payer` address (an x402 payment authorization / signed
-  challenge). **This is the #1 pre-production item**, tracked with the real
-  facilitator gate below.
+```sh
+python3 -m receipts.service --settlement rpc --chain base \
+  --pay-to 0xYourReceivingAddress --seller-id your.domain \
+  --gate facilitator --facilitator-url https://facilitator.example --bind-payer
+```
+
+Flow per request: the service returns `402` with x402 payment requirements;
+the caller resubmits with an `X-PAYMENT` header (a signed EIP-3009
+authorization); the service asks the facilitator to **verify** it (the
+facilitator checks the secp256k1 signature, balance, and nonce — so this
+service never reimplements chain crypto), issues the receipt, then asks the
+facilitator to **settle** and echoes the result in `X-PAYMENT-RESPONSE`.
+With `--bind-payer`, the facilitator-verified paying wallet must equal
+`settlement.payer`, so **only the wallet that made a payment can obtain a
+receipt for it.** Settlement happens only *after* a receipt is successfully
+issued, so a caller is never charged for a request that fails to produce a
+receipt.
+
+**What is still NOT defended:**
+
 * **Issuer key compromise** forges anything. Keep it in a KMS/HSM.
 * **Availability**: a slow client is bounded by a 15s socket timeout, but
   `http.server` has no hard thread cap — put it behind a real reverse proxy.
+* **Without `--bind-payer`** (e.g. seller-hosted mode alone), the residual
+  risk noted for that mode still applies: a third party could spam the
+  operator's own chain with real-payments-to-operator plus fabricated
+  commerce. Enable payer binding for the strongest guarantee.
+* **Facilitator trust**: verification/settlement correctness is delegated to
+  the configured facilitator; point it only at one you trust.
 
 ## Security notes
 
@@ -192,18 +208,22 @@ multi-tenant issuer yet:**
   functions (`schema.py`) that are unit-tested first — same TDD-on-the-
   security-boundary approach as the egress proxy in this repository.
 
-## Roadmap (deliberately not in v0.1)
+## Roadmap
 
-* **Real x402 gate + payer binding** — verify `X-PAYMENT` via a facilitator
-  (Coinbase CDP / Cloudflare) instead of the dev gate, and use the same
-  proof to bind the caller to the settlement's `payer`. This closes the
-  authentication gap in the threat model and unlocks safe multi-tenant
-  (neutral-issuer) deployment.
+Done since v0.1: **seller/payee binding**, **signature-checked chain
+verification**, and the **real facilitator gate with payer binding**
+(`--gate facilitator --bind-payer`) — the receipt-fraud findings from the
+adversarial audit are closed.
+
+Still ahead:
+
 * **Merkle batch anchoring** — publish a periodic Merkle root of issued
   receipts on-chain (certificate-transparency style) so existence-by-time is
   provable without trusting the issuer at all.
 * **PDF/HTML rendering** — human-facing invoice documents (VAT fields,
   entity details) generated from the signed payload.
+* **Facilitator failover + key rotation JWKS history** — publish retired
+  public keys so receipts verify years after a rotation.
 * **Alignment with the x402 receipt-extension discussion**
   ([x402#2357](https://github.com/x402-foundation/x402/issues/2357)) as it
   evolves.

@@ -17,6 +17,11 @@ from receipts.settlement import (
 )
 from receipts.service import App, make_handler
 from receipts.signing import Signer, verify_envelope
+from receipts.x402_gate import (
+    Facilitator, decode_payment_header, encode_payment_response,
+    gate_verify, payer_from_payload,
+)
+import base64 as _b64
 
 PAYER = "0x" + "aa" * 20
 PAYEE = "0x" + "bb" * 20
@@ -473,6 +478,166 @@ class TestService(unittest.TestCase):
         self.assertEqual(results.count(201), 16, results)
         code, chain = self._get("/chain/concurrent.example.com")
         self.assertEqual(chain["chain"], "intact")
+
+
+def make_xpayment(payer, value="2000", network="base-sepolia"):
+    """A well-formed X-PAYMENT header (base64 JSON) for the exact scheme."""
+    payload = {
+        "x402Version": 1, "scheme": "exact", "network": network,
+        "payload": {"signature": "0x" + "11" * 65, "authorization": {
+            "from": payer, "to": PAYEE, "value": value,
+            "validAfter": "0", "validBefore": "9999999999",
+            "nonce": "0x" + "22" * 32}},
+    }
+    return _b64.b64encode(json.dumps(payload).encode()).decode()
+
+
+class FakeFacilitator:
+    """Stand-in for a real x402 facilitator. verify() approves iff asked;
+    records settle() calls so tests can assert money moved (or didn't)."""
+
+    def __init__(self, valid=True, invalid_reason="insufficient funds",
+                 settle_ok=True):
+        self.valid = valid
+        self.invalid_reason = invalid_reason
+        self.settle_ok = settle_ok
+        self.verify_calls = 0
+        self.settle_calls = 0
+
+    def verify(self, payment, requirements):
+        self.verify_calls += 1
+        if not self.valid:
+            return {"isValid": False, "invalidReason": self.invalid_reason}
+        return {"isValid": True, "payer": payer_from_payload(payment)}
+
+    def settle(self, payment, requirements):
+        self.settle_calls += 1
+        if not self.settle_ok:
+            return {"success": False, "errorReason": "settle reverted"}
+        return {"success": True, "transaction": "0x" + "fe" * 32,
+                "network": requirements["network"],
+                "payer": payer_from_payload(payment)}
+
+
+class TestX402GateUnit(unittest.TestCase):
+    def test_decode_rejects_garbage(self):
+        for bad in ["", "!!!notbase64!!!",
+                    _b64.b64encode(b"not json").decode(),
+                    _b64.b64encode(b'{"x402Version":2}').decode(),
+                    _b64.b64encode(b'{"x402Version":1}').decode()]:
+            with self.assertRaises(ValueError):
+                decode_payment_header(bad)
+
+    def test_decode_and_payer_extraction(self):
+        h = make_xpayment("0x" + "Ab" * 20)
+        payload = decode_payment_header(h)
+        self.assertEqual(payload["scheme"], "exact")
+        self.assertEqual(payer_from_payload(payload), "0x" + "ab" * 20)
+
+    def test_gate_verify_absent_payment_402(self):
+        d = gate_verify(FakeFacilitator(), {}, {"network": "base-sepolia"},
+                        {"error": "pay up"})
+        self.assertFalse(d.ok)
+        self.assertEqual(d.code, 402)
+
+    def test_gate_verify_invalid_payment_402(self):
+        fac = FakeFacilitator(valid=False)
+        d = gate_verify(fac, {"X-PAYMENT": make_xpayment(PAYER)},
+                        {"network": "base-sepolia"}, {"error": "pay up"})
+        self.assertFalse(d.ok)
+        self.assertEqual(d.code, 402)
+        self.assertIn("insufficient funds", d.body["error"])
+
+    def test_gate_verify_ok_returns_payer_without_settling(self):
+        fac = FakeFacilitator()
+        d = gate_verify(fac, {"X-PAYMENT": make_xpayment(PAYER)},
+                        {"network": "base-sepolia"}, {"error": "x"})
+        self.assertTrue(d.ok)
+        self.assertEqual(d.payer, PAYER.lower())
+        self.assertEqual(fac.settle_calls, 0)  # verify does not move money
+
+    def test_payment_response_roundtrips(self):
+        s = {"success": True, "transaction": "0xabc"}
+        decoded = json.loads(_b64.b64decode(encode_payment_response(s)))
+        self.assertEqual(decoded, s)
+
+
+class TestFacilitatorService(unittest.TestCase):
+    """End-to-end through the HTTP service with a fake facilitator + payer
+    binding — the security property the real gate exists to provide."""
+
+    def _make(self, **over):
+        d = tempfile.mkdtemp()
+        fac = over.pop("facilitator", FakeFacilitator())
+        cfg = dict(signer=Signer.generate(), ledger=Ledger(os.path.join(d, "f.db")),
+                   verifier=MockVerifier(), gate="facilitator", price_base_units="2000",
+                   pay_to=PAYEE, seller_id="operator.example", chain="base-sepolia",
+                   base_url="http://x", facilitator=fac, bind_payer=True)
+        cfg.update(over)
+        app = App(**cfg)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        return app, fac, port
+
+    def _post(self, port, body, xpayment=None):
+        headers = {"Content-Type": "application/json"}
+        if xpayment is not None:
+            headers["X-PAYMENT"] = xpayment
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/receipts",
+                                     data=json.dumps(body).encode(), headers=headers)
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, json.loads(r.read()), dict(r.headers)
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read()), dict(e.headers)
+
+    def _body(self, payer, tx):
+        return {"settlement": {"chain": "base-sepolia", "tx_hash": tx,
+                "amount_base_units": "5000", "payer": payer, "payee": PAYEE},
+                "commerce": sample_commerce()}
+
+    def test_no_payment_gets_402(self):
+        _, fac, port = self._make()
+        code, obj, _ = self._post(port, self._body(PAYER, "0x" + "b1" * 32))
+        self.assertEqual(code, 402)
+        self.assertEqual(fac.settle_calls, 0)
+
+    def test_paid_and_payer_matches_issues_and_settles(self):
+        _, fac, port = self._make()
+        code, obj, hdrs = self._post(port, self._body(PAYER, "0x" + "b2" * 32),
+                                     xpayment=make_xpayment(PAYER))
+        self.assertEqual(code, 201, obj)
+        self.assertEqual(fac.settle_calls, 1)              # money moved
+        self.assertIn("X-PAYMENT-RESPONSE", hdrs)          # settle echoed back
+
+    def test_payer_binding_blocks_third_party_claim(self):
+        # THE fraud the gate closes: someone pays from their OWN wallet but
+        # tries to document a settlement whose payer is a DIFFERENT address.
+        _, fac, port = self._make()
+        attacker = "0x" + "99" * 20
+        code, obj, _ = self._post(
+            port, self._body(PAYER, "0x" + "b3" * 32),  # settlement.payer = victim
+            xpayment=make_xpayment(attacker))            # but attacker pays
+        self.assertEqual(code, 403, obj)
+        self.assertIn("payer binding", obj["error"])
+        self.assertEqual(fac.settle_calls, 0)  # no charge for a rejected claim
+
+    def test_issue_failure_does_not_settle(self):
+        # A malformed settlement must NOT charge the caller.
+        _, fac, port = self._make()
+        body = self._body(PAYER, "0xshort")  # invalid tx hash
+        code, obj, _ = self._post(port, body, xpayment=make_xpayment(PAYER))
+        self.assertEqual(code, 400)
+        self.assertEqual(fac.settle_calls, 0)
+
+    def test_settle_failure_still_returns_receipt_with_warning(self):
+        _, fac, port = self._make(facilitator=FakeFacilitator(settle_ok=False))
+        code, obj, _ = self._post(port, self._body(PAYER, "0x" + "b4" * 32),
+                                  xpayment=make_xpayment(PAYER))
+        self.assertEqual(code, 201)
+        self.assertIn("settlement_warning", obj)
 
 
 class TestTrustBoundary(unittest.TestCase):
