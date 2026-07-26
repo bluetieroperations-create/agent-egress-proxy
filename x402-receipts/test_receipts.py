@@ -182,7 +182,11 @@ class TestLedger(unittest.TestCase):
 
     def _append_next(self, seller="s1"):
         seq, prev = self.ledger.next_link(seller)
-        payload = sample_receipt(seq=seq, prev=prev, seller_id=seller)
+        # each receipt documents a DISTINCT settlement (unique tx per seq)
+        payload = sample_receipt(
+            seq=seq, prev=prev, seller_id=seller,
+            settlement=sample_settlement(tx_hash="0x" + f"{seq:064x}"),
+        )
         env = self.signer.sign_envelope(payload)
         self.ledger.append(env)
         return payload
@@ -284,6 +288,22 @@ class TestSettlement(unittest.TestCase):
         self.assertFalse(r.ok)
         self.assertIn("not found", r.reason)
 
+    def test_match_on_second_of_multiple_logs(self):
+        # A tx with two payer->payee transfers; only the second has the
+        # claimed amount. Must scan all logs, not fail on the first.
+        wrong = chain_receipt(amount=1)["logs"][0]
+        right = chain_receipt(amount=5000)["logs"][0]
+        rec = {"status": "0x1", "logs": [wrong, right]}
+        v = RpcVerifier("http://unused", transport=fake_rpc(rec))
+        self.assertTrue(v.verify(sample_settlement()).ok)
+
+    def test_malformed_log_data_is_skipped_not_crash(self):
+        bad = chain_receipt()["logs"][0] | {"data": "0x"}
+        rec = {"status": "0x1", "logs": [bad]}
+        v = RpcVerifier("http://unused", transport=fake_rpc(rec))
+        r = v.verify(sample_settlement())  # must not raise
+        self.assertFalse(r.ok)
+
 
 # ---------------------------------------------------------------------------
 # service end-to-end (dev gate + mock settlement)
@@ -373,6 +393,43 @@ class TestService(unittest.TestCase):
     def test_unknown_receipt_404(self):
         code, _ = self._get("/verify/rcpt_doesnotexist")
         self.assertEqual(code, 404)
+
+    def test_duplicate_settlement_is_idempotent_not_farmable(self):
+        # One on-chain payment must never yield two receipts.
+        body = self.request_body()
+        body["seller_id"] = "farm.example.com"
+        body["settlement"]["tx_hash"] = "0x" + "77" * 32
+        c1, r1 = self._post("/receipts", body, headers={"X-PAYMENT": "t"})
+        c2, r2 = self._post("/receipts", body, headers={"X-PAYMENT": "t"})
+        self.assertEqual(c1, 201)
+        self.assertEqual(c2, 200)
+        self.assertTrue(r2.get("idempotent"))
+        self.assertEqual(r1["receipt"]["payload"]["receipt_id"],
+                         r2["receipt"]["payload"]["receipt_id"])
+        # ...even with different commerce data attached to the same tx
+        body["commerce"]["description"] = "totally different claim"
+        c3, r3 = self._post("/receipts", body, headers={"X-PAYMENT": "t"})
+        self.assertEqual(c3, 200)
+        self.assertEqual(r3["receipt"]["payload"]["receipt_id"],
+                         r1["receipt"]["payload"]["receipt_id"])
+
+    def test_concurrent_issuance_all_succeed_dense_chain(self):
+        import threading as _t
+        results = []
+        def worker(i):
+            body = self.request_body()
+            body["seller_id"] = "concurrent.example.com"
+            body["settlement"]["tx_hash"] = "0x" + f"{i:064x}"
+            results.append(self._post("/receipts", body,
+                                      headers={"X-PAYMENT": "t"})[0])
+        threads = [_t.Thread(target=worker, args=(i,)) for i in range(16)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(results.count(201), 16, results)
+        code, chain = self._get("/chain/concurrent.example.com")
+        self.assertEqual(chain["chain"], "intact")
 
 
 if __name__ == "__main__":

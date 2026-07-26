@@ -114,6 +114,12 @@ $0.005). Floats are rejected everywhere — see *Design choices*.
   base-unit strings, so float canonicalization never arises.
 * **`receipt_id` is content-derived** — the same inputs always produce the
   same receipt; issuance is idempotent by construction.
+* **One settlement, one receipt** — `(seller_id, tx_hash)` is unique in the
+  ledger (enforced both in the issue path and by a DB constraint).
+  Re-submitting a settlement returns the *original* receipt with HTTP 200
+  and `"idempotent": true`; it can never mint a second receipt for the same
+  payment, even with different commerce data attached. Issuance for a seller
+  is serialized, so concurrent requests can't fork the chain.
 * **Per-seller hash chain with dense sequence numbers** — sequential
   numbering (what invoice rules expect) *and* tamper-evidence in one
   mechanism. `verify_chain` re-derives every hash from stored envelopes, so

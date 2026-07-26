@@ -80,9 +80,14 @@ class RpcVerifier:
         want_payee = settlement["payee"].lower()
         want_amount = int(settlement["amount_base_units"])
 
+        # Scan ALL logs: a tx may legitimately contain several Transfer events
+        # (router contracts, fee splits). Success = any log fully matches.
+        # Only if none does do we report the most specific failure seen.
+        near_miss = None
         for log in rec.get("logs", []):
             topics = log.get("topics", [])
-            if len(topics) != 3 or topics[0].lower() != TRANSFER_TOPIC:
+            if len(topics) != 3 or not isinstance(topics[0], str) \
+                    or topics[0].lower() != TRANSFER_TOPIC:
                 continue
             if log.get("address", "").lower() != want_contract:
                 continue
@@ -90,15 +95,17 @@ class RpcVerifier:
                 continue
             if _topic_to_addr(topics[2]) != want_payee:
                 continue
-            amount = int(log.get("data", "0x0"), 16)
-            if amount != want_amount:
-                return SettlementResult(
-                    False, "rpc",
-                    f"amount mismatch: chain says {amount}, claim says {want_amount}",
-                )
-            return SettlementResult(True, "rpc")
+            try:
+                amount = int(log.get("data", "0x0"), 16)
+            except (ValueError, TypeError):
+                continue  # malformed log data: not a match, never a crash
+            if amount == want_amount:
+                return SettlementResult(True, "rpc")
+            near_miss = (f"amount mismatch: chain says {amount}, "
+                         f"claim says {want_amount}")
         return SettlementResult(
             False, "rpc",
+            near_miss or
             "no matching USDC Transfer log (contract/payer/payee) in this transaction",
         )
 

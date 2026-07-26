@@ -25,11 +25,13 @@ CREATE TABLE IF NOT EXISTS receipts (
     receipt_id  TEXT PRIMARY KEY,
     seller_id   TEXT NOT NULL,
     sequence    INTEGER NOT NULL,
+    tx_hash     TEXT NOT NULL,
     receipt_hash TEXT NOT NULL,
     prev_hash   TEXT NOT NULL,
     issued_at   TEXT NOT NULL,
     envelope    TEXT NOT NULL,
-    UNIQUE (seller_id, sequence)
+    UNIQUE (seller_id, sequence),
+    UNIQUE (seller_id, tx_hash)
 );
 CREATE INDEX IF NOT EXISTS idx_receipts_seller ON receipts (seller_id, sequence);
 """
@@ -85,12 +87,13 @@ class Ledger:
             con = self._connect()
             try:
                 con.execute(
-                    "INSERT INTO receipts (receipt_id, seller_id, sequence, "
-                    "receipt_hash, prev_hash, issued_at, envelope) VALUES (?,?,?,?,?,?,?)",
+                    "INSERT INTO receipts (receipt_id, seller_id, sequence, tx_hash, "
+                    "receipt_hash, prev_hash, issued_at, envelope) VALUES (?,?,?,?,?,?,?,?)",
                     (
                         payload["receipt_id"],
                         payload["seller_id"],
                         payload["sequence"],
+                        payload["settlement"]["tx_hash"].lower(),
                         receipt_hash(payload),
                         payload["prev_receipt_hash"],
                         payload["issued_at"],
@@ -100,6 +103,20 @@ class Ledger:
                 con.commit()
             finally:
                 con.close()
+
+    def find_by_settlement(self, seller_id: str, tx_hash: str) -> dict | None:
+        """The receipt already issued for this seller+settlement, if any.
+        One settlement, one receipt — this is what makes issuance idempotent
+        and receipt farming impossible."""
+        con = self._connect()
+        try:
+            row = con.execute(
+                "SELECT envelope FROM receipts WHERE seller_id = ? AND tx_hash = ?",
+                (seller_id, tx_hash.lower()),
+            ).fetchone()
+        finally:
+            con.close()
+        return json.loads(row["envelope"]) if row else None
 
     def get(self, receipt_id: str) -> dict | None:
         con = self._connect()

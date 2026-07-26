@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -49,6 +50,11 @@ class App:
         self.pay_to = pay_to
         self.chain = chain
         self.base_url = base_url.rstrip("/")
+        # Serializes the read-head -> build -> sign -> append critical section.
+        # The server is threaded; without this, two concurrent issuances for
+        # the same seller both read the same chain head and one dies on a
+        # chain-break error.
+        self._issue_lock = threading.Lock()
 
     # -- x402 gate ---------------------------------------------------------
     def payment_required_body(self, resource: str) -> dict:
@@ -91,16 +97,32 @@ class App:
         settlement["verified"] = True
         settlement["verification_method"] = result.method
 
-        seq, prev = self.ledger.next_link(body["seller_id"])
-        try:
-            payload = build_receipt(
-                seller_id=body["seller_id"], sequence=seq, prev_receipt_hash=prev,
-                issued_at=utc_now(), settlement=settlement, commerce=body["commerce"],
-            )
-        except ValueError as e:
-            return 400, {"error": str(e)}
-        envelope = self.signer.sign_envelope(payload)
-        self.ledger.append(envelope)
+        seller_id = body["seller_id"]
+        tx_hash = settlement.get("tx_hash", "")
+        with self._issue_lock:
+            # One settlement, one receipt: re-submitting the same tx returns
+            # the ORIGINAL receipt (idempotent), never a second one.
+            existing = self.ledger.find_by_settlement(seller_id, tx_hash)
+            if existing is not None:
+                rid = existing["payload"]["receipt_id"]
+                return 200, {
+                    "receipt": existing,
+                    "verify_url": f"{self.base_url}/verify/{rid}",
+                    "idempotent": True,
+                }
+            seq, prev = self.ledger.next_link(seller_id)
+            try:
+                payload = build_receipt(
+                    seller_id=seller_id, sequence=seq, prev_receipt_hash=prev,
+                    issued_at=utc_now(), settlement=settlement, commerce=body["commerce"],
+                )
+            except ValueError as e:
+                return 400, {"error": str(e)}
+            envelope = self.signer.sign_envelope(payload)
+            try:
+                self.ledger.append(envelope)
+            except ValueError as e:
+                return 409, {"error": f"could not append to chain: {e}"}
         return 201, {
             "receipt": envelope,
             "verify_url": f"{self.base_url}/verify/{payload['receipt_id']}",
@@ -173,7 +195,11 @@ def make_handler(app: App):
                 body = json.loads(self.rfile.read(length).decode("utf-8"))
             except (ValueError, UnicodeDecodeError):
                 return self._send(400, {"error": "body must be valid JSON"})
-            code, obj = app.issue(body)
+            try:
+                code, obj = app.issue(body)
+            except Exception as e:
+                # Never let an exception kill the connection without a response.
+                return self._send(500, {"error": f"internal error: {type(e).__name__}"})
             return self._send(code, obj)
 
         def log_message(self, fmt, *args):  # quiet; the ledger is the record
