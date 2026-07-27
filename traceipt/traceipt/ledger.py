@@ -33,11 +33,14 @@ CREATE TABLE IF NOT EXISTS receipts (
     envelope    TEXT NOT NULL,
     anchor_id   INTEGER,
     anchor_pos  INTEGER,
+    kind        TEXT NOT NULL DEFAULT 'payment',
+    ref_receipt_id TEXT,
     UNIQUE (seller_id, sequence),
     UNIQUE (seller_id, tx_hash)
 );
 CREATE INDEX IF NOT EXISTS idx_receipts_seller ON receipts (seller_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_receipts_anchor ON receipts (anchor_id, anchor_pos);
+CREATE INDEX IF NOT EXISTS idx_receipts_ref ON receipts (ref_receipt_id);
 
 CREATE TABLE IF NOT EXISTS anchors (
     anchor_id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,6 +60,15 @@ class Ledger:
         con = self._connect()
         try:
             con.executescript(_SCHEMA)
+            # migrate pre-v0.2 databases (columns added for credit notes)
+            for ddl in (
+                "ALTER TABLE receipts ADD COLUMN kind TEXT NOT NULL DEFAULT 'payment'",
+                "ALTER TABLE receipts ADD COLUMN ref_receipt_id TEXT",
+            ):
+                try:
+                    con.execute(ddl)
+                except sqlite3.OperationalError:
+                    pass  # column already exists
             con.commit()
         finally:
             con.close()
@@ -101,7 +113,8 @@ class Ledger:
             try:
                 con.execute(
                     "INSERT INTO receipts (receipt_id, seller_id, sequence, tx_hash, "
-                    "receipt_hash, prev_hash, issued_at, envelope) VALUES (?,?,?,?,?,?,?,?)",
+                    "receipt_hash, prev_hash, issued_at, envelope, kind, ref_receipt_id) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (
                         payload["receipt_id"],
                         payload["seller_id"],
@@ -111,6 +124,8 @@ class Ledger:
                         payload["prev_receipt_hash"],
                         payload["issued_at"],
                         json.dumps(envelope, ensure_ascii=False),
+                        payload.get("kind", "payment"),
+                        (payload.get("credit") or {}).get("credits_receipt_id"),
                     ),
                 )
                 con.commit()
@@ -143,6 +158,23 @@ class Ledger:
         finally:
             con.close()
         return json.loads(row["envelope"]) if row else None
+
+    def credited_total(self, receipt_id: str) -> int:
+        """Sum of base units already credited (refunded) against a receipt,
+        across all credit notes that reference it."""
+        con = self._connect()
+        try:
+            rows = con.execute(
+                "SELECT envelope FROM receipts WHERE kind='credit' "
+                "AND ref_receipt_id = ?", (receipt_id,)
+            ).fetchall()
+        finally:
+            con.close()
+        total = 0
+        for row in rows:
+            payload = json.loads(row["envelope"])["payload"]
+            total += int(payload["settlement"]["amount_base_units"])
+        return total
 
     def verify_chain(self, seller_id: str, verify_envelope_fn=None) -> list[str]:
         """Re-derive the whole chain for a seller from stored envelopes.

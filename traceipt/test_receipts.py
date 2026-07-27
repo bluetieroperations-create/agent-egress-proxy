@@ -884,6 +884,232 @@ class TestFacilitatorService(unittest.TestCase):
         self.assertIn("settlement_warning", obj)
 
 
+class TestV02Schema(unittest.TestCase):
+    """v0.2 additions: evidence links, principal, authorization, credit notes."""
+
+    def test_payment_receipts_carry_kind(self):
+        self.assertEqual(sample_receipt()["kind"], "payment")
+        self.assertEqual(sample_receipt()["spec"], "x402-receipt/v0.2")
+
+    def test_v01_style_build_still_works(self):
+        # a caller passing only the original fields gets a valid receipt
+        p = build_receipt(
+            seller_id="s", sequence=1, prev_receipt_hash=GENESIS_HASH,
+            issued_at="2026-07-27T12:00:00Z",
+            settlement=sample_settlement(), commerce=sample_commerce())
+        self.assertEqual(p["kind"], "payment")
+
+    def test_evidence_links_valid(self):
+        ev = [{"type": "aar-receipt", "hash": "sha256:" + "ab" * 32,
+               "ref": "https://example.com/aar/123"},
+              {"type": "acta-receipt", "hash": "sha256:" + "cd" * 32}]
+        p = sample_receipt(commerce=sample_commerce(evidence=ev))
+        self.assertEqual(len(p["commerce"]["evidence"]), 2)
+
+    def test_evidence_bad_hash_rejected(self):
+        with self.assertRaises(ValueError):
+            sample_receipt(commerce=sample_commerce(
+                evidence=[{"type": "aar-receipt", "hash": "0xnothash"}]))
+
+    def test_evidence_unknown_key_rejected(self):
+        with self.assertRaises(ValueError):
+            sample_receipt(commerce=sample_commerce(
+                evidence=[{"type": "x", "hash": "sha256:" + "ab" * 32,
+                           "payload": "smuggled"}]))
+
+    def test_evidence_list_cap(self):
+        ev = [{"type": "x", "hash": "sha256:" + "ab" * 32}] * 17
+        with self.assertRaises(ValueError):
+            sample_receipt(commerce=sample_commerce(evidence=ev))
+
+    def test_principal_and_authorization_valid(self):
+        p = sample_receipt(commerce=sample_commerce(
+            principal={"id_hash": "sha256:" + "11" * 32, "type": "org"},
+            authorization={"scopes": ["spend:usdc"], "grant_hash":
+                           "sha256:" + "22" * 32, "delegation_depth": 1}))
+        self.assertEqual(p["commerce"]["principal"]["type"], "org")
+
+    def test_principal_needs_id_or_hash(self):
+        with self.assertRaises(ValueError):
+            sample_receipt(commerce=sample_commerce(principal={"type": "org"}))
+
+    def test_credit_receipt_build(self):
+        p = build_receipt(
+            seller_id="s", sequence=2, prev_receipt_hash="sha256:" + "ab" * 32,
+            issued_at="2026-07-27T12:00:00Z", settlement=sample_settlement(),
+            kind="credit",
+            credit={"credits_receipt_id": "rcpt_" + "a" * 20, "reason": "refund"})
+        self.assertEqual(p["kind"], "credit")
+        self.assertNotIn("commerce", p)
+
+    def test_credit_requires_credit_block_and_no_commerce(self):
+        with self.assertRaises(ValueError):
+            build_receipt(seller_id="s", sequence=1,
+                          prev_receipt_hash=GENESIS_HASH,
+                          issued_at="2026-07-27T12:00:00Z",
+                          settlement=sample_settlement(), kind="credit")
+        with self.assertRaises(ValueError):
+            build_receipt(seller_id="s", sequence=1,
+                          prev_receipt_hash=GENESIS_HASH,
+                          issued_at="2026-07-27T12:00:00Z",
+                          settlement=sample_settlement(), kind="credit",
+                          commerce=sample_commerce(),
+                          credit={"credits_receipt_id": "rcpt_" + "a" * 20,
+                                  "reason": "r"})
+
+
+class TestCreditsService(unittest.TestCase):
+    """Credit-note lifecycle through the HTTP service."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dir = tempfile.TemporaryDirectory()
+        cls.app = App(signer=Signer.generate(),
+                      ledger=Ledger(os.path.join(cls.dir.name, "c.db")),
+                      verifier=MockVerifier(), gate="dev",
+                      price_base_units="2000", pay_to=PAYEE,
+                      seller_id="op.example", chain="base-sepolia",
+                      base_url="http://x")
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(cls.app))
+        cls.port = cls.server.server_address[1]
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.dir.cleanup()
+
+    def _post(self, path, body, headers=None):
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}", data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json", **(headers or {})})
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def _issue_payment(self, tx):
+        body = {"settlement": {"chain": "base-sepolia", "tx_hash": tx,
+                               "amount_base_units": "5000", "payer": PAYER,
+                               "payee": PAYEE},
+                "commerce": sample_commerce()}
+        code, obj = self._post("/receipts", body, {"X-PAYMENT": "t"})
+        assert code == 201, obj
+        return obj["receipt"]["payload"]["receipt_id"]
+
+    def _credit(self, rid, amount, tx, payer=PAYEE, payee=PAYER, reason="refund"):
+        return self._post("/credits", {
+            "credits_receipt_id": rid, "reason": reason,
+            "settlement": {"chain": "base-sepolia", "tx_hash": tx,
+                           "amount_base_units": amount,
+                           "payer": payer, "payee": payee}})
+
+    def test_full_credit_lifecycle(self):
+        rid = self._issue_payment("0x" + "c1" * 32)
+        # partial credit 2000
+        code, obj = self._credit(rid, "2000", "0x" + "d1" * 32)
+        self.assertEqual(code, 201, obj)
+        credit_payload = obj["receipt"]["payload"]
+        self.assertEqual(credit_payload["kind"], "credit")
+        self.assertEqual(credit_payload["credit"]["credits_receipt_id"], rid)
+        # original verify now reports credited amount
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{self.port}/verify/{rid}") as r:
+            rep = json.loads(r.read())
+        self.assertEqual(rep["credited_base_units"], "2000")
+        self.assertEqual(rep["verdict"], "PASS")
+        # over-credit rejected (only 3000 left)
+        code, obj = self._credit(rid, "4000", "0x" + "d2" * 32)
+        self.assertEqual(code, 409)
+        # exact remaining passes; then nothing left
+        code, _ = self._credit(rid, "3000", "0x" + "d3" * 32)
+        self.assertEqual(code, 201)
+        code, _ = self._credit(rid, "1", "0x" + "d4" * 32)
+        self.assertEqual(code, 409)
+        # chain (payments + credits interleaved) verifies intact
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{self.port}/chain/op.example") as r:
+            self.assertEqual(json.loads(r.read())["chain"], "intact")
+
+    def test_wrong_refund_direction_403(self):
+        rid = self._issue_payment("0x" + "c2" * 32)
+        code, obj = self._credit(rid, "1000", "0x" + "d5" * 32,
+                                 payer=PAYER, payee=PAYEE)  # NOT reversed
+        self.assertEqual(code, 403)
+        self.assertIn("reverse", obj["error"].replace("back to", "reverse"))
+
+    def test_unknown_receipt_404_and_crediting_a_credit_400(self):
+        code, _ = self._credit("rcpt_" + "0" * 20, "1", "0x" + "d6" * 32)
+        self.assertEqual(code, 404)
+        rid = self._issue_payment("0x" + "c3" * 32)
+        code, obj = self._credit(rid, "1000", "0x" + "d7" * 32)
+        self.assertEqual(code, 201)
+        credit_id = obj["receipt"]["payload"]["receipt_id"]
+        code, obj = self._credit(credit_id, "1", "0x" + "d8" * 32)
+        self.assertEqual(code, 400)
+
+    def test_refund_tx_reuse_is_idempotent(self):
+        rid = self._issue_payment("0x" + "c4" * 32)
+        code1, obj1 = self._credit(rid, "500", "0x" + "d9" * 32)
+        code2, obj2 = self._credit(rid, "500", "0x" + "d9" * 32)
+        self.assertEqual(code1, 201)
+        self.assertEqual(code2, 200)
+        self.assertTrue(obj2.get("idempotent"))
+        self.assertEqual(obj1["receipt"]["payload"]["receipt_id"],
+                         obj2["receipt"]["payload"]["receipt_id"])
+
+    def test_credit_note_invoice_pdf(self):
+        rid = self._issue_payment("0x" + "c5" * 32)
+        code, obj = self._credit(rid, "1000", "0x" + "da" * 32)
+        cid = obj["receipt"]["payload"]["receipt_id"]
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{self.port}/receipts/{cid}/invoice.pdf") as r:
+            data = r.read()
+        assert_valid_pdf(self, data)
+        self.assertIn(b"CREDIT NOTE", data)
+        self.assertIn(b"Total credited", data)
+
+    def test_admin_token_gates_credits(self):
+        d = tempfile.mkdtemp()
+        app = App(signer=Signer.generate(), ledger=Ledger(os.path.join(d, "g.db")),
+                  verifier=MockVerifier(), gate="dev", price_base_units="2000",
+                  pay_to=PAYEE, seller_id="op", chain="base-sepolia",
+                  base_url="http://x", admin_token="sekrit")
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
+        port = srv.server_address[1]
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/credits", data=b"{}",
+            headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req)
+            self.fail("expected 403")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 403)
+
+    def test_evidence_principal_flow_through_issue(self):
+        body = {"settlement": {"chain": "base-sepolia", "tx_hash": "0x" + "c6" * 32,
+                               "amount_base_units": "5000", "payer": PAYER,
+                               "payee": PAYEE},
+                "commerce": sample_commerce(
+                    evidence=[{"type": "aar-receipt",
+                               "hash": "sha256:" + "ef" * 32}],
+                    principal={"id_hash": "sha256:" + "aa" * 32, "type": "org"},
+                    authorization={"scopes": ["spend:usdc:testnet"]})}
+        code, obj = self._post("/receipts", body, {"X-PAYMENT": "t"})
+        self.assertEqual(code, 201, obj)
+        c = obj["receipt"]["payload"]["commerce"]
+        self.assertEqual(c["evidence"][0]["type"], "aar-receipt")
+        self.assertEqual(c["principal"]["type"], "org")
+        # invalid evidence rejected cleanly
+        body["settlement"]["tx_hash"] = "0x" + "c7" * 32
+        body["commerce"]["evidence"] = [{"type": "x", "hash": "junk"}]
+        code, obj = self._post("/receipts", body, {"X-PAYMENT": "t"})
+        self.assertEqual(code, 400)
+
+
 class TestKeyRotation(unittest.TestCase):
     """A receipt signed by a now-retired key must still verify after the
     operator rotates to a new active key, as long as the old PUBLIC key is

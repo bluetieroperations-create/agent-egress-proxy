@@ -30,7 +30,10 @@ from urllib.parse import unquote, urlsplit
 from .invoice import render_invoice
 from .ledger import Ledger
 from .merkle import verify_inclusion
-from .schema import build_receipt, receipt_hash, validate_commerce, validate_settlement
+from .schema import (
+    build_receipt, receipt_hash, validate_commerce, validate_credit,
+    validate_settlement,
+)
 from .settlement import USDC_CONTRACTS, make_verifier
 from .signing import load_or_create_signer, verify_envelope
 from .x402_gate import (
@@ -225,6 +228,93 @@ class App:
             "verify_url": f"{self.base_url}/verify/{payload['receipt_id']}",
         }
 
+    def issue_credit(self, body: dict) -> tuple[int, dict]:
+        """Issue a credit note: a receipt documenting a VERIFIED refund of a
+        prior receipt. The refund must flow in the exact reverse direction
+        (original payee -> original payer) and is capped by the original
+        amount minus what has already been credited. Credit notes join the
+        same sequential per-seller chain — accounting-correct numbering."""
+        for field in ("credits_receipt_id", "reason", "settlement"):
+            if field not in body:
+                return 400, {"error": f"missing field {field!r}"}
+
+        original_env = self.ledger.get(body["credits_receipt_id"])
+        if original_env is None:
+            return 404, {"error": "unknown credits_receipt_id"}
+        original = original_env["payload"]
+        if original.get("kind", "payment") != "payment":
+            return 400, {"error": "can only credit a payment receipt"}
+        seller_id = original["seller_id"]
+        if self.seller_id is not None and seller_id != self.seller_id:
+            return 403, {"error": "receipt belongs to a different seller"}
+
+        settlement = dict(body["settlement"])
+        settlement["asset"] = "USDC"
+        if "chain" in settlement and settlement["chain"] != self.chain:
+            return 400, {"error": f"settlement.chain must be {self.chain!r}"}
+        settlement["chain"] = self.chain
+        settlement["asset_contract"] = USDC_CONTRACTS[self.chain]
+
+        try:
+            _pre = dict(settlement)
+            _pre.setdefault("verified", False)
+            _pre.setdefault("verification_method", "unverified")
+            validate_settlement(_pre)
+            validate_credit({"credits_receipt_id": body["credits_receipt_id"],
+                             "reason": body["reason"]})
+        except ValueError as e:
+            return 400, {"error": str(e)}
+
+        # Refund direction binding: money must flow back along the exact
+        # reverse path of the original settlement.
+        orig_s = original["settlement"]
+        if settlement.get("payer", "").lower() != orig_s["payee"].lower() or \
+                settlement.get("payee", "").lower() != orig_s["payer"].lower():
+            return 403, {"error": "refund must flow from the original payee "
+                                  "back to the original payer"}
+
+        # Amount cap: cannot credit more than remains uncredited.
+        already = self.ledger.credited_total(original["receipt_id"])
+        remaining = int(orig_s["amount_base_units"]) - already
+        if int(settlement["amount_base_units"]) > remaining:
+            return 409, {"error": f"credit exceeds remaining creditable amount "
+                                  f"({remaining} base units left)"}
+
+        result = self.verifier.verify(settlement)
+        if not result.ok:
+            return 422, {"error": "refund settlement verification failed",
+                         "reason": result.reason}
+        settlement["verified"] = True
+        settlement["verification_method"] = result.method
+
+        with self._issue_lock:
+            existing = self.ledger.find_by_settlement(seller_id,
+                                                      settlement["tx_hash"])
+            if existing is not None:
+                rid = existing["payload"]["receipt_id"]
+                return 200, {"receipt": existing,
+                             "verify_url": f"{self.base_url}/verify/{rid}",
+                             "idempotent": True}
+            seq, prev = self.ledger.next_link(seller_id)
+            try:
+                payload = build_receipt(
+                    seller_id=seller_id, sequence=seq, prev_receipt_hash=prev,
+                    issued_at=utc_now(), settlement=settlement, kind="credit",
+                    credit={"credits_receipt_id": body["credits_receipt_id"],
+                            "reason": body["reason"]},
+                )
+            except ValueError as e:
+                return 400, {"error": str(e)}
+            envelope = self.signer.sign_envelope(payload)
+            try:
+                self.ledger.append(envelope)
+            except ValueError as e:
+                return 409, {"error": f"could not append to chain: {e}"}
+        return 201, {
+            "receipt": envelope,
+            "verify_url": f"{self.base_url}/verify/{payload['receipt_id']}",
+        }
+
     def _jwks(self) -> dict:
         # Active key first, then any retired keys (dedup by kid) so receipts
         # signed before a rotation still verify.
@@ -280,11 +370,16 @@ class App:
             report["signature"] = "valid"
         except ValueError as e:
             return 200, {**report, "signature": f"INVALID: {e}", "verdict": "FAIL"}
+        report["kind"] = payload.get("kind", "payment")
         report["seller_id"] = payload["seller_id"]
         report["sequence"] = payload["sequence"]
         report["receipt_hash"] = receipt_hash(payload)
         report["settlement_tx"] = payload["settlement"]["tx_hash"]
         report["settlement_verification"] = payload["settlement"]["verification_method"]
+        if report["kind"] == "credit":
+            report["credits_receipt_id"] = payload["credit"]["credits_receipt_id"]
+        elif self.ledger.credited_total(receipt_id):
+            report["credited_base_units"] = str(self.ledger.credited_total(receipt_id))
         # Chain verdict includes a signature check on every receipt in the
         # chain, not just a keyless hash re-derivation.
         problems = self.chain_report(payload["seller_id"])
@@ -390,6 +485,22 @@ def make_handler(app: App):
                 if not app.admin_ok(self.headers):
                     return self._send(403, {"error": "admin token required"})
                 code, obj = app.create_anchor()
+                return self._send(code, obj)
+            if resource == "/credits":
+                # Operator op: issue a credit note for a verified refund.
+                if not app.admin_ok(self.headers):
+                    return self._send(403, {"error": "admin token required"})
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if length <= 0 or length > MAX_BODY:
+                        return self._send(400, {"error": f"body must be 1..{MAX_BODY} bytes"})
+                    body = json.loads(self.rfile.read(length).decode("utf-8"))
+                except (ValueError, UnicodeDecodeError):
+                    return self._send(400, {"error": "body must be valid JSON"})
+                try:
+                    code, obj = app.issue_credit(body)
+                except Exception as e:
+                    return self._send(500, {"error": f"internal error: {type(e).__name__}"})
                 return self._send(code, obj)
             if resource != "/receipts":
                 return self._send(404, {"error": "not found"})

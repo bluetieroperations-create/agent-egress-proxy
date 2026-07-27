@@ -132,18 +132,24 @@ def _build_pdf(canvas: _Canvas) -> bytes:
 
 def render_invoice(payload: dict, *, verify_url: str | None = None,
                    issuer_kid: str | None = None) -> bytes:
-    """Render a receipt payload into invoice PDF bytes."""
+    """Render a receipt payload into invoice PDF bytes. Payment receipts
+    render as RECEIPT / INVOICE; credit receipts render as CREDIT NOTE."""
     s = payload.get("settlement", {})
     c = payload.get("commerce", {})
+    kind = payload.get("kind", "payment")
+    cr = payload.get("credit", {}) if kind == "credit" else {}
     ent = c.get("seller_entity", {}) if isinstance(c.get("seller_entity"), dict) else {}
 
     cv = _Canvas()
     y = MARGIN
 
     # -- header --
-    cv.text(MARGIN, y, "RECEIPT / INVOICE", size=20, bold=True)
-    cv.text(PAGE_W - MARGIN - 180, y - 12, "x402 machine payment", size=9)
-    cv.text(PAGE_W - MARGIN - 180, y, f"Receipt no. {payload.get('sequence', '?')}",
+    title = "CREDIT NOTE" if kind == "credit" else "RECEIPT / INVOICE"
+    subtitle = "x402 refund" if kind == "credit" else "x402 machine payment"
+    doc_no = ("Credit note no." if kind == "credit" else "Receipt no.")
+    cv.text(MARGIN, y, title, size=20, bold=True)
+    cv.text(PAGE_W - MARGIN - 180, y - 12, subtitle, size=9)
+    cv.text(PAGE_W - MARGIN - 180, y, f"{doc_no} {payload.get('sequence', '?')}",
             size=10, bold=True)
     y += 18
     cv.line(MARGIN, y, PAGE_W - MARGIN, y, width=1.0)
@@ -176,16 +182,41 @@ def render_invoice(payload: dict, *, verify_url: str | None = None,
         y += 16
 
     y += 6
-    cv.text(MARGIN, y, "Purchase", size=11, bold=True); y += 16
-    field("Resource", c.get("resource", ""))
-    field("Description", c.get("description", ""))
-    if "request_hash" in c:
-        field("Request hash", c["request_hash"])
-    if "response_hash" in c:
-        field("Response hash", c["response_hash"])
+    if kind == "credit":
+        cv.text(MARGIN, y, "Credit", size=11, bold=True); y += 16
+        field("Credits receipt", cr.get("credits_receipt_id", ""))
+        field("Reason", cr.get("reason", ""))
+    else:
+        cv.text(MARGIN, y, "Purchase", size=11, bold=True); y += 16
+        field("Resource", c.get("resource", ""))
+        field("Description", c.get("description", ""))
+        if "request_hash" in c:
+            field("Request hash", c["request_hash"])
+        if "response_hash" in c:
+            field("Response hash", c["response_hash"])
+        if isinstance(c.get("principal"), dict):
+            p = c["principal"]
+            ident = p.get("id") or p.get("id_hash", "")
+            if "type" in p:
+                ident += f" ({p['type']})"
+            field("Principal", ident)
+        if isinstance(c.get("authorization"), dict):
+            a = c["authorization"]
+            if "scopes" in a:
+                field("Auth scopes", ", ".join(a["scopes"]))
+            if "grant_ref" in a:
+                field("Auth grant", a["grant_ref"])
+            elif "grant_hash" in a:
+                field("Auth grant", a["grant_hash"])
+        if isinstance(c.get("evidence"), list):
+            for i, e in enumerate(c["evidence"][:4]):
+                field(f"Evidence {i + 1}", f"{e.get('type','')}: {e.get('hash','')}")
+            if len(c["evidence"]) > 4:
+                field("", f"(+{len(c['evidence']) - 4} more evidence links)")
 
     y += 6
-    cv.text(MARGIN, y, "Settlement (on-chain)", size=11, bold=True); y += 16
+    head = "Refund settlement (on-chain)" if kind == "credit" else "Settlement (on-chain)"
+    cv.text(MARGIN, y, head, size=11, bold=True); y += 16
     field("Network", s.get("chain", ""))
     field("Asset", s.get("asset", "USDC"))
     field("Transaction", s.get("tx_hash", ""))
@@ -198,6 +229,7 @@ def render_invoice(payload: dict, *, verify_url: str | None = None,
     cv.line(MARGIN, y, PAGE_W - MARGIN, y, width=0.8)
     y += 18
     amount = usdc(s.get("amount_base_units", "0"))
+    total_label = "Total credited" if kind == "credit" else "Total paid"
     vr = ent.get("vat_rate") if ent else None
     bd = vat_breakdown(s.get("amount_base_units", "0"), vr) if vr else None
     if bd:
@@ -206,10 +238,10 @@ def render_invoice(payload: dict, *, verify_url: str | None = None,
                 f"{net} USDC", size=10); y += 15
         cv.text(MARGIN, y, f"VAT ({vr}%, inclusive)", size=10)
         cv.text(PAGE_W - MARGIN - 140, y, f"{vat} USDC", size=10); y += 15
-        cv.text(MARGIN, y, "Total paid", size=11, bold=True)
+        cv.text(MARGIN, y, total_label, size=11, bold=True)
         cv.text(PAGE_W - MARGIN - 140, y, f"{gross} USDC", size=11, bold=True); y += 18
     else:
-        cv.text(MARGIN, y, "Total paid", size=11, bold=True)
+        cv.text(MARGIN, y, total_label, size=11, bold=True)
         cv.text(PAGE_W - MARGIN - 140, y, f"{amount} USDC", size=11, bold=True); y += 16
         if vr is None and ent:
             cv.text(MARGIN, y, "VAT: not specified by seller", size=8, bold=False)

@@ -72,13 +72,61 @@ curl -s -X POST http://127.0.0.1:8402/receipts \
 The response contains the signed envelope and a `verify_url`. Then:
 
 * `GET /verify/{receipt_id}` — re-checks the signature and the seller's whole
-  chain, returns a PASS/FAIL report.
+  chain, returns a PASS/FAIL report (including any credited amount).
 * `GET /receipts/{receipt_id}` — the raw signed envelope.
 * `GET /receipts/{receipt_id}/invoice.pdf` — the receipt rendered as a
-  human-facing **A4 invoice PDF** (the artifact an accountant files).
+  human-facing **A4 invoice PDF** (payment receipts render as invoices,
+  credit receipts as **credit notes**).
+* `POST /credits` — operator op (admin token if configured): issue a
+  **credit note** for a verified on-chain refund. See below.
 * `GET /chain/{seller_id}` — full-chain integrity check.
 * `GET /jwks.json` — issuer public keys, for **offline** verification with any
   JOSE/Ed25519 library. No SDK required.
+
+### v0.2: evidence links, principal & authorization, credit notes
+
+The spec is now `x402-receipt/v0.2`; every addition is optional or
+defaulted, so v0.1 receipts remain verifiable.
+
+**Evidence links** (`commerce.evidence`) tie a payment receipt to external
+signed artifacts — action receipts (AAR, acta and similar), logs,
+attestations — by hash. Traceipt never stores the artifact, only its digest,
+making the payment receipt the settlement layer under any action-receipt
+stack:
+
+```json
+"evidence": [
+  {"type": "aar-receipt", "hash": "sha256:…", "ref": "https://…"}
+]
+```
+
+**Principal & authorization** (`commerce.principal`,
+`commerce.authorization`) record *on whose behalf* and *under what
+authority* the agent spent — the traceability the EU AI Act's record-keeping
+expects. Hash forms (`id_hash`, `grant_hash`) are supported so nothing
+sensitive lands in the receipt:
+
+```json
+"principal": {"id_hash": "sha256:…", "type": "org"},
+"authorization": {"scopes": ["spend:usdc"], "grant_hash": "sha256:…"}
+```
+
+**Credit notes** (`POST /credits`) document refunds with the same rigor as
+payments. A credit is only issued for a **verified on-chain refund** flowing
+in the exact reverse direction (original payee → original payer), is capped
+at the original amount minus what was already credited (partial credits
+allowed), and joins the **same sequential chain** as the payments — so the
+numbering an auditor sees is complete across invoices *and* credit notes:
+
+```sh
+curl -X POST $BASE/credits -H 'Content-Type: application/json' -d '{
+  "credits_receipt_id": "rcpt_…",
+  "reason": "duplicate charge",
+  "settlement": {"chain": "base-sepolia", "tx_hash": "0x…",
+                  "amount_base_units": "2000",
+                  "payer": "<original payee>", "payee": "<original payer>"}
+}'
+```
 
 ### Invoice PDF
 
