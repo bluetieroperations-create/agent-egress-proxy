@@ -30,6 +30,7 @@ from urllib.parse import unquote, urlsplit
 from .invoice import render_invoice
 from .ledger import Ledger
 from .merkle import verify_inclusion
+from .publisher import make_publisher
 from .schema import (
     build_receipt, receipt_hash, validate_attestation_request,
     validate_commerce, validate_credit, validate_settlement,
@@ -56,7 +57,7 @@ class App:
                  price_base_units: str, pay_to: str, chain: str, base_url: str,
                  seller_id: str | None = None, facilitator=None,
                  bind_payer: bool = False, extra_public_jwks=None,
-                 admin_token: str | None = None):
+                 admin_token: str | None = None, publisher=None):
         self.signer = signer
         self.ledger = ledger
         self.verifier = verifier
@@ -72,6 +73,9 @@ class App:
         # admin ops are open — acceptable behind a private reverse proxy, but
         # production should set it.
         self.admin_token = admin_token
+        # Optional on-chain anchor publisher: f(root_hex) -> (network, tx) | None.
+        # None records roots locally only (onchain_tx stays null).
+        self.publisher = publisher
         # Facilitator client for the real x402 gate (None in off/dev modes).
         self.facilitator = facilitator
         # When on, the wallet that pays for the receipt (verified by the
@@ -373,7 +377,13 @@ class App:
         return headers.get("Authorization", "") == f"Bearer {self.admin_token}"
 
     def create_anchor(self) -> tuple[int, dict]:
-        anchor = self.ledger.create_anchor(utc_now())
+        try:
+            anchor = self.ledger.create_anchor(utc_now(), publisher=self.publisher)
+        except Exception as e:
+            # a broken/underfunded publisher must not lose the batch; the
+            # ledger only commits when the publisher returns, so on failure
+            # nothing was sealed and the operator can retry.
+            return 502, {"error": f"anchor publish failed, nothing sealed: {e}"}
         if anchor is None:
             return 200, {"anchored": 0, "message": "nothing to anchor"}
         return 201, {"anchored": anchor["leaf_count"], "anchor": anchor}
@@ -639,13 +649,30 @@ def main(argv=None):
                    help="JSON file {\"keys\":[...]} of RETIRED public JWKs to keep "
                         "publishing so pre-rotation receipts still verify")
     p.add_argument("--admin-token", default=os.environ.get("RECEIPTS_ADMIN_TOKEN"),
-                   help="bearer token required for admin ops (POST /anchor)")
+                   help="bearer token required for admin ops (POST /anchor, /credits)")
+    p.add_argument("--publisher", choices=["off", "mock", "onchain"],
+                   default=os.environ.get("RECEIPTS_PUBLISHER", "off"),
+                   help="on-chain anchor publisher. 'off' records roots locally; "
+                        "'onchain' signs+broadcasts with the gas key")
+    p.add_argument("--gas-key", default=os.environ.get("RECEIPTS_GAS_KEY"),
+                   help="private key of a dedicated GAS wallet for --publisher "
+                        "onchain (never the receiving wallet). Prefer the env var.")
+    p.add_argument("--anchor-interval", type=int,
+                   default=int(os.environ.get("RECEIPTS_ANCHOR_INTERVAL", "0")),
+                   help="seconds between automatic anchor batches (0 = manual "
+                        "only, via POST /anchor)")
     p.add_argument("--print-jwk", action="store_true",
                    help="print the active key's PUBLIC JWK and exit (capture "
                         "this into --jwks-history before rotating --key)")
     args = p.parse_args(argv)
 
-    signer = load_or_create_signer(args.key)
+    # Signing key: prefer an inline PEM secret (RECEIPTS_KEY_PEM) so the key
+    # survives on hosts without a persistent disk; else a key file.
+    key_pem = os.environ.get("RECEIPTS_KEY_PEM")
+    if key_pem:
+        signer = Signer.from_pem(key_pem.encode())
+    else:
+        signer = load_or_create_signer(args.key)
     if args.print_jwk:
         print(json.dumps(signer.jwk(), indent=2))
         return
@@ -660,6 +687,12 @@ def main(argv=None):
         if not args.facilitator_url:
             p.error("--gate facilitator requires --facilitator-url")
         facilitator = Facilitator(args.facilitator_url)
+
+    if args.publisher == "onchain" and not (args.gas_key or
+                                            os.environ.get("RECEIPTS_GAS_KEY")):
+        p.error("--publisher onchain requires --gas-key / RECEIPTS_GAS_KEY")
+    publisher = make_publisher(args.publisher, args.chain, rpc_url=args.rpc_url,
+                               private_key=args.gas_key)
 
     base_url = args.base_url or f"http://{args.host}:{args.port}"
     app = App(
@@ -676,16 +709,45 @@ def main(argv=None):
         bind_payer=args.bind_payer,
         extra_public_jwks=extra_public_jwks,
         admin_token=args.admin_token,
+        publisher=publisher,
     )
     server = ThreadingHTTPServer((args.host, args.port), make_handler(app))
+    pub_addr = getattr(publisher, "address", None)
     print(f"Traceipt listening on {args.host}:{args.port} "
           f"(public={base_url}, gate={args.gate}, chain={args.chain}, "
           f"settlement={args.settlement}, bind_payer={app.bind_payer}, "
-          f"kid={app.signer.kid})")
+          f"publisher={args.publisher}"
+          f"{' gas=' + pub_addr if pub_addr else ''}, "
+          f"anchor_interval={args.anchor_interval}s, kid={app.signer.kid})")
+
+    stop = threading.Event()
+    if args.anchor_interval > 0:
+        threading.Thread(target=_auto_anchor_loop,
+                         args=(app, args.anchor_interval, stop),
+                         daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
+        stop.set()
         server.shutdown()
+
+
+def _auto_anchor_loop(app: "App", interval: int, stop: threading.Event):
+    """Periodically seal any pending receipts/attestations into an anchor.
+    Errors are swallowed (logged to stdout) so a transient publish failure
+    doesn't kill the loop; the batch stays unsealed and retries next tick."""
+    while not stop.wait(interval):
+        try:
+            code, obj = app.create_anchor()
+            if code == 201:
+                a = obj["anchor"]
+                print(f"[auto-anchor] sealed {a['leaf_count']} leaves "
+                      f"({a.get('receipts')} receipts, {a.get('attestations')} "
+                      f"attestations) root={a['root'][:16]}... tx={a.get('onchain_tx')}")
+            elif code == 502:
+                print(f"[auto-anchor] publish failed: {obj.get('error')}")
+        except Exception as e:  # never let the loop die
+            print(f"[auto-anchor] error: {type(e).__name__}: {e}")
 
 
 if __name__ == "__main__":

@@ -1334,6 +1334,84 @@ class TestAttestFacilitator(unittest.TestCase):
         self.assertEqual(fac.settle_calls, 1)
 
 
+class TestPublisher(unittest.TestCase):
+    """On-chain anchor publisher: offline signing + broadcast via fake RPC."""
+
+    def test_off_returns_none(self):
+        from traceipt.publisher import make_publisher
+        self.assertIsNone(make_publisher("off", "base-sepolia"))
+
+    def test_mock_publisher_shape(self):
+        from traceipt.publisher import make_publisher
+        pub = make_publisher("mock", "base-sepolia")
+        net, tx = pub("ab" * 32)
+        self.assertEqual(net, "mock")
+        self.assertTrue(tx.startswith("0x") and len(tx) == 66)
+
+    def test_onchain_signs_and_broadcasts(self):
+        from traceipt.publisher import make_publisher
+        calls = {}
+        def fake_rpc(method, params):
+            calls.setdefault(method, []).append(params)
+            if method == "eth_getTransactionCount":
+                return "0x5"
+            if method == "eth_gasPrice":
+                return "0x3b9aca00"
+            if method == "eth_sendRawTransaction":
+                # a real 0x-prefixed signed tx blob was passed
+                assert params[0].startswith("0x") and len(params[0]) > 100
+                return "0x" + "fe" * 32
+            raise AssertionError(method)
+        pub = make_publisher("onchain", "base-sepolia",
+                             private_key="0x" + "11" * 32, transport=fake_rpc)
+        net, tx = pub("ab" * 32)
+        self.assertEqual(net, "base-sepolia")
+        self.assertEqual(tx, "0x" + "fe" * 32)
+        # it read nonce + gas, then broadcast exactly once
+        self.assertEqual(len(calls["eth_sendRawTransaction"]), 1)
+        self.assertIn("eth_getTransactionCount", calls)
+
+    def test_onchain_requires_key(self):
+        from traceipt.publisher import make_publisher
+        with self.assertRaises(ValueError):
+            make_publisher("onchain", "base-sepolia")
+
+    def test_anchor_records_publisher_tx(self):
+        # the ledger anchor path stamps the publisher's (network, tx)
+        d = tempfile.mkdtemp()
+        led = Ledger(os.path.join(d, "p.db"))
+        signer = Signer.generate()
+        seq, prev = led.next_link("s1")
+        led.append(signer.sign_envelope(sample_receipt(seq=seq, prev=prev, seller_id="s1")))
+        anchor = led.create_anchor("t", publisher=lambda root: ("base", "0x" + "cc" * 32))
+        self.assertEqual(anchor["onchain_network"], "base")
+        self.assertEqual(anchor["onchain_tx"], "0x" + "cc" * 32)
+        # and the receipt's inclusion proof carries that tx through
+        con_rid = None
+        import sqlite3
+        con = sqlite3.connect(os.path.join(d, "p.db"))
+        con_rid = con.execute("SELECT receipt_id FROM receipts").fetchone()[0]
+        con.close()
+        pr = led.inclusion_for(con_rid)
+        self.assertEqual(pr["onchain_tx"], "0x" + "cc" * 32)
+
+    def test_failed_publisher_does_not_seal_batch(self):
+        # if the publisher raises, nothing is committed and it can retry
+        d = tempfile.mkdtemp()
+        led = Ledger(os.path.join(d, "q.db"))
+        signer = Signer.generate()
+        seq, prev = led.next_link("s1")
+        led.append(signer.sign_envelope(sample_receipt(seq=seq, prev=prev, seller_id="s1")))
+        def boom(root):
+            raise RuntimeError("rpc down")
+        with self.assertRaises(RuntimeError):
+            led.create_anchor("t", publisher=boom)
+        # batch NOT sealed -> a retry with a working publisher still finds it
+        anchor = led.create_anchor("t2", publisher=lambda r: ("base", "0x" + "dd" * 32))
+        self.assertEqual(anchor["leaf_count"], 1)
+        self.assertEqual(anchor["onchain_tx"], "0x" + "dd" * 32)
+
+
 class TestKeyRotation(unittest.TestCase):
     """A receipt signed by a now-retired key must still verify after the
     operator rotates to a new active key, as long as the old PUBLIC key is

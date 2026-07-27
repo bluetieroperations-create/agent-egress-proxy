@@ -113,36 +113,55 @@ curl -s -X POST $BASE/receipts -H 'X-PAYMENT: demo' -H 'Content-Type: applicatio
 
 ## 2. Production hardening
 
-Change these off the demo defaults, in roughly this order:
+Do these in order. The first two make the demo *durable* (the biggest gap);
+the rest make it *real*. On Render, set secrets in the dashboard's
+**Environment** tab (mark them secret / `sync:false`), not in `render.yaml`.
 
-1. **Real chain + settlement.** `RECEIPTS_CHAIN=base`, `RECEIPTS_SETTLEMENT=rpc`,
-   and `RECEIPTS_RPC_URL=<a reliable Base RPC>` (a provider endpoint, not the
-   public node). Now receipts attest a *verified* on-chain transfer.
+**A. Persistence — stop losing receipts and keys on restart.** The free plan
+has no disk, so the ledger and signing key reset when the instance idles or
+redeploys, and every prior receipt stops verifying. Fix both:
+- **Disk:** switch to a paid instance and mount a disk at `/data` (the
+  `render.yaml` comment block and `fly.toml` already show how; Fly already
+  has the volume). Now the ledger survives.
+- **Signing key as a durable secret:** generate the key once and provide it
+  as `RECEIPTS_KEY_PEM` (the full PEM, as a secret env var) — the service
+  loads it in preference to the key file, so the key survives even without a
+  disk. Generate it with:
+  ```sh
+  python3 -c "from traceipt.signing import Signer; print(Signer.generate().private_pem().decode())"
+  ```
+  Capture the matching public JWK for your records with
+  `python3 -m traceipt.service --print-jwk`. **Back the key up** — it is the
+  root of trust for every receipt.
 
-2. **Real payment gate + payer binding.** `X402_GATE=facilitator`,
-   `RECEIPTS_FACILITATOR_URL=<Coinbase CDP / Cloudflare facilitator>`, and
-   `RECEIPTS_BIND_PAYER=1`. This collects payment and closes the last fraud gap.
+**B. Auto-anchor.** Set `RECEIPTS_ANCHOR_INTERVAL=3600` so batches seal
+hourly on their own; otherwise call `POST /anchor` manually.
 
-3. **Your receiving wallet.** `RECEIPTS_PAY_TO=0xYourNewTraceiptWallet` and
-   `RECEIPTS_SELLER_ID=your.domain` (seller-hosted binding). Only the
-   **address** goes here — never the private key.
+**C. Admin token.** `RECEIPTS_ADMIN_TOKEN=<random>` so `POST /anchor` and
+`POST /credits` aren't open. Call them with `Authorization: Bearer <token>`.
 
-4. **Public URL.** `RECEIPTS_BASE_URL=https://<your domain>` so every receipt's
-   verify link and QR point at a domain you own **permanently** (receipts are
-   meant to verify years later).
+**D. Real chain + settlement.** `RECEIPTS_CHAIN=base`,
+`RECEIPTS_SETTLEMENT=rpc`, `RECEIPTS_RPC_URL=<reliable Base RPC>` (a provider
+endpoint, not the public node). Receipts then attest a *verified* transfer,
+and `verification_method` reads `rpc` instead of `mock`.
+> Do NOT flip to `rpc` without also setting `RECEIPTS_PAY_TO` (step E) — an
+> unbound `rpc` service would let a caller claim any third party's transfer
+> as "verified". Honest `mock` beats dishonest `rpc`.
 
-5. **Signing key as a secret.** Generate the Ed25519 key once and mount it as a
-   platform secret at `RECEIPTS_KEY`, rather than letting the container create
-   an ephemeral one. Back it up — it is the root of trust for every receipt.
-   (Roadmap: move it into a KMS/HSM.)
+**E. Receiving wallet + payment gate.** `RECEIPTS_PAY_TO=0xYourWallet` and
+`RECEIPTS_SELLER_ID=your.domain` (seller-hosted binding; only the **address**,
+never the key). Then `X402_GATE=facilitator`,
+`RECEIPTS_FACILITATOR_URL=<Coinbase CDP / Cloudflare>`, `RECEIPTS_BIND_PAYER=1`
+to actually collect payment and close the payer-fraud gap.
 
-6. **Admin token.** `RECEIPTS_ADMIN_TOKEN=<random>` so `POST /anchor` (sealing
-   Merkle batches) isn't open. Call it with `Authorization: Bearer <token>`.
-
-7. **On-chain anchoring (optional).** Anchoring works locally without it
-   (`onchain_tx` stays null, proofs still verify). To publish roots on-chain,
-   wire a publisher with a **separate small gas wallet** — never the receiving
-   wallet's key.
+**F. On-chain anchoring (optional).** Publish Merkle roots to the chain so
+existence-by-time is provable against a public ledger, not just our DB.
+Build the image with `--build-arg ONCHAIN=1` (installs `eth-account`), then
+set `RECEIPTS_PUBLISHER=onchain` and `RECEIPTS_GAS_KEY=<key of a dedicated,
+tiny gas wallet>`. **Never the receiving wallet's key** — the gas wallet
+holds a few dollars of ETH and does nothing but sign root transactions. With
+the publisher off, anchoring still works locally (`onchain_tx` stays null;
+proofs still verify).
 
 ### Env var reference
 
@@ -161,9 +180,13 @@ Change these off the demo defaults, in roughly this order:
 | `RECEIPTS_SELLER_ID` | `--seller-id` | — |
 | `RECEIPTS_PRICE_BASE_UNITS` | `--price` | `2000` ($0.002) |
 | `RECEIPTS_KEY` | `--key` | `issuer_ed25519.pem` |
+| `RECEIPTS_KEY_PEM` | (inline) | — (preferred over key file; a durable secret) |
 | `RECEIPTS_DB` | `--db` | `receipts.db` |
-| `RECEIPTS_ADMIN_TOKEN` | `--admin-token` | — |
+| `RECEIPTS_ADMIN_TOKEN` | `--admin-token` | — (gates `/anchor`, `/credits`) |
 | `RECEIPTS_JWKS_HISTORY` | `--jwks-history` | — |
+| `RECEIPTS_PUBLISHER` | `--publisher` | `off` (off / mock / onchain) |
+| `RECEIPTS_GAS_KEY` | `--gas-key` | — (onchain only; dedicated gas wallet) |
+| `RECEIPTS_ANCHOR_INTERVAL` | `--anchor-interval` | `0` (seconds; 0 = manual) |
 
 See the main [README](README.md#security-model--threat-model) for the threat
 model before going to production.

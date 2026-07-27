@@ -1,0 +1,4 @@
+# OPTIONAL: only needed for `--publisher onchain` (broadcasting Merkle roots
+# on-chain). The core service (stdlib + cryptography) does not import this;
+# with --publisher off or mock it is never loaded.
+eth-account>=0.11,<0.14

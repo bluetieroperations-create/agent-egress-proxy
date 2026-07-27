@@ -8,9 +8,13 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Dependencies first for layer caching.
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Dependencies first for layer caching. Core is stdlib + cryptography only.
+# For on-chain anchor publishing (--publisher onchain), also install
+# requirements-onchain.txt by setting the build arg ONCHAIN=1.
+ARG ONCHAIN=0
+COPY requirements.txt requirements-onchain.txt ./
+RUN pip install --no-cache-dir -r requirements.txt && \
+    if [ "$ONCHAIN" = "1" ]; then pip install --no-cache-dir -r requirements-onchain.txt; fi
 
 # The package.
 COPY traceipt/ ./traceipt/
