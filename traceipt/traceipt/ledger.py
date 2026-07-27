@@ -50,6 +50,21 @@ CREATE TABLE IF NOT EXISTS anchors (
     onchain_network  TEXT,
     onchain_tx       TEXT
 );
+
+-- Anchoring-as-a-service: externally submitted digests (e.g. AAR/acta
+-- receipt-chain heads) folded into the same Merkle batches as receipts.
+CREATE TABLE IF NOT EXISTS attestations (
+    attestation_id TEXT PRIMARY KEY,
+    hash           TEXT NOT NULL,
+    type           TEXT NOT NULL,
+    ref            TEXT,
+    submitted_at   TEXT NOT NULL,
+    payer          TEXT,
+    anchor_id      INTEGER,
+    anchor_pos     INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_att_anchor ON attestations (anchor_id, anchor_pos);
+CREATE INDEX IF NOT EXISTS idx_att_hash ON attestations (hash);
 """
 
 
@@ -223,7 +238,9 @@ class Ledger:
 
     # -- Merkle anchoring --------------------------------------------------
     def create_anchor(self, created_at: str, publisher=None) -> dict | None:
-        """Seal all not-yet-anchored receipts into a Merkle batch.
+        """Seal all not-yet-anchored receipts AND externally submitted
+        attestations into one Merkle batch (receipts first, then
+        attestations, one contiguous position sequence).
 
         `publisher`, if given, is called with the hex root and returns
         (network, tx_hash) for the on-chain publication, or None. Returns the
@@ -232,13 +249,18 @@ class Ledger:
         with self._lock:
             con = self._connect()
             try:
-                rows = con.execute(
+                r_rows = con.execute(
                     "SELECT receipt_id, receipt_hash FROM receipts "
                     "WHERE anchor_id IS NULL ORDER BY rowid ASC"
                 ).fetchall()
-                if not rows:
+                a_rows = con.execute(
+                    "SELECT attestation_id, hash FROM attestations "
+                    "WHERE anchor_id IS NULL ORDER BY rowid ASC"
+                ).fetchall()
+                if not r_rows and not a_rows:
                     return None
-                leaves = [r["receipt_hash"].encode("utf-8") for r in rows]
+                leaves = ([r["receipt_hash"].encode("utf-8") for r in r_rows] +
+                          [a["hash"].encode("utf-8") for a in a_rows])
                 root_hex = merkle_root(leaves).hex()
                 onchain = publisher(root_hex) if publisher else None
                 network, tx = onchain if onchain else (None, None)
@@ -248,18 +270,38 @@ class Ledger:
                     (created_at, len(leaves), root_hex, network, tx),
                 )
                 anchor_id = cur.lastrowid
-                for pos, r in enumerate(rows):
+                pos = 0
+                for r in r_rows:
                     con.execute(
                         "UPDATE receipts SET anchor_id = ?, anchor_pos = ? "
-                        "WHERE receipt_id = ?",
-                        (anchor_id, pos, r["receipt_id"]),
-                    )
+                        "WHERE receipt_id = ?", (anchor_id, pos, r["receipt_id"]))
+                    pos += 1
+                for a in a_rows:
+                    con.execute(
+                        "UPDATE attestations SET anchor_id = ?, anchor_pos = ? "
+                        "WHERE attestation_id = ?",
+                        (anchor_id, pos, a["attestation_id"]))
+                    pos += 1
                 con.commit()
             finally:
                 con.close()
             return {"anchor_id": anchor_id, "leaf_count": len(leaves),
+                    "receipts": len(r_rows), "attestations": len(a_rows),
                     "root": root_hex, "onchain_network": network,
                     "onchain_tx": tx, "created_at": created_at}
+
+    def _anchor_leaves(self, con, anchor_id: int) -> list[bytes]:
+        """Full ordered leaf list of an anchor, merged across receipts and
+        attestations by their global anchor_pos."""
+        rows = con.execute(
+            "SELECT anchor_pos, receipt_hash AS leaf FROM receipts "
+            "WHERE anchor_id = ? "
+            "UNION ALL "
+            "SELECT anchor_pos, hash AS leaf FROM attestations "
+            "WHERE anchor_id = ? "
+            "ORDER BY anchor_pos ASC", (anchor_id, anchor_id)
+        ).fetchall()
+        return [r["leaf"].encode("utf-8") for r in rows]
 
     def list_anchors(self) -> list[dict]:
         con = self._connect()
@@ -288,13 +330,9 @@ class Ledger:
                 "SELECT created_at, leaf_count, root, onchain_network, onchain_tx "
                 "FROM anchors WHERE anchor_id = ?", (row["anchor_id"],)
             ).fetchone()
-            leaf_rows = con.execute(
-                "SELECT receipt_hash FROM receipts WHERE anchor_id = ? "
-                "ORDER BY anchor_pos ASC", (row["anchor_id"],)
-            ).fetchall()
+            leaves = self._anchor_leaves(con, row["anchor_id"])
         finally:
             con.close()
-        leaves = [r["receipt_hash"].encode("utf-8") for r in leaf_rows]
         m = row["anchor_pos"]
         proof = inclusion_proof(leaves, m)
         return {
@@ -303,6 +341,82 @@ class Ledger:
             "leaf_index": m,
             "tree_size": len(leaves),
             "leaf_data": row["receipt_hash"],
+            "audit_path": [h.hex() for h in proof],
+            "root": anchor["root"],
+            "onchain_network": anchor["onchain_network"],
+            "onchain_tx": anchor["onchain_tx"],
+            "anchored_at": anchor["created_at"],
+        }
+
+    # -- anchoring-as-a-service (external attestations) --------------------
+    def submit_attestation(self, *, digest: str, type_: str, ref: str | None,
+                           submitted_at: str, payer: str | None = None):
+        """Queue an external digest for the next Merkle batch.
+
+        Returns (record, idempotent). Re-submitting a digest that is still
+        waiting for an anchor returns the existing record (no double
+        anchoring); once anchored, the same digest may be submitted again to
+        attest continued existence at a later time."""
+        import secrets as _secrets
+        with self._lock:
+            con = self._connect()
+            try:
+                row = con.execute(
+                    "SELECT * FROM attestations WHERE hash = ? "
+                    "AND anchor_id IS NULL", (digest,)
+                ).fetchone()
+                if row is not None:
+                    return dict(row), True
+                att_id = "att_" + _secrets.token_hex(10)
+                con.execute(
+                    "INSERT INTO attestations (attestation_id, hash, type, ref, "
+                    "submitted_at, payer) VALUES (?,?,?,?,?,?)",
+                    (att_id, digest, type_, ref, submitted_at, payer),
+                )
+                con.commit()
+                row = con.execute(
+                    "SELECT * FROM attestations WHERE attestation_id = ?",
+                    (att_id,)).fetchone()
+                return dict(row), False
+            finally:
+                con.close()
+
+    def get_attestation(self, att_id: str) -> dict | None:
+        con = self._connect()
+        try:
+            row = con.execute(
+                "SELECT * FROM attestations WHERE attestation_id = ?",
+                (att_id,)).fetchone()
+        finally:
+            con.close()
+        return dict(row) if row else None
+
+    def attestation_inclusion(self, att_id: str) -> dict | None:
+        """Merkle inclusion proof for an external attestation, or None if
+        unknown / not yet anchored."""
+        con = self._connect()
+        try:
+            row = con.execute(
+                "SELECT anchor_id, anchor_pos, hash FROM attestations "
+                "WHERE attestation_id = ?", (att_id,)
+            ).fetchone()
+            if row is None or row["anchor_id"] is None:
+                return None
+            anchor = con.execute(
+                "SELECT created_at, leaf_count, root, onchain_network, onchain_tx "
+                "FROM anchors WHERE anchor_id = ?", (row["anchor_id"],)
+            ).fetchone()
+            leaves = self._anchor_leaves(con, row["anchor_id"])
+        finally:
+            con.close()
+        m = row["anchor_pos"]
+        proof = inclusion_proof(leaves, m)
+        return {
+            "attestation_id": att_id,
+            "anchor_id": row["anchor_id"],
+            "leaf_index": m,
+            "tree_size": len(leaves),
+            "leaf_data": row["hash"],
             "audit_path": [h.hex() for h in proof],
             "root": anchor["root"],
             "onchain_network": anchor["onchain_network"],

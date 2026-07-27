@@ -1110,6 +1110,230 @@ class TestCreditsService(unittest.TestCase):
         self.assertEqual(code, 400)
 
 
+class TestAttestLedger(unittest.TestCase):
+    """Anchoring-as-a-service at the ledger layer: external digests share
+    Merkle batches with receipts, and both sides' proofs verify."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.ledger = Ledger(os.path.join(self.dir.name, "a.db"))
+        self.signer = Signer.generate()
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def _append_receipt(self, seq_tx):
+        seq, prev = self.ledger.next_link("s1")
+        payload = sample_receipt(seq=seq, prev=prev, seller_id="s1",
+                                 settlement=sample_settlement(
+                                     tx_hash="0x" + f"{seq_tx:064x}"))
+        self.ledger.append(self.signer.sign_envelope(payload))
+        return payload["receipt_id"]
+
+    def test_mixed_anchor_proofs_verify_for_both_kinds(self):
+        rids = [self._append_receipt(i + 1) for i in range(2)]
+        a1, _ = self.ledger.submit_attestation(
+            digest="sha256:" + "11" * 32, type_="aar-chain-head",
+            ref="https://x/aar", submitted_at="2026-07-27T00:00:00Z")
+        a2, _ = self.ledger.submit_attestation(
+            digest="sha256:" + "22" * 32, type_="acta-receipt",
+            ref=None, submitted_at="2026-07-27T00:00:01Z")
+        anchor = self.ledger.create_anchor("2026-07-27T00:01:00Z")
+        self.assertEqual(anchor["leaf_count"], 4)
+        self.assertEqual(anchor["receipts"], 2)
+        self.assertEqual(anchor["attestations"], 2)
+        root = bytes.fromhex(anchor["root"])
+        # receipt proofs verify against the mixed tree
+        for rid in rids:
+            pr = self.ledger.inclusion_for(rid)
+            self.assertTrue(verify_inclusion(
+                pr["leaf_index"], pr["tree_size"], pr["leaf_data"].encode(),
+                [bytes.fromhex(h) for h in pr["audit_path"]], root))
+        # attestation proofs verify against the same root
+        seen_positions = set()
+        for att in (a1, a2):
+            pr = self.ledger.attestation_inclusion(att["attestation_id"])
+            self.assertTrue(verify_inclusion(
+                pr["leaf_index"], pr["tree_size"], pr["leaf_data"].encode(),
+                [bytes.fromhex(h) for h in pr["audit_path"]], root))
+            seen_positions.add(pr["leaf_index"])
+        self.assertEqual(len(seen_positions), 2)
+
+    def test_attestation_only_anchor(self):
+        self.ledger.submit_attestation(
+            digest="sha256:" + "33" * 32, type_="digest", ref=None,
+            submitted_at="2026-07-27T00:00:00Z")
+        anchor = self.ledger.create_anchor("t")
+        self.assertEqual(anchor["leaf_count"], 1)
+        self.assertEqual(anchor["attestations"], 1)
+
+    def test_idempotent_while_pending_new_after_anchor(self):
+        d = "sha256:" + "44" * 32
+        r1, idem1 = self.ledger.submit_attestation(
+            digest=d, type_="digest", ref=None, submitted_at="t1")
+        r2, idem2 = self.ledger.submit_attestation(
+            digest=d, type_="digest", ref=None, submitted_at="t2")
+        self.assertFalse(idem1)
+        self.assertTrue(idem2)
+        self.assertEqual(r1["attestation_id"], r2["attestation_id"])
+        self.ledger.create_anchor("t3")
+        # once anchored, the same digest may be attested again (re-anchoring)
+        r3, idem3 = self.ledger.submit_attestation(
+            digest=d, type_="digest", ref=None, submitted_at="t4")
+        self.assertFalse(idem3)
+        self.assertNotEqual(r1["attestation_id"], r3["attestation_id"])
+
+
+class TestAttestService(unittest.TestCase):
+    """POST /attest through the HTTP service, dev gate."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dir = tempfile.TemporaryDirectory()
+        cls.app = App(signer=Signer.generate(),
+                      ledger=Ledger(os.path.join(cls.dir.name, "s.db")),
+                      verifier=MockVerifier(), gate="dev",
+                      price_base_units="1000", pay_to=PAYEE,
+                      seller_id="op.example", chain="base-sepolia",
+                      base_url="http://x")
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(cls.app))
+        cls.port = cls.server.server_address[1]
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.dir.cleanup()
+
+    def _req(self, method, path, body=None, headers=None):
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}", data=data, method=method,
+            headers={"Content-Type": "application/json", **(headers or {})})
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def test_attest_requires_payment(self):
+        code, obj = self._req("POST", "/attest",
+                              {"hash": "sha256:" + "aa" * 32})
+        self.assertEqual(code, 402)
+        self.assertEqual(obj["accepts"][0]["resource"], "http://x/attest")
+
+    def test_bad_hash_400(self):
+        code, _ = self._req("POST", "/attest", {"hash": "0xnope"},
+                            {"X-PAYMENT": "t"})
+        self.assertEqual(code, 400)
+
+    def test_full_attest_lifecycle(self):
+        digest = "sha256:" + "bb" * 32
+        code, obj = self._req("POST", "/attest",
+                              {"hash": digest, "type": "aar-chain-head",
+                               "ref": "https://example.com/chain"},
+                              {"X-PAYMENT": "t"})
+        self.assertEqual(code, 201, obj)
+        aid = obj["attestation"]["attestation_id"]
+        self.assertEqual(obj["attestation"]["status"], "pending")
+        # proof not available yet -> 409 with a helpful message
+        code, obj2 = self._req("GET", f"/attest/{aid}/proof")
+        self.assertEqual(code, 409)
+        # also issue a receipt so the batch is mixed
+        code, obj3 = self._req("POST", "/receipts", {
+            "settlement": {"chain": "base-sepolia", "tx_hash": "0x" + "e1" * 32,
+                           "amount_base_units": "5000", "payer": PAYER,
+                           "payee": PAYEE},
+            "commerce": sample_commerce()}, {"X-PAYMENT": "t"})
+        self.assertEqual(code, 201)
+        rid = obj3["receipt"]["payload"]["receipt_id"]
+        # seal the batch
+        code, aobj = self._req("POST", "/anchor", {})
+        self.assertEqual(code, 201)
+        self.assertEqual(aobj["anchor"]["attestations"], 1)
+        # attestation proof now verifies OFFLINE against the anchor root
+        code, proof = self._req("GET", f"/attest/{aid}/proof")
+        self.assertEqual(code, 200)
+        self.assertEqual(proof["leaf_data"], digest)
+        self.assertTrue(verify_inclusion(
+            proof["leaf_index"], proof["tree_size"],
+            proof["leaf_data"].encode(),
+            [bytes.fromhex(h) for h in proof["audit_path"]],
+            bytes.fromhex(proof["root"])))
+        # the receipt's proof verifies against the SAME root
+        code, rproof = self._req("GET", f"/receipts/{rid}/proof")
+        self.assertEqual(code, 200)
+        self.assertEqual(rproof["root"], proof["root"])
+        self.assertTrue(verify_inclusion(
+            rproof["leaf_index"], rproof["tree_size"],
+            rproof["leaf_data"].encode(),
+            [bytes.fromhex(h) for h in rproof["audit_path"]],
+            bytes.fromhex(rproof["root"])))
+        # record endpoint reflects anchored status
+        code, rec = self._req("GET", f"/attest/{aid}")
+        self.assertEqual(rec["status"], "anchored")
+
+    def test_unknown_attestation_404(self):
+        code, _ = self._req("GET", "/attest/att_doesnotexist")
+        self.assertEqual(code, 404)
+        code, _ = self._req("GET", "/attest/att_doesnotexist/proof")
+        self.assertEqual(code, 404)
+
+
+class TestAttestFacilitator(unittest.TestCase):
+    """Money-fairness of /attest under the real gate: settle only on 201."""
+
+    def _make(self, fac):
+        d = tempfile.mkdtemp()
+        app = App(signer=Signer.generate(), ledger=Ledger(os.path.join(d, "f.db")),
+                  verifier=MockVerifier(), gate="facilitator",
+                  price_base_units="1000", pay_to=PAYEE, seller_id="op",
+                  chain="base-sepolia", base_url="http://x",
+                  facilitator=fac, bind_payer=True)
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        return srv.server_address[1]
+
+    def _post(self, port, body, xpayment=None):
+        headers = {"Content-Type": "application/json"}
+        if xpayment:
+            headers["X-PAYMENT"] = xpayment
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/attest",
+                                     data=json.dumps(body).encode(), headers=headers)
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def test_valid_attest_settles(self):
+        fac = FakeFacilitator()
+        port = self._make(fac)
+        code, _ = self._post(port, {"hash": "sha256:" + "cc" * 32},
+                             xpayment=make_xpayment(PAYER))
+        self.assertEqual(code, 201)
+        self.assertEqual(fac.settle_calls, 1)
+
+    def test_invalid_body_does_not_settle(self):
+        fac = FakeFacilitator()
+        port = self._make(fac)
+        code, _ = self._post(port, {"hash": "garbage"},
+                             xpayment=make_xpayment(PAYER))
+        self.assertEqual(code, 400)
+        self.assertEqual(fac.settle_calls, 0)
+
+    def test_idempotent_resubmit_does_not_settle_twice(self):
+        fac = FakeFacilitator()
+        port = self._make(fac)
+        d = {"hash": "sha256:" + "dd" * 32}
+        c1, _ = self._post(port, d, xpayment=make_xpayment(PAYER))
+        c2, obj2 = self._post(port, d, xpayment=make_xpayment(PAYER))
+        self.assertEqual((c1, c2), (201, 200))
+        self.assertTrue(obj2.get("idempotent"))
+        self.assertEqual(fac.settle_calls, 1)
+
+
 class TestKeyRotation(unittest.TestCase):
     """A receipt signed by a now-retired key must still verify after the
     operator rotates to a new active key, as long as the old PUBLIC key is

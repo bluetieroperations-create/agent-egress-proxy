@@ -305,6 +305,28 @@ lists batches.
 > (`onchain_tx` is null until a publisher is wired to a funded wallet). The
 > Merkle proofs are real and verifiable regardless.
 
+### Anchoring as a service (`POST /attest`)
+
+Anyone with a signed artifact — an AAR or acta receipt chain head, an audit
+log digest, any `sha256:` hash — can pay (x402-gated, same flow as
+`/receipts`) to have it folded into Traceipt's next Merkle batch. We never
+see the artifact, only its digest:
+
+```sh
+curl -X POST $BASE/attest -H 'X-PAYMENT: …' -H 'Content-Type: application/json' \
+  -d '{"hash": "sha256:…", "type": "aar-chain-head", "ref": "https://…"}'
+```
+
+Returns an `attestation_id` and a `proof_url`. Once the operator seals the
+next batch, `GET /attest/{id}/proof` returns an RFC 6962 inclusion proof
+(leaf index, tree size, audit path, root) that verifies **offline** with
+~20 lines of code (`traceipt.merkle.verify_inclusion`) — proof the digest
+existed by the anchor's time, without trusting Traceipt's database.
+External digests share batches with our own receipts: one root covers both.
+Re-submitting a digest that is still pending is idempotent (and not charged
+under the facilitator gate); an already-anchored digest may be submitted
+again to attest continued existence at a later time.
+
 ### Key rotation
 
 The active key signs new receipts; retired **public** keys stay published in

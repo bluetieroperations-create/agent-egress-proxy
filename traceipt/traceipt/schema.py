@@ -164,6 +164,22 @@ def validate_credit(cr: dict):
              "credit.reason must be a non-empty string (<=500 chars)")
 
 
+def validate_attestation_request(a: dict):
+    """An anchoring-as-a-service submission: a digest to fold into the next
+    Merkle batch. We never receive the artifact, only its hash."""
+    _require(isinstance(a, dict), "attestation request must be an object")
+    _require(set(a) <= {"hash", "type", "ref"},
+             "attestation allows only hash/type/ref")
+    _require(bool(_HASH_RE.match(a.get("hash", ""))),
+             "hash must look like sha256:<64 hex>")
+    if "type" in a:
+        _require(isinstance(a["type"], str) and 0 < len(a["type"]) <= 40,
+                 "type must be a short string (e.g. 'aar-chain-head')")
+    if "ref" in a:
+        _require(isinstance(a["ref"], str) and 0 < len(a["ref"]) <= 300,
+                 "ref must be a string (<=300 chars)")
+
+
 def build_receipt(*, seller_id: str, sequence: int, prev_receipt_hash: str,
                   issued_at: str, settlement: dict, commerce: dict | None = None,
                   kind: str = "payment", credit: dict | None = None) -> dict:

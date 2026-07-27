@@ -31,8 +31,8 @@ from .invoice import render_invoice
 from .ledger import Ledger
 from .merkle import verify_inclusion
 from .schema import (
-    build_receipt, receipt_hash, validate_commerce, validate_credit,
-    validate_settlement,
+    build_receipt, receipt_hash, validate_attestation_request,
+    validate_commerce, validate_credit, validate_settlement,
 )
 from .settlement import USDC_CONTRACTS, make_verifier
 from .signing import load_or_create_signer, verify_envelope
@@ -96,6 +96,8 @@ class App:
     # -- x402 gate ---------------------------------------------------------
     def requirements(self, resource: str) -> dict:
         """The single x402 `accepts` entry this service advertises."""
+        desc = ("anchor one external digest in the next Merkle batch"
+                if resource == "/attest" else "issue one signed x402 receipt")
         return {
             "scheme": "exact",
             "network": self.chain,
@@ -103,7 +105,7 @@ class App:
             "asset": USDC_CONTRACTS[self.chain],
             "payTo": self.pay_to,
             "resource": self.base_url + resource,
-            "description": "issue one signed x402 receipt",
+            "description": desc,
             "mimeType": "application/json",
             "maxTimeoutSeconds": 60,
         }
@@ -315,6 +317,36 @@ class App:
             "verify_url": f"{self.base_url}/verify/{payload['receipt_id']}",
         }
 
+    def issue_attestation(self, body: dict,
+                          gate_payer: str | None = None) -> tuple[int, dict]:
+        """Anchoring-as-a-service: accept an external digest (e.g. an
+        AAR/acta receipt-chain head) into the next Merkle batch. Paid via
+        the x402 gate like receipt issuance. Returns 201 on a new
+        submission, 200 when an identical digest is already queued."""
+        try:
+            validate_attestation_request(body)
+        except ValueError as e:
+            return 400, {"error": str(e)}
+        rec, idem = self.ledger.submit_attestation(
+            digest=body["hash"], type_=body.get("type", "digest"),
+            ref=body.get("ref"), submitted_at=utc_now(), payer=gate_payer)
+        att_id = rec["attestation_id"]
+        out = {
+            "attestation": {
+                "attestation_id": att_id,
+                "hash": rec["hash"],
+                "type": rec["type"],
+                "ref": rec["ref"],
+                "submitted_at": rec["submitted_at"],
+                "status": "anchored" if rec["anchor_id"] else "pending",
+            },
+            "proof_url": f"{self.base_url}/attest/{att_id}/proof",
+        }
+        if idem:
+            out["idempotent"] = True
+            return 200, out
+        return 201, out
+
     def _jwks(self) -> dict:
         # Active key first, then any retired keys (dedup by kid) so receipts
         # signed before a rotation still verify.
@@ -457,6 +489,21 @@ def make_handler(app: App):
                 if envelope is None:
                     return self._send(404, {"error": "unknown receipt_id"})
                 return self._send(200, envelope)
+            if path.startswith("/attest/") and path.endswith("/proof"):
+                aid = unquote(path[len("/attest/"):-len("/proof")])
+                if app.ledger.get_attestation(aid) is None:
+                    return self._send(404, {"error": "unknown attestation_id"})
+                proof = app.ledger.attestation_inclusion(aid)
+                if proof is None:
+                    return self._send(409, {"error": "not yet anchored; the next "
+                                            "anchor batch will include it"})
+                return self._send(200, proof)
+            if path.startswith("/attest/"):
+                rec = app.ledger.get_attestation(unquote(path[len("/attest/"):]))
+                if rec is None:
+                    return self._send(404, {"error": "unknown attestation_id"})
+                rec["status"] = "anchored" if rec["anchor_id"] else "pending"
+                return self._send(200, rec)
             if path.startswith("/verify/"):
                 code, obj = app.verify_report(unquote(path[len("/verify/"):]))
                 return self._send(code, obj)
@@ -502,9 +549,10 @@ def make_handler(app: App):
                 except Exception as e:
                     return self._send(500, {"error": f"internal error: {type(e).__name__}"})
                 return self._send(code, obj)
-            if resource != "/receipts":
+            if resource not in ("/receipts", "/attest"):
                 return self._send(404, {"error": "not found"})
 
+            # Paid endpoints share one money-fair flow:
             # 1. Gate: verify payment (does NOT move money yet).
             decision = app.gate_payment(self.headers, resource)
             if not decision.ok:
@@ -522,21 +570,25 @@ def make_handler(app: App):
             except (ValueError, UnicodeDecodeError):
                 return self._send(400, {"error": "body must be valid JSON"})
 
-            # 3. Issue the receipt (payer binding uses the gate's payer).
+            # 3. Perform the operation (payer binding uses the gate's payer).
             try:
-                code, obj = app.issue(body, gate_payer=decision.payer)
+                if resource == "/attest":
+                    code, obj = app.issue_attestation(body, gate_payer=decision.payer)
+                else:
+                    code, obj = app.issue(body, gate_payer=decision.payer)
             except Exception as e:
                 return self._send(500, {"error": f"internal error: {type(e).__name__}"})
             if code != 201:
-                # Issuance failed → do NOT settle. The caller is not charged.
+                # Nothing new was created (error, or idempotent replay) →
+                # do NOT settle. The caller is not charged.
                 return self._send(code, obj)
 
-            # 4. Settle the payment now that the receipt exists.
+            # 4. Settle the payment now that the work exists.
             if decision.payment is not None:
                 ok, settle_response, err = app.settle_payment(decision.payment, resource)
                 if not ok:
                     obj = {**obj, "settlement_warning":
-                           f"receipt issued but payment settlement failed: {err}"}
+                           f"issued but payment settlement failed: {err}"}
                     return self._send_with_payment_response(201, obj, settle_response or None)
                 return self._send_with_payment_response(201, obj, settle_response)
             return self._send(code, obj)
