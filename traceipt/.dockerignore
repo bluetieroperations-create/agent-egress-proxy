@@ -6,3 +6,5 @@ test_receipts.py
 site/
 *.md
 .git
+node_modules/
+.wrangler/

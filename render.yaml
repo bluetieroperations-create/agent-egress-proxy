@@ -1,0 +1,46 @@
+# Render Blueprint for the Traceipt API (testnet demo).
+# Render reads render.yaml from the REPO ROOT. The service builds the Docker
+# image in traceipt/ and Render terminates HTTPS at its edge, so the app
+# binds 0.0.0.0.
+#
+# New > Blueprint > connect this repo > pick the branch that has this file.
+services:
+  - type: web
+    name: traceipt                 # -> https://traceipt.onrender.com (or a suffix if taken)
+    runtime: docker
+    rootDir: traceipt              # build context = the traceipt/ project dir
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    region: virginia
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: RECEIPTS_HOST
+        value: "0.0.0.0"
+      - key: RECEIPTS_PORT
+        value: "8402"
+      - key: RECEIPTS_CHAIN
+        value: base-sepolia
+      - key: X402_GATE
+        value: dev
+      - key: RECEIPTS_SETTLEMENT
+        value: mock
+      # Public URL embedded in verify links + invoice QR. Set to the custom
+      # domain you will attach (below). If you test via the *.onrender.com URL
+      # before the domain is live, change this to that URL instead.
+      - key: RECEIPTS_BASE_URL
+        value: https://api.traceipt.xyz
+
+# NOTE ON STORAGE: the free plan has NO persistent disk, so /data is
+# ephemeral -- the ledger DB and the Ed25519 signing key reset whenever the
+# instance restarts (Render also spins free services down after ~15 min idle,
+# with a cold start on the next request). That means receipts issued in an
+# earlier session stop verifying. This is fine for a demo. For a stable
+# endpoint, switch to a paid instance and add a disk:
+#
+#     plan: starter          # ~$7/mo
+#     disk:
+#       name: traceipt-data
+#       mountPath: /data
+#       sizeGB: 1
