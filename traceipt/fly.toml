@@ -1,7 +1,7 @@
 # Fly.io deployment for the Traceipt testnet demo.
 # `fly launch --no-deploy` then `fly deploy`. Fly terminates HTTPS at its edge
 # and forwards to the container's internal port, so the app binds 0.0.0.0.
-app = "traceipt-demo"          # change to your app name (must be globally unique)
+app = "traceipt"           # dashless; globally unique on Fly (fallback: traceiptapi)
 primary_region = "iad"         # pick one near you: iad, lhr, fra, sjc, ...
 
 [build]
