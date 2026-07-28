@@ -377,6 +377,87 @@ class TestValidateRequest(unittest.TestCase):
         self.assertEqual(clean["counterparty"], addr.lower())
 
 
+class TestForecastPayloadSimulation(unittest.TestCase):
+    """
+    forecast() with payload simulation (Phase 1): the agent's ACTUAL signed
+    payment is cross-checked against the claim. A mismatch is a hard STOP.
+
+    Mutation notes:
+      - don't thread payload_mismatch_reasons into decide_payment -> the swap
+        tests below stop STOPping.
+      - treat the X-PAYMENT transport header (Blackwall's fee) as the scored
+        payment -> the recipient swap would false-positive; here it comes from the
+        BODY field, so these stay correct.
+    """
+    GOOD = "0xKNOWNGOOD000000000000000000000000000001"
+    USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+
+    def setUp(self):
+        self.src = bw.MockReputationSource()
+
+    def _xpayment(self, *, to, value, asset=None, network="base"):
+        payment = {
+            "x402Version": 2,
+            "accepted": {"scheme": "exact", "network": network,
+                         "asset": asset or self.USDC},
+            "payload": {"signature": "0x" + "2" * 130,
+                        "authorization": {"from": "0x" + "b" * 40, "to": to,
+                                          "value": value, "validAfter": "0",
+                                          "validBefore": "9999999999",
+                                          "nonce": "0x" + "1" * 64}}}
+        return bw._b64_header(payment)
+
+    def test_matching_payment_stays_go(self):
+        # baseline: a known-good counterparty is GO with NO payment attached
+        base = {"counterparty": self.GOOD, "amount": "0.09",
+                "asset": self.USDC, "chain": "base"}
+        self.assertEqual(bw.forecast(dict(base), self.src)[0]["verdict"], "GO")
+        # attaching a MATCHING signed payment (0.09 USDC -> GOOD) keeps it GO
+        payload = dict(base, payment_authorization=self._xpayment(
+            to=self.GOOD, value="90000"))
+        resp, err = bw.forecast(payload, self.src)
+        self.assertIsNone(err)
+        self.assertEqual(resp["verdict"], "GO")
+        self.assertFalse(resp["hard_stop"])
+
+    def test_recipient_swap_hard_stops(self):
+        # score "pay GOOD" but the signed auth actually pays a DIFFERENT address
+        payload = {"counterparty": self.GOOD, "amount": "0.09",
+                   "asset": self.USDC, "chain": "base",
+                   "payment_authorization": self._xpayment(
+                       to="0x" + "d" * 40, value="90000")}
+        resp, err = bw.forecast(payload, self.src)
+        self.assertEqual(resp["verdict"], "STOP")
+        self.assertTrue(resp["hard_stop"])
+        self.assertTrue(any("recipient mismatch" in r for r in resp["reasons"]))
+
+    def test_amount_inflation_hard_stops(self):
+        # score $0.09 but the signed auth moves $5.00 (5_000_000 atomic)
+        payload = {"counterparty": self.GOOD, "amount": "0.09",
+                   "asset": self.USDC, "chain": "base",
+                   "payment_authorization": self._xpayment(
+                       to=self.GOOD, value="5000000")}
+        resp, _ = bw.forecast(payload, self.src)
+        self.assertEqual(resp["verdict"], "STOP")
+        self.assertTrue(resp["hard_stop"])
+        self.assertTrue(any("value" in r for r in resp["reasons"]))
+
+    def test_no_payment_is_unaffected(self):
+        # the check is opt-in: no payment_authorization -> normal verdict, no stop
+        payload = {"counterparty": self.GOOD, "amount": "0.09",
+                   "asset": self.USDC, "chain": "base"}
+        resp, _ = bw.forecast(payload, self.src)
+        self.assertEqual(resp["verdict"], "GO")
+
+    def test_bad_payment_authorization_type_rejected(self):
+        payload = {"counterparty": self.GOOD, "amount": "0.09",
+                   "asset": self.USDC, "chain": "base",
+                   "payment_authorization": {"not": "a string"}}
+        resp, err = bw.forecast(payload, self.src)
+        self.assertIsNone(resp)
+        self.assertIn("payment_authorization", err)
+
+
 class TestForecastEndToEnd(unittest.TestCase):
     """forecast(): validate -> mock lookup -> decide -> receipt."""
 
