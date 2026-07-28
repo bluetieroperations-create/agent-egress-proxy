@@ -1,0 +1,6 @@
+# The Blackwall guard CORE (blackwall_guard.py) is stdlib-only -- it needs nothing
+# here; it imports the verdict engine from the repo root.
+#
+# The LangChain ADAPTER (langchain_blackwall.py) needs langchain-core. Any recent
+# 0.2+/1.x works; pinned loosely.
+langchain-core>=0.2

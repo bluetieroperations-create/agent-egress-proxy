@@ -30,6 +30,12 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `clients/x402_pay.py` (TEST-ONLY funded-signer dry-run client; the one place
   that uses a dep -- `eth-account` -- to sign a real EIP-3009 X-PAYMENT;
   see `clients/README.md`. Deploy: `Dockerfile`, `fly.toml`, `render.yaml`),
+  `integrations/langchain/` (LangChain plugin -- "call Blackwall before you sign":
+  a `BlackwallPaymentGuardTool` the agent calls + a `BlackwallGuardrailCallback`
+  that enforces the verdict on a payment tool. Core `blackwall_guard.py` is
+  LangChain-free/stdlib + fully tested; `langchain_blackwall.py` is the thin adapter
+  needing `langchain-core`. OBSERVE/ENFORCE modes; fail-safe to human CONFIRM. Its
+  own tests run from that dir, not the root command),
   `BLACKWALL.md`, `DISCOVERY.md`, `DEPLOY.md`, `COMPETITIVE.md`, `PRICING.md`,
   `ap_gate.py` (treasury/AP payout gate -- folds the verdict into a
   RELEASE/REVIEW/BLOCK decision at the approve-&-release step; see
