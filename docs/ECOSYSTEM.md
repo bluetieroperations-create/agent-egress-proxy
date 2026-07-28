@@ -63,8 +63,17 @@ so it's been quiet).
 - **Role:** presumably another distribution adapter (like the Eliza plugin), for a
   different framework.
 
-### 5. awesome-x402 listing  `[VERIFIED via screenshots]`
-- **PR #679 MERGED** into `xpaysh/awesome-x402` `main` (by maintainer Sri Akula).
+### 5. `Traceipt`  `[OBSERVED]`/`[UNKNOWN]`
+User indicated this may already exist and cover the **receipt / attestation** side
+(Gemini's "on-chain risk registry" pillar). Name suggests *trace + receipt* — likely
+a verdict-receipt / settlement-attestation system.
+- **Purpose unconfirmed — investigate.** If it publishes PROOFS (a verdict was
+  issued, a settlement confirmed), it's the honest version of the risk registry.
+  It must **not** publish the private reputation corpus (moat rule).
+- **Role (candidate):** the on-chain proof/attestation layer the audit-verify (#2)
+  and co-signing (#4) pillars would attach to. See `docs/STRATEGY_REVIEW.md`.
+
+### 6. awesome-x402 listing  `[VERIFIED via screenshots]`- **PR #679 MERGED** into `xpaysh/awesome-x402` `main` (by maintainer Sri Akula).
   Blackwall is live in the ecosystem index. (Earlier PR #667 via the fork
   `bluetieroperations-create/awesome-x402`.)
 
