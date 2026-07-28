@@ -258,6 +258,24 @@ def build_payment(challenge_req, signer_pk, signer_addr, network, rpc_url):
     return payment
 
 
+def payment_header(requirements, signer_pk, signer_addr, network, rpc_url=None):
+    """Sign a payment satisfying a 402 `accepts[]` entry and return the base64
+    `X-PAYMENT` header value (the wire form the server expects)."""
+    payment = build_payment(requirements, signer_pk, signer_addr, network, rpc_url)
+    return base64.b64encode(json.dumps(payment).encode()).decode()
+
+
+def make_pay(signer_pk, network="base", rpc_url=None):
+    """Return a `pay(requirements) -> X-PAYMENT` callback for
+    `traceipt_attest.anchor_verdict(..., pay=...)`. Binds a funded key so the
+    stdlib anchor loop can fund Traceipt's x402 `/attest` without importing
+    eth-account. Reads the signer address once from the key."""
+    signer_addr = Account.from_key(signer_pk).address
+    def _pay(requirements):
+        return payment_header(requirements, signer_pk, signer_addr, network, rpc_url)
+    return _pay
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description="Funded-signer x402 test client for Blackwall.")
     p.add_argument("--url", required=True, help="Blackwall forecast endpoint URL")
@@ -321,8 +339,7 @@ def main(argv=None):
                          "--network is %r; signature will be rejected.\n"
                          % (req.get("network"), args.network))
 
-    payment = build_payment(req, pk, signer_addr, args.network, rpc_url)
-    x_payment = base64.b64encode(json.dumps(payment).encode()).decode()
+    x_payment = payment_header(req, pk, signer_addr, args.network, rpc_url)
     sys.stdout.write("signed EIP-3009 authorization; resending with X-PAYMENT...\n")
 
     status, parsed, raw = _http_json(args.url, body, headers={"X-PAYMENT": x_payment})

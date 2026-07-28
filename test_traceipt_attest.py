@@ -124,5 +124,130 @@ class TestAnchorVerdict(unittest.TestCase):
         self.assertEqual(seen.get("X-PAYMENT"), "b64pay")
 
 
+class TestAnchorVerdictAutoPay(unittest.TestCase):
+    """
+    The x402 auto-pay loop: on 402, mint a payment from the challenge and retry.
+
+    Mutation notes:
+      - don't retry after minting -> test_pays_then_succeeds FAILS.
+      - retry more than once / ignore the mint -> test_retries_only_once FAILS.
+      - pass the wrong requirements to pay() -> test_pay_sees_accepts FAILS.
+      - re-pay when x_payment already given -> test_no_double_pay FAILS.
+      - let a raising pay() escape -> test_pay_failure_fails_open FAILS.
+    """
+    VERDICT = {"verdict": "STOP", "score": 0.0, "receipt_id": "bw_abc"}
+    # a Traceipt v1 /attest 402 challenge (maxAmountRequired, bare network name)
+    CHALLENGE = {"x402Version": 1, "error": "X-PAYMENT header is required",
+                 "accepts": [{"scheme": "exact", "network": "base",
+                              "maxAmountRequired": "1000", "payTo": "0x" + "e" * 40,
+                              "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                              "resource": "https://api.traceipt.xyz/attest"}]}
+
+    def _transport_402_then_201(self, calls, pay_ok=True):
+        def t(url, data, headers, timeout):
+            calls.append(headers.get("X-PAYMENT"))
+            if headers.get("X-PAYMENT"):
+                return 201, {"attestation": {"attestation_id": "att_paid",
+                                             "status": "pending"},
+                             "proof_url": "https://api.traceipt.xyz/attest/att_paid/proof"}
+            return 402, self.CHALLENGE
+        return t
+
+    def test_pays_then_succeeds(self):
+        calls = []
+        r = T.anchor_verdict("https://api.traceipt.xyz", self.VERDICT,
+                             pay=lambda req: "MINTED_B64",
+                             _transport=self._transport_402_then_201(calls))
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["attestation_id"], "att_paid")
+        self.assertEqual(calls, [None, "MINTED_B64"])  # unpaid, then paid retry
+
+    def test_retries_only_once(self):
+        # pay yields a header but the server STILL 402s -> we must not loop forever
+        calls = []
+        def always_402(url, data, headers, timeout):
+            calls.append(headers.get("X-PAYMENT"))
+            return 402, self.CHALLENGE
+        r = T.anchor_verdict("https://x", self.VERDICT, pay=lambda req: "H",
+                             _transport=always_402)
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "payment_required")
+        self.assertEqual(len(calls), 2)  # original + exactly one paid retry
+
+    def test_pay_sees_accepts(self):
+        seen = {}
+        def pay(req):
+            seen.update(req)
+            return "H"
+        T.anchor_verdict("https://x", self.VERDICT, pay=pay,
+                         _transport=self._transport_402_then_201([]))
+        self.assertEqual(seen.get("payTo"), "0x" + "e" * 40)
+        self.assertEqual(seen.get("maxAmountRequired"), "1000")
+
+    def test_no_double_pay_when_header_given(self):
+        # an explicit x_payment is used as-is; pay() must NOT be invoked
+        calls = []
+        def pay(req):
+            raise AssertionError("pay must not be called when x_payment is given")
+        def t(url, data, headers, timeout):
+            calls.append(headers.get("X-PAYMENT"))
+            return 201, {"attestation": {"attestation_id": "att_1"}}
+        r = T.anchor_verdict("https://x", self.VERDICT, x_payment="PREPAID",
+                             pay=pay, _transport=t)
+        self.assertTrue(r["ok"])
+        self.assertEqual(calls, ["PREPAID"])
+
+    def test_pay_failure_fails_open(self):
+        def boom(req):
+            raise RuntimeError("no funds")
+        r = T.anchor_verdict("https://x", self.VERDICT, pay=boom,
+                             _transport=lambda *a: (402, self.CHALLENGE))
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "payment_required")  # never raises
+
+    def test_pay_returning_none_stays_402(self):
+        r = T.anchor_verdict("https://x", self.VERDICT, pay=lambda req: None,
+                             _transport=lambda *a: (402, self.CHALLENGE))
+        self.assertEqual(r["reason"], "payment_required")
+
+    def test_spend_cap_refuses_oversized_challenge(self):
+        # a spoofed 402 demanding more than the cap -> we must NOT sign
+        def pay(req):
+            raise AssertionError("must not sign a payment over the cap")
+        big = {"accepts": [{"payTo": "0x" + "b" * 40, "maxAmountRequired": "5000000",
+                            "asset": "0x0", "network": "base"}]}
+        r = T.anchor_verdict("https://x", self.VERDICT, pay=pay,
+                             max_amount_atomic=1_000_000,
+                             _transport=lambda *a: (402, big))
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "amount_exceeds_cap")
+
+    def test_spend_cap_allows_within_budget(self):
+        calls = []
+        r = T.anchor_verdict("https://api.traceipt.xyz", self.VERDICT,
+                             pay=lambda req: "MINTED", max_amount_atomic=1_000_000,
+                             _transport=self._transport_402_then_201(calls))
+        self.assertTrue(r["ok"])  # 1000 <= 1_000_000
+        self.assertEqual(calls, [None, "MINTED"])
+
+    def test_spend_cap_refuses_unparseable_amount(self):
+        # fail-safe: with a cap set, an amount we can't parse is treated as over it
+        def pay(req):
+            raise AssertionError("must not sign when the amount can't be bounded")
+        bad = {"accepts": [{"payTo": "0x" + "b" * 40, "maxAmountRequired": "lots"}]}
+        r = T.anchor_verdict("https://x", self.VERDICT, pay=pay,
+                             max_amount_atomic=1_000_000,
+                             _transport=lambda *a: (402, bad))
+        self.assertEqual(r["reason"], "amount_exceeds_cap")
+
+    def test_no_accepts_no_pay(self):
+        # a 402 with no accepts array -> nothing to satisfy, pay() not called
+        def pay(req):
+            raise AssertionError("pay must not be called without requirements")
+        r = T.anchor_verdict("https://x", self.VERDICT, pay=pay,
+                             _transport=lambda *a: (402, {"error": "pay"}))
+        self.assertEqual(r["reason"], "payment_required")
+
+
 if __name__ == "__main__":
     unittest.main()
