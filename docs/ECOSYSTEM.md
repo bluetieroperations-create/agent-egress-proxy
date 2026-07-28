@@ -63,15 +63,28 @@ so it's been quiet).
 - **Role:** presumably another distribution adapter (like the Eliza plugin), for a
   different framework.
 
-### 5. `Traceipt`  `[OBSERVED]`/`[UNKNOWN]`
-User indicated this may already exist and cover the **receipt / attestation** side
-(Gemini's "on-chain risk registry" pillar). Name suggests *trace + receipt* — likely
-a verdict-receipt / settlement-attestation system.
-- **Purpose unconfirmed — investigate.** If it publishes PROOFS (a verdict was
-  issued, a settlement confirmed), it's the honest version of the risk registry.
-  It must **not** publish the private reputation corpus (moat rule).
-- **Role (candidate):** the on-chain proof/attestation layer the audit-verify (#2)
-  and co-signing (#4) pillars would attach to. See `docs/STRATEGY_REVIEW.md`.
+### 5. `Traceipt`  `[VERIFIED — in this repo]`
+**The post-payment RECEIPT half of the trust lifecycle** (Black_Wall is the
+pre-payment VERDICT half). Live: `traceipt.xyz` / `api.traceipt.xyz`. Lives in
+**this same repo** (`agent-egress-proxy`) under `traceipt/` on branch
+`claude/x402-product-ideas-6adgah` — Python, stdlib + `cryptography`, ~110 tests.
+- **What:** issues **Ed25519-signed, offline-verifiable receipts** for x402
+  payments — settlement verified **on-chain before signing**, binding the payment
+  to payer/payee/what-was-bought. Verifiable against published JWKS, no callback.
+  The audit/accounting layer (invoices, auditor trail, EU AI Act Art. 12 / MiCA).
+- **Modules:** `signing.py` (Ed25519), `settlement.py` (on-chain verify),
+  `ledger.py` (tamper-evident per-seller hash chain), `merkle.py` (RFC 6962
+  anchoring), `invoice.py` (VAT A4 PDF + QR), `x402_gate.py` (payment gate),
+  `service.py` (API incl. `POST /attest` anchoring-as-a-service — the
+  recurring-revenue endpoint), `publisher.py` (on-chain).
+- **Role — resolves Gemini pillars #4/#5:** it IS the honest "on-chain risk
+  registry" (attest PROOFS via Merkle anchoring, never the private corpus).
+- **Two-way integration with Black_Wall (the flywheel):**
+  1. **Traceipt receipts → Black_Wall reputation** — a receipt is an on-chain-
+     verified, payer-bound settlement = exactly the chain-confirmed outcome
+     `ledger.py`/reputation wants (fraud-resistant reputation source).
+  2. **Black_Wall verdicts → Traceipt `/attest`** — anchor a signed verdict digest
+     into Traceipt's Merkle batches → trustless, time-stamped proof of the verdict.
 
 ### 6. awesome-x402 listing  `[VERIFIED via screenshots]`- **PR #679 MERGED** into `xpaysh/awesome-x402` `main` (by maintainer Sri Akula).
   Blackwall is live in the ecosystem index. (Earlier PR #667 via the fork

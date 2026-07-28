@@ -139,11 +139,39 @@ EAS attestations in ROADMAP.md).
 
 ---
 
-## Note: "Traceipt" (receipt / on-chain registry?)
-The user indicated a component **"Traceipt"** may already cover the receipt/
-attestation side (Gemini's "on-chain risk registry" long-term pillar). **Unverified
-— not in this repo.** If Traceipt is a verdict-receipt / settlement-attestation
-system, it likely IS the honest version of the "risk registry" (publish PROOFS —
-"Black_Wall attested this verdict/settlement" — never the private corpus). Add it to
-`docs/ECOSYSTEM.md` and confirm its scope in a session that can see it before wiring
-the audit-verify (#2) or attestation (#4/#5) pillars to it.
+## Traceipt CHANGES THE PICTURE — verdict + receipt = the full lifecycle
+**Traceipt is real, live, and in this repo** (`traceipt/`, branch
+`claude/x402-product-ideas-6adgah`; see `docs/ECOSYSTEM.md`). It issues Ed25519-
+signed, on-chain-verified receipts for x402 payments — the **post-payment RECEIPT**
+half to Black_Wall's **pre-payment VERDICT** half:
+
+```
+Black_Wall (decide: GO/HOLD/STOP)  ──►  agent pays x402  ──►  Traceipt (record: signed receipt)
+        ▲                                                              │
+        └──────────── reputation flywheel (receipts feed verdicts) ◄───┘
+```
+
+**This resolves the long-term pillars without new infra:**
+- **Pillars #4/#5 (on-chain registry / network effect) = Traceipt.** Don't build a
+  new registry. Anchor Black_Wall verdict digests via Traceipt's `POST /attest`
+  (Merkle, RFC 6962) → trustless "Black_Wall attested this verdict at time T",
+  PROOFS not corpus. Bonus: `/attest` is Traceipt's paid endpoint → revenue.
+- **Pillar #2 (seller audit-verify)** — a "verified merchant" badge = a Traceipt-
+  anchored audit attestation. The attestation layer already exists.
+
+**The compounding moat (the real prize):**
+- **Traceipt receipts → Black_Wall reputation.** A receipt is an on-chain-verified,
+  payer/payee-bound settlement — precisely the chain-confirmed outcome
+  `ledger.py`/reputation consumes, but *fraud-resistant* (bound to what was bought).
+  Feeding Traceipt receipts into Black_Wall's reputation is a higher-quality moat
+  input than raw chain scraping.
+
+**Two concrete integration builds (both in-scope, span two branches):**
+- **A) verdict → `/attest`** — after a verdict, POST its digest to Traceipt to
+  anchor it. Small; delivers the "registry" pillar immediately.
+- **B) receipts → reputation** — ingest Traceipt receipts as confirmed settlement
+  outcomes into `ledger.py`. Higher value (compounds the moat); needs a receipt→
+  ledger data path.
+
+Design against the real Traceipt code (`traceipt/service.py` `/attest` shape,
+`traceipt/schema.py` receipt schema) before wiring.
