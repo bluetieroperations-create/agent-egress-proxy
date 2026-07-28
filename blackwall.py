@@ -713,6 +713,12 @@ def validate_request(payload):
     if payment_authorization is not None and not isinstance(payment_authorization, str):
         return None, "payment_authorization must be a base64 X-PAYMENT string"
 
+    # transaction = a raw contract-call payment the agent is about to sign
+    # {to, data, value}; Phase-3 calldata screening flags drainer patterns. Optional.
+    transaction = payload.get("transaction")
+    if transaction is not None and not isinstance(transaction, dict):
+        return None, "transaction must be an object {to, data, value}"
+
     return {
         "agent_id": payload.get("agent_id"),
         "counterparty": counterparty,
@@ -725,6 +731,7 @@ def validate_request(payload):
         "expected_recipient": expected_recipient,
         "payer": payer,
         "payment_authorization": payment_authorization,
+        "transaction": transaction,
     }, None
 
 
@@ -776,15 +783,23 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     # agent supplied in context (its prior quotes for this resource).
     price_history = record.get("price_history") or clean["price_history"]
 
-    # Payload simulation (Phase 1): if the agent handed us the ACTUAL signed
-    # payment it's about to send, cross-check it against the claim being scored.
-    # A mismatch (wrong recipient/amount/asset/chain) is a hard STOP -- you'd be
-    # signing something other than what we judged. Opt-in + fail-open.
+    # Payload simulation: cross-check what the agent is ACTUALLY about to sign
+    # against the claim being scored. Opt-in + fail-open. Two forms:
+    #   * Phase 1/2 (payment_authorization): the signed EIP-3009 transfer -- match
+    #     recipient/amount/asset/chain and recover the signer.
+    #   * Phase 3 (transaction): a raw contract-call payment -- flag drainer calldata
+    #     (unlimited approval, setApprovalForAll, transfer to the wrong recipient).
+    # Any mismatch is a hard STOP; warnings are advisory.
+    sim_claim = {"counterparty": clean["counterparty"], "amount": clean["amount"],
+                 "asset": clean["asset"], "chain": clean["chain"]}
     from payload_sim import check_payment_authorization
+    from calldata import screen_transaction
     pay_check = check_payment_authorization(
-        {"counterparty": clean["counterparty"], "amount": clean["amount"],
-         "asset": clean["asset"], "chain": clean["chain"]},
-        clean.get("payment_authorization"), decimals=6, now=int(time.time()))
+        sim_claim, clean.get("payment_authorization"), decimals=6,
+        now=int(time.time()))
+    tx_check = screen_transaction(sim_claim, clean.get("transaction"))
+    sim_mismatches = pay_check["mismatches"] + tx_check["mismatches"]
+    sim_warnings = pay_check["warnings"] + tx_check["warnings"]
 
     verdict = decide_payment(
         amount=clean["amount"],
@@ -796,11 +811,12 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         resource=clean.get("resource"),
         peer_median=(peer_index.get(clean["resource_class"])
                      if peer_index and clean.get("resource_class") else None),
-        payload_mismatch_reasons=pay_check["mismatches"],
+        payload_mismatch_reasons=sim_mismatches,
     )
-    # Surface advisory (non-blocking) payload warnings, e.g. an expired auth.
-    if pay_check["warnings"]:
-        verdict["reasons"].extend(pay_check["warnings"])
+    # Surface advisory (non-blocking) simulation warnings, e.g. an expired auth or
+    # a bounded approval.
+    if sim_warnings:
+        verdict["reasons"].extend(sim_warnings)
 
     # Endpoint-readiness enrichment (address-based verdict + URL-based readiness).
     # FAIL OPEN here, at the consumer: a misbehaving/raising readiness source --

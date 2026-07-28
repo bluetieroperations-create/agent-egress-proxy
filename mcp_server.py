@@ -50,6 +50,12 @@ _FORECAST_SCHEMA = {
                            "about to send the counterparty. If given, it's "
                            "cross-checked against the claim -- a mismatch is a hard "
                            "STOP (you'd be signing a different payment than scored)."},
+        "transaction": {
+            "type": "object",
+            "description": "optional: a raw contract-call payment {to, data, value} "
+                           "you're about to sign. Calldata is screened for drainer "
+                           "patterns (unlimited approval, setApprovalForAll, transfer "
+                           "to the wrong recipient) -- a hit is a hard STOP."},
         "resource": {"type": "string", "description": "what's being paid for"},
         "agent_id": {"type": "string", "description": "caller DID/identity"},
         "context": {"type": "object",

@@ -99,12 +99,18 @@ not the payment being judged).
   unknown-asset degrades to a warning. Anchored to published vectors (Keccak,
   privkey→address, the EIP-712 spec "Mail" domain separator).
 
-**Phase 3 — contract-call malice (the "smart-contract exploit" Gemini means):**
-- For payments that are *contract calls* (not plain transferWithAuthorization),
-  decode calldata and flag known-bad patterns (`approve` to an unknown spender,
-  unlimited allowance, self-destruct, delegatecall). This is the Blockaid/GPT55
-  lane — a genuine product expansion beyond counterparty risk. Bigger; sequence
-  after Phase 1/2.
+**Phase 3 — contract-call malice — SHIPPED (`calldata.py`):**
+- For payments that are *contract calls* (not plain transferWithAuthorization), the
+  request carries a `transaction` {to, data, value}; we decode the 4-byte selector
+  (keccak) + static ABI args and flag drainer patterns: UNLIMITED `approve` /
+  `increaseAllowance` / EIP-2612 `permit`, `setApprovalForAll(operator,true)`, and
+  `transfer`/`transferFrom` whose recipient (or, when the token is the claimed
+  asset, amount) doesn't match the claim. CRITICAL → hard STOP; bounded approvals /
+  unknown selectors → advisory warning. Selectors anchored to the published 4byte
+  db. Folds into the verdict via the same `payload_mismatch_reasons` seam as Ph 1/2.
+- Out of scope (documented in the module): target-contract bytecode simulation
+  (this is the calldata lane, not full tx simulation) and spender-reputation
+  screening.
 
 **Verdict integration:** a payload mismatch is a `hard_stop` (non-negotiable),
 distinct from a price/reputation judgment — maps cleanly through

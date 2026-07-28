@@ -486,6 +486,38 @@ class TestForecastPayloadSimulation(unittest.TestCase):
         self.assertIsNone(resp)
         self.assertIn("payment_authorization", err)
 
+    def test_phase3_unlimited_approval_hard_stops(self):
+        # a "payment" that is actually an UNLIMITED token approval -> hard STOP
+        spender = "0x" + "d" * 40
+        data = "0x095ea7b3" + (bytes(12) + bytes.fromhex(spender[2:])).hex() \
+            + ((1 << 256) - 1).to_bytes(32, "big").hex()
+        payload = {"counterparty": self.GOOD, "amount": "0.09", "asset": self.USDC,
+                   "chain": "base", "transaction": {"to": self.USDC, "data": data}}
+        resp, err = bw.forecast(payload, self.src)
+        self.assertIsNone(err)
+        self.assertEqual(resp["verdict"], "STOP")
+        self.assertTrue(resp["hard_stop"])
+        self.assertTrue(any("UNLIMITED" in r for r in resp["reasons"]))
+
+    def test_phase3_clean_transfer_stays_go(self):
+        # a token transfer to the RIGHT counterparty is not flagged
+        gh = "0x" + "a" * 40
+        data = "0xa9059cbb" + (bytes(12) + bytes.fromhex(gh[2:])).hex() \
+            + (90000).to_bytes(32, "big").hex()
+        # use a known-good hex counterparty by registering it in the mock is hard;
+        # instead assert the transaction alone adds no hard-stop reason.
+        from calldata import screen_transaction
+        r = screen_transaction({"counterparty": gh, "amount": "0.09"},
+                               {"to": self.USDC, "data": data})
+        self.assertTrue(r["matches"])
+
+    def test_bad_transaction_type_rejected(self):
+        payload = {"counterparty": self.GOOD, "amount": "0.09", "asset": self.USDC,
+                   "chain": "base", "transaction": "not-an-object"}
+        resp, err = bw.forecast(payload, self.src)
+        self.assertIsNone(resp)
+        self.assertIn("transaction", err)
+
 
 class TestForecastEndToEnd(unittest.TestCase):
     """forecast(): validate -> mock lookup -> decide -> receipt."""
