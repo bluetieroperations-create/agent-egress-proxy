@@ -1,7 +1,12 @@
-# Render Blueprint for the Traceipt API (testnet demo).
+# Render Blueprint for the Traceipt API (Base Sepolia REAL mode).
 # Render reads render.yaml from the REPO ROOT. The service builds the Docker
 # image in traceipt/ and Render terminates HTTPS at its edge, so the app
 # binds 0.0.0.0.
+#
+# This is the testnet-REAL config (see traceipt/FLYWHEEL.md): real x402 v2
+# facilitator gate + on-chain (rpc) settlement verification on Base Sepolia --
+# real crypto, no real money. The two SECRETS below (sync:false) are set in
+# the Render dashboard's Environment tab, not here.
 #
 # New > Blueprint > connect this repo > pick the branch that has this file.
 services:
@@ -22,15 +27,45 @@ services:
         value: "8402"
       - key: RECEIPTS_CHAIN
         value: base-sepolia
+      # REAL mode: charge via a facilitator and verify settlement on-chain.
       - key: X402_GATE
-        value: dev
+        value: facilitator
+      - key: RECEIPTS_FACILITATOR_URL
+        value: https://facilitator.x402.rs   # supports base-sepolia, keyless
       - key: RECEIPTS_SETTLEMENT
-        value: mock
+        value: rpc
+      - key: RECEIPTS_RPC_URL
+        value: https://sepolia.base.org
+      - key: RECEIPTS_MIN_CONFIRMATIONS
+        value: "0"                            # testnet; set a few for mainnet
+      # Seller-hosted binding: this instance issues receipts ONLY for payments
+      # to this wallet, and (bind_payer) only to the wallet that paid the fee.
+      # PAY_TO is a public receiving address -- never a private key.
+      - key: RECEIPTS_PAY_TO
+        value: "0x3ec5e0ec1e1cb8e2afa36f3b40eed9057d9004e1"
+      - key: RECEIPTS_SELLER_ID
+        value: traceipt.xyz
+      - key: RECEIPTS_BIND_PAYER
+        value: "1"
+      - key: RECEIPTS_PRICE_BASE_UNITS
+        value: "2000"                         # $0.002 per /attest or /receipts
       # Public URL embedded in verify links + invoice QR. Set to the custom
       # domain you will attach (below). If you test via the *.onrender.com URL
       # before the domain is live, change this to that URL instead.
       - key: RECEIPTS_BASE_URL
         value: https://api.traceipt.xyz
+      # SECRETS -- set in the Render dashboard (Environment tab), not here.
+      # sync:false means the Blueprint will NOT manage/overwrite them.
+      #   RECEIPTS_KEY_PEM   the durable Ed25519 signing key (root of trust for
+      #                      every receipt; generate once, back it up):
+      #     python3 -c "from traceipt.signing import Signer; \
+      #                 print(Signer.generate().private_pem().decode())"
+      #   RECEIPTS_ADMIN_TOKEN  gates POST /anchor + /credits (random):
+      #     python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+      - key: RECEIPTS_KEY_PEM
+        sync: false
+      - key: RECEIPTS_ADMIN_TOKEN
+        sync: false
 
 # NOTE ON STORAGE: the free plan has NO persistent disk, so /data is
 # ephemeral -- the ledger DB and the Ed25519 signing key reset whenever the

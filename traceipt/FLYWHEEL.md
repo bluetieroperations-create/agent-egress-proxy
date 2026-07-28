@@ -19,26 +19,26 @@ Only the address — never a private key.
 
 ## Side 1 — Traceipt (this repo): flip the live API to real mode
 
-Set these as environment variables on the Render service (`traceipt`), in the
-dashboard **Environment** tab. `render.yaml` is deliberately left on the safe
-testnet-*demo* defaults (mock settlement, dev gate) so a stray push can never flip
-the live service into an unsafe half-configured `rpc` state; the real-mode values
-live in the dashboard.
+The non-secret real-mode vars now live in `render.yaml` (committed), including
+`RECEIPTS_PAY_TO` (a public receiving address). The two SECRETS are declared
+`sync: false` there and set in the Render dashboard's **Environment** tab. So on
+deploy you only need to set the two secrets, below.
 
-| Env var | Value | Notes |
-|---|---|---|
-| `RECEIPTS_CHAIN` | `base-sepolia` | testnet |
-| `RECEIPTS_SETTLEMENT` | `rpc` | verify real transfers, not mock |
-| `RECEIPTS_RPC_URL` | `https://sepolia.base.org` | public node; works now that the UA bug is fixed. Swap for a provider endpoint if it rate-limits. |
-| `X402_GATE` | `facilitator` | actually collect payment |
-| `RECEIPTS_FACILITATOR_URL` | `https://facilitator.x402.rs` | supports base-sepolia, **no credentials** |
-| `RECEIPTS_BIND_PAYER` | `1` | the wallet that pays must equal the settlement payer (closes payer-fraud gap) |
-| `RECEIPTS_PAY_TO` | `<YOUR_WALLET_ADDRESS>` | **the one value you provide.** Address only. Receipts only mint for transfers paid TO this address. |
-| `RECEIPTS_SELLER_ID` | `traceipt.xyz` | seller-hosted identity pinned into receipts |
-| `RECEIPTS_PRICE_BASE_UNITS` | `2000` | $0.002 per `/attest` / `/receipts` call |
-| `RECEIPTS_BASE_URL` | `https://api.traceipt.xyz` | verify links + QR resolve here |
-| `RECEIPTS_KEY_PEM` | *(secret — see below)* | durable signing key; mark **secret** |
-| `RECEIPTS_ADMIN_TOKEN` | *(secret — random)* | gates `/anchor` + `/credits` |
+| Env var | Value | Where | Notes |
+|---|---|---|---|
+| `RECEIPTS_CHAIN` | `base-sepolia` | render.yaml | testnet |
+| `RECEIPTS_SETTLEMENT` | `rpc` | render.yaml | verify real transfers, not mock |
+| `RECEIPTS_RPC_URL` | `https://sepolia.base.org` | render.yaml | public node; works now that the UA bug is fixed. Swap for a provider endpoint if it rate-limits. |
+| `RECEIPTS_MIN_CONFIRMATIONS` | `0` | render.yaml | testnet; set a few for mainnet |
+| `X402_GATE` | `facilitator` | render.yaml | actually collect payment |
+| `RECEIPTS_FACILITATOR_URL` | `https://facilitator.x402.rs` | render.yaml | supports base-sepolia, **no credentials** |
+| `RECEIPTS_BIND_PAYER` | `1` | render.yaml | the wallet that pays must equal the settlement payer (closes payer-fraud gap) |
+| `RECEIPTS_PAY_TO` | `0x3ec5…04e1` | render.yaml | public receiving address; receipts only mint for transfers paid TO it |
+| `RECEIPTS_SELLER_ID` | `traceipt.xyz` | render.yaml | seller-hosted identity pinned into receipts |
+| `RECEIPTS_PRICE_BASE_UNITS` | `2000` | render.yaml | $0.002 per `/attest` / `/receipts` call |
+| `RECEIPTS_BASE_URL` | `https://api.traceipt.xyz` | render.yaml | verify links + QR resolve here |
+| `RECEIPTS_KEY_PEM` | *(secret — see below)* | **dashboard** | durable signing key; mark **secret** |
+| `RECEIPTS_ADMIN_TOKEN` | *(secret — random)* | **dashboard** | gates `/anchor` + `/credits` |
 
 **Generate the durable signing key yourself** (never let it transit a chat or a
 log — it is the root of trust for every receipt), then paste it into Render as the
