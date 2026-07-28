@@ -308,10 +308,11 @@ def fake_rpc(receipt_result):
     return transport
 
 
-def chain_receipt(contract=CONTRACT, payer=PAYER, payee=PAYEE, amount=5000, status="0x1"):
+def chain_receipt(contract=CONTRACT, payer=PAYER, payee=PAYEE, amount=5000,
+                  status="0x1", block=None):
     def pad_addr(a):
         return "0x" + "0" * 24 + a[2:].lower()
-    return {
+    rec = {
         "status": status,
         "logs": [{
             "address": contract,
@@ -319,6 +320,21 @@ def chain_receipt(contract=CONTRACT, payer=PAYER, payee=PAYEE, amount=5000, stat
             "data": hex(amount),
         }],
     }
+    if block is not None:
+        rec["blockNumber"] = hex(block)
+    return rec
+
+
+def fake_rpc_with_head(receipt_result, head_block):
+    """Transport answering BOTH eth_getTransactionReceipt and eth_blockNumber,
+    for the confirmation-depth guard."""
+    def transport(req):
+        if req["method"] == "eth_getTransactionReceipt":
+            return {"result": receipt_result}
+        if req["method"] == "eth_blockNumber":
+            return {"result": hex(head_block)}
+        raise AssertionError("unexpected method " + req["method"])
+    return transport
 
 
 class TestSettlement(unittest.TestCase):
@@ -356,6 +372,42 @@ class TestSettlement(unittest.TestCase):
         r = v.verify(sample_settlement())
         self.assertFalse(r.ok)
         self.assertIn("not found", r.reason)
+
+    def test_confirmations_zero_makes_no_head_call(self):
+        # Guard off: never calls eth_blockNumber (fake_rpc asserts the method),
+        # so the default path costs no extra RPC round-trip.
+        v = RpcVerifier("http://unused", transport=fake_rpc(chain_receipt()),
+                        min_confirmations=0)
+        self.assertTrue(v.verify(sample_settlement()).ok)
+
+    def test_confirmations_insufficient_fails(self):
+        rec = chain_receipt(block=100)
+        # head 101 -> confirmations = 101-100+1 = 2; require 5 -> fail
+        v = RpcVerifier("http://unused", transport=fake_rpc_with_head(rec, 101),
+                        min_confirmations=5)
+        r = v.verify(sample_settlement())
+        self.assertFalse(r.ok)
+        self.assertIn("insufficient confirmations", r.reason)
+
+    def test_confirmations_sufficient_passes(self):
+        rec = chain_receipt(block=100)
+        # head 110 -> confirmations = 11; require 5 -> pass
+        v = RpcVerifier("http://unused", transport=fake_rpc_with_head(rec, 110),
+                        min_confirmations=5)
+        self.assertTrue(v.verify(sample_settlement()).ok)
+
+    def test_confirmations_unreadable_head_fails_safe(self):
+        rec = chain_receipt(block=100)
+
+        def transport(req):
+            if req["method"] == "eth_getTransactionReceipt":
+                return {"result": rec}
+            raise RuntimeError("rpc head unreadable")
+
+        v = RpcVerifier("http://unused", transport=transport, min_confirmations=3)
+        r = v.verify(sample_settlement())
+        self.assertFalse(r.ok)   # never attest on an unverifiable depth
+        self.assertIn("confirmations", r.reason)
 
     def test_match_on_second_of_multiple_logs(self):
         # A tx with two payer->payee transfers; only the second has the
@@ -866,6 +918,32 @@ class TestX402GateUnit(unittest.TestCase):
         decoded = json.loads(_b64.b64decode(encode_payment_response(s)))
         self.assertEqual(decoded, s)
 
+    def test_gate_rejects_wrong_recipient_without_facilitator(self):
+        # Defense-in-depth: a payment to the WRONG address is rejected locally,
+        # never reaching the facilitator (which we don't trust to enforce it).
+        fac = FakeFacilitator()
+        req = {"scheme": "exact", "network": "eip155:84532",
+               "amount": "2000", "payTo": PAYEE}
+        # authorization pays a DIFFERENT address than payTo
+        bad = make_xpayment(PAYER)  # to=PAYEE... build one paying elsewhere:
+        payload = json.loads(_b64.b64decode(bad))
+        payload["payload"]["authorization"]["to"] = "0x" + "99" * 20
+        bad = _b64.b64encode(json.dumps(payload).encode()).decode()
+        d = gate_verify(fac, {"X-PAYMENT": bad}, req, {"error": "x"})
+        self.assertFalse(d.ok)
+        self.assertIn("payTo", d.body["error"])
+        self.assertEqual(fac.verify_calls, 0)   # never consulted the facilitator
+
+    def test_gate_rejects_wrong_amount_without_facilitator(self):
+        fac = FakeFacilitator()
+        req = {"scheme": "exact", "network": "eip155:84532",
+               "amount": "2000", "payTo": PAYEE}
+        d = gate_verify(fac, {"X-PAYMENT": make_xpayment(PAYER, value="1")},
+                        req, {"error": "x"})
+        self.assertFalse(d.ok)
+        self.assertIn("underpaid", d.body["error"])
+        self.assertEqual(fac.verify_calls, 0)
+
 
 class TestFacilitatorService(unittest.TestCase):
     """End-to-end through the HTTP service with a fake facilitator + payer
@@ -1373,7 +1451,7 @@ class TestAttestFacilitator(unittest.TestCase):
         d = tempfile.mkdtemp()
         app = App(signer=Signer.generate(), ledger=Ledger(os.path.join(d, "f.db")),
                   verifier=MockVerifier(), gate="facilitator",
-                  price_base_units="1000", pay_to=PAYEE, seller_id="op",
+                  price_base_units="2000", pay_to=PAYEE, seller_id="op",
                   chain="base-sepolia", base_url="http://x",
                   facilitator=fac, bind_payer=True)
         srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))

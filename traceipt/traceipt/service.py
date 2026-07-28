@@ -705,6 +705,11 @@ def main(argv=None):
     p.add_argument("--settlement", choices=["rpc", "mock"],
                    default=os.environ.get("RECEIPTS_SETTLEMENT", "rpc"))
     p.add_argument("--rpc-url", default=os.environ.get("RECEIPTS_RPC_URL"))
+    p.add_argument("--min-confirmations", type=int,
+                   default=int(os.environ.get("RECEIPTS_MIN_CONFIRMATIONS", "0")),
+                   help="block confirmations required before a settlement is "
+                        "attested (rpc mode). 0 = as soon as mined; set a few "
+                        "for real mainnet money (reorg protection)")
     p.add_argument("--price", default=os.environ.get("RECEIPTS_PRICE_BASE_UNITS", "2000"))
     p.add_argument("--pay-to", default=os.environ.get("RECEIPTS_PAY_TO",
                    "0x0000000000000000000000000000000000000000"),
@@ -766,7 +771,8 @@ def main(argv=None):
     app = App(
         signer=signer,
         ledger=Ledger(args.db),
-        verifier=make_verifier(args.settlement, args.chain, args.rpc_url),
+        verifier=make_verifier(args.settlement, args.chain, args.rpc_url,
+                               min_confirmations=args.min_confirmations),
         gate=args.gate,
         price_base_units=args.price,
         pay_to=args.pay_to,

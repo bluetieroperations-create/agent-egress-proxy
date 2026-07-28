@@ -90,13 +90,63 @@ def decode_payment_header(value: str) -> dict:
     return payload
 
 
+def _authorization(payment: dict) -> dict:
+    """The EIP-3009 authorization inside a payment payload, type-safely.
+
+    The nested payload/authorization are fully attacker-controlled (only the
+    top level is guaranteed a dict by decode_payment_header), so a non-dict at
+    any level returns {} rather than raising."""
+    if not isinstance(payment, dict):
+        return {}
+    inner = payment.get("payload")
+    if not isinstance(inner, dict):
+        return {}
+    auth = inner.get("authorization")
+    return auth if isinstance(auth, dict) else {}
+
+
 def payer_from_payload(payload: dict) -> str | None:
     """Best-effort extraction of the paying address from the authorization,
     used only as a cross-check; the facilitator's verified `payer` is
     authoritative."""
-    auth = payload.get("payload", {}).get("authorization", {})
-    frm = auth.get("from")
+    frm = _authorization(payload).get("from")
     return frm.lower() if isinstance(frm, str) else None
+
+
+def payment_satisfies(payment: dict, requirements: dict) -> tuple[bool, str]:
+    """Defense-in-depth: does the payment's ACTUAL signed authorization match
+    the terms we require (recipient + exact amount), independent of what the
+    facilitator reports? The `exact` scheme (EIP-3009 transferWithAuthorization)
+    signs a fixed {to, value, nonce}; we assert those against our own
+    requirements so we never rely solely on the facilitator to enforce that a
+    caller paid the right address the right amount. Returns (ok, reason).
+
+    Checks are applied only for requirement fields that are present, so a
+    minimal requirements dict (e.g. in a unit test) still passes; a real
+    challenge always carries payTo + amount."""
+    auth = _authorization(payment)
+
+    pay_to = requirements.get("payTo")
+    if pay_to is not None:
+        to = auth.get("to")
+        if not isinstance(to, str) or to.lower() != str(pay_to).lower():
+            return False, "payment recipient does not match payTo"
+
+    required_raw = requirements.get("amount", requirements.get("maxAmountRequired"))
+    if required_raw is not None:
+        try:
+            value = int(str(auth.get("value")))
+            required = int(str(required_raw))
+        except (TypeError, ValueError):
+            return False, "missing/invalid payment value"
+        # exact scheme: the authorization must move EXACTLY the required amount.
+        if value != required:
+            return False, "underpaid" if value < required else "overpaid"
+
+    # A real EIP-3009 authorization always carries a nonce.
+    if not auth.get("nonce"):
+        return False, "missing authorization nonce"
+    return True, "ok"
 
 
 class Facilitator:
@@ -165,6 +215,15 @@ def gate_verify(facilitator: Facilitator, headers, requirements: dict,
         payment = decode_payment_header(raw_header)
     except ValueError as e:
         return _reject(402, {**challenge_body, "error": f"invalid X-PAYMENT: {e}"})
+
+    # Defense-in-depth: check the signed authorization matches OUR terms
+    # (recipient + exact amount) BEFORE spending a facilitator round-trip and
+    # before trusting its verdict. A payment that pays the wrong address or the
+    # wrong amount is rejected here, not on the facilitator's good behavior.
+    ok, reason = payment_satisfies(payment, requirements)
+    if not ok:
+        return _reject(402, {**challenge_body,
+                             "error": f"payment does not satisfy terms: {reason}"})
 
     try:
         v = facilitator.verify(payment, requirements)

@@ -60,9 +60,16 @@ def _topic_to_addr(topic: str) -> str:
 
 
 class RpcVerifier:
-    def __init__(self, rpc_url: str, transport=None, timeout: float = 15.0):
+    def __init__(self, rpc_url: str, transport=None, timeout: float = 15.0,
+                 min_confirmations: int = 0):
         self._url = rpc_url
         self._timeout = timeout
+        # Finality guard: require the settlement's block to be buried under at
+        # least this many confirmations before attesting it. 0 = attest as soon
+        # as the tx is mined (fine for the fast soft-finality of an L2 like Base
+        # / for testnet); set a few for real mainnet money so a tx that later
+        # reorgs out is never turned into a durable receipt. See DEPLOY.md.
+        self._min_confirmations = max(0, int(min_confirmations))
         self._transport = transport or self._http_transport
 
     def _http_transport(self, request_obj: dict) -> dict:
@@ -126,6 +133,11 @@ class RpcVerifier:
             except (ValueError, TypeError):
                 continue  # malformed log data: not a match, never a crash
             if amount == want_amount:
+                # Full match. Apply the finality guard once (all logs share
+                # this tx's block) before attesting.
+                conf_ok, conf_reason = self._confirmations_ok(rec)
+                if not conf_ok:
+                    return SettlementResult(False, "rpc", conf_reason)
                 return SettlementResult(True, "rpc")
             near_miss = (f"amount mismatch: chain says {amount}, "
                          f"claim says {want_amount}")
@@ -134,6 +146,33 @@ class RpcVerifier:
             near_miss or
             "no matching USDC Transfer log (contract/payer/payee) in this transaction",
         )
+
+    def _confirmations_ok(self, rec: dict) -> tuple[bool, str]:
+        """True if the settlement's block is at least `min_confirmations` deep.
+        With the guard off (0) this is a no-op and costs no extra RPC call.
+        Fail-safe: an unreadable head / block number is treated as NOT
+        confirmed, so a receipt is never issued on an unverifiable depth."""
+        if self._min_confirmations <= 0:
+            return True, ""
+        try:
+            tx_block = int(rec.get("blockNumber", ""), 16)
+        except (ValueError, TypeError):
+            return False, "receipt is missing a block number"
+        try:
+            head_resp = self._transport({
+                "jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber",
+                "params": [],
+            })
+            head = int(head_resp.get("result", ""), 16)
+        except (ValueError, TypeError) as e:
+            return False, f"could not read chain head for confirmations: {e}"
+        except Exception as e:  # transport failure -> fail safe
+            return False, f"could not read chain head for confirmations: {e}"
+        confirmations = head - tx_block + 1
+        if confirmations < self._min_confirmations:
+            return False, (f"insufficient confirmations "
+                           f"({confirmations} of {self._min_confirmations} required)")
+        return True, ""
 
 
 class MockVerifier:
@@ -145,9 +184,11 @@ class MockVerifier:
         return SettlementResult(True, "mock")
 
 
-def make_verifier(mode: str, chain: str, rpc_url: str | None = None):
+def make_verifier(mode: str, chain: str, rpc_url: str | None = None,
+                  min_confirmations: int = 0):
     if mode == "rpc":
-        return RpcVerifier(rpc_url or RPC_DEFAULTS[chain])
+        return RpcVerifier(rpc_url or RPC_DEFAULTS[chain],
+                           min_confirmations=min_confirmations)
     if mode == "mock":
         return MockVerifier()
     raise ValueError(f"unknown settlement mode {mode!r}")

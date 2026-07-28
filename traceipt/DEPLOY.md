@@ -143,7 +143,11 @@ hourly on their own; otherwise call `POST /anchor` manually.
 **D. Real chain + settlement.** `RECEIPTS_CHAIN=base`,
 `RECEIPTS_SETTLEMENT=rpc`, `RECEIPTS_RPC_URL=<reliable Base RPC>` (a provider
 endpoint, not the public node). Receipts then attest a *verified* transfer,
-and `verification_method` reads `rpc` instead of `mock`.
+and `verification_method` reads `rpc` instead of `mock`. For real mainnet
+money also set `RECEIPTS_MIN_CONFIRMATIONS` to a few blocks (e.g. `3`): a
+settlement is only attested once it is that many confirmations deep, so a tx
+that later reorgs out is never turned into a durable receipt. Base has ~2s
+blocks, so this adds only a few seconds of latency. Leave it `0` on testnet.
 > Do NOT flip to `rpc` without also setting `RECEIPTS_PAY_TO` (step E) — an
 > unbound `rpc` service would let a caller claim any third party's transfer
 > as "verified". Honest `mock` beats dishonest `rpc`.
@@ -176,6 +180,7 @@ proofs still verify).
 | `RECEIPTS_BIND_PAYER` | `--bind-payer` | off |
 | `RECEIPTS_SETTLEMENT` | `--settlement` | `rpc` |
 | `RECEIPTS_RPC_URL` | `--rpc-url` | public node |
+| `RECEIPTS_MIN_CONFIRMATIONS` | `--min-confirmations` | `0` (set a few for mainnet) |
 | `RECEIPTS_PAY_TO` | `--pay-to` | zero address (unset) |
 | `RECEIPTS_SELLER_ID` | `--seller-id` | — |
 | `RECEIPTS_PRICE_BASE_UNITS` | `--price` | `2000` ($0.002) |
