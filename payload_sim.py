@@ -28,6 +28,23 @@ IMPORTANT -- CHANNEL: the payment-being-scored travels in the request BODY field
 Blackwall's OWN fee payment (Blackwall is itself x402-paid, see x402.py); the two
 must never be conflated.
 
+LIMITATIONS (Phase 1, audited & accepted -- Phase 2 addresses the first two):
+  * Strong vs best-effort bindings. `to` and `value` live in the SIGNED EIP-3009
+    authorization -- they are the crown jewels and Phase 2 confirms the signature
+    covers them. `asset`/`network` live in the UNSIGNED `accepted` metadata wrapper
+    (the chain/asset are truly bound only in the EIP-712 DOMAIN, which Phase 1 can't
+    read). So the asset/chain checks are best-effort: a payment that OMITS them
+    simply isn't cross-checked on those fields (we never fabricate a match; we just
+    can't confirm). Recipient + amount always bind.
+  * Fundamental limit: we verify the SHOWN authorization matches the claim; we
+    cannot prove the shown authorization is the one actually broadcast. A fully
+    malicious agent showing us one auth and sending another is out of scope for any
+    phase.
+  * Decimals. The amount is compared in atomic units assuming USDC (6dp). A
+    non-USDC asset with different decimals would FALSE-mismatch on amount -- errs
+    SAFE (STOP, never a false GO). Blackwall is USDC-only today; wire decimals to
+    the asset when that changes.
+
 Phase 2 (deferred, needs secp256k1): recover the signer from the EIP-712 digest and
 confirm signer == the stated payer -- catches a signature that isn't the payer's.
 See docs/STRATEGY_REVIEW.md.
