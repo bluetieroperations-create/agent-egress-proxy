@@ -433,10 +433,16 @@ class TestService(unittest.TestCase):
     def test_unpaid_gets_402_with_x402_requirements(self):
         code, obj = self._post("/receipts", self.request_body())
         self.assertEqual(code, 402)
+        self.assertEqual(obj["x402Version"], 2)          # x402 v2 wire format
         acc = obj["accepts"][0]
         self.assertEqual(acc["scheme"], "exact")
-        self.assertEqual(acc["maxAmountRequired"], "2000")
+        self.assertEqual(acc["amount"], "2000")          # v2: amount, not maxAmountRequired
+        self.assertNotIn("maxAmountRequired", acc)
+        self.assertEqual(acc["network"], "eip155:84532")  # v2: CAIP-2 network
+        self.assertEqual(acc["extra"], {"name": "USDC", "version": "2"})  # EIP-712 domain
         self.assertEqual(acc["payTo"], PAYEE)
+        # v2: resource/description move to a top-level ResourceInfo.
+        self.assertEqual(obj["resource"]["mimeType"], "application/json")
 
     def test_paid_issue_verify_roundtrip(self):
         code, obj = self._post("/receipts", self.request_body(),
@@ -736,6 +742,24 @@ def make_xpayment(payer, value="2000", network="base-sepolia"):
     return _b64.b64encode(json.dumps(payload).encode()).decode()
 
 
+def make_xpayment_v2(payer, value="2000", network="eip155:84532"):
+    """The exact x402 v2 X-PAYMENT envelope Black_Wall's client (clients/
+    x402_pay.py::build_payment) produces: x402Version 2, the chosen
+    requirements under `accepted`, EIP-3009 authorization under
+    payload.authorization (no top-level scheme/network)."""
+    payload = {
+        "x402Version": 2,
+        "accepted": {"scheme": "exact", "network": network, "amount": value,
+                     "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+                     "payTo": PAYEE},
+        "payload": {"signature": "0x" + "11" * 65, "authorization": {
+            "from": payer, "to": PAYEE, "value": value,
+            "validAfter": "0", "validBefore": "9999999999",
+            "nonce": "0x" + "22" * 32}},
+    }
+    return _b64.b64encode(json.dumps(payload).encode()).decode()
+
+
 class FakeFacilitator:
     """Stand-in for a real x402 facilitator. verify() approves iff asked;
     records settle() calls so tests can assert money moved (or didn't)."""
@@ -777,6 +801,43 @@ class TestX402GateUnit(unittest.TestCase):
         payload = decode_payment_header(h)
         self.assertEqual(payload["scheme"], "exact")
         self.assertEqual(payer_from_payload(payload), "0x" + "ab" * 20)
+
+    def test_decode_accepts_v2_envelope(self):
+        # The exact envelope Black_Wall's client builds must decode, and the
+        # payer must be recoverable from payload.authorization.from.
+        h = make_xpayment_v2("0x" + "Ab" * 20)
+        payload = decode_payment_header(h)
+        self.assertEqual(payload["x402Version"], 2)
+        self.assertEqual(payload["accepted"]["scheme"], "exact")
+        self.assertEqual(payer_from_payload(payload), "0x" + "ab" * 20)
+
+    def test_decode_rejects_v2_without_accepted(self):
+        bad = _b64.b64encode(json.dumps({
+            "x402Version": 2, "payload": {"authorization": {"from": PAYER}},
+        }).encode()).decode()
+        with self.assertRaises(ValueError):
+            decode_payment_header(bad)
+
+    def test_gate_verify_ok_with_v2_payment(self):
+        fac = FakeFacilitator()
+        d = gate_verify(fac, {"X-PAYMENT": make_xpayment_v2(PAYER)},
+                        {"network": "eip155:84532"}, {"error": "x"})
+        self.assertTrue(d.ok)
+        self.assertEqual(d.payer, PAYER.lower())
+
+    def test_facilitator_forwards_v2_envelope(self):
+        captured = {}
+
+        def fake_transport(path, body):
+            captured["path"] = path
+            captured["body"] = body
+            return {"isValid": True}
+
+        fac = Facilitator("https://f.example", transport=fake_transport)
+        fac.verify({"x402Version": 2}, {"scheme": "exact"})
+        self.assertEqual(captured["body"]["x402Version"], 2)  # v2 forwarded
+        self.assertIn("paymentPayload", captured["body"])
+        self.assertIn("paymentRequirements", captured["body"])
 
     def test_gate_verify_absent_payment_402(self):
         d = gate_verify(FakeFacilitator(), {}, {"network": "base-sepolia"},
@@ -1220,7 +1281,8 @@ class TestAttestService(unittest.TestCase):
         code, obj = self._req("POST", "/attest",
                               {"hash": "sha256:" + "aa" * 32})
         self.assertEqual(code, 402)
-        self.assertEqual(obj["accepts"][0]["resource"], "http://x/attest")
+        self.assertEqual(obj["x402Version"], 2)
+        self.assertEqual(obj["resource"]["url"], "http://x/attest")  # v2 ResourceInfo
 
     def test_bad_hash_400(self):
         code, _ = self._req("POST", "/attest", {"hash": "0xnope"},

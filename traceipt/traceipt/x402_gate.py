@@ -27,8 +27,11 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import urllib.error
 import urllib.request
 from collections import namedtuple
+
+X402_VERSION = 2  # protocol version emitted in the facilitator envelope
 
 MAX_PAYMENT_HEADER = 8 * 1024  # base64 payload cap (untrusted input)
 
@@ -67,14 +70,23 @@ def decode_payment_header(value: str) -> dict:
         raise ValueError("X-PAYMENT does not contain valid JSON")
     if not isinstance(payload, dict):
         raise ValueError("X-PAYMENT payload must be a JSON object")
-    if payload.get("x402Version") != 1:
+    version = payload.get("x402Version")
+    if version not in (1, 2):
         raise ValueError("unsupported x402Version")
-    if not isinstance(payload.get("scheme"), str) or not isinstance(
-        payload.get("network"), str
-    ):
-        raise ValueError("X-PAYMENT missing scheme/network")
+    # Both versions nest the EIP-3009 authorization under `payload`.
     if not isinstance(payload.get("payload"), dict):
         raise ValueError("X-PAYMENT missing inner payload")
+    if version == 2:
+        # v2 carries the chosen requirements (scheme/network/asset) under
+        # `accepted`; the top level has no scheme/network.
+        if not isinstance(payload.get("accepted"), dict):
+            raise ValueError("X-PAYMENT (v2) missing accepted requirements")
+    else:
+        # v1 legacy: scheme/network live at the top level.
+        if not isinstance(payload.get("scheme"), str) or not isinstance(
+            payload.get("network"), str
+        ):
+            raise ValueError("X-PAYMENT missing scheme/network")
     return payload
 
 
@@ -108,19 +120,30 @@ class Facilitator:
                 "User-Agent": "Traceipt/0.2 x402-gate",
             },
         )
-        with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            # Real facilitators (observed on Base Sepolia) return a STRUCTURED
+            # x402 error with a non-2xx status — e.g. 500 + {isValid:false,
+            # invalidReason:...} when on-chain signature recovery reverts.
+            # Surface that body instead of treating it as opaque/unreachable,
+            # so the caller sees the real reason rather than a 502.
+            try:
+                return json.loads(e.read().decode("utf-8"))
+            except Exception:
+                raise  # genuinely opaque error -> propagate -> caller fails safe
 
     def verify(self, payment: dict, requirements: dict) -> dict:
         return self._transport("/verify", {
-            "x402Version": 1,
+            "x402Version": X402_VERSION,
             "paymentPayload": payment,
             "paymentRequirements": requirements,
         })
 
     def settle(self, payment: dict, requirements: dict) -> dict:
         return self._transport("/settle", {
-            "x402Version": 1,
+            "x402Version": X402_VERSION,
             "paymentPayload": payment,
             "paymentRequirements": requirements,
         })

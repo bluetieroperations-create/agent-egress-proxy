@@ -35,7 +35,7 @@ from .schema import (
     build_receipt, receipt_hash, validate_attestation_request,
     validate_commerce, validate_credit, validate_settlement,
 )
-from .settlement import USDC_CONTRACTS, make_verifier
+from .settlement import CAIP2, EIP712_DOMAINS, USDC_CONTRACTS, make_verifier
 from .signing import load_or_create_signer, verify_envelope
 from .x402_gate import (
     Facilitator, GateDecision, _proceed, _reject, encode_payment_response,
@@ -97,29 +97,44 @@ class App:
         # chain-break error.
         self._issue_lock = threading.Lock()
 
-    # -- x402 gate ---------------------------------------------------------
+    # -- x402 gate (protocol v2) ------------------------------------------
     def requirements(self, resource: str) -> dict:
-        """The single x402 `accepts` entry this service advertises."""
+        """The single x402 v2 `accepts` entry this service advertises.
+
+        v2 vs v1: the amount field is `amount` (was `maxAmountRequired`), the
+        network is CAIP-2 (`eip155:84532`, not the bare `base-sepolia`), and the
+        asset's EIP-712 domain rides in `extra` so the facilitator can verify the
+        EIP-3009 signature. The resource/description/mimeType move OUT to a
+        top-level ResourceInfo (see payment_required_body)."""
+        req = {
+            "scheme": "exact",
+            "network": CAIP2.get(self.chain, self.chain),
+            "amount": self.price_base_units,
+            "asset": USDC_CONTRACTS[self.chain],
+            "payTo": self.pay_to,
+            "maxTimeoutSeconds": 60,
+        }
+        domain = EIP712_DOMAINS.get(self.chain)
+        if domain:
+            req["extra"] = dict(domain)
+        return req
+
+    def payment_required_body(self, resource: str) -> dict:
+        """x402 v2 Payment Required body. v2 shape: {x402Version:2, error?,
+        resource:{ResourceInfo}, accepts:[...], extensions:{}}."""
         desc = ("anchor one external digest in the next Merkle batch"
                 if resource == "/attest" else "issue one signed x402 receipt")
         return {
-            "scheme": "exact",
-            "network": self.chain,
-            "maxAmountRequired": self.price_base_units,
-            "asset": USDC_CONTRACTS[self.chain],
-            "payTo": self.pay_to,
-            "resource": self.base_url + resource,
-            "description": desc,
-            "mimeType": "application/json",
-            "maxTimeoutSeconds": 60,
-        }
-
-    def payment_required_body(self, resource: str) -> dict:
-        """x402-shaped payment requirements for the 402 response."""
-        return {
-            "x402Version": 1,
+            "x402Version": 2,
             "error": "X-PAYMENT header is required",
+            "resource": {
+                "url": self.base_url + resource,
+                "description": desc,
+                "mimeType": "application/json",
+                "serviceName": "Traceipt",
+            },
             "accepts": [self.requirements(resource)],
+            "extensions": {},
         }
 
     def gate_payment(self, headers, resource: str) -> GateDecision:

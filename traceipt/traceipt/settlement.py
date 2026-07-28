@@ -28,6 +28,24 @@ RPC_DEFAULTS = {
     "base-sepolia": "https://sepolia.base.org",
 }
 
+# CAIP-2 network identifiers. x402 v2 requires CAIP-2 (`eip155:8453`), not the
+# bare chain name — the service keeps the human name internally and converts at
+# the protocol edge (the 402 challenge + facilitator envelope).
+CAIP2 = {
+    "base": "eip155:8453",
+    "base-sepolia": "eip155:84532",
+}
+
+# EIP-712 domain (name, version) of each chain's USDC, carried in the v2 402
+# challenge `extra` so a facilitator/client can reconstruct the domain and
+# verify the EIP-3009 signature without an on-chain read. USDC domains are
+# stable: Base mainnet is "USD Coin"/"2", Base Sepolia (Circle testnet) is
+# "USDC"/"2".
+EIP712_DOMAINS = {
+    "base": {"name": "USD Coin", "version": "2"},
+    "base-sepolia": {"name": "USDC", "version": "2"},
+}
+
 
 class SettlementResult:
     def __init__(self, ok: bool, method: str, reason: str = ""):
