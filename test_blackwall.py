@@ -13,6 +13,13 @@ from decimal import Decimal
 
 import blackwall as bw
 
+try:
+    from eth_account import Account
+    from eth_account.messages import encode_typed_data
+    _HAVE_ETH_ACCOUNT = True
+except Exception:  # pragma: no cover - optional cross-check dependency
+    _HAVE_ETH_ACCOUNT = False
+
 
 class TestParseAmount(unittest.TestCase):
     """
@@ -517,6 +524,66 @@ class TestForecastPayloadSimulation(unittest.TestCase):
         resp, err = bw.forecast(payload, self.src)
         self.assertIsNone(resp)
         self.assertIn("transaction", err)
+
+
+@unittest.skipUnless(_HAVE_ETH_ACCOUNT, "eth-account not installed")
+class TestForecastRealSignatureEndToEnd(unittest.TestCase):
+    """LIVE end-to-end: a REAL eth-account signature through the full forecast()
+    verdict path -- proves Phase 2 recovers real signatures without false-STOPs and
+    catches a real foreign-signer payment. Skips when eth-account isn't installed."""
+    USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+    TYPES = {
+        "EIP712Domain": [
+            {"name": "name", "type": "string"}, {"name": "version", "type": "string"},
+            {"name": "chainId", "type": "uint256"},
+            {"name": "verifyingContract", "type": "address"}],
+        "TransferWithAuthorization": [
+            {"name": "from", "type": "address"}, {"name": "to", "type": "address"},
+            {"name": "value", "type": "uint256"}, {"name": "validAfter", "type": "uint256"},
+            {"name": "validBefore", "type": "uint256"}, {"name": "nonce", "type": "bytes32"}]}
+
+    def _payment(self, signer_acct, from_addr, to, value=90000):
+        msg = {"from": signer_acct.address, "to": to, "value": value, "validAfter": 0,
+               "validBefore": 9999999999, "nonce": bytes.fromhex("11" * 32)}
+        signed = Account.sign_message(encode_typed_data(full_message={
+            "types": self.TYPES,
+            "domain": {"name": "USD Coin", "version": "2", "chainId": 8453,
+                       "verifyingContract": self.USDC},
+            "primaryType": "TransferWithAuthorization", "message": msg}),
+            private_key=signer_acct.key)
+        sig = "0x" + signed.r.to_bytes(32, "big").hex() + signed.s.to_bytes(32, "big").hex() \
+            + bytes([signed.v]).hex()
+        return bw._b64_header({
+            "x402Version": 2,
+            "accepted": {"scheme": "exact", "network": "base", "asset": self.USDC},
+            "payload": {"signature": sig,
+                        "authorization": {"from": from_addr, "to": to,
+                                          "value": str(value), "validAfter": "0",
+                                          "validBefore": "9999999999",
+                                          "nonce": "0x" + "11" * 32}}})
+
+    def test_real_matching_signature_no_hard_stop(self):
+        acct = Account.create()
+        to = "0x" + "a" * 40
+        payload = {"counterparty": to, "amount": "0.09", "asset": self.USDC,
+                   "chain": "base",
+                   "payment_authorization": self._payment(acct, acct.address, to)}
+        resp, err = bw.forecast(payload, bw.MockReputationSource())
+        self.assertIsNone(err)
+        self.assertFalse(resp["hard_stop"])          # real signature must not false-STOP
+        self.assertFalse(any("signer" in r for r in resp["reasons"]))
+
+    def test_real_foreign_signer_hard_stops(self):
+        signer, stated = Account.create(), Account.create()
+        to = "0x" + "a" * 40
+        payload = {"counterparty": to, "amount": "0.09", "asset": self.USDC,
+                   "chain": "base",
+                   "payment_authorization": self._payment(signer, stated.address, to)}
+        resp, err = bw.forecast(payload, bw.MockReputationSource())
+        self.assertIsNone(err)
+        self.assertEqual(resp["verdict"], "STOP")
+        self.assertTrue(resp["hard_stop"])
+        self.assertTrue(any("signer" in r for r in resp["reasons"]))
 
 
 class TestForecastEndToEnd(unittest.TestCase):

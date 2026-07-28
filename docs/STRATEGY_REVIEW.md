@@ -98,6 +98,13 @@ not the payment being judged).
   metadata. Gated to assets with a trusted domain (Base/Base-Sepolia USDC);
   unknown-asset degrades to a warning. Anchored to published vectors (Keccak,
   privkey→address, the EIP-712 spec "Mail" domain separator).
+- **LIVE-VALIDATED against eth-account.** A real Ethereum signing library was
+  cross-checked (test-only, `skipUnless`-gated in `test_eip712.py` /
+  `test_blackwall.py`): our EIP-712 digest is byte-identical to eth-account's, and
+  our pure-Python `ecrecover` recovered the correct signer on **200/200 real random
+  signatures** (both v=27/28); real foreign-signer / wrong-chain / forged signatures
+  all hard-STOP through `forecast()`; `keccak256` matches `eth-utils.keccak`. The
+  production path stays stdlib-only — eth-account is only a test cross-check.
 
 **Phase 3 — contract-call malice — SHIPPED (`calldata.py`):**
 - For payments that are *contract calls* (not plain transferWithAuthorization), the
