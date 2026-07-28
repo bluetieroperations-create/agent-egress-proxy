@@ -54,11 +54,19 @@ but a real bet — design fail-open vs fail-closed explicitly.
 
 # How to build each
 
-## 1. EIP-712 / EIP-3009 payload simulation  *(build first)*
+## 1. EIP-712 / EIP-3009 payload simulation  *(build first)*  — **Phase 1 SHIPPED**
 **Gap:** today the verdict trusts the CLAIMS in the request body
 (`counterparty/amount/asset/chain`). A compromised/malicious agent (or a MITM) can
 ask us to score "pay $5 to X" while actually signing "pay $5000 to Y". We never see
 the real signed authorization.
+
+**Phase 1 is built** (`payload_sim.py`, `test_payload_sim.py`): the request may
+carry the agent's actual signed X-PAYMENT in the body field `payment_authorization`
+(distinct from the fee header); `check_payment_authorization()` decodes it and
+asserts `to/value(atomic)/asset/network` match the claim and a nonce is present.
+Any mismatch is a hard STOP folded into `decide_payment` (`payload_mismatch_reasons`
+→ `hard_stop`); expired/not-yet-valid is an advisory warning. Wired through
+`forecast()` + the MCP schema; USDC (6dp) assumed. Phases 2–3 below remain.
 
 **The seam already exists.** `x402.py` has `decode_payment_header()` (base64→JSON),
 `_authorization()` (pulls the EIP-3009 `{from,to,value,validAfter,validBefore,

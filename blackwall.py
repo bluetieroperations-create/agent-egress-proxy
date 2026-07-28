@@ -37,6 +37,7 @@ import json
 import os
 import re
 import sys
+import time
 from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -327,7 +328,7 @@ def reputation_score(record):
 
 def decide_payment(amount, record, price_history,
                    counterparty=None, expected_recipient=None, hold_above=None,
-                   resource=None, peer_median=None):
+                   resource=None, peer_median=None, payload_mismatch_reasons=None):
     """
     The core verdict. Returns a dict:
         {verdict, score, reasons[], signals{...}}
@@ -382,6 +383,14 @@ def decide_payment(amount, record, price_history,
     # ---- STOP conditions (any one trips it) ----
     stop = False
     hard_stop = False  # sanctioned / known-bad / mismatch => trust score floored to 0
+    # Payload simulation (Phase 1): the agent's ACTUAL signed x402 payment did not
+    # match the payment it asked us to score (pays the wrong party / wrong amount /
+    # wrong asset/chain). Non-negotiable -- you'd be signing something other than
+    # what was judged. Leads the reasons because it is the sharpest attack. (See
+    # payload_sim.py; reasons are pre-computed there so this stays pure.)
+    for _m in (payload_mismatch_reasons or []):
+        stop = hard_stop = True
+        reasons.append(_m)
     if expected_recipient is not None and counterparty is not None \
             and not addresses_equal(counterparty, expected_recipient):
         # Case-INSENSITIVE: an EIP-55 checksummed recipient and its lowercase
@@ -695,6 +704,15 @@ def validate_request(payload):
     if resource_class is not None and not isinstance(resource_class, str):
         return None, "resource_class must be a string"
 
+    # payment_authorization = the agent's ACTUAL signed X-PAYMENT (base64) for the
+    # payment being scored -- the one it's about to send the COUNTERPARTY. Optional.
+    # NB: this is a request-BODY field, distinct from the transport X-PAYMENT header
+    # (which pays Blackwall's own fee); payload_sim cross-checks it against the
+    # claim. When present it must be a string (base64 header value).
+    payment_authorization = payload.get("payment_authorization")
+    if payment_authorization is not None and not isinstance(payment_authorization, str):
+        return None, "payment_authorization must be a base64 X-PAYMENT string"
+
     return {
         "agent_id": payload.get("agent_id"),
         "counterparty": counterparty,
@@ -706,6 +724,7 @@ def validate_request(payload):
         "price_history": price_history,
         "expected_recipient": expected_recipient,
         "payer": payer,
+        "payment_authorization": payment_authorization,
     }, None
 
 
@@ -757,6 +776,16 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     # agent supplied in context (its prior quotes for this resource).
     price_history = record.get("price_history") or clean["price_history"]
 
+    # Payload simulation (Phase 1): if the agent handed us the ACTUAL signed
+    # payment it's about to send, cross-check it against the claim being scored.
+    # A mismatch (wrong recipient/amount/asset/chain) is a hard STOP -- you'd be
+    # signing something other than what we judged. Opt-in + fail-open.
+    from payload_sim import check_payment_authorization
+    pay_check = check_payment_authorization(
+        {"counterparty": clean["counterparty"], "amount": clean["amount"],
+         "asset": clean["asset"], "chain": clean["chain"]},
+        clean.get("payment_authorization"), decimals=6, now=int(time.time()))
+
     verdict = decide_payment(
         amount=clean["amount"],
         record=record,
@@ -767,7 +796,11 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         resource=clean.get("resource"),
         peer_median=(peer_index.get(clean["resource_class"])
                      if peer_index and clean.get("resource_class") else None),
+        payload_mismatch_reasons=pay_check["mismatches"],
     )
+    # Surface advisory (non-blocking) payload warnings, e.g. an expired auth.
+    if pay_check["warnings"]:
+        verdict["reasons"].extend(pay_check["warnings"])
 
     # Endpoint-readiness enrichment (address-based verdict + URL-based readiness).
     # FAIL OPEN here, at the consumer: a misbehaving/raising readiness source --

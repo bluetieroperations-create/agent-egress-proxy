@@ -34,6 +34,14 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `ap_gate.py` (treasury/AP payout gate -- folds the verdict into a
   RELEASE/REVIEW/BLOCK decision at the approve-&-release step; see
   `docs/TREASURY_AP.md`),
+  `payload_sim.py` (Phase 1 payload simulation: cross-check the agent's ACTUAL
+  signed x402 payment -- from the request-body `payment_authorization`, NOT the fee
+  header -- against the claim being scored; any recipient/amount/asset/chain
+  mismatch is a hard STOP folded into the verdict. See `docs/STRATEGY_REVIEW.md`),
+  `traceipt_attest.py` (anchor a verdict digest via Traceipt `POST /attest`, with
+  x402 auto-pay + spend cap), `traceipt_ingest.py` (map on-chain-verified Traceipt
+  receipts into reputation), `traceipt_verify.py` (pure-Python Ed25519 JWKS
+  verification of Traceipt receipt envelopes -- the authenticity gate for ingest),
   `ROADMAP.md`, `docs/DATA_SOURCE_SPIKE.md`. Tests:
   `test_blackwall.py`, `test_ledger.py`, `test_reputation_onchain.py`,
   `test_settlement_watch.py`, `test_addresses.py`, `test_x402.py`,
@@ -47,7 +55,7 @@ test states the mutation it kills). Keep new code stdlib-only and match this sty
 
 Run all tests:
 ```sh
-python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py
+python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py
 ```
 
 ## Standing working practice: ALWAYS deep audit → eval → verify

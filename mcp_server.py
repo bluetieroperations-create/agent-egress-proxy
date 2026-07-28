@@ -44,6 +44,12 @@ _FORECAST_SCHEMA = {
         "chain": {"type": "string", "description": "e.g. base"},
         "payer": {"type": "string",
                   "description": "agent's EVM wallet (optional; binds settlement)"},
+        "payment_authorization": {
+            "type": "string",
+            "description": "optional: the actual signed X-PAYMENT (base64) you're "
+                           "about to send the counterparty. If given, it's "
+                           "cross-checked against the claim -- a mismatch is a hard "
+                           "STOP (you'd be signing a different payment than scored)."},
         "resource": {"type": "string", "description": "what's being paid for"},
         "agent_id": {"type": "string", "description": "caller DID/identity"},
         "context": {"type": "object",
