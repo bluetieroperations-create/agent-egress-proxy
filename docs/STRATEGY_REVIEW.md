@@ -178,8 +178,12 @@ Black_Wall (decide: GO/HOLD/STOP)  ──►  agent pays x402  ──►  Tracei
 - **A) verdict → `/attest`** — after a verdict, POST its digest to Traceipt to
   anchor it. Small; delivers the "registry" pillar immediately.
 - **B) receipts → reputation** — ingest Traceipt receipts as confirmed settlement
-  outcomes into `ledger.py`. Higher value (compounds the moat); needs a receipt→
-  ledger data path.
+  outcomes into reputation. Higher value (compounds the moat). **SHIPPED:**
+  `traceipt_ingest.py` maps receipts, `traceipt_verify.py` authenticates the
+  Ed25519 envelope against the issuer JWKS (fail-closed), and `traceipt_pull.py`
+  pulls signed receipts by id from live Traceipt (`GET /receipts/{id}` +
+  `/jwks.json`), verifies, and folds the authenticated payments into a
+  `ReputationStore`. Remaining: a live run against real Traceipt receipt volume.
 
 Design against the real Traceipt code (`traceipt/service.py` `/attest` shape,
 `traceipt/schema.py` receipt schema) before wiring.

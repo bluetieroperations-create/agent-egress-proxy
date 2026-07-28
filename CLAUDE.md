@@ -42,6 +42,10 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   x402 auto-pay + spend cap), `traceipt_ingest.py` (map on-chain-verified Traceipt
   receipts into reputation), `traceipt_verify.py` (pure-Python Ed25519 JWKS
   verification of Traceipt receipt envelopes -- the authenticity gate for ingest),
+  `traceipt_pull.py` (pull signed receipts by id from live Traceipt -- `GET
+  /receipts/{id}` + `GET /jwks.json` -- verify, and ingest the authenticated
+  payments into a ReputationStore; the live half of the receipts->reputation
+  flywheel, fail-closed on any unverified receipt),
   `ROADMAP.md`, `docs/DATA_SOURCE_SPIKE.md`. Tests:
   `test_blackwall.py`, `test_ledger.py`, `test_reputation_onchain.py`,
   `test_settlement_watch.py`, `test_addresses.py`, `test_x402.py`,
@@ -55,7 +59,7 @@ test states the mutation it kills). Keep new code stdlib-only and match this sty
 
 Run all tests:
 ```sh
-python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py
+python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py
 ```
 
 ## Standing working practice: ALWAYS deep audit → eval → verify
