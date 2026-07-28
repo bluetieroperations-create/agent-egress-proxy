@@ -99,7 +99,14 @@ class Facilitator:
         req = urllib.request.Request(
             self.base_url + path,
             data=json.dumps(body).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            # A Cloudflare-fronted facilitator answers 403 to the default
+            # Python-urllib UA, which would fail the gate with "facilitator
+            # unreachable"; send a plain identifying UA + explicit accept.
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "Traceipt/0.2 x402-gate",
+            },
         )
         with urllib.request.urlopen(req, timeout=self._timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))

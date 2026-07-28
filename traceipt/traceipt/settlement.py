@@ -51,7 +51,15 @@ class RpcVerifier:
         req = urllib.request.Request(
             self._url,
             data=json.dumps(request_obj).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            # A User-Agent is required in practice: Cloudflare-fronted public
+            # nodes (e.g. mainnet.base.org / sepolia.base.org) answer 403 to the
+            # default Python-urllib UA, which would fail every settlement with
+            # "rpc unreachable". Send a plain identifying UA + explicit accept.
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "Traceipt/0.2 settlement-verifier",
+            },
         )
         with urllib.request.urlopen(req, timeout=self._timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
