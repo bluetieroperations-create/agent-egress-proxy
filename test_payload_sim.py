@@ -43,17 +43,21 @@ def _claim(*, counterparty=CP, amount="0.09", asset=USDC, chain="base"):
 
 
 class TestMatch(unittest.TestCase):
-    """Mutation note: if any field comparison is inverted/dropped, the matching
+    """Phase-1 field checks in isolation (verify_signer=False; the fixtures carry a
+    placeholder signature -- Phase 2 is exercised separately with real signatures).
+
+    Mutation note: if any field comparison is inverted/dropped, the matching
     happy-path below stops being clean OR an attack below stops tripping."""
 
     def test_matching_payment_passes(self):
-        r = PS.check_payment_authorization(_claim(), _b64(_payment()))
+        r = PS.check_payment_authorization(_claim(), _b64(_payment()),
+                                           verify_signer=False)
         self.assertTrue(r["checked"])
         self.assertTrue(r["matches"])
         self.assertEqual(r["mismatches"], [])
 
     def test_accepts_predecoded_dict(self):
-        r = PS.check_payment_authorization(_claim(), _payment())
+        r = PS.check_payment_authorization(_claim(), _payment(), verify_signer=False)
         self.assertTrue(r["matches"])
 
     def test_absent_payment_is_opt_in_not_a_failure(self):
@@ -122,12 +126,14 @@ class TestRobustness(unittest.TestCase):
     def test_caip2_network_equivalence_is_not_a_mismatch(self):
         # client sends CAIP-2 network, claim uses the bare name -> same chain
         r = PS.check_payment_authorization(_claim(chain="base"),
-                                           _b64(_payment(network="eip155:8453")))
+                                           _b64(_payment(network="eip155:8453")),
+                                           verify_signer=False)
         self.assertTrue(r["matches"])
 
     def test_symbol_asset_claim_is_not_falsely_flagged(self):
         # claim.asset "USDC" (a symbol) can't be compared to a contract address;
-        # must NOT produce a spurious asset mismatch (only real addr claims compare)
+        # must NOT produce a spurious asset mismatch (only real addr claims compare).
+        # (symbol asset -> no trusted domain -> Phase 2 degrades to a warning)
         r = PS.check_payment_authorization(_claim(asset="USDC"), _b64(_payment()))
         self.assertTrue(r["matches"])
         self.assertFalse(any("asset" in m for m in r["mismatches"]))
@@ -135,8 +141,106 @@ class TestRobustness(unittest.TestCase):
     def test_case_insensitive_recipient(self):
         r = PS.check_payment_authorization(
             _claim(counterparty=CP.upper().replace("0X", "0x")),
-            _b64(_payment(to=CP)))
+            _b64(_payment(to=CP)), verify_signer=False)
         self.assertTrue(r["matches"])
+
+
+class TestPhase2SignerRecovery(unittest.TestCase):
+    """
+    Phase 2: recover the EIP-3009 signer (real signatures, pure-Python secp256k1)
+    and confirm it is the stated payer -- and, because the digest domain is built
+    from the CLAIM, that recovery also binds the chain + asset.
+
+    Mutation notes:
+      - skip the signer check -> test_wrong_key_signature FAILS.
+      - build the domain from the payment's metadata instead of the claim ->
+        test_wrong_chain_signature / test_wrong_asset_signature FAIL.
+      - treat a failed recovery as a pass -> test_forged_signature FAILS.
+    """
+    def _signed(self, pk, *, to=CP, value="90000", asset=USDC, network="base",
+                chain_id=8453, name="USD Coin", version="2", frm=None,
+                nonce="0x" + "1" * 64):
+        import secp256k1 as S
+        import eip712 as E
+        signer = E.pubkey_to_address(S.privkey_to_pub(pk))
+        message = {"from": frm or signer, "to": to, "value": value,
+                   "validAfter": "0", "validBefore": "9999999999", "nonce": nonce}
+        z = E.transfer_authorization_digest(
+            {"name": name, "version": version, "chainId": chain_id,
+             "verifyingContract": asset}, message)
+        r, s, rec = S.ecdsa_sign(z, pk)
+        sig = "0x" + (r.to_bytes(32, "big") + s.to_bytes(32, "big")
+                      + bytes([27 + rec])).hex()
+        payment = {"x402Version": 2,
+                   "accepted": {"scheme": "exact", "network": network, "asset": asset},
+                   "payload": {"signature": sig, "authorization": message}}
+        return payment, signer
+
+    def test_valid_signature_matches(self):
+        payment, signer = self._signed(0xA11CE)
+        r = PS.check_payment_authorization(
+            {"counterparty": CP, "amount": "0.09", "asset": USDC, "chain": "base"},
+            payment)
+        self.assertTrue(r["matches"], r["mismatches"])
+        self.assertEqual(r["warnings"], [])
+
+    def test_wrong_key_signature(self):
+        # `from` claims one address, but a DIFFERENT key actually signed
+        victim = __import__("eip712").pubkey_to_address(
+            __import__("secp256k1").privkey_to_pub(0xBEEF))
+        payment, _ = self._signed(0xA11CE, frm=victim)   # signed by A11CE, from=victim
+        r = PS.check_payment_authorization(
+            {"counterparty": CP, "amount": "0.09", "asset": USDC, "chain": "base"},
+            payment)
+        self.assertFalse(r["matches"])
+        self.assertTrue(any("signer" in m for m in r["mismatches"]))
+
+    def test_forged_signature(self):
+        payment, _ = self._signed(0xA11CE)
+        # corrupt the signature -> recovery yields a different / no signer
+        payment["payload"]["signature"] = "0x" + "3" * 130
+        r = PS.check_payment_authorization(
+            {"counterparty": CP, "amount": "0.09", "asset": USDC, "chain": "base"},
+            payment)
+        self.assertFalse(r["matches"])
+
+    def test_wrong_chain_signature(self):
+        # signature made for base-sepolia (84532), but the claim says base (8453).
+        # Domain built from the CLAIM -> recovery over 8453 != signer -> STOP.
+        payment, _ = self._signed(0xA11CE, chain_id=84532, network="base-sepolia")
+        r = PS.check_payment_authorization(
+            {"counterparty": CP, "amount": "0.09", "asset": USDC, "chain": "base"},
+            payment)
+        self.assertFalse(r["matches"])   # chain bound THROUGH the signature
+
+    def test_wrong_asset_signature(self):
+        # signature made over a different verifyingContract than the claimed asset
+        other = "0x" + "c" * 40
+        payment, _ = self._signed(0xA11CE, asset=other)
+        r = PS.check_payment_authorization(
+            {"counterparty": CP, "amount": "0.09", "asset": USDC, "chain": "base"},
+            payment)
+        self.assertFalse(r["matches"])   # asset bound THROUGH the signature
+
+    def test_unknown_asset_degrades_to_warning(self):
+        # a claim asset with no trusted EIP-712 domain -> can't recover -> warning,
+        # not a hard stop (Phase-1 recipient+amount still bind).
+        other = "0x" + "c" * 40
+        payment, _ = self._signed(0xA11CE, asset=other)
+        r = PS.check_payment_authorization(
+            {"counterparty": CP, "amount": "0.09", "asset": other, "chain": "base"},
+            payment)
+        self.assertTrue(r["matches"])
+        self.assertTrue(any("signer not verified" in w for w in r["warnings"]))
+
+    def test_missing_signature_is_warning(self):
+        payment, _ = self._signed(0xA11CE)
+        del payment["payload"]["signature"]
+        r = PS.check_payment_authorization(
+            {"counterparty": CP, "amount": "0.09", "asset": USDC, "chain": "base"},
+            payment)
+        self.assertTrue(r["matches"])
+        self.assertTrue(any("no signature" in w for w in r["warnings"]))
 
 
 class TestTimeValidityAdvisory(unittest.TestCase):
@@ -144,19 +248,22 @@ class TestTimeValidityAdvisory(unittest.TestCase):
 
     def test_expired_is_warning_not_mismatch(self):
         r = PS.check_payment_authorization(
-            _claim(), _b64(_payment(valid_before="1000")), now=2000)
+            _claim(), _b64(_payment(valid_before="1000")), now=2000,
+            verify_signer=False)
         self.assertTrue(r["matches"])                 # not a hard stop
         self.assertTrue(any("expired" in w for w in r["warnings"]))
 
     def test_not_yet_valid_is_warning(self):
         r = PS.check_payment_authorization(
-            _claim(), _b64(_payment(valid_after="5000")), now=2000)
+            _claim(), _b64(_payment(valid_after="5000")), now=2000,
+            verify_signer=False)
         self.assertTrue(r["matches"])
         self.assertTrue(any("not yet valid" in w for w in r["warnings"]))
 
     def test_no_now_skips_time_checks(self):
         r = PS.check_payment_authorization(
-            _claim(), _b64(_payment(valid_before="1000")))  # no `now`
+            _claim(), _b64(_payment(valid_before="1000")),  # no `now`
+            verify_signer=False)
         self.assertEqual(r["warnings"], [])
 
 

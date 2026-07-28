@@ -395,16 +395,17 @@ class TestForecastPayloadSimulation(unittest.TestCase):
     def setUp(self):
         self.src = bw.MockReputationSource()
 
-    def _xpayment(self, *, to, value, asset=None, network="base"):
-        payment = {
-            "x402Version": 2,
-            "accepted": {"scheme": "exact", "network": network,
-                         "asset": asset or self.USDC},
-            "payload": {"signature": "0x" + "2" * 130,
-                        "authorization": {"from": "0x" + "b" * 40, "to": to,
-                                          "value": value, "validAfter": "0",
-                                          "validBefore": "9999999999",
-                                          "nonce": "0x" + "1" * 64}}}
+    def _xpayment(self, *, to, value, asset=None, network="base", signature="0x" + "2" * 130):
+        payload = {"authorization": {"from": "0x" + "b" * 40, "to": to,
+                                     "value": value, "validAfter": "0",
+                                     "validBefore": "9999999999",
+                                     "nonce": "0x" + "1" * 64}}
+        if signature is not None:
+            payload["signature"] = signature
+        payment = {"x402Version": 2,
+                   "accepted": {"scheme": "exact", "network": network,
+                                "asset": asset or self.USDC},
+                   "payload": payload}
         return bw._b64_header(payment)
 
     def test_matching_payment_stays_go(self):
@@ -412,9 +413,10 @@ class TestForecastPayloadSimulation(unittest.TestCase):
         base = {"counterparty": self.GOOD, "amount": "0.09",
                 "asset": self.USDC, "chain": "base"}
         self.assertEqual(bw.forecast(dict(base), self.src)[0]["verdict"], "GO")
-        # attaching a MATCHING signed payment (0.09 USDC -> GOOD) keeps it GO
+        # a MATCHING payment (0.09 USDC -> GOOD) with recipient+amount right stays GO.
+        # No signature attached -> Phase 2 degrades to an advisory warning, not a stop.
         payload = dict(base, payment_authorization=self._xpayment(
-            to=self.GOOD, value="90000"))
+            to=self.GOOD, value="90000", signature=None))
         resp, err = bw.forecast(payload, self.src)
         self.assertIsNone(err)
         self.assertEqual(resp["verdict"], "GO")
@@ -448,6 +450,33 @@ class TestForecastPayloadSimulation(unittest.TestCase):
                    "asset": self.USDC, "chain": "base"}
         resp, _ = bw.forecast(payload, self.src)
         self.assertEqual(resp["verdict"], "GO")
+
+    def test_phase2_bad_signer_hard_stops_through_forecast(self):
+        # Phase 1 fields all match (to==counterparty, value, asset, chain), but the
+        # signature was made by a different key than `from` -> Phase 2 recovers a
+        # signer != from -> hard STOP end-to-end through forecast().
+        import secp256k1 as S
+        import eip712 as E
+        payer = E.pubkey_to_address(S.privkey_to_pub(0xBEEF))   # stated from
+        cp = "0x" + "a" * 40
+        message = {"from": payer, "to": cp, "value": "90000", "validAfter": "0",
+                   "validBefore": "9999999999", "nonce": "0x" + "1" * 64}
+        z = E.transfer_authorization_digest(
+            {"name": "USD Coin", "version": "2", "chainId": 8453,
+             "verifyingContract": self.USDC}, message)
+        r, s, rec = S.ecdsa_sign(z, 0xA11CE)                    # signed by a DIFFERENT key
+        sig = "0x" + (r.to_bytes(32, "big") + s.to_bytes(32, "big")
+                      + bytes([27 + rec])).hex()
+        payment = {"x402Version": 2,
+                   "accepted": {"scheme": "exact", "network": "base", "asset": self.USDC},
+                   "payload": {"signature": sig, "authorization": message}}
+        payload = {"counterparty": cp, "amount": "0.09", "asset": self.USDC,
+                   "chain": "base", "payment_authorization": bw._b64_header(payment)}
+        resp, err = bw.forecast(payload, self.src)
+        self.assertIsNone(err)
+        self.assertEqual(resp["verdict"], "STOP")
+        self.assertTrue(resp["hard_stop"])
+        self.assertTrue(any("signer" in r for r in resp["reasons"]))
 
     def test_bad_payment_authorization_type_rejected(self):
         payload = {"counterparty": self.GOOD, "amount": "0.09",

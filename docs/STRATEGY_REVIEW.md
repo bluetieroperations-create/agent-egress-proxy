@@ -86,15 +86,18 @@ not the payment being judged).
 - Also check `validBefore` isn't already past and `nonce` is present (reuse the
   existing replay guard `NonceLedger`).
 
-**Phase 2 — signer recovery (needs secp256k1):**
+**Phase 2 — signer recovery — SHIPPED (pure-Python, option (a)):**
 - `ecrecover` the EIP-712 digest of the `transferWithAuthorization` struct →
-  confirm the recovered signer == the claimed `payer`/`from`. Catches a signature
-  that doesn't belong to the stated payer.
-- secp256k1 is NOT stdlib. Options: (a) a pure-Python secp256k1 recover (same
-  posture as `cdp_auth.py`'s pure Ed25519 — heavier but keeps the stdlib rule);
-  (b) make Phase 2 an optional dep-gated check; (c) do recovery client-side in
-  `clients/x402_pay.py` (already has `eth-account`) and have the server verify the
-  claim. Recommend (a) if we want it server-side and dependency-free.
+  confirm the recovered signer == the stated `from`. Catches a signature that
+  doesn't belong to the stated payer. **Built dependency-free** in `keccak.py`
+  (Ethereum Keccak-256), `secp256k1.py` (ECDSA public-key recovery), `eip712.py`
+  (typed-data hashing) — same posture as `cdp_auth.py`'s pure Ed25519.
+- **Bonus — closes the Phase-1 asset/chain gap:** the EIP-712 digest's DOMAIN is
+  built from the CLAIM (chainId from `chain`, verifyingContract from `asset`), so a
+  valid recovery cryptographically binds the chain + asset — no longer self-declared
+  metadata. Gated to assets with a trusted domain (Base/Base-Sepolia USDC);
+  unknown-asset degrades to a warning. Anchored to published vectors (Keccak,
+  privkey→address, the EIP-712 spec "Mail" domain separator).
 
 **Phase 3 — contract-call malice (the "smart-contract exploit" Gemini means):**
 - For payments that are *contract calls* (not plain transferWithAuthorization),

@@ -28,34 +28,42 @@ IMPORTANT -- CHANNEL: the payment-being-scored travels in the request BODY field
 Blackwall's OWN fee payment (Blackwall is itself x402-paid, see x402.py); the two
 must never be conflated.
 
-LIMITATIONS (Phase 1, audited & accepted -- Phase 2 addresses the first two):
-  * Strong vs best-effort bindings. `to` and `value` live in the SIGNED EIP-3009
-    authorization -- they are the crown jewels and Phase 2 confirms the signature
-    covers them. `asset`/`network` live in the UNSIGNED `accepted` metadata wrapper
-    (the chain/asset are truly bound only in the EIP-712 DOMAIN, which Phase 1 can't
-    read). So the asset/chain checks are best-effort: a payment that OMITS them
-    simply isn't cross-checked on those fields (we never fabricate a match; we just
-    can't confirm). Recipient + amount always bind.
-  * Fundamental limit: we verify the SHOWN authorization matches the claim; we
-    cannot prove the shown authorization is the one actually broadcast. A fully
-    malicious agent showing us one auth and sending another is out of scope for any
-    phase.
+LIMITATIONS (audited & accepted):
+  * Known-asset gate. Phase 2's signer recovery (and thus the cryptographic
+    chain/asset binding) runs only for assets with a trusted EIP-712 domain in
+    x402.EIP712_DOMAINS (Base/Base-Sepolia USDC today). For an UNKNOWN asset there
+    is no trusted domain, so signer verification degrades to a warning and the
+    Phase-1 asset/chain checks fall back to best-effort on self-declared metadata
+    (a payment omitting them isn't cross-checked on those fields). Recipient +
+    amount always bind; add domains to the table to extend the crypto binding.
+  * Fundamental limit: we verify the SHOWN authorization; we cannot prove it is the
+    one actually broadcast. A fully malicious agent showing one auth and sending
+    another is out of scope for any phase.
   * Decimals. The amount is compared in atomic units assuming USDC (6dp). A
     non-USDC asset with different decimals would FALSE-mismatch on amount -- errs
     SAFE (STOP, never a false GO). Blackwall is USDC-only today; wire decimals to
     the asset when that changes.
+  * Latency. Pure-Python secp256k1 recovery is ~20ms per signed check -- negligible
+    next to the on-chain settlement it guards, and only runs when a signature is
+    present.
 
-Phase 2 (deferred, needs secp256k1): recover the signer from the EIP-712 digest and
-confirm signer == the stated payer -- catches a signature that isn't the payer's.
-See docs/STRATEGY_REVIEW.md.
+Phase 2 (BUILT, `verify_signer=True`): reconstruct the EIP-712 digest of the
+`transferWithAuthorization` and RECOVER the signer (pure-Python secp256k1), then
+confirm it is the authorization's stated `from`. Crucially the digest's DOMAIN is
+built from the CLAIM (chainId from `chain`, verifyingContract from `asset`), so a
+valid recovery also cryptographically binds the chain + asset -- closing the Phase-1
+gap where those were self-declared. Recovery failure or a signer != `from` for a
+KNOWN asset is a hard STOP; an unknown asset/chain (no trusted domain) or an absent
+signature degrades to a warning (Phase-1 recipient+amount still bind).
 
-Reuses x402.py's decode/extract helpers and addresses.py. Pure + stdlib.
+Reuses x402.py's decode/extract helpers, addresses.py, and the pure-Python
+keccak/secp256k1/eip712 primitives. Pure + stdlib.
 """
 from __future__ import annotations
 
 from addresses import addresses_equal, is_evm_address
-from x402 import (_accepted, _authorization, decode_payment_header, to_atomic,
-                  to_caip2)
+from x402 import (EIP712_DOMAINS, _accepted, _authorization, decode_payment_header,
+                  to_atomic, to_caip2)
 
 
 def _decode(x_payment, decode):
@@ -80,8 +88,54 @@ def _show(v):
     return s if len(s) <= 60 else s[:57] + "..."
 
 
+def _claim_domain(claim):
+    """Build the EIP-712 domain FROM THE CLAIM (name/version from the asset's known
+    domain, chainId from the claimed chain, verifyingContract = the claimed asset),
+    or None if the asset/chain isn't a trusted known domain. Building it from the
+    claim -- not the attacker's metadata -- is what makes a successful recovery bind
+    the signature to the claimed chain + asset."""
+    asset = claim.get("asset")
+    if not is_evm_address(asset):
+        return None
+    nv = EIP712_DOMAINS.get(asset.lower())
+    if not nv:
+        return None
+    caip2 = to_caip2(claim.get("chain"))
+    if not (isinstance(caip2, str) and caip2.startswith("eip155:")):
+        return None
+    try:
+        chain_id = int(caip2.split(":")[1])
+    except (ValueError, IndexError):
+        return None
+    return {"name": nv["name"], "version": nv["version"],
+            "chainId": chain_id, "verifyingContract": asset}
+
+
+def _recover_signer(payment, auth, domain):
+    """Recover the Ethereum address that signed the payment's EIP-3009
+    authorization under `domain`, or None. NEVER raises."""
+    try:
+        from eip712 import (pubkey_to_address, split_signature,
+                            transfer_authorization_digest)
+        from secp256k1 import ecdsa_recover
+        payload = payment.get("payload") if isinstance(payment, dict) else None
+        sig = payload.get("signature") if isinstance(payload, dict) else None
+        parts = split_signature(sig) if sig else None
+        if not parts:
+            return None
+        r, s, rec = parts
+        z = transfer_authorization_digest(domain, {
+            "from": auth.get("from"), "to": auth.get("to"),
+            "value": auth.get("value"), "validAfter": auth.get("validAfter"),
+            "validBefore": auth.get("validBefore"), "nonce": auth.get("nonce")})
+        q = ecdsa_recover(z, r, s, rec)
+        return pubkey_to_address(q) if q else None
+    except Exception:
+        return None
+
+
 def check_payment_authorization(claim, x_payment, *, decimals=6, now=None,
-                                decode=None):
+                                verify_signer=True, decode=None):
     """Cross-check a signed x402 payment against the CLAIMED payment being scored.
 
     `claim`     = {counterparty, amount, asset, chain} (amount a decimal string or
@@ -149,6 +203,34 @@ def check_payment_authorization(claim, x_payment, *, decimals=6, now=None,
     if not auth.get("nonce"):
         mismatches.append("signed payment carries no authorization nonce -- not a "
                           "valid EIP-3009 authorization")
+
+    # --- Phase 2: recover the signer and confirm it is the stated payer. The
+    #     domain is built from the CLAIM, so a valid recovery ALSO binds the
+    #     signature to the claimed chain + asset (EIP-712 domain = chainId +
+    #     token). Hard STOP on a bad/foreign signature for a KNOWN asset; unknown
+    #     asset/chain or a missing signature degrades to a warning. ---
+    if verify_signer:
+        _from = auth.get("from")
+        domain = _claim_domain(claim)
+        payload = payment.get("payload") if isinstance(payment, dict) else None
+        has_sig = isinstance(payload, dict) and bool(payload.get("signature"))
+        if domain is None:
+            warnings.append("signer not verified: no trusted EIP-712 domain for the "
+                            "claimed asset/chain (%s)" % _show(claim.get("asset")))
+        elif not has_sig:
+            warnings.append("signer not verified: payment carries no signature")
+        elif not _from:
+            warnings.append("signer not verified: authorization has no `from`")
+        else:
+            recovered = _recover_signer(payment, auth, domain)
+            if recovered is None:
+                mismatches.append(
+                    "signature is not a valid payer signature for the claimed "
+                    "chain+asset -- forged, or a different chain/asset than scored")
+            elif not addresses_equal(recovered, _from):
+                mismatches.append(
+                    "signature signer %s != the stated payer %s (from)"
+                    % (_show(recovered), _show(_from)))
 
     # --- time validity: advisory only (a facilitator rejects these itself) ---
     if now is not None:

@@ -34,10 +34,15 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `ap_gate.py` (treasury/AP payout gate -- folds the verdict into a
   RELEASE/REVIEW/BLOCK decision at the approve-&-release step; see
   `docs/TREASURY_AP.md`),
-  `payload_sim.py` (Phase 1 payload simulation: cross-check the agent's ACTUAL
-  signed x402 payment -- from the request-body `payment_authorization`, NOT the fee
-  header -- against the claim being scored; any recipient/amount/asset/chain
-  mismatch is a hard STOP folded into the verdict. See `docs/STRATEGY_REVIEW.md`),
+  `payload_sim.py` (payload simulation: cross-check the agent's ACTUAL signed x402
+  payment -- from the request-body `payment_authorization`, NOT the fee header --
+  against the claim being scored. Phase 1: recipient/amount/asset/chain field match;
+  Phase 2: recover the EIP-3009 signer and confirm == stated payer, binding chain +
+  asset via the EIP-712 domain. Any mismatch is a hard STOP folded into the verdict.
+  See `docs/STRATEGY_REVIEW.md`), `keccak.py` (pure-Python Keccak-256 -- Ethereum's,
+  not FIPS SHA3), `secp256k1.py` (pure-Python secp256k1 ECDSA public-key recovery),
+  `eip712.py` (EIP-712 typed-data hashing for transferWithAuthorization + address
+  derivation) -- the stdlib crypto behind payload-sim Phase 2,
   `traceipt_attest.py` (anchor a verdict digest via Traceipt `POST /attest`, with
   x402 auto-pay + spend cap), `traceipt_ingest.py` (map on-chain-verified Traceipt
   receipts into reputation), `traceipt_verify.py` (pure-Python Ed25519 JWKS
@@ -59,7 +64,7 @@ test states the mutation it kills). Keep new code stdlib-only and match this sty
 
 Run all tests:
 ```sh
-python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py
+python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py
 ```
 
 ## Standing working practice: ALWAYS deep audit → eval → verify
