@@ -937,12 +937,36 @@ class TestFacilitatorService(unittest.TestCase):
         self.assertEqual(code, 400)
         self.assertEqual(fac.settle_calls, 0)
 
-    def test_settle_failure_still_returns_receipt_with_warning(self):
-        _, fac, port = self._make(facilitator=FakeFacilitator(settle_ok=False))
-        code, obj, _ = self._post(port, self._body(PAYER, "0x" + "b4" * 32),
+    def test_settle_failure_issues_no_receipt(self):
+        # "No settled fee => no receipt": if the fee fails to settle, the
+        # caller gets an error and NOTHING is persisted -- so they can't
+        # obtain a valid signed receipt without paying.
+        app, fac, port = self._make(facilitator=FakeFacilitator(settle_ok=False))
+        tx = "0x" + "b4" * 32
+        code, obj, _ = self._post(port, self._body(PAYER, tx),
                                   xpayment=make_xpayment(PAYER))
-        self.assertEqual(code, 201)
-        self.assertIn("settlement_warning", obj)
+        self.assertEqual(code, 402, obj)          # not 201 + warning
+        self.assertNotIn("receipt", obj)
+        self.assertEqual(fac.settle_calls, 1)     # settle was attempted
+        # And no receipt persisted: a retry (settle now succeeds) issues a
+        # FRESH receipt rather than returning a leaked one.
+        self.assertIsNone(app.ledger.find_by_settlement("operator.example", tx))
+
+    def test_settle_failure_then_retry_succeeds(self):
+        # A transient settle failure must not burn the settlement: once the
+        # facilitator recovers, the same request issues a receipt.
+        fac = FakeFacilitator(settle_ok=False)
+        app, _, port = self._make(facilitator=fac)
+        tx = "0x" + "b5" * 32
+        code, _, _ = self._post(port, self._body(PAYER, tx),
+                                xpayment=make_xpayment(PAYER))
+        self.assertEqual(code, 402)
+        fac.settle_ok = True                      # facilitator recovers
+        code, obj, hdrs = self._post(port, self._body(PAYER, tx),
+                                     xpayment=make_xpayment(PAYER))
+        self.assertEqual(code, 201, obj)
+        self.assertIn("X-PAYMENT-RESPONSE", hdrs)
+        self.assertNotIn("_payment_response", obj)  # header only, never in body
 
 
 class TestV02Schema(unittest.TestCase):
@@ -1394,6 +1418,20 @@ class TestAttestFacilitator(unittest.TestCase):
         self.assertEqual((c1, c2), (201, 200))
         self.assertTrue(obj2.get("idempotent"))
         self.assertEqual(fac.settle_calls, 1)
+
+    def test_settle_failure_queues_no_attestation(self):
+        # "No settled fee => no attestation": a settle failure yields an error
+        # and NOTHING is queued, so a retry (settle OK) is a fresh submission.
+        fac = FakeFacilitator(settle_ok=False)
+        port = self._make(fac)
+        d = {"hash": "sha256:" + "ee" * 32}
+        code, obj = self._post(port, d, xpayment=make_xpayment(PAYER))
+        self.assertEqual(code, 402, obj)
+        self.assertNotIn("attestation", obj)
+        fac.settle_ok = True
+        code, obj = self._post(port, d, xpayment=make_xpayment(PAYER))
+        self.assertEqual(code, 201, obj)          # fresh submission, not idempotent
+        self.assertNotIn("idempotent", obj)
 
 
 class TestPublisher(unittest.TestCase):

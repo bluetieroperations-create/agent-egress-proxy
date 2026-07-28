@@ -391,6 +391,20 @@ class Ledger:
             con.close()
         return dict(row) if row else None
 
+    def find_pending_attestation(self, digest: str) -> dict | None:
+        """The still-unanchored attestation for `digest`, or None. A read-only
+        idempotency pre-check so the caller can detect a duplicate submission
+        (and skip charging for it) BEFORE settling — mirrors the (hash, anchor
+        IS NULL) match submit_attestation uses to dedupe."""
+        con = self._connect()
+        try:
+            row = con.execute(
+                "SELECT * FROM attestations WHERE hash = ? AND anchor_id IS NULL",
+                (digest,)).fetchone()
+        finally:
+            con.close()
+        return dict(row) if row else None
+
     def attestation_inclusion(self, att_id: str) -> dict | None:
         """Merkle inclusion proof for an external attestation, or None if
         unknown / not yet anchored."""

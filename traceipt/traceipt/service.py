@@ -162,7 +162,8 @@ class App:
         return gate_settle(self.facilitator, payment, self.requirements(resource))
 
     # -- core operation ----------------------------------------------------
-    def issue(self, body: dict, gate_payer: str | None = None) -> tuple[int, dict]:
+    def issue(self, body: dict, gate_payer: str | None = None,
+              settle=None) -> tuple[int, dict]:
         for field in ("settlement", "commerce"):
             if field not in body:
                 return 400, {"error": f"missing field {field!r}"}
@@ -220,9 +221,32 @@ class App:
         settlement["verification_method"] = result.method
 
         tx_hash = settlement.get("tx_hash", "")
+        # Idempotency FAST-PATH (before charging): a re-submitted settlement
+        # returns the ORIGINAL receipt and is NOT charged a second time.
+        existing = self.ledger.find_by_settlement(seller_id, tx_hash)
+        if existing is not None:
+            rid = existing["payload"]["receipt_id"]
+            return 200, {
+                "receipt": existing,
+                "verify_url": f"{self.base_url}/verify/{rid}",
+                "idempotent": True,
+            }
+
+        # Settle the fee BEFORE persisting: a signed receipt is never durably
+        # issued unless its fee actually settled ("no settled fee => no
+        # receipt"). The settlement/commerce were fully validated above, so
+        # the build below cannot fail after the charge. Settle runs OUTSIDE
+        # _issue_lock so a slow facilitator can't stall other sellers'
+        # issuance; on failure nothing is persisted and the caller is not
+        # billed a receipt they didn't get.
+        ok, settle_response, err = settle() if settle is not None else (True, None, "")
+        if not ok:
+            return 402, {"error": "payment settlement failed", "reason": err}
+
         with self._issue_lock:
-            # One settlement, one receipt: re-submitting the same tx returns
-            # the ORIGINAL receipt (idempotent), never a second one.
+            # Re-check under the lock: a concurrent request for the SAME
+            # settlement may have issued between the fast-path and here. Rare;
+            # the fee just settled is the documented cost of that race.
             existing = self.ledger.find_by_settlement(seller_id, tx_hash)
             if existing is not None:
                 rid = existing["payload"]["receipt_id"]
@@ -244,10 +268,13 @@ class App:
                 self.ledger.append(envelope)
             except ValueError as e:
                 return 409, {"error": f"could not append to chain: {e}"}
-        return 201, {
+        resp = {
             "receipt": envelope,
             "verify_url": f"{self.base_url}/verify/{payload['receipt_id']}",
         }
+        if settle_response is not None:
+            resp["_payment_response"] = settle_response
+        return 201, resp
 
     def issue_credit(self, body: dict) -> tuple[int, dict]:
         """Issue a credit note: a receipt documenting a VERIFIED refund of a
@@ -336,21 +363,9 @@ class App:
             "verify_url": f"{self.base_url}/verify/{payload['receipt_id']}",
         }
 
-    def issue_attestation(self, body: dict,
-                          gate_payer: str | None = None) -> tuple[int, dict]:
-        """Anchoring-as-a-service: accept an external digest (e.g. an
-        AAR/acta receipt-chain head) into the next Merkle batch. Paid via
-        the x402 gate like receipt issuance. Returns 201 on a new
-        submission, 200 when an identical digest is already queued."""
-        try:
-            validate_attestation_request(body)
-        except ValueError as e:
-            return 400, {"error": str(e)}
-        rec, idem = self.ledger.submit_attestation(
-            digest=body["hash"], type_=body.get("type", "digest"),
-            ref=body.get("ref"), submitted_at=utc_now(), payer=gate_payer)
+    def _attestation_out(self, rec: dict) -> dict:
         att_id = rec["attestation_id"]
-        out = {
+        return {
             "attestation": {
                 "attestation_id": att_id,
                 "hash": rec["hash"],
@@ -361,9 +376,42 @@ class App:
             },
             "proof_url": f"{self.base_url}/attest/{att_id}/proof",
         }
+
+    def issue_attestation(self, body: dict, gate_payer: str | None = None,
+                          settle=None) -> tuple[int, dict]:
+        """Anchoring-as-a-service: accept an external digest (e.g. an
+        AAR/acta receipt-chain head) into the next Merkle batch. Paid via
+        the x402 gate like receipt issuance. Returns 201 on a new
+        submission, 200 when an identical digest is already queued."""
+        try:
+            validate_attestation_request(body)
+        except ValueError as e:
+            return 400, {"error": str(e)}
+        digest = body["hash"]
+        # Idempotency FAST-PATH (before charging): an already-queued digest is
+        # returned without settling a second fee.
+        existing = self.ledger.find_pending_attestation(digest)
+        if existing is not None:
+            return 200, {**self._attestation_out(existing), "idempotent": True}
+
+        # Settle the fee BEFORE queuing: no settled fee => no attestation. On
+        # failure nothing is queued and the caller is not billed.
+        ok, settle_response, err = settle() if settle is not None else (True, None, "")
+        if not ok:
+            return 402, {"error": "payment settlement failed", "reason": err}
+
+        rec, idem = self.ledger.submit_attestation(
+            digest=digest, type_=body.get("type", "digest"),
+            ref=body.get("ref"), submitted_at=utc_now(), payer=gate_payer)
+        out = self._attestation_out(rec)
         if idem:
+            # Rare race: an identical digest was queued concurrently between
+            # the fast-path and here. The fee just settled is the documented
+            # cost of that race.
             out["idempotent"] = True
             return 200, out
+        if settle_response is not None:
+            out["_payment_response"] = settle_response
         return 201, out
 
     def _jwks(self) -> dict:
@@ -595,27 +643,32 @@ def make_handler(app: App):
             except (ValueError, UnicodeDecodeError):
                 return self._send(400, {"error": "body must be valid JSON"})
 
-            # 3. Perform the operation (payer binding uses the gate's payer).
+            # 3. Perform the operation. The fee is settled INSIDE the op —
+            #    after idempotency is resolved (so replays are never charged)
+            #    but BEFORE the receipt/attestation is persisted, so a signed
+            #    artifact is never durably issued unless its fee settled. On a
+            #    settle failure the op returns non-201 and nothing persists.
+            def _settle():
+                if decision.payment is None:
+                    return True, None, ""
+                return app.settle_payment(decision.payment, resource)
+
             try:
                 if resource == "/attest":
-                    code, obj = app.issue_attestation(body, gate_payer=decision.payer)
+                    code, obj = app.issue_attestation(
+                        body, gate_payer=decision.payer, settle=_settle)
                 else:
-                    code, obj = app.issue(body, gate_payer=decision.payer)
+                    code, obj = app.issue(
+                        body, gate_payer=decision.payer, settle=_settle)
             except Exception as e:
                 return self._send(500, {"error": f"internal error: {type(e).__name__}"})
-            if code != 201:
-                # Nothing new was created (error, or idempotent replay) →
-                # do NOT settle. The caller is not charged.
-                return self._send(code, obj)
 
-            # 4. Settle the payment now that the work exists.
-            if decision.payment is not None:
-                ok, settle_response, err = app.settle_payment(decision.payment, resource)
-                if not ok:
-                    obj = {**obj, "settlement_warning":
-                           f"issued but payment settlement failed: {err}"}
-                    return self._send_with_payment_response(201, obj, settle_response or None)
-                return self._send_with_payment_response(201, obj, settle_response)
+            # The op stashes the facilitator's settle response for the
+            # X-PAYMENT-RESPONSE header; pop it so it never leaks into the body.
+            payment_response = (obj.pop("_payment_response", None)
+                                if isinstance(obj, dict) else None)
+            if code == 201 and payment_response is not None:
+                return self._send_with_payment_response(201, obj, payment_response)
             return self._send(code, obj)
 
         def log_message(self, fmt, *args):  # quiet; the ledger is the record
