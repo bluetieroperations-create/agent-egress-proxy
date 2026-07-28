@@ -22,14 +22,19 @@ Guards (only clean, real settlements feed reputation):
 Pure + stdlib; unit-tested. `ingest_receipts()` is a thin convenience over the
 store's existing `ingest_transfers`.
 
-⚠️ SECURITY -- AUTHENTICITY IS THE CALLER'S JOB. This module TRUSTS the receipt's
-`settlement.verified` flag; it does NOT check the receipt's Ed25519 signature. A
-forged receipt with `verified: true` would poison a counterparty's reputation.
-Therefore: only feed receipts whose signature has been verified against Traceipt's
-published JWKS. Pass a `verify(receipt) -> bool` callback (that does the JWKS
-Ed25519 check) to `receipts_to_transfers` / `ingest_receipts`; without it, only
-ingest receipts from a source you already trust end-to-end. Wiring the JWKS
-signature check is the REQUIRED hardening before this touches untrusted input.
+⚠️ SECURITY -- AUTHENTICITY. The bare-receipt helpers (`receipt_to_transfer`,
+`receipts_to_transfers`, `ingest_receipts`) TRUST the receipt's
+`settlement.verified` flag; they do NOT themselves check the Ed25519 signature, so
+a forged receipt with `verified: true` would poison reputation. Two safe ways to
+feed reputation:
+
+  * PREFERRED -- feed SIGNED ENVELOPES through `ingest_envelopes(store, envelopes,
+    jwks)` / `envelopes_to_transfers(envelopes, jwks)`. These verify each
+    envelope's Ed25519 signature against Traceipt's published JWKS
+    (`traceipt_verify.verify_envelope`) and only the AUTHENTICATED payload is
+    mapped. Forged/tampered envelopes are dropped (fail-closed).
+  * Or pass a `verify(receipt) -> bool` authenticity callback to the bare-receipt
+    helpers; without one, only ingest from a source you already trust end-to-end.
 """
 from __future__ import annotations
 
@@ -98,6 +103,43 @@ def ingest_receipts(store, receipts, verify=None):
     via the store). No-op-safe on an empty/all-filtered list. Pass `verify` to
     gate on the receipt's JWKS signature (see the module SECURITY note)."""
     transfers = receipts_to_transfers(receipts, verify=verify)
+    if not transfers:
+        return 0
+    return store.ingest_transfers(transfers)
+
+
+# ---------------------------------------------------------------------------
+# Authenticated path: verify Traceipt's Ed25519 envelope signatures against the
+# issuer's JWKS, then map ONLY the authenticated payloads. This is the safe way
+# to ingest from an untrusted source (see the module SECURITY note).
+# ---------------------------------------------------------------------------
+def envelope_to_transfer(envelope, jwks):
+    """Verify one Traceipt signed envelope against `jwks` and map its authenticated
+    payload to a reputation transfer, or None if the signature does not verify or
+    the payload must not feed reputation."""
+    from traceipt_verify import verify_envelope
+    payload = verify_envelope(envelope, jwks)   # None unless Ed25519-authenticated
+    if payload is None:
+        return None
+    return receipt_to_transfer(payload)
+
+
+def envelopes_to_transfers(envelopes, jwks):
+    """Map many SIGNED envelopes; drop any whose signature does not verify against
+    `jwks` (fail-closed) or that must not feed reputation."""
+    out = []
+    for e in envelopes or []:
+        t = envelope_to_transfer(e, jwks)
+        if t:
+            out.append(t)
+    return out
+
+
+def ingest_envelopes(store, envelopes, jwks):
+    """Convenience: verify Traceipt signed envelopes against `jwks` and fold the
+    authenticated payment receipts into a reputation store. Returns the number of
+    NEW settlements ingested. Forged/tampered envelopes are silently dropped."""
+    transfers = envelopes_to_transfers(envelopes, jwks)
     if not transfers:
         return 0
     return store.ingest_transfers(transfers)

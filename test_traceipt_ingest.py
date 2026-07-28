@@ -119,5 +119,51 @@ class TestIngestReceiptsEndToEnd(unittest.TestCase):
         self.assertEqual(TI.ingest_receipts(_Boom(), [_receipt(kind="credit")]), 0)
 
 
+class TestIngestEnvelopesAuthenticated(unittest.TestCase):
+    """
+    The authenticated path: only Ed25519-signed, JWKS-verified envelopes feed
+    reputation.
+
+    Mutation notes:
+      - map the payload WITHOUT verifying the signature -> test_forged_dropped FAILS.
+      - fail to unwrap the verified payload -> test_signed_feeds_reputation FAILS.
+    """
+    def _env(self, payload):
+        from test_traceipt_verify import make_signed_envelope
+        return make_signed_envelope(payload)
+
+    def test_signed_envelope_feeds_reputation(self):
+        from reputation_store import ReputationStore
+        payee = "0x" + "a" * 40
+        env, jwks = self._env(_receipt(payee=payee, payer="0x" + "b" * 40,
+                                       tx="0x" + "1" * 64, amount_base_units="90000"))
+        with tempfile.TemporaryDirectory() as d:
+            store = ReputationStore(d + "/rep.db")
+            n = TI.ingest_envelopes(store, [env], jwks)
+            self.assertEqual(n, 1)
+            rec = store.lookup(payee)
+            self.assertGreaterEqual(rec.get("settlement_count", 0), 1)
+            obs = rec.get("price_observations") or []
+            self.assertTrue(any(str(o.get("amount")) == "0.09" for o in obs))
+
+    def test_forged_envelope_dropped(self):
+        # sign a real receipt, then tamper the payload -> signature no longer valid
+        env, jwks = self._env(_receipt(amount_base_units="90000"))
+        env["payload"]["settlement"]["amount_base_units"] = "999999999"  # forged
+        self.assertEqual(TI.envelopes_to_transfers([env], jwks), [])
+
+    def test_wrong_issuer_dropped(self):
+        # envelope signed by a key NOT in the trusted jwks -> dropped (fail-closed)
+        from test_traceipt_verify import make_signed_envelope
+        env, _ = make_signed_envelope(_receipt(), seed=b"\x99" * 32)
+        _, trusted = make_signed_envelope(_receipt(), seed=b"\x11" * 32)
+        self.assertEqual(TI.envelopes_to_transfers([env], trusted), [])
+
+    def test_credit_note_still_skipped_after_verify(self):
+        # a genuinely-signed CREDIT note is authentic but must not feed reputation
+        env, jwks = self._env(_receipt(kind="credit"))
+        self.assertEqual(TI.envelopes_to_transfers([env], jwks), [])
+
+
 if __name__ == "__main__":
     unittest.main()
