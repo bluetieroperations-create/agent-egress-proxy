@@ -328,7 +328,8 @@ def reputation_score(record):
 
 def decide_payment(amount, record, price_history,
                    counterparty=None, expected_recipient=None, hold_above=None,
-                   resource=None, peer_median=None, payload_mismatch_reasons=None):
+                   resource=None, peer_median=None, payload_mismatch_reasons=None,
+                   verified_floor=None, verified_grade=None):
     """
     The core verdict. Returns a dict:
         {verdict, score, reasons[], signals{...}}
@@ -379,6 +380,22 @@ def decide_payment(amount, record, price_history,
         and distinct_payers < MIN_DISTINCT_PAYERS
 
     reasons = []
+
+    # Seller-audit tier: a VALID Blackwall "verified merchant" attestation (issued
+    # ONLY to a merchant that passed the audit -- seller_audit.py) grants a bounded,
+    # EARNED trust floor and clears the thin-COUNT gate (the audit substitutes for
+    # organic volume). It deliberately does NOT touch the Sybil / distinct-payer
+    # gate (an audit can't certify distinct real payers) and NEVER overrides a STOP
+    # (sanctions/known-bad/mismatch/gouge) or the anomaly/budget gates -- all of
+    # which are evaluated from the LIVE record/price below, so a verified merchant
+    # that later misbehaves is still caught (and its badge can be revoked).
+    if verified_floor is not None:
+        rep = max(rep, float(verified_floor))
+        thin = False
+        reasons.append(
+            "counterparty is a Blackwall-verified merchant (grade %s) -- audit-earned "
+            "trust floor %.2f applied; thin-history gate waived (Sybil/anomaly/budget/"
+            "sanctions still enforced)" % (verified_grade, float(verified_floor)))
 
     # ---- STOP conditions (any one trips it) ----
     stop = False
@@ -517,6 +534,9 @@ def decide_payment(amount, record, price_history,
         # x402 settlement is on-chain and final.
         "reversibility": "irreversible",
         "blast_radius": "bounded" if not over_budget else "unbounded",
+        # the merchant's Blackwall seller-audit grade, when it holds a valid badge
+        # (None otherwise). Bounded/earned/revocable -- never a pay-to-whitelist.
+        "seller_verified": verified_grade,
     }
 
     return {
@@ -756,7 +776,7 @@ def default_billing_asset(network, explicit, base_usdc, sepolia_usdc):
 
 
 def forecast(payload, reputation_source, ledger=None, readiness_source=None,
-             hold_above=None, peer_index=None):
+             hold_above=None, peer_index=None, seller_registry=None, now=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
@@ -801,6 +821,22 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     sim_mismatches = pay_check["mismatches"] + tx_check["mismatches"]
     sim_warnings = pay_check["warnings"] + tx_check["warnings"]
 
+    # Seller-audit tier: if the counterparty holds a VALID Blackwall "verified
+    # merchant" badge, apply its bounded, audit-earned trust floor (never a STOP
+    # override -- see seller_audit.py / decide_payment).
+    verified_floor = verified_grade = None
+    if seller_registry is not None:
+        cred = seller_registry.credential_for(clean["counterparty"],
+                                              int(time.time()) if now is None else int(now))
+        if cred:
+            # A badge does NOT help a merchant whose LIVE disputes have since risen
+            # past the audit bar (post-audit drift; re-audit + revocation are the
+            # real control, but this is a cheap stale-badge guard at verdict time).
+            import seller_audit
+            live_dispute = float(record.get("dispute_rate") or 0.0)
+            if live_dispute <= seller_audit.MAX_AUDIT_DISPUTE_RATE:
+                verified_floor, verified_grade = cred["floor"], cred["grade"]
+
     verdict = decide_payment(
         amount=clean["amount"],
         record=record,
@@ -812,6 +848,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         peer_median=(peer_index.get(clean["resource_class"])
                      if peer_index and clean.get("resource_class") else None),
         payload_mismatch_reasons=sim_mismatches,
+        verified_floor=verified_floor, verified_grade=verified_grade,
     )
     # Surface advisory (non-blocking) simulation warnings, e.g. an expired auth or
     # a bounded approval.

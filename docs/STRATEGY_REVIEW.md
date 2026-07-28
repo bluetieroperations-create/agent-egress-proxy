@@ -123,16 +123,21 @@ not the payment being judged).
 distinct from a price/reputation judgment — maps cleanly through
 `docs/RECONCILIATION.md`.
 
-## 2. Seller-side audit-and-verify (earned, NOT paid)
+## 2. Seller-side audit-and-verify (earned, NOT paid) — **SHIPPED (`seller_audit.py`)**
 **Risk to avoid:** "merchant pays → risk score = 0" is the credit-rating-agency
 trap (pay us, we call you safe) and destroys the oracle's integrity.
-**Design:** a merchant submits its endpoint; Black_Wall runs an **audit** —
-`readiness.py` signals (402 impl, manifest, https, openapi) + on-chain settlement
-history + sanctions-clear + price-fairness vs peers. If it PASSES, it earns a
-signed **"verified" attestation** with an expiry that lowers (not zeroes) the risk
-contribution and cuts latency. The **fee is for the audit + periodic re-audit**,
-not a guaranteed pass — a merchant that later misbehaves loses the badge. Ties to
-`readiness.py` + the receipt/attestation layer (see Traceipt note).
+**Built:** `run_audit()` scores a merchant from `readiness.py` signals + on-chain
+settlement history + sanctions/known-bad screen + price-fairness vs peers; a bad
+actor / unconfigured / disputed / gouging merchant FAILS. A pass earns a signed,
+**expiring, revocable** attestation (`SellerRegistry`) granting a **bounded trust
+FLOOR** (grade A 0.85 / B 0.72 — above GO_REPUTATION_MIN, never 1.0). Folds into
+`decide_payment` via `verified_floor`: it clears the thin-*count* gate (the audit
+substitutes for organic volume) but **not** the Sybil/distinct-payer gate, and
+**never overrides a STOP** — live sanctions/anomaly/budget/recipient/payload gates
+all still fire, plus a verdict-time stale-badge guard drops the floor if live
+disputes have since risen past the audit bar. The **fee is the audit + re-audit**,
+not a pass. For public verifiability, anchor the attestation via Traceipt `/attest`
+(proofs, not the key).
 
 ## 3. LangChain plugin
 Same thin-adapter pattern as `blackwall-eliza-guardrail`: a callback/tool that runs

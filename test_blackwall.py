@@ -586,6 +586,105 @@ class TestForecastRealSignatureEndToEnd(unittest.TestCase):
         self.assertTrue(any("signer" in r for r in resp["reasons"]))
 
 
+class TestSellerAuditTier(unittest.TestCase):
+    """
+    The verified-merchant badge through forecast(): it lifts the thin-history gate
+    but is EARNED, BOUNDED, and can NEVER override a STOP.
+
+    Mutation notes:
+      - let the badge override sanctioned/gouge -> those tests FAIL.
+      - waive the Sybil gate with the badge -> test_badge_does_not_waive_sybil FAILS.
+      - not apply the floor -> test_badge_lifts_thin_to_go FAILS.
+    """
+    import seller_audit as _SA
+    MERCHANT = "0x" + "c" * 40
+
+    class _Src:
+        def __init__(self, rec):
+            self.rec = rec
+
+        def lookup(self, cp):
+            return dict(self.rec)
+
+    def _registry(self, record, *, ready="ready"):
+        from readiness import score_readiness
+        reg = self._SA.SellerRegistry()
+        rd = score_readiness({"payment_challenge": True, "manifest_present": True,
+                              "manifest_well_formed": True, "https": True,
+                              "endpoint_reachable": True, "openapi": True,
+                              "homepage_reachable": True}) if ready == "ready" else \
+            {"grade": ready, "score": 60}
+        audit = self._SA.run_audit(readiness=rd, record=record, peer_ratio=1.1)
+        reg.issue(self.MERCHANT, audit, issued_at=1000)
+        return reg
+
+    def _req(self, **o):
+        return dict({"counterparty": self.MERCHANT, "amount": "0.09",
+                     "asset": "USDC", "chain": "base"}, **o)
+
+    def test_badge_lifts_thin_to_go(self):
+        rec = {"settlement_count": 8, "confirmed_settlement_count": 8,
+               "distinct_payers": 5, "dispute_rate": 0.0}
+        src, reg = self._Src(rec), self._registry({"settlement_count": 8,
+            "confirmed_settlement_count": 8, "distinct_payers": 5, "dispute_rate": 0.0})
+        self.assertEqual(bw.forecast(self._req(), src)[0]["verdict"], "HOLD")  # thin
+        r, _ = bw.forecast(self._req(), src, seller_registry=reg, now=2000)
+        self.assertEqual(r["verdict"], "GO")
+        self.assertEqual(r["signals"]["seller_verified"], "B")
+
+    def test_badge_does_not_waive_sybil(self):
+        # only 1 distinct payer -> wash-trade gate stays, even verified -> HOLD
+        rec = {"settlement_count": 8, "confirmed_settlement_count": 8,
+               "distinct_payers": 1, "dispute_rate": 0.0}
+        reg = self._registry(rec)
+        r, _ = bw.forecast(self._req(), self._Src(rec), seller_registry=reg, now=2000)
+        self.assertEqual(r["verdict"], "HOLD")
+
+    def test_badge_cannot_override_sanctioned(self):
+        rec = {"settlement_count": 40, "confirmed_settlement_count": 40,
+               "distinct_payers": 6, "dispute_rate": 0.0}
+        reg = self._registry(rec)
+        r, _ = bw.forecast(self._req(), self._Src(dict(rec, sanctioned=True)),
+                           seller_registry=reg, now=2000)
+        self.assertEqual(r["verdict"], "STOP")
+        self.assertTrue(r["hard_stop"])
+
+    def test_badge_cannot_override_gouge(self):
+        rec = {"settlement_count": 40, "confirmed_settlement_count": 40,
+               "distinct_payers": 6, "dispute_rate": 0.0, "price_history": ["0.09"] * 6}
+        reg = self._registry(rec)
+        # 10x the merchant's own median -> STOP regardless of the badge
+        r, _ = bw.forecast(self._req(amount="0.90"), self._Src(rec),
+                           seller_registry=reg, now=2000)
+        self.assertEqual(r["verdict"], "STOP")
+
+    def test_revoked_badge_no_lift(self):
+        rec = {"settlement_count": 8, "confirmed_settlement_count": 8,
+               "distinct_payers": 5, "dispute_rate": 0.0}
+        reg = self._registry(rec)
+        reg.revoke(self.MERCHANT)
+        r, _ = bw.forecast(self._req(), self._Src(rec), seller_registry=reg, now=2000)
+        self.assertEqual(r["verdict"], "HOLD")
+
+    def test_badge_ignored_when_live_disputes_spike(self):
+        # badge issued while clean, but live disputes have since exceeded the audit
+        # bar -> the stale badge does NOT lift the verdict.
+        clean_rec = {"settlement_count": 8, "confirmed_settlement_count": 8,
+                     "distinct_payers": 5, "dispute_rate": 0.0}
+        reg = self._registry(clean_rec)
+        drifted = dict(clean_rec, dispute_rate=0.20)      # 20% disputes now
+        r, _ = bw.forecast(self._req(), self._Src(drifted),
+                           seller_registry=reg, now=2000)
+        self.assertNotEqual(r["verdict"], "GO")
+        self.assertIsNone(r["signals"]["seller_verified"])
+
+    def test_no_registry_is_unaffected(self):
+        rec = {"settlement_count": 40, "confirmed_settlement_count": 40,
+               "distinct_payers": 6, "dispute_rate": 0.0}
+        r, _ = bw.forecast(self._req(), self._Src(rec))
+        self.assertIsNone(r["signals"]["seller_verified"])
+
+
 class TestForecastEndToEnd(unittest.TestCase):
     """forecast(): validate -> mock lookup -> decide -> receipt."""
 
