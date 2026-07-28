@@ -20,7 +20,10 @@ try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import (
         Ed25519PrivateKey, Ed25519PublicKey)
     _HAVE_CRYPTO = True
-except Exception:  # pragma: no cover - container path
+except BaseException:  # pragma: no cover - container path
+    # NB: a broken `cryptography` rust binding raises pyo3_runtime.PanicException,
+    # which subclasses BaseException (not Exception) -- catch it too so the
+    # optional cross-check degrades to a skip instead of crashing the suite.
     _HAVE_CRYPTO = False
 
 
