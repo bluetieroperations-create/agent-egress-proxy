@@ -57,6 +57,11 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `calldata.py` (payload-sim Phase 3: decode a contract-call payment's calldata and
   flag drainer patterns -- unlimited approval / setApprovalForAll / transfer to the
   wrong recipient/amount -- as a hard STOP; from the request-body `transaction`),
+  `aa_cosigner.py` (AA co-signing -- Blackwall as a MANDATORY ERC-4337/7579 guard,
+  off-chain half: compute the v0.7 `userOpHash`, decode `execute` + Phase-3 screen
+  the real on-chain call, then ECDSA-sign the hash ONLY on GO/approved-HOLD and
+  WITHHOLD on STOP; explicit fail-open/closed. Posture change -- see
+  `docs/AA_COSIGNING.md`),
   `traceipt_attest.py` (anchor a verdict digest via Traceipt `POST /attest`, with
   x402 auto-pay + spend cap), `traceipt_ingest.py` (map on-chain-verified Traceipt
   receipts into reputation), `traceipt_verify.py` (pure-Python Ed25519 JWKS
@@ -78,7 +83,7 @@ test states the mutation it kills). Keep new code stdlib-only and match this sty
 
 Run all tests:
 ```sh
-python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py
+python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py test_aa_cosigner.py
 ```
 
 ## Standing working practice: ALWAYS deep audit → eval → verify

@@ -144,7 +144,20 @@ Same thin-adapter pattern as `blackwall-eliza-guardrail`: a callback/tool that r
 `forecast_payment` (or the broad check) before a tool/payment executes; observe →
 enforce modes; reuse the HITL confirmation. Lives in its own repo. Low effort.
 
-## 4. AA co-signing (the moat — design deliberately)
+## 4. AA co-signing (the moat) — **OFF-CHAIN HALF SHIPPED (`aa_cosigner.py`)**
+**Built (off-chain, what Blackwall runs):** `user_op_hash()` computes the exact
+ERC-4337 v0.7 `userOpHash` (cross-checked vs `eth_abi`); `decode_execute()` pulls
+the inner `(to,value,data)` from a standard account `execute()` so we Phase-3 screen
+the REAL on-chain call (a drainer inner-call is refused even on a GO verdict);
+`cosign_user_op()` ECDSA-signs the userOpHash ONLY on GO / human-approved HOLD and
+WITHHOLDS on STOP — with an explicit `FAIL_OPEN`/`FAIL_CLOSED` choice when the
+engine is unreachable; `recover_cosigner()` is what the on-chain validator does
+(cross-checked vs `eth-account`). **Not built (the real bet):** the deployed
+ERC-7579 Solidity validator, HSM/MPC key infra, bundler path — prototype on testnet.
+See `docs/AA_COSIGNING.md` for the reference validator + the hash-domain caveat.
+Everything below still holds — this is a posture change, not a free upgrade.
+
+### Original design notes
 **Model:** Black_Wall as an **ERC-4337 guard/validator module** (or MPC co-signer):
 the smart account's `validateUserOp` calls Black_Wall; it returns a signature only
 when the verdict is GO (or a human approves a HOLD). The wallet **cannot** broadcast
