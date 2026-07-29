@@ -26,6 +26,15 @@ guard.set_availability(W.FAIL_OPEN)   # toggle live
 A **STOP verdict always withholds** — the toggle only governs the "can't reach
 Blackwall" case.
 
+**Customer-facing copy is built in** so your settings UI can render the choice in
+plain language without re-writing it:
+
+```python
+W.describe_policy()                 # {question, default, options:[...], note}
+W.describe_policy(W.FAIL_CLOSED)    # {label:"Pause payments", tagline, customer, best_for}
+guard.describe_availability()       # copy for the guard's CURRENT setting
+```
+
 ## Where the verdict comes from
 
 ```python

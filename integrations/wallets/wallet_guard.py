@@ -46,6 +46,54 @@ CONFIRM = "confirm"
 BLOCK = "block"
 
 
+# Customer-facing copy for the availability toggle, so a wallet provider's settings
+# UI can render the choice straight from the library (plain language, not dev docs).
+_POLICY_COPY = {
+    FAIL_CLOSED: {
+        "label": "Pause payments",
+        "tagline": "Safest — default",
+        "customer": ("If Blackwall's safety check is ever briefly unavailable, your "
+                     "wallet waits and won't send a payment until it's back. Nothing "
+                     "risky slips through — but during that short window, payments "
+                     "are on hold."),
+        "best_for": "Treasuries and high-value wallets — correctness over speed.",
+    },
+    FAIL_OPEN: {
+        "label": "Keep paying",
+        "tagline": "Keeps things moving",
+        "customer": ("If Blackwall's safety check is briefly unavailable, your wallet "
+                     "keeps sending payments as normal. You're never held up — but "
+                     "for that short window, payments go out without the extra check."),
+        "best_for": "Everyday agent spending wallets — liveness over the guarantee.",
+    },
+}
+_ALWAYS_BLOCKS_NOTE = ("Either way, a payment flagged as dangerous is always blocked. "
+                       "This setting only changes what happens in the rare moment "
+                       "Blackwall itself can't be reached.")
+_TOGGLE_QUESTION = ("If Blackwall can't be reached for a moment, what should your "
+                    "wallet do?")
+
+
+def describe_policy(policy=None):
+    """Customer-facing description of the availability toggle, for a wallet UI.
+
+    With a `policy` (FAIL_CLOSED/FAIL_OPEN) -> that option's copy dict
+    {value, label, tagline, customer, best_for}. Without one -> the whole control:
+    {question, default, options:[both option dicts], note} where `note` is the
+    "a dangerous payment is always blocked" reassurance. Raises on an unknown policy."""
+    if policy is None:
+        return {
+            "question": _TOGGLE_QUESTION,
+            "default": FAIL_CLOSED,
+            "options": [dict(_POLICY_COPY[FAIL_CLOSED], value=FAIL_CLOSED),
+                        dict(_POLICY_COPY[FAIL_OPEN], value=FAIL_OPEN)],
+            "note": _ALWAYS_BLOCKS_NOTE,
+        }
+    if policy not in _POLICY_COPY:
+        raise ValueError("policy must be FAIL_CLOSED or FAIL_OPEN")
+    return dict(_POLICY_COPY[policy], value=policy)
+
+
 class Decision:
     def __init__(self, *, action, verdict=None, hard_stop=False, score=None,
                  reasons=None, receipt_id=None, degraded=False):
@@ -186,6 +234,11 @@ class WalletGuard:
             raise ValueError("policy must be FAIL_CLOSED or FAIL_OPEN")
         self.on_unreachable = policy
         return self.on_unreachable
+
+    def describe_availability(self):
+        """Customer-facing copy for the CURRENTLY-selected availability policy
+        (for a 'your setting: ...' UI). See describe_policy()."""
+        return describe_policy(self.on_unreachable)
 
     def check(self, payload) -> Decision:
         try:

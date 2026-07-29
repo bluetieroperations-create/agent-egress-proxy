@@ -128,6 +128,38 @@ class TestAvailabilityToggle(unittest.TestCase):
             g.set_availability("whatever")
 
 
+class TestDescribePolicy(unittest.TestCase):
+    """Mutation notes: wrong default -> test_control FAILS; missing the
+    always-blocks note -> the reassurance is gone."""
+
+    def test_single_policy(self):
+        d = W.describe_policy(W.FAIL_CLOSED)
+        self.assertEqual(d["value"], W.FAIL_CLOSED)
+        self.assertEqual(d["label"], "Pause payments")
+        for k in ("label", "tagline", "customer", "best_for"):
+            self.assertTrue(d[k])
+        self.assertIn("Keep paying", W.describe_policy(W.FAIL_OPEN)["label"])
+
+    def test_control(self):
+        c = W.describe_policy()
+        self.assertEqual(c["default"], W.FAIL_CLOSED)
+        self.assertEqual(len(c["options"]), 2)
+        self.assertEqual({o["value"] for o in c["options"]},
+                         {W.FAIL_CLOSED, W.FAIL_OPEN})
+        self.assertIn("always blocked", c["note"])
+        self.assertTrue(c["question"])
+
+    def test_bad_policy_raises(self):
+        with self.assertRaises(ValueError):
+            W.describe_policy("nonsense")
+
+    def test_guard_describes_current(self):
+        g = W.WalletGuard(_fixed(_v("GO")), on_unreachable=W.FAIL_OPEN)
+        self.assertEqual(g.describe_availability()["value"], W.FAIL_OPEN)
+        g.set_availability(W.FAIL_CLOSED)
+        self.assertEqual(g.describe_availability()["label"], "Pause payments")
+
+
 class TestInProcessEndToEnd(unittest.TestCase):
     """Real forecast via a small reputation source (no network)."""
     class _Src:
