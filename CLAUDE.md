@@ -2,6 +2,15 @@
 
 Guidance for working in this repo.
 
+> ⚠️ **Multiple sessions? Read `docs/HANDOFF.md` FIRST.** Two separate projects live
+> in this repo as two branches — **Blackwall** (payment-verdict engine, repo root,
+> branch `claude/blackwall-x402-integration-j3rdab`) and **Traceipt** (`traceipt/`
+> dir, branch `claude/x402-product-ideas-6adgah`). Do NOT merge them. Before pushing:
+> `git fetch` + rebase onto the remote tip, then verify `local HEAD == remote HEAD`
+> (a same-branch overwrite already happened once). Don't rebuild what the handoff's
+> inventory lists as done. The `traceipt_*.py` files are a shared seam — coordinate
+> schema changes.
+
 ## Repo
 
 Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
