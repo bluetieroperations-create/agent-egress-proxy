@@ -101,18 +101,49 @@ the confirmed outcome Black_Wall's reputation moat wants, but fraud-resistant.
 
 ## The shared unblock (same on both sides)
 
-Both products are **testnet / dev-gate / mock-settlement** today. The integration is
-**proven in code, not in production revenue.** For Black_Wall to pay Traceipt real
-USDC on Base — turning the verified-in-code flywheel into a real end-to-end demo —
-Traceipt needs the production flip we already scoped:
+`render.yaml` is now committed in **Base Sepolia REAL mode** (x402 v2 facilitator
+gate + on-chain `rpc` settlement, bound to the operator wallet
+`0x3ec5…04e1`) — real crypto, no real money. Remaining to complete the first live
+flywheel run:
 
-1. a receiving wallet (`RECEIPTS_PAY_TO`, address only),
-2. real settlement (`RECEIPTS_CHAIN=base`, `RECEIPTS_SETTLEMENT=rpc`, a reliable RPC),
-3. the facilitator gate (`X402_GATE=facilitator`, `RECEIPTS_BIND_PAYER=1`),
-4. durable persistence (paid disk + `RECEIPTS_KEY_PEM` secret).
+1. set the two Render dashboard secrets (`RECEIPTS_KEY_PEM`, `RECEIPTS_ADMIN_TOKEN`),
+2. deploy `api.traceipt.xyz`,
+3. Black_Wall side: fund a **throwaway** signer key with testnet USDC and run
+   `clients/traceipt_anchor.py` (see `FLYWHEEL.md`).
 
-See `DEPLOY.md` §2. Until then, receipts stay honestly marked
-`verification_method:"mock"` and `/attest` runs on the dev gate.
+The mainnet flip (real money) then only swaps chain/RPC/facilitator + a paid disk +
+`RECEIPTS_MIN_CONFIRMATIONS`. See `DEPLOY.md` §2 and `FLYWHEEL.md`.
+
+---
+
+## Seam status & boundary (mirrors Black_Wall `docs/HANDOFF.md`)
+
+The two products are **complementary, never merged** — Traceipt *produces* the
+receipts Black_Wall *consumes*. Their functional inventories do not overlap:
+Traceipt owns signed receipts / on-chain verify / Merkle anchoring / invoices;
+Black_Wall owns the verdict engine / reputation / sanctions / payload-sim / AA
+co-sign. The one parallel-implementation is each product's **own** x402 payment
+gate (`traceipt/x402_gate.py` vs their `x402.py`) — two services each billing for
+their own thing, not one product built twice.
+
+**The shared seam** is the four `traceipt_*.py` bridge files on the Black_Wall
+branch. They depend on Traceipt's receipt **envelope** `{protected, payload,
+signature}`, the payload fields (`kind`, `settlement{...}`, `issued_at`), the
+**JWKS**, and endpoints `POST /attest` + `GET /receipts/{id}`.
+
+**Seam status as of this session — all data contracts UNCHANGED**, so the bridge
+files are not broken:
+- envelope + `signing.py` canonical form (`ensure_ascii=False`) — unchanged;
+- receipt payload / settlement fields — unchanged;
+- `GET /jwks.json`, `GET /receipts/{id}`, `POST /attest` request/response —
+  unchanged.
+
+**What DID change (per HANDOFF §4, flagged for the Black_Wall session):**
+- Traceipt's x402 **payment** protocol moved **v1 → v2** (CAIP-2 networks, `amount`,
+  EIP-712 `extra`) — this *aligns* with Black_Wall's already-v2 client and is what
+  makes the paid `/attest` bridge actually work; it was the mismatch, now fixed.
+- The **live endpoint is now real** (facilitator + `rpc` settlement on Base
+  Sepolia), so the real-path client (`traceipt_anchor.py`) will actually be charged.
 
 ---
 
