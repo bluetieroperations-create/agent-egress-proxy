@@ -1,0 +1,288 @@
+/* The Teachings of the Masters — styles */
+
+:root {
+  --bg: #0d0b1a;
+  --bg2: #161230;
+  --card: #1d1839;
+  --card-hi: #251f4a;
+  --line: #35306033;
+  --border: #3a3468;
+  --text: #e9e5ff;
+  --muted: #9d96c7;
+  --gold: #c9a227;
+  --good: #2ec4b6;
+  --bad: #e4572e;
+  --radius: 16px;
+  font-size: 16px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  min-height: 100%;
+}
+
+body {
+  font-family: "Georgia", "Palatino Linotype", serif;
+  background:
+    radial-gradient(1200px 600px at 70% -10%, #2a2255cc, transparent),
+    radial-gradient(900px 500px at 0% 100%, #1a2a4acc, transparent),
+    var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+}
+
+button { font-family: inherit; }
+
+#app {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 1.2rem 1rem 5rem;
+}
+
+/* ------- header / HUD ------- */
+header.hud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .8rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: .9rem 1.1rem;
+  background: linear-gradient(160deg, var(--card-hi), var(--card));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 1.2rem;
+  cursor: pointer;
+}
+
+.hud .rank { font-size: 1.05rem; font-weight: bold; letter-spacing: .02em; }
+.hud .rank .icon { font-size: 1.4rem; margin-right: .4rem; }
+.hud .stats { display: flex; gap: 1rem; color: var(--muted); font-size: .9rem; }
+.hud .stats b { color: var(--text); }
+
+.xpbar { flex-basis: 100%; height: 8px; background: #0006; border-radius: 99px; overflow: hidden; }
+.xpbar > div {
+  height: 100%;
+  background: linear-gradient(90deg, var(--gold), #ffe28a);
+  border-radius: 99px;
+  transition: width .6s ease;
+}
+
+/* ------- generic ------- */
+h1 { font-size: 1.5rem; margin: .2rem 0 .6rem; }
+h2 { font-size: 1.2rem; margin-bottom: .5rem; }
+.muted { color: var(--muted); }
+.small { font-size: .85rem; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.1rem 1.2rem;
+  margin-bottom: 1rem;
+}
+
+.btn {
+  display: inline-block;
+  background: linear-gradient(160deg, #6c5ce7, #4834d4);
+  color: #fff;
+  border: none;
+  border-radius: 12px;
+  padding: .65rem 1.3rem;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: transform .15s ease, filter .15s ease;
+}
+.btn:hover { transform: translateY(-1px); filter: brightness(1.1); }
+.btn:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+.btn.gold { background: linear-gradient(160deg, #e0b73f, #a8821a); color: #221a00; }
+.btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+.btn.small { padding: .4rem .9rem; font-size: .85rem; }
+
+.backlink {
+  display: inline-block;
+  color: var(--muted);
+  cursor: pointer;
+  margin-bottom: .8rem;
+  background: none;
+  border: none;
+  font-size: .95rem;
+}
+.backlink:hover { color: var(--text); }
+
+/* ------- path list ------- */
+.path-card {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+  cursor: pointer;
+  border-left: 4px solid var(--path-color, var(--gold));
+  transition: transform .15s ease;
+}
+.path-card:hover { transform: translateY(-2px); }
+.path-card.locked { opacity: .55; cursor: default; }
+.path-card.locked:hover { transform: none; }
+.path-card .icon { font-size: 2rem; line-height: 1.2; }
+.path-card .src { font-style: italic; }
+.path-progress {
+  height: 6px; background: #0006; border-radius: 99px; overflow: hidden; margin-top: .5rem;
+}
+.path-progress > div { height: 100%; background: var(--path-color, var(--gold)); transition: width .5s; }
+
+/* ------- stage list ------- */
+.stage {
+  display: flex; align-items: center; gap: .9rem;
+  padding: .8rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  margin-bottom: .6rem;
+  cursor: pointer;
+  background: var(--card);
+}
+.stage:hover { background: var(--card-hi); }
+.stage.locked { opacity: .45; cursor: default; }
+.stage.locked:hover { background: var(--card); }
+.stage .num {
+  width: 2rem; height: 2rem; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: #0006; font-size: .9rem; flex-shrink: 0;
+}
+.stage.done .num { background: var(--good); color: #04302c; font-weight: bold; }
+.stage .meta { font-size: .8rem; color: var(--muted); }
+
+/* ------- teaching / practice screen ------- */
+.teaching-text {
+  font-size: 1.05rem;
+  white-space: pre-line;
+}
+blockquote.guidance {
+  border-left: 3px solid var(--gold);
+  padding: .4rem .9rem;
+  margin: .9rem 0;
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* ------- meditation session ------- */
+.session {
+  text-align: center;
+  padding: 1.5rem 1rem 2rem;
+}
+.session .clock {
+  font-size: 2.6rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .05em;
+  margin: .4rem 0 .8rem;
+}
+.session .phase-label {
+  font-size: 1.2rem;
+  min-height: 1.8rem;
+  color: var(--gold);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.orb-wrap { display: flex; justify-content: center; margin: 1rem 0; }
+.orb {
+  width: 190px; height: 190px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #cfc6ff, #6c5ce7 55%, #241b58);
+  box-shadow: 0 0 60px 10px #6c5ce755;
+  transform: scale(0.6);
+  transition: transform 1s linear, box-shadow 1s linear;
+}
+.orb.big { transform: scale(1); box-shadow: 0 0 90px 25px #6c5ce788; }
+
+/* chakra column */
+.chakra-col {
+  display: flex; flex-direction: column-reverse; align-items: center;
+  gap: .55rem; margin: 1rem 0;
+}
+.chakra-dot {
+  width: 34px; height: 34px; border-radius: 50%;
+  background: #221d45;
+  border: 2px solid #3a346888;
+  transition: all .8s ease;
+  position: relative;
+}
+.chakra-dot.lit {
+  border-color: transparent;
+  box-shadow: 0 0 22px 4px var(--c);
+  background: var(--c);
+}
+.chakra-name { min-height: 1.6rem; font-size: 1rem; color: var(--muted); }
+
+/* gaze practice */
+.gaze-flame {
+  font-size: 4.5rem;
+  display: block;
+  margin: .8rem auto;
+  animation: flicker 2.4s infinite ease-in-out;
+}
+@keyframes flicker {
+  0%, 100% { transform: scale(1) rotate(-1deg); opacity: .95; }
+  50% { transform: scale(1.06) rotate(1deg); opacity: 1; }
+}
+.tap-bell {
+  width: 100%;
+  max-width: 340px;
+  padding: 1rem;
+  font-size: 1.05rem;
+  border-radius: 14px;
+  border: 1px dashed var(--gold);
+  background: #c9a22711;
+  color: var(--gold);
+  cursor: pointer;
+}
+.tap-bell:active { background: #c9a22733; }
+
+/* ------- quiz ------- */
+.quiz-opt {
+  display: block; width: 100%; text-align: left;
+  padding: .75rem 1rem; margin-bottom: .55rem;
+  border-radius: 12px; border: 1px solid var(--border);
+  background: var(--card); color: var(--text);
+  font-size: .98rem; cursor: pointer;
+}
+.quiz-opt:hover { background: var(--card-hi); }
+.quiz-opt.correct { border-color: var(--good); background: #2ec4b622; }
+.quiz-opt.wrong { border-color: var(--bad); background: #e4572e22; }
+
+/* ------- achievements ------- */
+.ach-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: .7rem; }
+.ach {
+  display: flex; gap: .7rem; align-items: center;
+  border: 1px solid var(--border); border-radius: 12px;
+  padding: .7rem .9rem; background: var(--card);
+}
+.ach.locked { opacity: .35; filter: grayscale(1); }
+.ach .icon { font-size: 1.6rem; }
+.ach b { display: block; font-size: .95rem; }
+.ach span { font-size: .8rem; color: var(--muted); }
+
+/* ------- toast / celebration ------- */
+#toasts {
+  position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%);
+  display: flex; flex-direction: column; gap: .5rem; z-index: 50;
+  width: min(92vw, 420px);
+}
+.toast {
+  background: linear-gradient(160deg, #2b2455, #1d1839);
+  border: 1px solid var(--gold);
+  color: var(--text);
+  border-radius: 12px;
+  padding: .7rem 1rem;
+  text-align: center;
+  animation: rise .4s ease;
+  box-shadow: 0 8px 30px #0008;
+}
+@keyframes rise {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 560px) {
+  :root { font-size: 15px; }
+  .hud .stats { gap: .7rem; flex-wrap: wrap; }
+  .session .clock { font-size: 2.1rem; }
+  .orb { width: 150px; height: 150px; }
+}
