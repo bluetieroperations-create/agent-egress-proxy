@@ -160,6 +160,53 @@ class TestDescribePolicy(unittest.TestCase):
         self.assertEqual(g.describe_availability()["label"], "Pause payments")
 
 
+class TestCustomerMessage(unittest.TestCase):
+    """
+    Mutation notes:
+      - leak internal signals into the reason -> test_block_reason_is_clean FAILS.
+      - not label actions in plain words -> test_status_labels FAILS.
+      - not handle the degraded case -> test_degraded FAILS.
+    """
+    def _decide(self, verdict):
+        return W.WalletGuard(_fixed(verdict)).check({})
+
+    def test_status_labels(self):
+        self.assertEqual(W.customer_message(self._decide(_v("GO")))["status"], "Allowed")
+        self.assertEqual(W.customer_message(self._decide(_v("HOLD")))["status"],
+                         "Needs your approval")
+        self.assertEqual(W.customer_message(self._decide(_v("STOP")))["status"], "Blocked")
+
+    def test_block_reason_is_clean(self):
+        d = self._decide(_v("STOP", reasons=[
+            "counterparty is on a sanctions list",
+            "counterparty has 80 prior settlements, 1.0% dispute rate"]))
+        msg = W.customer_message(d)
+        self.assertEqual(msg["reason"], "counterparty is on a sanctions list")
+        # the internal signal line must NOT appear
+        self.assertNotIn("prior settlements", msg["detail"])
+        self.assertNotIn("atomic", msg["detail"])
+
+    def test_go_has_no_reason(self):
+        msg = W.customer_message(self._decide(_v("GO")))
+        self.assertIsNone(msg["reason"])
+        self.assertIn("safe", msg["headline"].lower())
+
+    def test_degraded_paused(self):
+        g = W.WalletGuard(lambda p: (_ for _ in ()).throw(ConnectionError("x")),
+                          on_unreachable=W.FAIL_CLOSED)
+        msg = W.customer_message(g.check({}))
+        self.assertEqual(msg["status"], "Blocked")
+        self.assertIn("couldn't complete", msg["headline"].lower())
+        self.assertIsNone(msg["reason"])          # no internal error leaked
+
+    def test_degraded_allowed(self):
+        g = W.WalletGuard(lambda p: (_ for _ in ()).throw(ConnectionError("x")),
+                          on_unreachable=W.FAIL_OPEN)
+        msg = W.customer_message(g.check({}))
+        self.assertEqual(msg["status"], "Allowed")
+        self.assertIn("without it", msg["headline"].lower())
+
+
 class TestInProcessEndToEnd(unittest.TestCase):
     """Real forecast via a small reputation source (no network)."""
     class _Src:

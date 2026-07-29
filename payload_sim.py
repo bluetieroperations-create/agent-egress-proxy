@@ -61,9 +61,21 @@ keccak/secp256k1/eip712 primitives. Pure + stdlib.
 """
 from __future__ import annotations
 
+from decimal import Decimal
+
 from addresses import addresses_equal, is_evm_address
 from x402 import (EIP712_DOMAINS, _accepted, _authorization, decode_payment_header,
                   to_atomic, to_caip2)
+
+
+def _atomic_human(atomic, decimals):
+    """Atomic units -> a human token amount string (e.g. 90000 -> "0.09"); falls
+    back to the raw value if it can't be parsed. So reasons read in real amounts,
+    not atomic units."""
+    try:
+        return format(Decimal(int(str(atomic))) / (Decimal(10) ** int(decimals)), "f")
+    except Exception:
+        return str(atomic)
 
 
 def _decode(x_payment, decode):
@@ -172,13 +184,13 @@ def check_payment_authorization(claim, x_payment, *, decimals=6, now=None,
             "signed payment pays %s but you asked me to score %s (recipient mismatch)"
             % (_show(to), _show(cp)))
 
-    # --- amount: same sum (compared in atomic units)? ---
+    # --- amount: same sum (compared in atomic units, reported in human units)? ---
     want = to_atomic(claim.get("amount"), decimals)
     got = _int_or_none(auth.get("value"))
     if want is None or got is None or want != got:
         mismatches.append(
-            "signed payment value %s != the %s atomic units you asked me to score"
-            % (_show(auth.get("value")), _show(want)))
+            "signed payment value is %s but you asked me to score %s"
+            % (_atomic_human(auth.get("value"), decimals), _show(claim.get("amount"))))
 
     # --- asset: same token? (only when the claim names a contract address; a
     #     symbol like "USDC" can't be checked against a contract address) ---

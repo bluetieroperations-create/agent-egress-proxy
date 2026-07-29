@@ -74,6 +74,62 @@ _TOGGLE_QUESTION = ("If Blackwall can't be reached for a moment, what should you
                     "wallet do?")
 
 
+# Plain, end-user-facing status for each guard action (vs the internal GO/HOLD/STOP).
+_STATUS_COPY = {
+    ALLOW:   ("Allowed", "This payment looks safe to send."),
+    CONFIRM: ("Needs your approval",
+              "This payment needs a quick human check before it goes through."),
+    BLOCK:   ("Blocked", "Blackwall stopped this payment to protect your funds."),
+}
+# Reason lines that are internal signal reporting, not the actual cause of a HOLD/
+# STOP -- filtered out of the customer-facing "why".
+# NB: "the counterparty's median" filters the price-signal INFO lines ("within Nx
+# of the counterparty's median", "is Nx the counterparty's median ...") but NOT the
+# gouge STOP reason, which reads "the counterparty's OWN median -- price wildly off".
+_INFO_REASON_HINTS = ("prior settlements", "within", "no price history",
+                      "the counterparty's median")
+
+
+def _customer_reason(reasons):
+    """Pick the single clearest cause from a verdict's reasons for an end user --
+    the first line that names a real cause, skipping internal signal reporting.
+    Returns None if there's nothing customer-appropriate to show."""
+    for r in reasons or []:
+        s = str(r)
+        if not any(h in s for h in _INFO_REASON_HINTS):
+            return s
+    return None
+
+
+def customer_message(decision):
+    """Plain-English, end-user-facing explanation of a guard Decision, for a wallet
+    UI. Returns {status, headline, reason, detail} -- a friendly status label
+    (Allowed / Needs your approval / Blocked), a one-line headline, and the single
+    clearest reason when there is one. Never dumps internal signals or atomic units.
+
+    Pass a `SignResult`'s `.decision`, or any Decision. The verdict engine already
+    reports amounts in human units."""
+    action = getattr(decision, "action", None)
+    status, headline = _STATUS_COPY.get(action, ("Checked", ""))
+    reason = None
+
+    if getattr(decision, "degraded", False):
+        # the availability toggle decided this (Blackwall couldn't be reached).
+        if action == BLOCK:
+            headline = ("We couldn't complete the safety check right now, so this "
+                        "payment was paused. Try again in a moment.")
+        elif action == ALLOW:
+            headline = ("The safety check was briefly unavailable, so this payment "
+                        "went through without it.")
+    elif action == BLOCK:
+        reason = _customer_reason(getattr(decision, "reasons", None))
+    elif action == CONFIRM:
+        reason = _customer_reason(getattr(decision, "reasons", None))
+
+    detail = headline if not reason else "%s Reason: %s" % (headline, reason)
+    return {"status": status, "headline": headline, "reason": reason, "detail": detail}
+
+
 def describe_policy(policy=None):
     """Customer-facing description of the availability toggle, for a wallet UI.
 

@@ -87,6 +87,20 @@ signature is cross-checked against the claim (payload-sim Phases 1–2).
 `res` is a `SignResult`: `.signed` (bool), `.signature` (from your signer, or None
 if withheld), `.decision` (`.verdict`, `.action`, `.reasons`, `.summary()`).
 
+**For your end-user UI**, don't render the raw `reasons` (they include internal
+signals). Use the built-in plain-English message instead:
+
+```python
+msg = W.customer_message(res.decision)
+# {status:"Blocked", headline:"Blackwall stopped this payment to protect your funds.",
+#  reason:"the recipient is on a sanctions list",
+#  detail:"...Blocked... Reason: ..."}
+```
+
+It leads with the single clearest reason, in real amounts (not atomic units), and
+never leaks internal stats. See also `docs/TRANSPARENCY.md` for a customer-facing
+"what Blackwall checks, sees, and stores" note.
+
 ## Notes / scope
 
 - The `sign_fn` is **yours** — the adapter decides *whether* to call it, not how to

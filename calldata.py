@@ -37,6 +37,8 @@ LIMITATIONS (audited & accepted):
 """
 from __future__ import annotations
 
+from decimal import Decimal
+
 from addresses import addresses_equal, is_evm_address
 from keccak import keccak256
 from x402 import to_atomic
@@ -198,9 +200,10 @@ def screen_transaction(claim, transaction, *, unlimited_min=UNLIMITED_MIN):
                 and addresses_equal(tx_to, asset):
             want = to_atomic(claim.get("amount"), 6)
             if want is not None and amt != want:
+                moved = format(Decimal(int(amt)) / (Decimal(10) ** 6), "f")
                 mismatches.append(
-                    "contract %s moves %s atomic units but you asked me to score %s "
-                    "(amount mismatch)" % (name, amt, want))
+                    "contract %s moves %s but you asked me to score %s "
+                    "(amount mismatch)" % (name, moved, _show(claim.get("amount"))))
 
     return {"checked": True, "matches": not mismatches,
             "mismatches": mismatches, "warnings": warnings}
