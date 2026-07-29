@@ -36,6 +36,12 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   LangChain-free/stdlib + fully tested; `langchain_blackwall.py` is the thin adapter
   needing `langchain-core`. OBSERVE/ENFORCE modes; fail-safe to human CONFIRM. Its
   own tests run from that dir, not the root command),
+  `integrations/wallets/` (wallet signing-guard adapters -- gate a wallet provider's
+  server-side signing call with the verdict: sign on GO, human-confirm HOLD, WITHHOLD
+  the signature on STOP. Shared `wallet_guard.py` core (+ `claim_from_tx` decoding
+  ERC-20 transfers) with a runtime-toggleable FAIL_CLOSED/FAIL_OPEN availability
+  policy; thin `turnkey_signer.py` / `privy_signer.py` shims map each provider's
+  request. Stdlib; own tests run from that dir),
   `BLACKWALL.md`, `DISCOVERY.md`, `DEPLOY.md`, `COMPETITIVE.md`, `PRICING.md`,
   `ap_gate.py` (treasury/AP payout gate -- folds the verdict into a
   RELEASE/REVIEW/BLOCK decision at the approve-&-release step; see
