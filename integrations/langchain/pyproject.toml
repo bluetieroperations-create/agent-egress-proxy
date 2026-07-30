@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "blackwall-langchain"
+version = "0.1.0"
+description = "Call Blackwall before you sign: a LangChain payment guard (GO/HOLD/STOP) for agent x402/on-chain payments."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "BlueTier Operations" }]
+keywords = ["x402", "payments", "langchain", "agent", "guardrail",
+            "counterparty-risk", "sanctions", "reputation", "base", "usdc"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Security",
+]
+# The guard CORE (blackwall_guard) is stdlib-only and talks to a deployed Blackwall
+# over HTTP -- no runtime deps. The LangChain adapter needs langchain-core (extra).
+dependencies = []
+
+[project.optional-dependencies]
+langchain = ["langchain-core>=0.2"]
+
+[project.urls]
+Homepage = "https://github.com/bluetieroperations-create/agent-egress-proxy"
+Source = "https://github.com/bluetieroperations-create/agent-egress-proxy/tree/main/integrations/langchain"
+
+[tool.setuptools]
+# Ship the two flat modules as-is (no restructure). blackwall_guard is the
+# framework-free core; langchain_blackwall is the adapter.
+py-modules = ["blackwall_guard", "langchain_blackwall"]

@@ -19,13 +19,28 @@ dependency** and is stdlib-only; `langchain_blackwall.py` is the adapter.
 
 ## Install
 
+This directory is a pip-installable package (`blackwall-langchain`):
+
 ```sh
-pip install langchain-core        # the adapter needs this; the core does not
+pip install blackwall-langchain           # core only (talks to a deployed Blackwall over HTTP)
+pip install "blackwall-langchain[langchain]"   # + the LangChain adapter
 ```
 
-The guard imports the Blackwall verdict engine from this repo's root
-(`blackwall.py`), so run with the repo on your `PYTHONPATH` (the module adds it
-automatically when imported from here).
+The **core** (`blackwall_guard`) is stdlib-only and needs no engine locally — it
+calls a deployed Blackwall via `HttpEngine`. To run the engine **in-process**
+instead (free, no network), also have `blackwall.py` importable (the repo root on
+`PYTHONPATH`); `InProcessEngine` picks it up automatically.
+
+### Publishing (maintainers)
+
+```sh
+cd integrations/langchain
+python -m pip wheel . -w dist --no-deps        # or: python -m build
+python -m twine upload dist/blackwall_langchain-*.whl   # needs your PyPI token
+```
+
+Test the build in isolation first: `pip install <wheel> --target /tmp/t` then import
+`blackwall_guard` / `langchain_blackwall` with only `/tmp/t` on the path.
 
 ## Engines: where the verdict comes from
 
