@@ -4,6 +4,7 @@ Traceipt HTTP service (stdlib http.server, threaded).
 Endpoints:
   POST /receipts        (x402-gated) verify settlement -> sign -> chain -> return envelope
   GET  /receipts/{id}   fetch a stored envelope
+  POST /receipts/{id}/disclose  (admin) signed redacted disclosure of chosen fields
   GET  /verify/{id}     re-verify signature + chain link, return a report
   GET  /chain/{seller}  full-chain integrity check for a seller
   GET  /chain/{seller}/completeness  signed proof the chain is WHOLE (nothing hidden)
@@ -30,6 +31,7 @@ from urllib.parse import unquote, urlsplit
 
 from .canonical import GENESIS_HASH
 from .completeness import build_checkpoint
+from .disclosure import commit as disclosure_commit, disclose as disclosure_disclose
 from .invoice import render_invoice
 from .ledger import Ledger
 from .merkle import verify_inclusion
@@ -164,6 +166,31 @@ class App:
         (ok, settle_response, error)."""
         return gate_settle(self.facilitator, payment, self.requirements(resource))
 
+    def _sign_receipt(self, payload: dict) -> dict:
+        """Fold in the selective-disclosure field commitment, then sign. The
+        `disclosure` block (a Merkle root over the receipt's fields) is thus
+        signed and chained/anchored like the rest of the receipt, so a later
+        redacted disclosure can be proved against it. See disclosure.py."""
+        payload["disclosure"] = disclosure_commit(
+            payload, self.signer.disclosure_secret())
+        return self.signer.sign_envelope(payload)
+
+    def disclose_receipt(self, receipt_id: str, reveal_paths) -> tuple[int, dict]:
+        """Issue a SIGNED, redacted disclosure of a receipt: reveal only
+        `reveal_paths`, prove they are the issuer's originals, hide the rest.
+        Operator-gated (the seller hands disclosures to auditors/counterparties).
+        The full receipt itself is never exposed."""
+        envelope = self.ledger.get(receipt_id)
+        if envelope is None:
+            return 404, {"error": "unknown receipt_id"}
+        payload = envelope["payload"]
+        if "disclosure" not in payload:
+            return 409, {"error": "receipt predates selective disclosure "
+                                  "(no field commitment); reissue to enable it"}
+        body = disclosure_disclose(
+            payload, self.signer.disclosure_secret(), reveal_paths)
+        return 200, self.signer.sign_envelope(body)
+
     # -- core operation ----------------------------------------------------
     def issue(self, body: dict, gate_payer: str | None = None,
               settle=None) -> tuple[int, dict]:
@@ -266,7 +293,7 @@ class App:
                 )
             except ValueError as e:
                 return 400, {"error": str(e)}
-            envelope = self.signer.sign_envelope(payload)
+            envelope = self._sign_receipt(payload)
             try:
                 self.ledger.append(envelope)
             except ValueError as e:
@@ -356,7 +383,7 @@ class App:
                 )
             except ValueError as e:
                 return 400, {"error": str(e)}
-            envelope = self.signer.sign_envelope(payload)
+            envelope = self._sign_receipt(payload)
             try:
                 self.ledger.append(envelope)
             except ValueError as e:
@@ -659,6 +686,23 @@ def make_handler(app: App):
                     code, obj = app.issue_credit(body)
                 except Exception as e:
                     return self._send(500, {"error": f"internal error: {type(e).__name__}"})
+                return self._send(code, obj)
+            if resource.startswith("/receipts/") and resource.endswith("/disclose"):
+                # Operator op: hand out a redacted, signed disclosure of a
+                # receipt (reveal a subset, prove it, hide the rest).
+                if not app.admin_ok(self.headers):
+                    return self._send(403, {"error": "admin token required"})
+                rid = unquote(resource[len("/receipts/"):-len("/disclose")])
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    body = (json.loads(self.rfile.read(length).decode("utf-8"))
+                            if 0 < length <= MAX_BODY else {})
+                except (ValueError, UnicodeDecodeError):
+                    return self._send(400, {"error": "body must be valid JSON"})
+                reveal = body.get("reveal", []) if isinstance(body, dict) else []
+                if not isinstance(reveal, list):
+                    return self._send(400, {"error": "'reveal' must be a list of paths"})
+                code, obj = app.disclose_receipt(rid, reveal)
                 return self._send(code, obj)
             if resource not in ("/receipts", "/attest"):
                 return self._send(404, {"error": "not found"})

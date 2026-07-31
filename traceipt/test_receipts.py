@@ -11,6 +11,7 @@ from http.server import ThreadingHTTPServer
 
 from traceipt.canonical import GENESIS_HASH, canonical_json, hash_obj
 from traceipt.completeness import verify_completeness
+from traceipt.disclosure import verify_disclosure
 from traceipt.ledger import Ledger
 from traceipt.schema import build_receipt, receipt_hash
 from traceipt.settlement import (
@@ -1808,6 +1809,93 @@ class TestCompleteness(unittest.TestCase):
             rep = json.loads(r.read())
         ok, problems = verify_completeness(rep, self._checker(app))
         self.assertTrue(ok, problems)
+
+
+class TestSelectiveDisclosure(unittest.TestCase):
+    """Reveal a subset of a receipt's fields and prove it, hiding the rest.
+    See disclosure.py."""
+
+    def _app(self, **over):
+        d = tempfile.mkdtemp()
+        cfg = dict(signer=Signer.generate(), ledger=Ledger(os.path.join(d, "d.db")),
+                   verifier=MockVerifier(), gate="off", price_base_units="2000",
+                   pay_to=PAYEE, seller_id="op.example", chain="base-sepolia",
+                   base_url="http://x")
+        cfg.update(over)
+        return App(**cfg)
+
+    def _issue(self, app):
+        s = sample_settlement(tx_hash="0x" + "11" * 32)
+        code, obj = app.issue({"settlement": s, "commerce": sample_commerce()})
+        self.assertEqual(code, 201, obj)
+        return obj["receipt"]["payload"]["receipt_id"]
+
+    def test_receipt_carries_signed_disclosure_commitment(self):
+        app = self._app()
+        rid = self._issue(app)
+        env = app.ledger.get(rid)
+        verify_envelope(env, app._jwks())          # signature covers the block
+        self.assertEqual(env["payload"]["disclosure"]["alg"], "merkle-sha256-v1")
+
+    def test_reveal_subset_hides_the_rest(self):
+        app = self._app()
+        rid = self._issue(app)
+        code, denv = app.disclose_receipt(
+            rid, ["settlement.amount_base_units", "issued_at"])
+        self.assertEqual(code, 200)
+        body = verify_envelope(denv, app._jwks())  # issuer-authenticated
+        ok, revealed, problems = verify_disclosure(body)
+        self.assertTrue(ok, problems)
+        self.assertEqual(revealed["settlement.amount_base_units"], "5000")
+        self.assertIn("issued_at", revealed)
+        # the sensitive counterparties are NOT recoverable
+        self.assertNotIn("settlement.payer", revealed)
+        self.assertNotIn("settlement.payee", revealed)
+
+    def test_tampered_revealed_value_fails(self):
+        app = self._app()
+        rid = self._issue(app)
+        _, denv = app.disclose_receipt(rid, ["settlement.amount_base_units"])
+        body = verify_envelope(denv, app._jwks())
+        body["revealed"][0]["value"] = "999999999"   # lie about the amount
+        ok, revealed, problems = verify_disclosure(body)
+        self.assertFalse(ok)
+        self.assertTrue(problems)
+
+    def test_forged_disclosure_rejected_at_signature(self):
+        app = self._app()
+        rid = self._issue(app)
+        _, denv = app.disclose_receipt(rid, ["issued_at"])
+        forged = Signer.generate().sign_envelope(denv["payload"])
+        with self.assertRaises(ValueError):
+            verify_envelope(forged, app._jwks())     # key not in JWKS
+
+    def test_disclose_endpoint_is_admin_gated(self):
+        app = self._app(admin_token="s3cret")
+        rid = self._issue(app)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+
+        def post(headers):
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/receipts/{rid}/disclose",
+                data=json.dumps({"reveal": ["issued_at"]}).encode(),
+                headers={"Content-Type": "application/json", **headers})
+            try:
+                with urllib.request.urlopen(req) as r:
+                    return r.status, json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                return e.code, json.loads(e.read())
+
+        code, _ = post({})                                    # no token
+        self.assertEqual(code, 403)
+        code, denv = post({"Authorization": "Bearer s3cret"})  # with token
+        self.assertEqual(code, 200)
+        ok, revealed, problems = verify_disclosure(verify_envelope(denv, app._jwks()))
+        self.assertTrue(ok, problems)
+        self.assertIn("issued_at", revealed)
 
 
 if __name__ == "__main__":

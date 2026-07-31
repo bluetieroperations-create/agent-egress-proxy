@@ -73,6 +73,19 @@ class Signer:
             serialization.Encoding.Raw, serialization.PublicFormat.Raw
         )
 
+    def disclosure_secret(self) -> bytes:
+        """A stable 32-byte secret derived from the private key, used to blind
+        selective-disclosure field commitments. Deterministic for a given key
+        (so disclosures regenerate across restarts with a durable key), and it
+        never exposes the private key itself (a one-way hash of it)."""
+        import hashlib
+        raw = self._key.private_bytes(
+            serialization.Encoding.Raw,
+            serialization.PrivateFormat.Raw,
+            serialization.NoEncryption(),
+        )
+        return hashlib.sha256(raw + b"traceipt-disclosure-v1").digest()
+
     def jwk(self) -> dict:
         return {
             "kty": "OKP",
