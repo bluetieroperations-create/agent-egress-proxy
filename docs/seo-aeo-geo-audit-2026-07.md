@@ -166,6 +166,39 @@ Actions:
 
 ---
 
+## 6. Competitive teardown — Apiosk, Nevermined, FluxA, x402b/Pieverse
+
+Live-fetched 2026-07-31 (homepages, robots.txt, llms.txt, sitemaps, JSON-LD).
+
+| Surface | Apiosk | Nevermined | FluxA | x402b (Pieverse) | Traceipt today |
+|---|---|---|---|---|---|
+| Title/desc/canonical/OG | ✅ | ✅ | ✅ | ✅ | ❌ none |
+| JSON-LD | ✅ Org+WebSite+SoftwareApp+ItemList+FAQPage | ✅ 4 blocks incl. FAQPage+Service | ✅ Org+WebSite+ItemList (no FAQ) | ✅ 11-type graph (schema-stuffed) | ❌ none |
+| `sameAs` entity links | ✅ | ✅ | ✅ | ✅ | ❌ |
+| robots.txt + AI-bot allows | ✅ explicit GPTBot/OAI | ✅ sophisticated | ✅ | ✅ | ❌ soft-404 |
+| llms.txt | ✅ exceptional | ✅ exceptional | ✅ with agent install cmd | — | ❌ |
+| Sitemap (w/ lastmod) | ✅ 131 URLs | ✅ 463 URLs | ✅ 63 URLs | ✅ | ❌ |
+| Content volume | ~120 long-tail articles | docs + blog + use-case pages | ~48 learning + 15 blog posts | PR syndication instead | 1 page |
+| Notable weakness | thin programmatic content | — | JS-soup H1; unparseable hero | x402b has **no coherent product page**; homepage sells a chat-app agent | everything technical |
+
+**What each one does that's worth copying (the tactic, not the text):**
+
+1. **FluxA — comparison-page machine.** ~48 `/learning` articles, heavily "X vs Y" and "N best tools" formats that *name competitors in the title* ("Stripe vs Nevermined vs FluxA", "6 Crossmint alternatives", "8 best virtual cards for AI agents"). These capture every comparison query in the category and get cited by answer engines constantly. Also proof that a **.xyz domain is not the blocker** — FluxA ranks fine. Traceipt equivalents: "Traceipt vs x402b for x402 receipts", "x402 audit-trail tools compared (2026)".
+2. **Apiosk — llms.txt as a machine-readable content index.** Their llms.txt links `articles.json` (a JSON catalog of every article), an RSS feed, the sitemap, a gateway-level llms.txt, and an OpenAPI spec, plus an explicit "Primary Topics" keyword list. Each of their ~120 articles answers exactly one narrow query ("x402 vs API keys", "payment confirmation windows"). Cheap to replicate at a smaller, higher-quality scale.
+3. **Nevermined — llms.txt as a *registry*.** Their llms.txt is a directory of agent-payable APIs (Exa, etc.) — a resource third parties want to be listed in, which turns a GEO file into a link magnet and gets it consumed by agents directly. Traceipt analog: a public registry of "x402 endpoints issuing verifiable receipts"; Black_Wall analog: a registry of guarded integrations. Also copy: audience-segmented use-case pages (`/use-cases/api-providers/`, `/use-cases/ai-crawlers/`) and their robots.txt discipline (credential paths disallowed, cross-submitted sitemaps).
+4. **x402b/Pieverse — PR syndication.** Their entire "audit-ready payment infrastructure" SERP presence is one press release distributed via MarketersMedia (→ Sina HK, ChainCatcher, financialcontent). No product page backs it up. A single well-distributed launch announcement for Traceipt would contest those queries; and "x402b alternative" content can outflank a PR-only presence.
+5. **All three real sites** — FAQPage schema (Apiosk, Nevermined, Pieverse), `lastmod`/`changefreq` in sitemaps, and an install command inside llms.txt (FluxA's `npx skills add …`; Black_Wall already does this — Traceipt needs its own quickstart line).
+
+**What none of them have (open lanes):**
+- No hreflang/multilingual content (Black_Wall's es/pt failure-modes pages are unique in category).
+- No offline-verification story: nobody publishes signing keys + a verify-without-us spec. Traceipt's "no trust in us required" + `.well-known` keys is a genuine differentiator — publish the verification spec as indexable HTML docs.
+- Nobody is listed on the x402.org homepage — the official-ecosystem race is still open (listings live in the x402-foundation GitHub instead).
+- x402b's receipts are BNB-chain-locked with a proprietary stablecoin (pieUSD); Traceipt's chain-light, self-hosted, USDC-on-Base story is the counter-position to write down explicitly.
+
+**On "copying":** copy structures, formats, and tactics freely — content *types*, schema patterns, llms.txt architecture, comparison-page formats are not ownable. Do not copy their prose, article text, or design — beyond copyright issues, duplicate content is actively penalized, and comparison pages must be factually accurate to be safe (and to be cited).
+
+---
+
 ## Appendix — raw evidence (2026-07-31)
 
 - `https://blackwalltier.com/` → 200, 78,415 bytes, Vercel, HSTS; full head metadata + 1× JSON-LD (`SoftwareApplication`).
