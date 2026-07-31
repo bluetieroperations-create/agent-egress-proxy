@@ -236,6 +236,29 @@ class Ledger:
             expected_seq += 1
         return problems
 
+    def chain_manifest(self, seller_id: str) -> list[dict]:
+        """Ordered, compact manifest of a seller's WHOLE chain: one row per
+        receipt (sequence, id, hash, prev-link, kind, anchored). Enough for a
+        third party to check density + linkage without downloading every
+        envelope. Backs the completeness proof (see completeness.py)."""
+        con = self._connect()
+        try:
+            rows = con.execute(
+                "SELECT sequence, receipt_id, receipt_hash, prev_hash, kind, "
+                "anchor_id FROM receipts WHERE seller_id = ? ORDER BY sequence ASC",
+                (seller_id,),
+            ).fetchall()
+        finally:
+            con.close()
+        return [{
+            "sequence": r["sequence"],
+            "receipt_id": r["receipt_id"],
+            "receipt_hash": r["receipt_hash"],
+            "prev_receipt_hash": r["prev_hash"],
+            "kind": r["kind"],
+            "anchored": r["anchor_id"] is not None,
+        } for r in rows]
+
     # -- Merkle anchoring --------------------------------------------------
     def create_anchor(self, created_at: str, publisher=None) -> dict | None:
         """Seal all not-yet-anchored receipts AND externally submitted

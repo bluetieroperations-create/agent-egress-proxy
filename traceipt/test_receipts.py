@@ -10,6 +10,7 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 
 from traceipt.canonical import GENESIS_HASH, canonical_json, hash_obj
+from traceipt.completeness import verify_completeness
 from traceipt.ledger import Ledger
 from traceipt.schema import build_receipt, receipt_hash
 from traceipt.settlement import (
@@ -1725,6 +1726,88 @@ class TestTrustBoundary(unittest.TestCase):
         del body["settlement"]["payer"]
         code, obj = self._post(body)
         self.assertEqual(code, 400)
+
+
+class TestCompleteness(unittest.TestCase):
+    """Provable completeness: prove the receipt SET is whole, not just that
+    each receipt is real. See completeness.py."""
+
+    def _app(self):
+        d = tempfile.mkdtemp()
+        return App(signer=Signer.generate(), ledger=Ledger(os.path.join(d, "c.db")),
+                   verifier=MockVerifier(), gate="off", price_base_units="2000",
+                   pay_to=PAYEE, seller_id="op.example", chain="base-sepolia",
+                   base_url="http://x")
+
+    def _issue(self, app, i):
+        s = sample_settlement(tx_hash="0x" + ("%02x" % (i + 1)) * 32)
+        code, obj = app.issue({"settlement": s, "commerce": sample_commerce()})
+        self.assertEqual(code, 201, obj)
+
+    def _checker(self, app):
+        jwks = app._jwks()
+        return lambda env: verify_envelope(env, jwks)
+
+    def test_complete_chain_verifies(self):
+        app = self._app()
+        for i in range(3):
+            self._issue(app, i)
+        code, rep = app.completeness_report("op.example")
+        self.assertEqual(code, 200)
+        self.assertEqual(rep["count"], 3)
+        ok, problems = verify_completeness(rep, self._checker(app))
+        self.assertTrue(ok, problems)
+
+    def test_hidden_receipt_detected(self):
+        app = self._app()
+        for i in range(3):
+            self._issue(app, i)
+        _, rep = app.completeness_report("op.example")
+        rep["manifest"].pop(1)          # try to hide the middle receipt
+        ok, problems = verify_completeness(rep, self._checker(app))
+        self.assertFalse(ok)
+        self.assertTrue(any("count" in p for p in problems), problems)
+
+    def test_tampered_head_detected(self):
+        app = self._app()
+        for i in range(2):
+            self._issue(app, i)
+        _, rep = app.completeness_report("op.example")
+        rep["manifest"][-1]["receipt_hash"] = "sha256:" + "00" * 32
+        ok, problems = verify_completeness(rep, self._checker(app))
+        self.assertFalse(ok)
+
+    def test_forged_checkpoint_rejected(self):
+        app = self._app()
+        for i in range(2):
+            self._issue(app, i)
+        _, rep = app.completeness_report("op.example")
+        # re-sign the checkpoint with a key that is NOT in the issuer JWKS
+        rep["checkpoint"] = Signer.generate().sign_envelope(rep["checkpoint"]["payload"])
+        ok, problems = verify_completeness(rep, self._checker(app))
+        self.assertFalse(ok)
+        self.assertTrue(any("INVALID" in p for p in problems), problems)
+
+    def test_empty_chain_is_vacuously_complete(self):
+        app = self._app()
+        _, rep = app.completeness_report("op.example")
+        self.assertEqual(rep["count"], 0)
+        ok, problems = verify_completeness(rep, self._checker(app))
+        self.assertTrue(ok, problems)
+
+    def test_completeness_over_http(self):
+        app = self._app()
+        for i in range(2):
+            self._issue(app, i)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/chain/op.example/completeness") as r:
+            rep = json.loads(r.read())
+        ok, problems = verify_completeness(rep, self._checker(app))
+        self.assertTrue(ok, problems)
 
 
 if __name__ == "__main__":

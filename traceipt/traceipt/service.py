@@ -6,6 +6,7 @@ Endpoints:
   GET  /receipts/{id}   fetch a stored envelope
   GET  /verify/{id}     re-verify signature + chain link, return a report
   GET  /chain/{seller}  full-chain integrity check for a seller
+  GET  /chain/{seller}/completeness  signed proof the chain is WHOLE (nothing hidden)
   GET  /jwks.json       issuer public keys (for offline verification)
   GET  /health
 
@@ -27,6 +28,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from urllib.parse import unquote, urlsplit
 
+from .canonical import GENESIS_HASH
+from .completeness import build_checkpoint
 from .invoice import render_invoice
 from .ledger import Ledger
 from .merkle import verify_inclusion
@@ -434,6 +437,37 @@ class App:
     def chain_report(self, seller_id: str) -> list[str]:
         return self.ledger.verify_chain(seller_id, self._envelope_verifier())
 
+    def completeness_report(self, seller_id: str) -> tuple[int, dict]:
+        """A signed, third-party-verifiable proof that this seller's chain is
+        COMPLETE: every receipt, in order, nothing hidden. The issuer signs a
+        checkpoint over {count, head_hash}; the manifest lets anyone check
+        density + linkage from genesis to that signed head. See
+        completeness.py and completeness.verify_completeness."""
+        manifest = self.ledger.chain_manifest(seller_id)
+        count = len(manifest)
+        head_hash = manifest[-1]["receipt_hash"] if manifest else GENESIS_HASH
+        checkpoint = self.signer.sign_envelope(
+            build_checkpoint(seller_id, count, head_hash, utc_now()))
+        head_anchor = (self.ledger.inclusion_for(manifest[-1]["receipt_id"])
+                       if manifest else None)
+        return 200, {
+            "seller_id": seller_id,
+            "count": count,
+            "genesis": GENESIS_HASH,
+            "head": ({"sequence": count, "receipt_hash": head_hash}
+                     if manifest else None),
+            "checkpoint": checkpoint,
+            "manifest": manifest,
+            "head_anchor": head_anchor,
+            "how_to_verify": (
+                "1) verify the checkpoint signature against /jwks.json; "
+                "2) check the manifest is dense (sequence 1..count) and each "
+                "prev_receipt_hash links to the previous receipt_hash, from "
+                "genesis through to the signed head; 3) for full authenticity, "
+                "fetch each receipt at /receipts/{id} and verify its own "
+                "signature. See completeness.verify_completeness."),
+        }
+
     def admin_ok(self, headers) -> bool:
         if self.admin_token is None:
             return True
@@ -579,6 +613,10 @@ def make_handler(app: App):
                 return self._send(200, rec)
             if path.startswith("/verify/"):
                 code, obj = app.verify_report(unquote(path[len("/verify/"):]))
+                return self._send(code, obj)
+            if path.startswith("/chain/") and path.endswith("/completeness"):
+                seller = unquote(path[len("/chain/"):-len("/completeness")])
+                code, obj = app.completeness_report(seller)
                 return self._send(code, obj)
             if path.startswith("/chain/"):
                 problems = app.chain_report(unquote(path[len("/chain/"):]))
