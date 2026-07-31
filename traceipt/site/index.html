@@ -11,7 +11,7 @@
     --bg:#0F1417; --bg2:#121A1E; --panel:#161F24; --panel2:#1A242A;
     --ink:#E8EBED; --dim:#9AA4A9; --muted:#6B757B; --line:#222C32;
     --teal:#41B49B; --teal-ink:#8FE7D3; --teal-soft:rgba(65,180,155,.10);
-    --brass:#C09A57;
+    --brass:#C09A57; --red:#E5635B; --red-soft:rgba(229,99,91,.12);
     --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
     --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
     --cn:"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans SC","Source Han Sans SC",var(--sans);
@@ -132,6 +132,22 @@
   .fb nav{margin-left:auto; display:flex; gap:20px}
   .fb nav a{color:var(--dim)} .fb nav a:hover{color:var(--ink)}
 
+  /* live seal demo */
+  .amt{cursor:text; border-bottom:1px dashed rgba(65,180,155,.55); padding:0 1px 1px; outline:none; transition:.15s}
+  .amt:hover{border-bottom-color:var(--teal)}
+  .amt:focus{border-bottom-color:var(--teal); background:var(--teal-soft); color:var(--teal-ink)}
+  .seal{display:flex; gap:9px; align-items:center; font-family:var(--mono); font-size:12px; padding:2px 0; transition:color .15s}
+  .seal .m{font-weight:700} .seal b{font-weight:600}
+  .seal.ok{color:var(--dim)} .seal.ok .m{color:var(--teal)} .seal.ok b{color:var(--ink)}
+  .seal.bad{color:var(--red)} .seal.bad .m{color:var(--red)} .seal.bad b{color:var(--red)}
+  .ck2{display:flex; gap:9px; align-items:center; font-family:var(--mono); font-size:11.5px; color:var(--dim); padding:1px 0; transition:opacity .15s}
+  .ck2 .m{color:var(--teal); font-weight:700} .ck2 b{color:var(--ink); font-weight:600}
+  .slab.broken .ck2{opacity:.32}
+  .slab.broken .dial{animation:none; opacity:.16}
+  .slab.broken{border-color:rgba(229,99,91,.5); box-shadow:0 24px 60px rgba(150,40,36,.30)}
+  .hint{font-family:var(--mono); font-size:10.5px; color:var(--muted); margin-top:8px; letter-spacing:.02em}
+  .seal.bad ~ .hint{color:var(--red)}
+
   @keyframes spin{to{transform:rotate(360deg)}}
   @keyframes fadein{to{opacity:1; transform:none}}
   .dial{animation:fadein .5s ease .35s forwards}
@@ -166,8 +182,8 @@
     <div class="wrap stage">
       <div>
         <span class="kick">Receipts for machines that spend money</span>
-        <h1>Your agents pay for things. Traceipt <em>proves it.</em></h1>
-        <p class="sub">Every payment your agent makes over x402 becomes a signed receipt you can hand to an auditor. Checkable for years. No trust in us required.</p>
+        <h1>An invoice is a claim. A Traceipt is <em>proof.</em></h1>
+        <p class="sub">Every payment your agent makes becomes a signed receipt anyone can verify, that no one can forge, alter, or backdate. Without trusting us.</p>
         <div class="cta">
           <a class="btn solid" href="#get">Request access</a>
           <a class="btn line" href="#how">See how it works</a>
@@ -181,7 +197,7 @@
       </div>
 
       <div class="slabwrap">
-        <div class="slab" aria-hidden="true">
+        <div class="slab" id="slab" role="group" aria-label="A real signed receipt. Edit the amount to break the seal.">
           <span class="corner tl"></span><span class="corner br"></span>
           <svg class="dial" viewBox="0 0 120 120" fill="none" aria-hidden="true">
             <circle cx="60" cy="60" r="54" stroke="var(--line)" stroke-width="1"/>
@@ -196,16 +212,18 @@
           </svg>
           <div class="sh"><span class="t">Payment Receipt</span><span class="n tnum">no. 148,213</span></div>
           <div class="sr">
-            <div class="rw"><span class="k">Paid</span><span class="v"><span class="big">0.005000 USDC</span> on Base</span></div>
+            <div class="rw"><span class="k">Paid</span><span class="v"><span class="big amt" id="amt" contenteditable="true" spellcheck="false" role="textbox" aria-label="receipt amount in USDC, editable">0.005000</span> USDC on Base</span></div>
             <div class="rw"><span class="k">For</span><span class="v">domain reputation query</span></div>
             <div class="rw"><span class="k">Tx</span><span class="v">0xab34f9…c1e7</span></div>
             <div class="rw"><span class="k">Anchor</span><span class="v">root a7f0…9bed, seq 42</span></div>
           </div>
           <div class="sc">
-            <div class="ck a"><span class="m">✓</span><span><b>Signature</b> valid</span></div>
-            <div class="ck b"><span class="m">✓</span><span><b>Settlement</b> confirmed on chain</span></div>
-            <div class="ck c"><span class="m">✓</span><span><b>Chain</b> intact, no edits</span></div>
-            <div class="ck d"><span class="m">✓</span><span><b>Anchor</b> proof holds</span></div>
+            <div class="seal ok" id="seal" role="status" aria-live="polite">
+              <span class="m" id="sealMark">&#10003;</span><span id="sealText"><b>Seal valid</b>, signature checks out</span>
+            </div>
+            <div class="ck2"><span class="m">&#10003;</span><span><b>Settlement</b> confirmed on chain</span></div>
+            <div class="ck2"><span class="m">&#10003;</span><span><b>Anchor</b> proof holds</span></div>
+            <div class="hint" id="sealHint">Try it: edit the amount above</div>
           </div>
         </div>
       </div>
@@ -218,7 +236,7 @@
     <div class="wrap">
       <p class="lead">The problem is boring, which is exactly why <em>it bites.</em></p>
       <div class="prose" style="margin-top:22px">
-        <p>An agent makes ten thousand tiny payments a month. Your books see ten thousand transactions with no context. No invoice. No vendor. No reason. Finance cannot reconcile it, an auditor will not sign off on it, and the rules arriving this year assume you kept a record you never had a way to keep.</p>
+        <p>An agent makes ten thousand tiny payments a month. Your books see ten thousand transactions with no context. No invoice. No vendor. No reason. Finance cannot reconcile it, and an auditor will not sign off on a number with no evidence behind it.</p>
         <p>The payment rail is solved. The record was not. That gap is the whole reason Traceipt exists.</p>
       </div>
     </div>
@@ -266,12 +284,12 @@
   <section id="compliance" class="comp">
     <div class="wrap">
       <span class="kick" style="display:block; margin-bottom:16px">Compliance</span>
-      <p class="lead">Written for the rules <em>showing up this year.</em></p>
+      <p class="lead">Built for the audit, <em>ahead of the mandate.</em></p>
       <div class="prose">
-        <p>The EU AI Act (Article 12) wants high risk systems to log their actions automatically, in enough detail to reconstruct what happened. MiCA wants transaction records tied to their settlement and kept for years. A signed Traceipt per payment is that record.</p>
-        <p>We wrote down the honest mapping, and the parts we do not claim, so your lawyer has a short conversation instead of a long one.</p>
+        <p>Rules for keeping provable records are arriving, unevenly. The EU AI Act asks high risk systems to log what they do, and the EU and South Korea now have AI laws in force. Crypto record keeping rules like FATF and MiCA are global, but they target regulated intermediaries above dollar thresholds, not cent sized agent payments.</p>
+        <p>So we will say it plainly: no rule today names a receipt like this. We are ahead of the mandate, not compelled by it. What Traceipt gives you is an audit ready, independently verifiable trail for machine payments, for the day you have to prove one.</p>
       </div>
-      <p class="foot">This is engineering, not legal advice. Whether a deployment is in scope is a call for counsel.</p>
+      <p class="foot">This is engineering, not legal advice, and not a compliance guarantee. Whether a deployment is in scope is a call for counsel.</p>
     </div>
   </section>
 
@@ -300,6 +318,76 @@
     </nav>
   </div>
 </footer>
+
+<script>
+/* Live seal demo: a REAL Ed25519 signature verified in your browser.
+   The signature was made offline over the receipt's exact contents; edit the
+   amount and the browser re-verifies and the seal breaks. No network, no fake. */
+(function(){
+  var PUB = "h9Zabr+C2twFvSBIbQ8z2ec7xbzvrnD69QLkwGZSB8Y=";
+  var SIG = "Ql8FSxLMuCeYjrO6q9vVnOrkyFprUE9uHAJmnWDKaCsODvkOYfDRnhjChv4pwDnubQfQAKkOj1I8M8UTmPtLCA==";
+  var FIXED = {
+    "for":  "domain reputation query",
+    payee:  "0x3ec5...04e1",
+    payer:  "0x8f2c...a19b",
+    tx:     "0xab34f9...c1e7"
+  };
+  var slab = document.getElementById("slab"),
+      amt  = document.getElementById("amt"),
+      seal = document.getElementById("seal"),
+      mark = document.getElementById("sealMark"),
+      text = document.getElementById("sealText"),
+      hint = document.getElementById("sealHint");
+  if(!amt || !seal) return;
+
+  function bytes(b64){ var s=atob(b64), u=new Uint8Array(s.length); for(var i=0;i<s.length;i++) u[i]=s.charCodeAt(i); return u; }
+  // Canonical bytes signed offline. Must match the signer exactly.
+  function canon(a){
+    return ["amount="+a+" USDC","for="+FIXED["for"],"payee="+FIXED.payee,
+            "payer="+FIXED.payer,"tx="+FIXED.tx].join("\n");
+  }
+
+  var key = null, ready = false;
+
+  function paint(ok){
+    seal.classList.toggle("ok", ok);
+    seal.classList.toggle("bad", !ok);
+    slab.classList.toggle("broken", !ok);
+    mark.innerHTML = ok ? "&#10003;" : "&#10007;";
+    text.innerHTML = ok ? "<b>Seal valid</b>, signature checks out"
+                        : "<b>Seal broken</b>, this receipt was altered";
+    if(hint) hint.textContent = ok ? "Try it: edit the amount above"
+                                   : "Put it back to 0.005000 and the seal re-verifies";
+  }
+
+  async function check(){
+    if(!ready || !key) return;
+    var a = (amt.textContent || "").trim();
+    var ok = false;
+    try{
+      ok = await crypto.subtle.verify({name:"Ed25519"}, key, bytes(SIG),
+             new TextEncoder().encode(canon(a)));
+    }catch(e){ ok = false; }
+    paint(ok);
+  }
+
+  (async function init(){
+    try{
+      key = await crypto.subtle.importKey("raw", bytes(PUB), {name:"Ed25519"}, false, ["verify"]);
+      ready = true;
+      amt.addEventListener("input", check);
+      amt.addEventListener("blur", check);
+      check();
+    }catch(e){
+      /* Browser without Ed25519 in WebCrypto: keep the static valid state,
+         drop the editing affordance rather than fake a result. */
+      amt.setAttribute("contenteditable","false");
+      amt.style.borderBottom = "none";
+      if(hint) hint.textContent = "";
+    }
+  })();
+})();
+</script>
 
 </body>
 </html>
