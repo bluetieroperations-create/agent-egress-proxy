@@ -131,12 +131,26 @@ branch. They depend on Traceipt's receipt **envelope** `{protected, payload,
 signature}`, the payload fields (`kind`, `settlement{...}`, `issued_at`), the
 **JWKS**, and endpoints `POST /attest` + `GET /receipts/{id}`.
 
-**Seam status as of this session — all data contracts UNCHANGED**, so the bridge
-files are not broken:
+**Seam status — the bridge files are NOT broken.** The four `traceipt_*.py`
+files verify the whole-payload signature and read specific fields (`settlement.*`,
+`kind`, `issued_at`), so additive payload fields don't affect them.
 - envelope + `signing.py` canonical form (`ensure_ascii=False`) — unchanged;
-- receipt payload / settlement fields — unchanged;
+- settlement fields, `kind`, `issued_at` — unchanged;
 - `GET /jwks.json`, `GET /receipts/{id}`, `POST /attest` request/response —
   unchanged.
+
+**Additive this session (three niche features — do not break the bridge):**
+- Every receipt now carries a signed `disclosure` block (a Merkle field-tree
+  root for selective disclosure) and receipts may carry an optional
+  `commerce.screening` block (a bound pre-payment verdict). Both are extra keys
+  the bridge files ignore.
+- New endpoints: `GET /chain/{seller}/completeness` (provable completeness),
+  `POST /receipts/{id}/disclose` (admin, redacted disclosure).
+- `screening.verdict_digest` is **byte-identical to Black_Wall's
+  `traceipt_attest.verdict_digest`** — a new interop point: a verdict Black_Wall
+  anchors via `/attest` and one bound into a Traceipt receipt share the same
+  hash, so a compliance-bound receipt references the same verdict Black_Wall
+  attested. Keep the two digest functions identical.
 
 **What DID change (per HANDOFF §4, flagged for the Black_Wall session):**
 - Traceipt's x402 **payment** protocol moved **v1 → v2** (CAIP-2 networks, `amount`,
