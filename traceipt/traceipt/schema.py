@@ -85,6 +85,8 @@ def validate_commerce(c: dict):
         validate_principal(c["principal"])
     if "authorization" in c:
         validate_authorization(c["authorization"])
+    if "screening" in c:
+        validate_screening(c["screening"])
 
 
 def validate_evidence(ev):
@@ -149,6 +151,36 @@ def validate_authorization(a):
         _require(isinstance(a["delegation_depth"], int) and
                  0 <= a["delegation_depth"] <= 32,
                  "authorization.delegation_depth must be an int 0..32")
+
+
+def validate_screening(sc):
+    """A bound pre-payment screening/verdict: evidence the payment was checked
+    (e.g. reputation + OFAC + risk -> GO/HOLD/STOP) BEFORE it was made. Hash-
+    first: the verdict itself can stay off-receipt, only its digest binds, so a
+    receipt proves 'this exact verdict was bound to this payment' without
+    exposing the verdict's contents. `verdict_hash` matches the digest the
+    verdict issuer anchors (see screening.verdict_digest / Black_Wall's
+    traceipt_attest.verdict_digest)."""
+    _require(isinstance(sc, dict), "commerce.screening must be an object")
+    _require(set(sc) <= {"verdict_hash", "decision", "screener", "decided_at",
+                         "attestation_ref"},
+             "commerce.screening allows only verdict_hash/decision/screener/"
+             "decided_at/attestation_ref")
+    _require(bool(_HASH_RE.match(sc.get("verdict_hash", ""))),
+             "screening.verdict_hash must look like sha256:<64 hex>")
+    if "decision" in sc:
+        _require(isinstance(sc["decision"], str) and 0 < len(sc["decision"]) <= 40,
+                 "screening.decision must be a short string (e.g. GO/HOLD/STOP)")
+    if "screener" in sc:
+        _require(isinstance(sc["screener"], str) and 0 < len(sc["screener"]) <= 100,
+                 "screening.screener must be a string (<=100 chars)")
+    if "decided_at" in sc:
+        _require(bool(_ISO_RE.match(sc["decided_at"])),
+                 "screening.decided_at must be UTC ISO-8601 ending in Z")
+    if "attestation_ref" in sc:
+        _require(isinstance(sc["attestation_ref"], str) and
+                 0 < len(sc["attestation_ref"]) <= 300,
+                 "screening.attestation_ref must be a string (<=300 chars)")
 
 
 def validate_credit(cr: dict):

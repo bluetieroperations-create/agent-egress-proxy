@@ -13,6 +13,7 @@ from traceipt.canonical import GENESIS_HASH, canonical_json, hash_obj
 from traceipt.completeness import verify_completeness
 from traceipt.disclosure import verify_disclosure
 from traceipt.ledger import Ledger
+from traceipt.screening import build_screening, verdict_digest, verify_screening
 from traceipt.schema import build_receipt, receipt_hash
 from traceipt.settlement import (
     TRANSFER_TOPIC, USDC_CONTRACTS, MockVerifier, RpcVerifier,
@@ -1896,6 +1897,88 @@ class TestSelectiveDisclosure(unittest.TestCase):
         ok, revealed, problems = verify_disclosure(verify_envelope(denv, app._jwks()))
         self.assertTrue(ok, problems)
         self.assertIn("issued_at", revealed)
+
+
+class TestComplianceBinding(unittest.TestCase):
+    """Compliance-bound receipts: bind a pre-payment verdict and prove
+    'screened before paid'. See screening.py."""
+
+    VERDICT = {"verdict": "GO", "score": 0.98, "ofac": "clear", "receipt_id": "bw_x"}
+
+    def _app(self):
+        d = tempfile.mkdtemp()
+        return App(signer=Signer.generate(), ledger=Ledger(os.path.join(d, "s.db")),
+                   verifier=MockVerifier(), gate="off", price_base_units="2000",
+                   pay_to=PAYEE, seller_id="op.example", chain="base-sepolia",
+                   base_url="http://x")
+
+    def _issue(self, app, screening, tx="0x" + "11" * 32, issued_over=None):
+        s = sample_settlement(tx_hash=tx)
+        c = sample_commerce(screening=screening)
+        code, obj = app.issue({"settlement": s, "commerce": c})
+        self.assertEqual(code, 201, obj)
+        return obj["receipt"]["payload"]
+
+    def test_digest_matches_blackwall_formula(self):
+        import hashlib as _h
+        bw = "sha256:" + _h.sha256(
+            json.dumps(self.VERDICT, sort_keys=True,
+                       separators=(",", ":")).encode()).hexdigest()
+        self.assertEqual(verdict_digest(self.VERDICT), bw)
+
+    def test_bound_verdict_verifies(self):
+        app = self._app()
+        sc = build_screening(self.VERDICT, decision="GO", screener="blackwall",
+                             decided_at="2026-07-31T10:00:00Z")
+        payload = self._issue(app, sc)
+        ok, problems = verify_screening(payload, self.VERDICT)
+        self.assertTrue(ok, problems)
+
+    def test_swapped_verdict_detected(self):
+        app = self._app()
+        payload = self._issue(app, build_screening(self.VERDICT, decision="GO"))
+        ok, problems = verify_screening(payload, {**self.VERDICT, "verdict": "STOP"})
+        self.assertFalse(ok)
+        self.assertTrue(any("does not match" in p for p in problems))
+
+    def test_screening_after_issue_rejected(self):
+        # A verdict "decided" after the receipt was issued is not before-payment.
+        app = self._app()
+        sc = build_screening(self.VERDICT, decided_at="2099-01-01T00:00:00Z")
+        payload = self._issue(app, sc)
+        ok, problems = verify_screening(payload, self.VERDICT)
+        self.assertFalse(ok)
+        self.assertTrue(any("AFTER" in p for p in problems))
+
+    def test_unbound_receipt_is_not_compliance_bound(self):
+        app = self._app()
+        s = sample_settlement(tx_hash="0x" + "22" * 32)
+        code, obj = app.issue({"settlement": s, "commerce": sample_commerce()})
+        self.assertEqual(code, 201, obj)
+        ok, problems = verify_screening(obj["receipt"]["payload"], self.VERDICT)
+        self.assertFalse(ok)
+        self.assertTrue(any("no screening block" in p for p in problems))
+
+    def test_bad_screening_block_is_400(self):
+        app = self._app()
+        s = sample_settlement(tx_hash="0x" + "33" * 32)
+        c = sample_commerce(screening={"verdict_hash": "not-a-hash"})
+        code, obj = app.issue({"settlement": s, "commerce": c})
+        self.assertEqual(code, 400, obj)
+
+    def test_composes_with_disclosure(self):
+        # Prove "screened GO" while hiding the amount -- the killer combination.
+        app = self._app()
+        sc = build_screening(self.VERDICT, decision="GO", screener="blackwall")
+        payload = self._issue(app, sc)
+        code, denv = app.disclose_receipt(
+            payload["receipt_id"],
+            ["commerce.screening.decision", "commerce.screening.verdict_hash"])
+        self.assertEqual(code, 200)
+        ok, revealed, problems = verify_disclosure(verify_envelope(denv, app._jwks()))
+        self.assertTrue(ok, problems)
+        self.assertEqual(revealed["commerce.screening.decision"], "GO")
+        self.assertNotIn("settlement.amount_base_units", revealed)
 
 
 if __name__ == "__main__":
