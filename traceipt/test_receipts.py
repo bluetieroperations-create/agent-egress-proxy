@@ -1,5 +1,6 @@
 """Tests for Traceipt. The security boundary — canonicalization,
 signing, hash chain, settlement matching — is tested first and hardest."""
+import copy
 import json
 import os
 import tempfile
@@ -13,7 +14,9 @@ from traceipt.canonical import GENESIS_HASH, canonical_json, hash_obj
 from traceipt.completeness import verify_completeness
 from traceipt.disclosure import verify_disclosure
 from traceipt.ledger import Ledger
-from traceipt.screening import build_screening, verdict_digest, verify_screening
+from traceipt.screening import (
+    build_screening, verdict_digest, verify_anchored_before, verify_screening,
+)
 from traceipt.schema import build_receipt, receipt_hash
 from traceipt.settlement import (
     TRANSFER_TOPIC, USDC_CONTRACTS, MockVerifier, RpcVerifier,
@@ -1797,6 +1800,20 @@ class TestCompleteness(unittest.TestCase):
         ok, problems = verify_completeness(rep, self._checker(app))
         self.assertTrue(ok, problems)
 
+    def test_seller_binding_rejects_cross_seller_checkpoint(self):
+        # Audit fix: a validly-signed checkpoint for another seller (or a
+        # tampered report seller_id) must not pass as this seller.
+        app = self._app()
+        for i in range(2):
+            self._issue(app, i)
+        _, rep = app.completeness_report("op.example")
+        chk = self._checker(app)
+        self.assertTrue(verify_completeness(rep, chk, expected_seller="op.example")[0])
+        self.assertFalse(verify_completeness(rep, chk, expected_seller="attacker")[0])
+        r2 = copy.deepcopy(rep)
+        r2["seller_id"] = "spoofed"
+        self.assertFalse(verify_completeness(r2, chk)[0])
+
     def test_completeness_over_http(self):
         app = self._app()
         for i in range(2):
@@ -1965,6 +1982,23 @@ class TestComplianceBinding(unittest.TestCase):
         c = sample_commerce(screening={"verdict_hash": "not-a-hash"})
         code, obj = app.issue({"settlement": s, "commerce": c})
         self.assertEqual(code, 400, obj)
+
+    def test_anchored_ordering_is_the_trustless_check(self):
+        self.assertTrue(verify_anchored_before(
+            "2026-01-01T09:00:00Z", "2026-01-01T10:00:00Z")[0])
+        self.assertFalse(verify_anchored_before(
+            "2026-01-01T11:00:00Z", "2026-01-01T10:00:00Z")[0])
+        self.assertFalse(verify_anchored_before(None, "2026-01-01T10:00:00Z")[0])
+
+    def test_decided_at_is_self_asserted_binding_still_holds(self):
+        # A backdated decided_at still passes verify_screening -- that check is
+        # BINDING + self-consistency, not trustless ordering (which is
+        # verify_anchored_before). Documents the audited boundary.
+        app = self._app()
+        payload = self._issue(
+            app, build_screening(self.VERDICT, decided_at="2000-01-01T00:00:00Z"))
+        ok, _ = verify_screening(payload, self.VERDICT)
+        self.assertTrue(ok)
 
     def test_composes_with_disclosure(self):
         # Prove "screened GO" while hiding the amount -- the killer combination.

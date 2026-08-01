@@ -40,7 +40,8 @@ def build_checkpoint(seller_id: str, count: int, head_hash: str, as_of: str,
     }
 
 
-def verify_completeness(report: dict, verify_checkpoint, genesis: str = GENESIS_HASH):
+def verify_completeness(report: dict, verify_checkpoint, genesis: str = GENESIS_HASH,
+                        expected_seller: str | None = None):
     """Verify a completeness report. Returns (ok, problems).
 
     `verify_checkpoint(envelope) -> payload` must AUTHENTICATE the signed
@@ -48,12 +49,20 @@ def verify_completeness(report: dict, verify_checkpoint, genesis: str = GENESIS_
     a closure over signing.verify_envelope bound to the fetched JWKS, so a
     forged checkpoint is rejected before any structural check.
 
+    `expected_seller`, when given, binds the proof to the seller the auditor
+    actually cares about -- so a validly-signed checkpoint for a DIFFERENT
+    seller cannot be passed off as this one.
+
     Checks, in order:
       * the checkpoint signature authenticates;
-      * it is a chain-checkpoint for a matching genesis;
+      * it is a chain-checkpoint for a matching genesis (and seller);
       * the manifest has exactly `count` rows with dense sequences 1..count;
       * prev links chain from genesis through to the signed head hash.
     A single failure still collects the rest, so the report lists every defect.
+
+    NOTE: this proves the issuer SIGNED a commitment to exactly this set, dense
+    and linked. It does not by itself prove each listed receipt is authentic --
+    for that, fetch each at /receipts/{id} and verify its own signature.
     """
     problems: list[str] = []
     manifest = report.get("manifest")
@@ -71,6 +80,14 @@ def verify_completeness(report: dict, verify_checkpoint, genesis: str = GENESIS_
         problems.append("signed payload is not a chain-checkpoint")
     if cp.get("genesis", genesis) != genesis:
         problems.append("checkpoint genesis mismatch")
+    # Bind the seller: the signed checkpoint's seller must match the report's
+    # claimed seller, and (if the auditor named one) the expected seller.
+    cp_seller = cp.get("seller_id")
+    if report.get("seller_id") is not None and cp_seller != report.get("seller_id"):
+        problems.append("checkpoint seller_id does not match the report's seller_id")
+    if expected_seller is not None and cp_seller != expected_seller:
+        problems.append(f"checkpoint is for seller {cp_seller!r}, not the "
+                        f"expected {expected_seller!r}")
 
     count = cp.get("count")
     if count != len(manifest):

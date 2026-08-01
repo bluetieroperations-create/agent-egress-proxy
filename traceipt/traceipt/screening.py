@@ -1,16 +1,26 @@
 """
-Compliance-bound receipts: prove a payment was SCREENED before it was made.
+Compliance-bound receipts: bind the pre-payment verdict that approved a payment
+into the receipt itself.
 
-Everyone proves "this payment happened." Regulated payers also need to prove
-"this payment was checked first" -- reputation + sanctions (OFAC) + risk ->
-GO/HOLD/STOP -- BEFORE the money moved. A screening block binds that verdict
-into the receipt: the receipt carries the verdict's digest (hash-first, so the
-verdict's contents stay off-receipt), and the whole thing is signed, chained,
-anchored, and selectively disclosable like any other receipt field.
+Everyone proves "this payment happened." Regulated payers also want to show the
+payment was checked first -- reputation + sanctions (OFAC) + risk -> GO/HOLD/STOP.
+A screening block binds that verdict into the receipt: the receipt carries the
+verdict's digest (hash-first, so the verdict's contents stay off-receipt), and
+the whole thing is signed, chained, anchored, and selectively disclosable like
+any other receipt field. This needs BOTH a pre-payment verdict engine and a
+neutral receipt layer -- no payment platform that only moves money can produce it.
 
-The single artifact then proves the whole decide -> pay -> record chain, and it
-is the one capability that needs BOTH a pre-payment verdict engine and a neutral
-receipt layer -- no payment platform that only moves money can produce it.
+TWO DIFFERENT STRENGTHS -- do not conflate them:
+  * BINDING (cryptographically strong): the receipt is bound to ONE exact
+    verdict. `verify_screening` recomputes the digest and catches any swap. This
+    holds against a lying caller.
+  * ORDERING ("screened BEFORE paid"): the `decided_at` field is SELF-ASSERTED
+    by whoever built the screening block -- a malicious payer can backdate it, so
+    `verify_screening`'s decided_at check is only a self-consistency sanity check,
+    NOT trustless proof of ordering. For trustless ordering, the verdict must be
+    independently timestamped -- anchored via Traceipt `/attest` -- and the
+    anchor time compared to the settlement's on-chain block time. Use
+    `verify_anchored_before` with those two timestamps.
 
 `verdict_digest` is byte-identical to Black_Wall's
 `traceipt_attest.verdict_digest` (sort_keys, compact separators), so a verdict
@@ -50,17 +60,19 @@ def build_screening(verdict_obj, *, decision=None, screener=None,
 
 
 def verify_screening(receipt_payload: dict, verdict_obj):
-    """Verify a compliance-bound receipt against the ACTUAL verdict object.
-    Returns (ok, problems).
+    """Verify the BINDING of a compliance-bound receipt to the ACTUAL verdict
+    object. Returns (ok, problems). This is the cryptographically strong half.
 
     Checks:
       * the receipt carries a screening block;
-      * its verdict_hash equals the digest of the provided verdict (so the
-        bound verdict cannot be swapped for a different one);
-      * if a decided_at is present, it is no later than the receipt's issued_at
-        (the decision was made before the payment was recorded -- the offline
-        "screened before paid" ordering; the strong form additionally checks
-        the verdict's /attest anchor timestamp predates the settlement block).
+      * its verdict_hash equals the digest of the provided verdict, so the bound
+        verdict cannot be swapped for a different one (holds against a lying
+        caller);
+      * self-consistency: if `decided_at` is present it is not AFTER the
+        receipt's issued_at. NOTE: decided_at is SELF-ASSERTED, so this catches
+        an obviously-wrong claim but does NOT prove the decision truly preceded
+        the payment -- for trustless ordering use verify_anchored_before against
+        the verdict's /attest anchor time and the settlement block time.
     """
     problems: list[str] = []
     commerce = receipt_payload.get("commerce") or {}
@@ -74,5 +86,20 @@ def verify_screening(receipt_payload: dict, verdict_obj):
     issued = receipt_payload.get("issued_at")
     if decided and issued and decided > issued:
         problems.append("screening decided_at is AFTER the receipt issued_at "
-                        "(not screened before the payment was recorded)")
+                        "(self-asserted timestamp is not even self-consistent)")
     return (not problems), problems
+
+
+def verify_anchored_before(anchor_time_iso, settlement_time_iso):
+    """The TRUSTLESS ordering check: was the verdict independently timestamped
+    (anchored via /attest) strictly before the payment settled on-chain?
+    Returns (ok, reason). Both timestamps are UTC ISO-8601 ('...Z'); the caller
+    supplies the verdict's anchor time (from Traceipt's /anchors or the
+    attestation's anchor) and the settlement's on-chain block time. This is the
+    real 'screened before paid' proof -- decided_at alone is self-asserted."""
+    if not anchor_time_iso or not settlement_time_iso:
+        return False, "need both the anchor time and the settlement block time"
+    if anchor_time_iso < settlement_time_iso:
+        return True, "verdict anchored before settlement"
+    return False, ("verdict anchor is not before settlement "
+                   f"(anchored {anchor_time_iso}, settled {settlement_time_iso})")
