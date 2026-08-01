@@ -1733,6 +1733,69 @@ class TestTrustBoundary(unittest.TestCase):
         self.assertEqual(code, 400)
 
 
+class TestNeutralVerifier(unittest.TestCase):
+    """Public POST /verify: verify any VC / VP / bundle, from any issuer. bundle.py."""
+
+    def _serve(self):
+        d = tempfile.mkdtemp()
+        app = App(signer=Signer.generate(), ledger=Ledger(os.path.join(d, "q.db")),
+                  verifier=MockVerifier(), gate="off", price_base_units="2000",
+                  pay_to=PAYEE, seller_id="op.example", chain="base-sepolia",
+                  base_url="https://api.traceipt.xyz")
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        return app, port
+
+    def _verify(self, port, doc):
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/verify",
+            data=json.dumps(doc).encode(), headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def test_verify_credential_and_tamper(self):
+        from traceipt import vc
+        app, port = self._serve()
+        rid = app.issue({"settlement": sample_settlement(tx_hash="0x" + "11" * 32),
+                         "commerce": sample_commerce()})[1]["receipt"]["payload"]["receipt_id"]
+        _, cred = app.receipt_vc(rid)
+        self.assertTrue(self._verify(port, cred)[1]["ok"])
+        cred["credentialSubject"]["seller"] = "evil"
+        self.assertFalse(self._verify(port, cred)[1]["ok"])
+
+    def test_neutrality_foreign_issuer(self):
+        # The verifier checks the credential's OWN did:key, so it verifies VCs
+        # from issuers other than this Traceipt instance -- the neutrality point.
+        from traceipt import vc
+        _, port = self._serve()
+        foreign = vc.verdict_vc({"verdict": "GO"}, Signer.generate(),
+                                "2026-07-31T10:00:00Z", decision="GO")
+        code, report = self._verify(port, foreign)
+        self.assertEqual(code, 200)
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["kind"], "credential")
+
+    def test_verify_presentation_and_bundle(self):
+        from traceipt import bundle
+        app, port = self._serve()
+        rid = app.issue({"settlement": sample_settlement(tx_hash="0x" + "11" * 32),
+                         "commerce": sample_commerce()})[1]["receipt"]["payload"]["receipt_id"]
+        _, cred = app.receipt_vc(rid)
+        vp = bundle.make_presentation([cred])
+        self.assertEqual(self._verify(port, vp)[1]["kind"], "presentation")
+        self.assertEqual(self._verify(port, {"receipt_vc": cred})[1]["kind"], "lifecycle")
+
+    def test_garbage_is_400(self):
+        _, port = self._serve()
+        self.assertEqual(self._verify(port, "not-a-dict")[0], 400)
+        self.assertEqual(self._verify(port, {"hello": "world"})[0], 400)
+
+
 class TestLifecycleBundle(unittest.TestCase):
     """Verify the decide -> pay -> record story as one coherent bundle of W3C
     VCs / a Verifiable Presentation. See bundle.py."""

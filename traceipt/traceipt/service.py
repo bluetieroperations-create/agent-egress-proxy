@@ -6,6 +6,7 @@ Endpoints:
   GET  /receipts/{id}   fetch a stored envelope
   GET  /receipts/{id}/vc  the receipt as a W3C Verifiable Credential (AP2-ready)
   GET  /attest/{id}/vc    the anchoring attestation (e.g. a verdict) as a W3C VC
+  POST /verify          neutral verifier: verify any VC / VP / lifecycle bundle (public)
   POST /receipts/{id}/disclose  (admin) signed redacted disclosure of chosen fields
   GET  /verify/{id}     re-verify signature + chain link, return a report
   GET  /chain/{seller}  full-chain integrity check for a seller
@@ -34,8 +35,10 @@ from urllib.parse import unquote, urlsplit
 from .canonical import GENESIS_HASH
 from .completeness import build_checkpoint
 from .disclosure import commit as disclosure_commit, disclose as disclosure_disclose
+from .bundle import verify_lifecycle, verify_presentation
 from .vc import (
     attestation_vc as build_attestation_vc, receipt_vc as build_receipt_vc,
+    verify_vc,
 )
 from .invoice import render_invoice
 from .ledger import Ledger
@@ -190,6 +193,34 @@ class App:
             return 404, {"error": "unknown receipt_id"}
         return 200, build_receipt_vc(
             envelope["payload"], self.signer, self.base_url, utc_now())
+
+    def verify_document(self, body) -> tuple[int, dict]:
+        """Neutral verifier: verify ANY submitted W3C VC, VerifiablePresentation,
+        or lifecycle bundle -- offline, with zero client-side crypto. Neutral
+        because it checks each credential's own embedded did:key signature, so it
+        verifies credentials from ANY issuer, not only Traceipt's. Public and
+        ungated; verification is a read-only public good."""
+        if not isinstance(body, dict):
+            return 400, {"error": "body must be a JSON object: a VC, a "
+                                  "VerifiablePresentation, or {receipt_vc,...}"}
+        if any(k in body for k in ("receipt_vc", "verdict_vc", "attestation_vc")):
+            ok, report = verify_lifecycle(
+                receipt_vc=body.get("receipt_vc"),
+                verdict_vc=body.get("verdict_vc"),
+                attestation_vc=body.get("attestation_vc"),
+                settlement_time=body.get("settlement_time"),
+                expected_issuers=body.get("expected_issuers"))
+            return 200, {"ok": ok, "kind": "lifecycle", **report}
+        types = body.get("type") or []
+        if "VerifiablePresentation" in types:
+            ok, report = verify_presentation(body)
+            return 200, {"ok": ok, "kind": "presentation", **report}
+        if "proof" in body:
+            return 200, {"ok": verify_vc(body), "kind": "credential",
+                         "issuer": body.get("issuer"), "types": types}
+        return 400, {"error": "unrecognized document: expected a VC (with a "
+                     "proof), a VerifiablePresentation, or a bundle "
+                     "{receipt_vc, verdict_vc, attestation_vc}"}
 
     def attestation_vc(self, att_id: str) -> tuple[int, dict]:
         """Traceipt's anchoring attestation (e.g. of a Black_Wall verdict digest)
@@ -700,6 +731,22 @@ def make_handler(app: App):
 
         def do_POST(self):
             resource = urlsplit(self.path).path
+            if resource == "/verify":
+                # Public, ungated neutral verifier: verify any submitted VC / VP
+                # / lifecycle bundle. No payment, no auth -- verification is a
+                # read-only public good.
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if length <= 0 or length > MAX_BODY:
+                        return self._send(400, {"error": f"body must be 1..{MAX_BODY} bytes"})
+                    body = json.loads(self.rfile.read(length).decode("utf-8"))
+                except (ValueError, UnicodeDecodeError):
+                    return self._send(400, {"error": "body must be valid JSON"})
+                try:
+                    code, obj = app.verify_document(body)
+                except Exception as e:
+                    return self._send(500, {"error": f"internal error: {type(e).__name__}"})
+                return self._send(code, obj)
             if resource == "/anchor":
                 # Admin op: seal a Merkle batch. In production this must be
                 # authenticated / run by the operator, not exposed publicly.
