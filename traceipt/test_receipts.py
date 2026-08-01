@@ -1733,6 +1733,78 @@ class TestTrustBoundary(unittest.TestCase):
         self.assertEqual(code, 400)
 
 
+class TestAP2Linkage(unittest.TestCase):
+    """Bind a receipt to the AP2 PaymentMandate it fulfilled, via the hash-first
+    commerce.evidence slot. See ap2.py."""
+
+    MANDATE = {
+        "@context": ["https://www.w3.org/ns/credentials/v2"],
+        "type": ["VerifiableCredential", "PaymentMandate"],
+        "credentialSubject": {"paymentDetails": {"amount": 5.0, "currency": "USDC",
+                                                 "payTo": "0x" + "bb" * 20}},
+        "proof": {"type": "DataIntegrityProof", "proofValue": "zFAKE"},
+    }
+
+    def _app(self):
+        d = tempfile.mkdtemp()
+        return App(signer=Signer.generate(), ledger=Ledger(os.path.join(d, "ap2.db")),
+                   verifier=MockVerifier(), gate="off", price_base_units="2000",
+                   pay_to=PAYEE, seller_id="op.example", chain="base-sepolia",
+                   base_url="https://api.traceipt.xyz")
+
+    def _issue_with_mandate(self, app, mandate):
+        from traceipt import ap2
+        ev = ap2.mandate_evidence(mandate, ref="https://merchant/ap2/pm/1")
+        c = sample_commerce(evidence=[ev])
+        code, obj = app.issue({"settlement": sample_settlement(tx_hash="0x" + "11" * 32),
+                               "commerce": c})
+        self.assertEqual(code, 201, obj)
+        return obj["receipt"]["payload"]
+
+    def test_evidence_entry_validates_and_links(self):
+        from traceipt import ap2
+        app = self._app()
+        payload = self._issue_with_mandate(app, self.MANDATE)
+        ok, problems = ap2.verify_mandate_link(payload, self.MANDATE)
+        self.assertTrue(ok, problems)
+
+    def test_swapped_mandate_not_linked(self):
+        from traceipt import ap2
+        app = self._app()
+        payload = self._issue_with_mandate(app, self.MANDATE)
+        other = copy.deepcopy(self.MANDATE)
+        other["credentialSubject"]["paymentDetails"]["amount"] = 5000.0
+        ok, problems = ap2.verify_mandate_link(payload, other)
+        self.assertFalse(ok)
+
+    def test_type_filter(self):
+        from traceipt import ap2
+        app = self._app()
+        payload = self._issue_with_mandate(app, self.MANDATE)
+        self.assertTrue(ap2.verify_mandate_link(
+            payload, self.MANDATE, mandate_type="ap2-payment-mandate")[0])
+        self.assertFalse(ap2.verify_mandate_link(
+            payload, self.MANDATE, mandate_type="ap2-cart-mandate")[0])
+
+    def test_no_evidence_is_not_linked(self):
+        from traceipt import ap2
+        app = self._app()
+        code, obj = app.issue({"settlement": sample_settlement(tx_hash="0x" + "22" * 32),
+                               "commerce": sample_commerce()})
+        self.assertEqual(code, 201, obj)
+        ok, problems = ap2.verify_mandate_link(obj["receipt"]["payload"], self.MANDATE)
+        self.assertFalse(ok)
+
+    def test_link_flows_into_receipt_vc(self):
+        from traceipt import vc as _vc
+        app = self._app()
+        payload = self._issue_with_mandate(app, self.MANDATE)
+        _, cred = app.receipt_vc(payload["receipt_id"])
+        self.assertEqual(cred["credentialSubject"]["commerce"]["evidence"][0]["type"],
+                         "ap2-payment-mandate")
+        self.assertTrue(_vc.verify_vc(cred))
+
+
 class TestVerifiableCredential(unittest.TestCase):
     """W3C VC output (eddsa-jcs-2022), for AP2 / VC interop. See vc.py."""
 
