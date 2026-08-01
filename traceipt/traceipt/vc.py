@@ -21,10 +21,16 @@ from __future__ import annotations
 
 import hashlib
 
+import json
+
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .canonical import canonical_json
+from .signing import b64url, b64url_decode
+
+JWT_TYP = "vc+ld+json+jwt"          # W3C VC-JOSE-COSE media type suffix
+JWT_TYPS = {"vc+ld+json+jwt", "vc+jwt"}
 
 VC_CONTEXT = "https://www.w3.org/ns/credentials/v2"
 TRACEIPT_CONTEXT = "https://traceipt.xyz/credentials/v1"
@@ -240,6 +246,62 @@ def receipt_vc(payload: dict, signer, base_url: str, created: str) -> dict:
     issuer_did, _vm = did_key(signer.public_bytes())
     credential = receipt_to_credential(payload, issuer_did, base_url)
     return add_proof(credential, signer, created)
+
+
+# --- VC-JOSE-COSE (VC-JWT): the other W3C securing mechanism ------------------
+def credential_jwt(credential: dict, signer) -> str:
+    """Secure an UNSIGNED credential as a compact VC-JWT (W3C VC-JOSE-COSE). The
+    payload is the credential DIRECTLY (no claim remapping); the JWS is the
+    securing mechanism, so this credential must NOT already carry a data-integrity
+    proof. `kid` is the issuer's did:key verificationMethod, so a verifier
+    resolves the key offline the same way as the DI form."""
+    _did, vm = did_key(signer.public_bytes())
+    header = {"alg": "EdDSA", "typ": JWT_TYP, "kid": vm}
+    h = b64url(json.dumps(header, separators=(",", ":")).encode("utf-8"))
+    p = b64url(json.dumps(credential, separators=(",", ":")).encode("utf-8"))
+    sig = b64url(signer.sign_raw(f"{h}.{p}".encode("ascii")))
+    return f"{h}.{p}.{sig}"
+
+
+def verify_jwt(token: str, *, expected_issuer: str | None = None):
+    """Verify a compact VC-JWT. Returns the AUTHENTICATED credential payload, or
+    None. Binds issuer to the signing key exactly like verify_vc: the kid's DID
+    (before '#') must equal the credential issuer. Never raises."""
+    try:
+        h_b64, p_b64, s_b64 = token.split(".")
+        header = json.loads(b64url_decode(h_b64))
+        if header.get("alg") != "EdDSA" or header.get("typ") not in JWT_TYPS:
+            return None
+        kid = header.get("kid", "")
+        payload = json.loads(b64url_decode(p_b64))
+        issuer = _issuer_id(payload)
+        if not issuer or issuer != kid.split("#", 1)[0]:
+            return None
+        if expected_issuer is not None and issuer != expected_issuer:
+            return None
+        pub = pubkey_from_verification_method(kid)
+        Ed25519PublicKey.from_public_bytes(pub).verify(
+            b64url_decode(s_b64), f"{h_b64}.{p_b64}".encode("ascii"))
+        return payload
+    except (InvalidSignature, ValueError, KeyError, TypeError):
+        return None
+
+
+def enveloped_vc(token: str) -> dict:
+    """The VC-2.0 EnvelopedVerifiableCredential wrapper around a VC-JWT, for
+    contexts that carry credentials as JSON objects."""
+    return {
+        "@context": VC_CONTEXT,
+        "id": f"data:application/{JWT_TYP},{token}",
+        "type": "EnvelopedVerifiableCredential",
+    }
+
+
+def receipt_vc_jwt(payload: dict, signer, base_url: str) -> str:
+    """Full path: Traceipt receipt payload -> compact VC-JWT."""
+    issuer_did, _vm = did_key(signer.public_bytes())
+    credential = receipt_to_credential(payload, issuer_did, base_url)
+    return credential_jwt(credential, signer)
 
 
 # --- verdict -> W3C VC (the pre-payment risk credential AP2 lacks) -----------

@@ -2076,6 +2076,41 @@ class TestVerifiableCredential(unittest.TestCase):
         for b in (b"", b"\x00", b"\x00\x00abc", os.urandom(32)):
             self.assertEqual(vc.b58decode(vc.b58encode(b)), b)
 
+    def test_vc_jwt_roundtrip_and_binding(self):
+        from traceipt import vc
+        app = self._app()
+        rid = self._issue(app)
+        code, obj = app.receipt_vc_jwt(rid)
+        self.assertEqual(code, 200)
+        token = obj["jwt"]
+        self.assertEqual(obj["format"], "vc+ld+json+jwt")
+        self.assertEqual(token.count("."), 2)
+        cred = vc.verify_jwt(token)
+        self.assertIsNotNone(cred)
+        self.assertIn("X402PaymentReceiptCredential", cred["type"])
+        # tamper the payload -> verify fails
+        h, _p, s = token.split(".")
+        forged = h + "." + vc.b64url(b'{"hacked":1}') + "." + s
+        self.assertIsNone(vc.verify_jwt(forged))
+
+    def test_vc_jwt_issuer_spoof_rejected(self):
+        # kid's DID must equal the credential issuer (same audit fix as verify_vc)
+        from traceipt import vc
+        attacker = Signer.generate()
+        victim_did = vc.did_key(Signer.generate().public_bytes())[0]
+        cred = {"@context": [vc.VC_CONTEXT], "type": ["VerifiableCredential"],
+                "issuer": victim_did, "credentialSubject": {"a": "1"}}
+        token = vc.credential_jwt(cred, attacker)   # claims victim, signed by attacker
+        self.assertIsNone(vc.verify_jwt(token))
+
+    def test_verify_endpoint_accepts_jwt_and_enveloped(self):
+        from traceipt import vc
+        app = self._app()
+        rid = self._issue(app)
+        _, obj = app.receipt_vc_jwt(rid)
+        self.assertTrue(app.verify_document({"jwt": obj["jwt"]})[1]["ok"])
+        self.assertTrue(app.verify_document(obj["envelopedVerifiableCredential"])[1]["ok"])
+
     def test_verdict_vc_signed_by_its_own_issuer(self):
         # The risk-credential slot AP2 lacks. Signed by the SCREENER's key
         # (here a distinct signer standing in for Black_Wall), hash-first so a

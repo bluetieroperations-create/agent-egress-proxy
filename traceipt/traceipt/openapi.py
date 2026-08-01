@@ -52,6 +52,8 @@ def spec(base_url: str, price_base_units: str = "2000", chain: str = "base-sepol
             "/receipts/{id}": {"get": _ok("Fetch a stored signed receipt envelope.")},
             "/receipts/{id}/vc": {"get": _ok("The receipt as a W3C Verifiable "
                                              "Credential (eddsa-jcs-2022, AP2-ready).")},
+            "/receipts/{id}/vc.jwt": {"get": _ok("The receipt as a VC-JWT "
+                                                 "(W3C VC-JOSE-COSE) for JWT-native verifiers.")},
             "/receipts/{id}/invoice.pdf": {"get": _ok("Rendered A4 invoice PDF.")},
             "/receipts/{id}/proof": {"get": _ok("Merkle inclusion proof (once anchored).")},
             "/receipts/{id}/disclose": {"post": {

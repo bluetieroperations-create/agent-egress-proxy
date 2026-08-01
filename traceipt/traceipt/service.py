@@ -39,8 +39,9 @@ from .bundle import verify_lifecycle, verify_presentation
 from .openapi import spec as openapi_spec
 from .signing import b64url_decode
 from .vc import (
-    attestation_vc as build_attestation_vc, did_web_document,
-    receipt_vc as build_receipt_vc, verify_vc,
+    JWT_TYP, attestation_vc as build_attestation_vc, did_web_document,
+    enveloped_vc, receipt_vc as build_receipt_vc, receipt_vc_jwt as build_receipt_vc_jwt,
+    verify_jwt, verify_vc,
 )
 from .invoice import render_invoice
 from .ledger import Ledger
@@ -221,6 +222,19 @@ class App:
         if not isinstance(body, dict):
             return 400, {"error": "body must be a JSON object: a VC, a "
                                   "VerifiablePresentation, or {receipt_vc,...}"}
+        # VC-JWT, either as {"jwt": "..."} or an EnvelopedVerifiableCredential.
+        token = None
+        if isinstance(body.get("jwt"), str):
+            token = body["jwt"]
+        elif "EnvelopedVerifiableCredential" in (body.get("type") or []):
+            vid = body.get("id", "")
+            if isinstance(vid, str) and vid.startswith("data:") and "," in vid:
+                token = vid.split(",", 1)[1]
+        if token is not None:
+            payload = verify_jwt(token)
+            return 200, {"ok": payload is not None, "kind": "credential-jwt",
+                         "issuer": (payload or {}).get("issuer"),
+                         "types": (payload or {}).get("type")}
         if any(k in body for k in ("receipt_vc", "verdict_vc", "attestation_vc")):
             ok, report = verify_lifecycle(
                 receipt_vc=body.get("receipt_vc"),
@@ -239,6 +253,16 @@ class App:
         return 400, {"error": "unrecognized document: expected a VC (with a "
                      "proof), a VerifiablePresentation, or a bundle "
                      "{receipt_vc, verdict_vc, attestation_vc}"}
+
+    def receipt_vc_jwt(self, receipt_id: str) -> tuple[int, dict]:
+        """The receipt as a compact VC-JWT (W3C VC-JOSE-COSE), for JWT-native
+        verifiers, plus the VC-2.0 EnvelopedVerifiableCredential wrapper."""
+        envelope = self.ledger.get(receipt_id)
+        if envelope is None:
+            return 404, {"error": "unknown receipt_id"}
+        token = build_receipt_vc_jwt(envelope["payload"], self.signer, self.base_url)
+        return 200, {"format": JWT_TYP, "jwt": token,
+                     "envelopedVerifiableCredential": enveloped_vc(token)}
 
     def attestation_vc(self, att_id: str) -> tuple[int, dict]:
         """Traceipt's anchoring attestation (e.g. of a Black_Wall verdict digest)
@@ -699,6 +723,10 @@ def make_handler(app: App):
                 if proof is None:
                     return self._send(404, {"error": "unknown or not-yet-anchored receipt"})
                 return self._send(200, proof)
+            if path.startswith("/receipts/") and path.endswith("/vc.jwt"):
+                rid = unquote(path[len("/receipts/"):-len("/vc.jwt")])
+                code, obj = app.receipt_vc_jwt(rid)
+                return self._send(code, obj)
             if path.startswith("/receipts/") and path.endswith("/vc"):
                 rid = unquote(path[len("/receipts/"):-len("/vc")])
                 code, obj = app.receipt_vc(rid)
