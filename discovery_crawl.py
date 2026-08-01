@@ -3,10 +3,12 @@
 discovery_crawl.py -- map the x402 seller ecosystem, and auto-feed the moat.
 
 `chain_backfill.py` seeds reputation from public data but needs a LIST of payee
-addresses. This crawler produces that list automatically: it fetches x402 discovery
-sources (a Bazaar/facilitator resource list, a directory, or an endpoint's own 402
-challenge / `/.well-known/x402` descriptor), parses the standard x402 `accepts`
-shape, and extracts each resource's `payTo` + advertised price + asset/network.
+addresses. This crawler produces that list automatically. Out of the box it walks
+the live **CDP x402 Bazaar** (`CDP_BAZAAR`, Coinbase's public discovery layer,
+~15k resources, offset-paginated) -- and also parses any extra source you pass (a
+facilitator resource list, a directory, or an endpoint's own 402 / `/.well-known/
+x402` descriptor). It reads the standard x402 `accepts` shape and extracts each
+resource's `payTo` + advertised price + asset/network.
 
 One crawl feeds THREE Blackwall signals with zero customers:
   * `payees()`             -> `chain_backfill` (counterparty REPUTATION).
@@ -30,6 +32,10 @@ from addresses import is_evm_address
 
 _MAX_DEPTH = 6
 _NESTED_KEYS = ("items", "resources", "data", "results", "endpoints")
+
+# The live x402 discovery layer: Coinbase's CDP Bazaar. Public GET, offset-paginated
+# (`{items:[{accepts:[...]}], pagination:{limit,offset,total}}`), ~15k resources.
+CDP_BAZAAR = "https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources"
 
 
 def _price_atomic(accept):
@@ -127,6 +133,41 @@ def crawl(sources, *, fetch=None):
     return resources
 
 
+def crawl_bazaar(*, base_url=CDP_BAZAAR, fetch=None, page_limit=100, max_pages=20):
+    """Paginate the CDP x402 Bazaar (offset-based) and aggregate resource records.
+    Stops at the reported `total`, at `max_pages`, or on the first bad/empty page.
+    `max_pages`*`page_limit` bounds a full crawl (~15k resources -> ~150 pages)."""
+    getj = fetch or _urllib_get_json
+    resources, offset, pages = [], 0, 0
+    while pages < max_pages:
+        try:
+            doc = getj("%s?limit=%d&offset=%d" % (base_url, page_limit, offset))
+        except Exception:
+            break
+        if not (isinstance(doc, dict) and doc.get("items")):
+            break
+        resources.extend(extract_resources(doc))
+        pag = doc.get("pagination") or {}
+        lim = pag.get("limit") or page_limit
+        total = pag.get("total")
+        offset += lim
+        pages += 1
+        if total is not None and offset >= total:
+            break
+    return resources
+
+
+def crawl_all(*, extra_sources=None, bazaar=True, fetch=None, max_pages=20):
+    """Everything: the CDP Bazaar (default, out of the box) + any extra single-doc
+    discovery sources. Returns the aggregated resource records."""
+    resources = []
+    if bazaar:
+        resources.extend(crawl_bazaar(fetch=fetch, max_pages=max_pages))
+    if extra_sources:
+        resources.extend(crawl(extra_sources, fetch=fetch))
+    return resources
+
+
 def crawl_and_backfill(store, sources, *, fetch=None, chain_fetch=None, max_pages=5):
     """Crawl discovery -> extract payees -> seed reputation from public Base data.
     Returns {resources, payees, fetched, ingested}."""
@@ -159,30 +200,41 @@ def _read_sources(args):
 def main(argv=None):
     p = argparse.ArgumentParser(
         description="Crawl x402 discovery, map endpoints, and (optionally) seed reputation.")
-    p.add_argument("--source", action="append", help="a discovery URL (repeatable)")
-    p.add_argument("--sources-file", help="file with one discovery URL per line")
+    p.add_argument("--source", action="append",
+                   help="an extra discovery URL, in addition to the Bazaar (repeatable)")
+    p.add_argument("--sources-file", help="file with one extra discovery URL per line")
+    p.add_argument("--no-bazaar", action="store_true",
+                   help="skip the default CDP Bazaar crawl (use only --source/--sources-file)")
+    p.add_argument("--max-pages", type=int, default=20,
+                   help="CDP Bazaar pages to walk (100 resources/page; default 20)")
     p.add_argument("--out-payees", help="write the deduped payee list here (one/line)")
     p.add_argument("--backfill-store", help="if set, seed this ReputationStore from the payees")
-    p.add_argument("--max-pages", type=int, default=5)
+    p.add_argument("--backfill-max-pages", type=int, default=5,
+                   help="on-chain pages per payee for the backfill (default 5)")
     args = p.parse_args(argv)
 
-    sources = _read_sources(args)
-    if not sources:
-        sys.stderr.write("discovery_crawl: no sources (--source or --sources-file)\n")
-        return 2
-    resources = crawl(sources)
+    extra = _read_sources(args)
+    # Out of the box: crawl the live CDP Bazaar. Add your own sources with --source,
+    # or skip the Bazaar with --no-bazaar.
+    resources = crawl_all(extra_sources=extra, bazaar=not args.no_bazaar,
+                          max_pages=args.max_pages)
     ps = payees(resources)
-    sys.stdout.write("Found %d resource(s) across %d source(s): %d distinct payee(s).\n"
-                     % (len(resources), len(sources), len(ps)))
+    sys.stdout.write("Found %d resource(s): %d distinct payee(s)%s.\n"
+                     % (len(resources), len(ps),
+                        "" if args.no_bazaar else " (incl. CDP Bazaar)"))
     if args.out_payees:
         with open(args.out_payees, "w", encoding="utf-8") as f:
             f.write("\n".join(ps) + ("\n" if ps else ""))
         sys.stdout.write("wrote payees -> %s\n" % args.out_payees)
     if args.backfill_store:
         from reputation_store import ReputationStore
-        summary = crawl_and_backfill(ReputationStore(args.backfill_store), sources,
-                                     max_pages=args.max_pages)
-        sys.stdout.write(json.dumps(summary, indent=2) + "\n")
+        import chain_backfill
+        store = ReputationStore(args.backfill_store)
+        bf = chain_backfill.backfill(store, ps, chain_backfill.BlockscoutPager().fetch,
+                                     max_pages=args.backfill_max_pages)
+        sys.stdout.write(json.dumps(
+            {"resources": len(resources), "payees": len(ps),
+             "fetched": bf["fetched"], "ingested": bf["ingested"]}, indent=2) + "\n")
     return 0
 
 

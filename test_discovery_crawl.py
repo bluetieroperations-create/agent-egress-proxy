@@ -95,6 +95,53 @@ class TestCrawl(unittest.TestCase):
         self.assertEqual([r["payTo"] for r in recs], [P1])
 
 
+class TestCrawlBazaar(unittest.TestCase):
+    """
+    Mutation notes:
+      - not advancing offset -> test_paginates loops the same page / never stops.
+      - not stopping at `total` -> test_paginates over-fetches.
+    """
+    def _bazaar(self, pages):
+        """pages: list of item-lists; serves them by offset with a pagination.total."""
+        total = sum(len(pg) for pg in pages)
+
+        def fetch(url, timeout=12):
+            # parse offset/limit from the URL
+            import urllib.parse as up
+            q = up.parse_qs(up.urlsplit(url).query)
+            offset = int(q.get("offset", ["0"])[0])
+            limit = int(q.get("limit", ["100"])[0])
+            idx = offset // max(limit, 1)
+            items = pages[idx] if idx < len(pages) else []
+            return {"items": items, "pagination": {"limit": limit, "offset": offset,
+                                                    "total": total}, "x402Version": 2}
+        return fetch
+
+    def test_paginates_to_total(self):
+        pages = [[{"accepts": [_accept(P1)]}], [{"accepts": [_accept(P2)]}]]
+        recs = D.crawl_bazaar(fetch=self._bazaar(pages), page_limit=1, max_pages=10)
+        self.assertEqual({r["payTo"] for r in recs}, {P1, P2})
+
+    def test_stops_at_max_pages(self):
+        pages = [[{"accepts": [_accept(P1)]}]] * 5
+        recs = D.crawl_bazaar(fetch=self._bazaar(pages), page_limit=1, max_pages=2)
+        self.assertEqual(len(recs), 2)          # only 2 pages walked
+
+    def test_empty_page_stops(self):
+        def fetch(url, timeout=12):
+            return {"items": [], "pagination": {"total": 0}}
+        self.assertEqual(D.crawl_bazaar(fetch=fetch), [])
+
+    def test_crawl_all_combines(self):
+        pages = [[{"accepts": [_accept(P1)]}]]
+        recs = D.crawl_all(extra_sources=["u"], bazaar=True,
+                           fetch=lambda u, **k: (self._bazaar(pages)(u)
+                                                 if "discovery" in u or "limit" in u
+                                                 else {"accepts": [_accept(P2)]}),
+                           max_pages=1)
+        self.assertEqual({r["payTo"] for r in recs}, {P1, P2})
+
+
 class TestCrawlAndBackfill(unittest.TestCase):
     """Discovery -> payees -> reputation, end to end (fake chain transport)."""
     def test_end_to_end(self):

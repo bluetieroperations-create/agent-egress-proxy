@@ -66,6 +66,17 @@ care about (x402 endpoints' `payTo`) and it accumulates their public settlement
 history. Depth of dispute/outcome signal still comes from Traceipt receipts + the
 verdict flywheel.
 
+### Discovery crawl — live CDP x402 Bazaar (self-populates the payee list)
+`discovery_crawl.py` walks Coinbase's public x402 Bazaar out of the box. Live run:
+```
+GET api.cdp.coinbase.com/platform/v2/x402/discovery/resources  -> pagination.total = 14,802
+crawl 3 pages -> 514 resource records, 103 DISTINCT payees, 511 advertised prices
+  (real price distribution: $0.0001 .. $0.0024+, e.g. api.onesource.io @ $0.001)
+```
+So `discovery_crawl --backfill-store rep.db` = the whole cold-start loop with zero
+customers: enumerate ~15k x402 endpoints from the Bazaar -> their payees -> seed
+reputation from public Base history; the advertised prices seed peer baselines.
+
 ## Reproduce
 
 Python's `urllib` must trust the agent proxy's CA to reach external HTTPS:
