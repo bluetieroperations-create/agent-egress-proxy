@@ -4,6 +4,7 @@ Traceipt HTTP service (stdlib http.server, threaded).
 Endpoints:
   POST /receipts        (x402-gated) verify settlement -> sign -> chain -> return envelope
   GET  /receipts/{id}   fetch a stored envelope
+  GET  /receipts/{id}/vc  the receipt as a W3C Verifiable Credential (AP2-ready)
   POST /receipts/{id}/disclose  (admin) signed redacted disclosure of chosen fields
   GET  /verify/{id}     re-verify signature + chain link, return a report
   GET  /chain/{seller}  full-chain integrity check for a seller
@@ -32,6 +33,7 @@ from urllib.parse import unquote, urlsplit
 from .canonical import GENESIS_HASH
 from .completeness import build_checkpoint
 from .disclosure import commit as disclosure_commit, disclose as disclosure_disclose
+from .vc import receipt_vc as build_receipt_vc
 from .invoice import render_invoice
 from .ledger import Ledger
 from .merkle import verify_inclusion
@@ -174,6 +176,17 @@ class App:
         payload["disclosure"] = disclosure_commit(
             payload, self.signer.disclosure_secret())
         return self.signer.sign_envelope(payload)
+
+    def receipt_vc(self, receipt_id: str) -> tuple[int, dict]:
+        """Re-express a stored receipt as a signed W3C Verifiable Credential
+        (eddsa-jcs-2022), so it drops into AP2 / VC verifiers alongside the
+        payment-instruction Mandates. The VC is independently signed (did:key)
+        and verifies fully offline. See vc.py."""
+        envelope = self.ledger.get(receipt_id)
+        if envelope is None:
+            return 404, {"error": "unknown receipt_id"}
+        return 200, build_receipt_vc(
+            envelope["payload"], self.signer, self.base_url, utc_now())
 
     def disclose_receipt(self, receipt_id: str, reveal_paths) -> tuple[int, dict]:
         """Issue a SIGNED, redacted disclosure of a receipt: reveal only
@@ -618,6 +631,10 @@ def make_handler(app: App):
                 if proof is None:
                     return self._send(404, {"error": "unknown or not-yet-anchored receipt"})
                 return self._send(200, proof)
+            if path.startswith("/receipts/") and path.endswith("/vc"):
+                rid = unquote(path[len("/receipts/"):-len("/vc")])
+                code, obj = app.receipt_vc(rid)
+                return self._send(code, obj)
             if path.startswith("/receipts/"):
                 envelope = app.ledger.get(unquote(path[len("/receipts/"):]))
                 if envelope is None:

@@ -1733,6 +1733,68 @@ class TestTrustBoundary(unittest.TestCase):
         self.assertEqual(code, 400)
 
 
+class TestVerifiableCredential(unittest.TestCase):
+    """W3C VC output (eddsa-jcs-2022), for AP2 / VC interop. See vc.py."""
+
+    def _app(self):
+        d = tempfile.mkdtemp()
+        return App(signer=Signer.generate(), ledger=Ledger(os.path.join(d, "vc.db")),
+                   verifier=MockVerifier(), gate="off", price_base_units="2000",
+                   pay_to=PAYEE, seller_id="op.example", chain="base-sepolia",
+                   base_url="https://api.traceipt.xyz")
+
+    def _issue(self, app):
+        code, obj = app.issue({"settlement": sample_settlement(tx_hash="0x" + "11" * 32),
+                               "commerce": sample_commerce()})
+        self.assertEqual(code, 201, obj)
+        return obj["receipt"]["payload"]["receipt_id"]
+
+    def test_vc_shape_and_verifies(self):
+        from traceipt import vc
+        app = self._app()
+        code, cred = app.receipt_vc(self._issue(app))
+        self.assertEqual(code, 200)
+        self.assertEqual(cred["@context"][0], "https://www.w3.org/ns/credentials/v2")
+        self.assertIn("VerifiableCredential", cred["type"])
+        self.assertTrue(cred["issuer"].startswith("did:key:z6Mk"))
+        self.assertEqual(cred["proof"]["cryptosuite"], "eddsa-jcs-2022")
+        self.assertTrue(cred["proof"]["proofValue"].startswith("z"))
+        self.assertTrue(vc.verify_vc(cred))
+
+    def test_vc_tamper_detected(self):
+        from traceipt import vc
+        app = self._app()
+        _, cred = app.receipt_vc(self._issue(app))
+        cred["credentialSubject"]["settlement"]["amountBaseUnits"] = "999999"
+        self.assertFalse(vc.verify_vc(cred))
+
+    def test_vc_didkey_matches_jwks(self):
+        import base64 as _b
+        from traceipt import vc
+        app = self._app()
+        _, cred = app.receipt_vc(self._issue(app))
+        pub = vc.pubkey_from_verification_method(cred["proof"]["verificationMethod"])
+        jwk = app._jwks()["keys"][0]
+        self.assertEqual(pub, _b.urlsafe_b64decode(jwk["x"] + "=="))
+
+    def test_vc_over_http(self):
+        from traceipt import vc
+        app = self._app()
+        rid = self._issue(app)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/receipts/{rid}/vc") as r:
+            cred = json.loads(r.read())
+        self.assertTrue(vc.verify_vc(cred))       # offline-verifiable, no JWKS fetch
+
+    def test_base58_roundtrip(self):
+        from traceipt import vc
+        for b in (b"", b"\x00", b"\x00\x00abc", os.urandom(32)):
+            self.assertEqual(vc.b58decode(vc.b58encode(b)), b)
+
+
 class TestCompleteness(unittest.TestCase):
     """Provable completeness: prove the receipt SET is whole, not just that
     each receipt is real. See completeness.py."""

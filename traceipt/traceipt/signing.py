@@ -96,6 +96,11 @@ class Signer:
             "alg": ALG,
         }
 
+    def sign_raw(self, data: bytes) -> bytes:
+        """Raw Ed25519 signature over arbitrary bytes (for the W3C
+        Verifiable Credential data-integrity proof; see vc.py)."""
+        return self._key.sign(data)
+
     def sign_envelope(self, payload: dict) -> dict:
         protected = {"alg": ALG, "kid": self.kid, "typ": TYP}
         signing_input = canonical_json({"payload": payload, "protected": protected})
