@@ -1733,6 +1733,52 @@ class TestTrustBoundary(unittest.TestCase):
         self.assertEqual(code, 400)
 
 
+class TestDiscovery(unittest.TestCase):
+    """did:web identity + OpenAPI discovery."""
+
+    def _serve(self):
+        d = tempfile.mkdtemp()
+        app = App(signer=Signer.generate(), ledger=Ledger(os.path.join(d, "disc.db")),
+                  verifier=MockVerifier(), gate="off", price_base_units="2000",
+                  pay_to=PAYEE, seller_id="op.example", chain="base-sepolia",
+                  base_url="https://api.traceipt.xyz")
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        return app, port
+
+    def _get(self, port, path):
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}") as r:
+            return json.loads(r.read())
+
+    def test_did_web_document_bridges_to_didkey(self):
+        from traceipt import vc
+        app, port = self._serve()
+        doc = self._get(port, "/.well-known/did.json")
+        self.assertEqual(doc["id"], "did:web:api.traceipt.xyz")
+        vm = doc["verificationMethod"][0]
+        self.assertEqual(vm["type"], "Multikey")
+        # the Multikey resolves to the signer's key
+        self.assertEqual(vc.unmultibase58(vm["publicKeyMultibase"])[2:],
+                         app.signer.public_bytes())
+        # and a VC's issuer did:key is exactly the doc's alsoKnownAs (the bridge)
+        rid = app.issue({"settlement": sample_settlement(tx_hash="0x" + "11" * 32),
+                         "commerce": sample_commerce()})[1]["receipt"]["payload"]["receipt_id"]
+        _, cred = app.receipt_vc(rid)
+        self.assertEqual(cred["issuer"], doc["alsoKnownAs"][0])
+
+    def test_openapi_document(self):
+        _, port = self._serve()
+        spec = self._get(port, "/openapi.json")
+        self.assertEqual(spec["openapi"], "3.1.0")
+        self.assertEqual(spec["info"]["title"], "Traceipt")
+        self.assertEqual(spec["servers"][0]["url"], "https://api.traceipt.xyz")
+        for p in ("/receipts", "/attest", "/verify", "/receipts/{id}/vc",
+                  "/chain/{seller}/completeness", "/.well-known/did.json"):
+            self.assertIn(p, spec["paths"])
+
+
 class TestNeutralVerifier(unittest.TestCase):
     """Public POST /verify: verify any VC / VP / bundle, from any issuer. bundle.py."""
 

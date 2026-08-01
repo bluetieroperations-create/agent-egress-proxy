@@ -87,6 +87,36 @@ def pubkey_from_verification_method(vm: str) -> bytes:
     return key
 
 
+def did_web_document(host: str, active_pubkey: bytes, retired_pubkeys=None) -> dict:
+    """The DID document served at https://<host>/.well-known/did.json, giving
+    Traceipt a resolvable, human-meaningful `did:web:<host>` identity (for
+    enterprise / AP2 verifiers that prefer it over an opaque did:key).
+
+    `alsoKnownAs` links it to the SAME key's did:key, so a verifier holding a
+    did:key-issued VC can resolve this document to confirm the key really
+    belongs to <host> -- while offline verification against did:key still works
+    unchanged (verify_vc stays did:key-only, which is spoof-proof because a
+    did:key IS its key; a did:web needs resolution to be trustworthy)."""
+    did = "did:web:" + host
+    seen, vms = set(), []
+    for pub in [active_pubkey] + list(retired_pubkeys or []):
+        if pub in seen:
+            continue
+        seen.add(pub)
+        mb = multibase58(_ED25519_MULTICODEC + pub)
+        vms.append({"id": f"{did}#{mb}", "type": "Multikey",
+                    "controller": did, "publicKeyMultibase": mb})
+    return {
+        "@context": ["https://www.w3.org/ns/did/v1",
+                     "https://w3id.org/security/multikey/v1"],
+        "id": did,
+        "alsoKnownAs": [did_key(active_pubkey)[0]],
+        "verificationMethod": vms,
+        "assertionMethod": [vm["id"] for vm in vms],
+        "authentication": [vms[0]["id"]],
+    }
+
+
 # --- eddsa-jcs-2022 proof (W3C VC Data Integrity) ----------------------------
 def _proof_config(proof: dict, doc_context) -> dict:
     """The proof options used for hashing: everything but proofValue, with the

@@ -36,9 +36,11 @@ from .canonical import GENESIS_HASH
 from .completeness import build_checkpoint
 from .disclosure import commit as disclosure_commit, disclose as disclosure_disclose
 from .bundle import verify_lifecycle, verify_presentation
+from .openapi import spec as openapi_spec
+from .signing import b64url_decode
 from .vc import (
-    attestation_vc as build_attestation_vc, receipt_vc as build_receipt_vc,
-    verify_vc,
+    attestation_vc as build_attestation_vc, did_web_document,
+    receipt_vc as build_receipt_vc, verify_vc,
 )
 from .invoice import render_invoice
 from .ledger import Ledger
@@ -193,6 +195,22 @@ class App:
             return 404, {"error": "unknown receipt_id"}
         return 200, build_receipt_vc(
             envelope["payload"], self.signer, self.base_url, utc_now())
+
+    def did_document(self) -> dict:
+        """The did:web DID document for this issuer, served at
+        /.well-known/did.json. Lists the active (and any retired) signing keys
+        as Multikey verification methods and links to the did:key identity."""
+        host = urlsplit(self.base_url).hostname or "traceipt.xyz"
+        retired = []
+        for jwk in self.extra_public_jwks:
+            try:
+                retired.append(b64url_decode(jwk["x"]))
+            except Exception:
+                pass
+        return did_web_document(host, self.signer.public_bytes(), retired)
+
+    def openapi(self) -> dict:
+        return openapi_spec(self.base_url, self.price_base_units, self.chain)
 
     def verify_document(self, body) -> tuple[int, dict]:
         """Neutral verifier: verify ANY submitted W3C VC, VerifiablePresentation,
@@ -663,6 +681,10 @@ def make_handler(app: App):
                 return self._send(200, {"ok": True, "gate": app.gate, "chain": app.chain})
             if path == "/jwks.json":
                 return self._send(200, app._jwks())
+            if path == "/.well-known/did.json":
+                return self._send(200, app.did_document())
+            if path == "/openapi.json":
+                return self._send(200, app.openapi())
             if path == "/anchors":
                 return self._send(200, {"anchors": app.ledger.list_anchors()})
             if path.startswith("/receipts/") and path.endswith("/invoice.pdf"):
