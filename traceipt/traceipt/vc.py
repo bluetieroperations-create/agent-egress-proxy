@@ -33,10 +33,33 @@ JWT_TYP = "vc+ld+json+jwt"          # W3C VC-JOSE-COSE media type suffix
 JWT_TYPS = {"vc+ld+json+jwt", "vc+jwt"}
 
 VC_CONTEXT = "https://www.w3.org/ns/credentials/v2"
-TRACEIPT_CONTEXT = "https://traceipt.xyz/credentials/v1"
+# The Traceipt credential context. A canonical, resolvable URL (served at
+# GET /credentials/v1) so our VCs are valid JSON-LD, not only valid JCS -- our
+# custom terms are defined, so a strict JSON-LD processor accepts them. (Our
+# eddsa-jcs-2022 / VC-JWT verification does not need to resolve it; this is for
+# the JSON-LD half of the ecosystem.)
+TRACEIPT_CONTEXT = "https://api.traceipt.xyz/credentials/v1"
+_TRACEIPT_VOCAB = "https://traceipt.xyz/vocab#"
 RECEIPT_TYPE = "X402PaymentReceiptCredential"
 VERDICT_TYPE = "RiskVerdictCredential"
 ATTESTATION_TYPE = "AnchoredAttestationCredential"
+
+
+def context_document() -> dict:
+    """The JSON-LD context served at TRACEIPT_CONTEXT. `@vocab` maps every
+    otherwise-undefined term to the Traceipt vocabulary, so our credential
+    fields are all defined without enumerating each one (and the credential
+    types are pinned explicitly). Makes the VCs process cleanly under a strict
+    JSON-LD processor."""
+    return {
+        "@context": {
+            "@version": 1.1,
+            "@vocab": _TRACEIPT_VOCAB,
+            RECEIPT_TYPE: _TRACEIPT_VOCAB + RECEIPT_TYPE,
+            VERDICT_TYPE: _TRACEIPT_VOCAB + VERDICT_TYPE,
+            ATTESTATION_TYPE: _TRACEIPT_VOCAB + ATTESTATION_TYPE,
+        }
+    }
 CRYPTOSUITE = "eddsa-jcs-2022"
 # multicodec prefix for an Ed25519 public key (varint 0xed 0x01).
 _ED25519_MULTICODEC = b"\xed\x01"

@@ -39,9 +39,9 @@ from .bundle import verify_lifecycle, verify_presentation
 from .openapi import spec as openapi_spec
 from .signing import b64url_decode
 from .vc import (
-    JWT_TYP, attestation_vc as build_attestation_vc, did_web_document,
-    enveloped_vc, receipt_vc as build_receipt_vc, receipt_vc_jwt as build_receipt_vc_jwt,
-    verify_jwt, verify_vc,
+    JWT_TYP, attestation_vc as build_attestation_vc, context_document,
+    did_web_document, enveloped_vc, receipt_vc as build_receipt_vc,
+    receipt_vc_jwt as build_receipt_vc_jwt, verify_jwt, verify_vc,
 )
 from .invoice import render_invoice
 from .ledger import Ledger
@@ -709,6 +709,8 @@ def make_handler(app: App):
                 return self._send(200, app.did_document())
             if path == "/openapi.json":
                 return self._send(200, app.openapi())
+            if path == "/credentials/v1":
+                return self._send(200, context_document())
             if path == "/anchors":
                 return self._send(200, {"anchors": app.ledger.list_anchors()})
             if path.startswith("/receipts/") and path.endswith("/invoice.pdf"):

@@ -81,6 +81,8 @@ def spec(base_url: str, price_base_units: str = "2000", chain: str = "base-sepol
             "/chain/{seller}/completeness": {"get": _ok("Signed proof the chain is "
                                                         "complete (nothing hidden).")},
             "/jwks.json": {"get": _ok("Issuer public keys (JWKS).")},
+            "/credentials/v1": {"get": _ok("The JSON-LD context for Traceipt "
+                                           "credential terms.")},
             "/.well-known/did.json": {"get": _ok("did:web DID document for the issuer.")},
             "/health": {"get": _ok("Liveness + gate/chain mode.")},
             "/openapi.json": {"get": _ok("This document.")},

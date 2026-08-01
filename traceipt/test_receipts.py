@@ -1768,6 +1768,21 @@ class TestDiscovery(unittest.TestCase):
         _, cred = app.receipt_vc(rid)
         self.assertEqual(cred["issuer"], doc["alsoKnownAs"][0])
 
+    def test_jsonld_context_resolves_and_matches_vcs(self):
+        from traceipt import vc
+        app, port = self._serve()
+        ctx = self._get(port, "/credentials/v1")
+        self.assertIn("@vocab", ctx["@context"])
+        for t in ("X402PaymentReceiptCredential", "RiskVerdictCredential",
+                  "AnchoredAttestationCredential"):
+            self.assertIn(t, ctx["@context"])
+        # the URL our VCs advertise is exactly the one served here
+        rid = app.issue({"settlement": sample_settlement(tx_hash="0x" + "11" * 32),
+                         "commerce": sample_commerce()})[1]["receipt"]["payload"]["receipt_id"]
+        _, cred = app.receipt_vc(rid)
+        self.assertEqual(cred["@context"][1], vc.TRACEIPT_CONTEXT)
+        self.assertTrue(vc.verify_vc(cred))
+
     def test_openapi_document(self):
         _, port = self._serve()
         spec = self._get(port, "/openapi.json")
