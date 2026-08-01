@@ -5,6 +5,7 @@ Endpoints:
   POST /receipts        (x402-gated) verify settlement -> sign -> chain -> return envelope
   GET  /receipts/{id}   fetch a stored envelope
   GET  /receipts/{id}/vc  the receipt as a W3C Verifiable Credential (AP2-ready)
+  GET  /attest/{id}/vc    the anchoring attestation (e.g. a verdict) as a W3C VC
   POST /receipts/{id}/disclose  (admin) signed redacted disclosure of chosen fields
   GET  /verify/{id}     re-verify signature + chain link, return a report
   GET  /chain/{seller}  full-chain integrity check for a seller
@@ -33,7 +34,9 @@ from urllib.parse import unquote, urlsplit
 from .canonical import GENESIS_HASH
 from .completeness import build_checkpoint
 from .disclosure import commit as disclosure_commit, disclose as disclosure_disclose
-from .vc import receipt_vc as build_receipt_vc
+from .vc import (
+    attestation_vc as build_attestation_vc, receipt_vc as build_receipt_vc,
+)
 from .invoice import render_invoice
 from .ledger import Ledger
 from .merkle import verify_inclusion
@@ -187,6 +190,18 @@ class App:
             return 404, {"error": "unknown receipt_id"}
         return 200, build_receipt_vc(
             envelope["payload"], self.signer, self.base_url, utc_now())
+
+    def attestation_vc(self, att_id: str) -> tuple[int, dict]:
+        """Traceipt's anchoring attestation (e.g. of a Black_Wall verdict digest)
+        as a signed W3C VC: the trustless TIMESTAMP that a verdict was anchored,
+        which turns 'screened before paid' from self-asserted into provable when
+        paired with the settlement block time. See vc.attestation_to_credential."""
+        rec = self.ledger.get_attestation(att_id)
+        if rec is None:
+            return 404, {"error": "unknown attestation_id"}
+        inclusion = self.ledger.attestation_inclusion(att_id)
+        return 200, build_attestation_vc(
+            rec, inclusion, self.signer, self.base_url, utc_now())
 
     def disclose_receipt(self, receipt_id: str, reveal_paths) -> tuple[int, dict]:
         """Issue a SIGNED, redacted disclosure of a receipt: reveal only
@@ -649,6 +664,10 @@ def make_handler(app: App):
                     return self._send(409, {"error": "not yet anchored; the next "
                                             "anchor batch will include it"})
                 return self._send(200, proof)
+            if path.startswith("/attest/") and path.endswith("/vc"):
+                aid = unquote(path[len("/attest/"):-len("/vc")])
+                code, obj = app.attestation_vc(aid)
+                return self._send(code, obj)
             if path.startswith("/attest/"):
                 rec = app.ledger.get_attestation(unquote(path[len("/attest/"):]))
                 if rec is None:

@@ -1794,6 +1794,47 @@ class TestVerifiableCredential(unittest.TestCase):
         for b in (b"", b"\x00", b"\x00\x00abc", os.urandom(32)):
             self.assertEqual(vc.b58decode(vc.b58encode(b)), b)
 
+    def test_verdict_vc_signed_by_its_own_issuer(self):
+        # The risk-credential slot AP2 lacks. Signed by the SCREENER's key
+        # (here a distinct signer standing in for Black_Wall), hash-first so a
+        # float score never reaches the JCS canonicalizer.
+        from traceipt import vc
+        from traceipt.screening import verdict_digest
+        bw = Signer.generate()
+        verdict = {"verdict": "GO", "score": 0.98, "ofac": "clear"}  # float score
+        cred = vc.verdict_vc(verdict, bw, "2026-07-31T10:00:00Z",
+                             decision="GO", screener="blackwall")
+        self.assertIn("RiskVerdictCredential", cred["type"])
+        self.assertTrue(cred["issuer"].startswith("did:key:z6Mk"))
+        # verdictHash ties to the receipt binding + /attest digest
+        self.assertEqual(cred["credentialSubject"]["verdictHash"],
+                         verdict_digest(verdict))
+        self.assertTrue(vc.verify_vc(cred))
+        # issued by Black_Wall's key, NOT Traceipt's
+        self.assertEqual(vc.pubkey_from_verification_method(
+            cred["proof"]["verificationMethod"]), bw.public_bytes())
+
+    def test_attestation_vc_over_http(self):
+        from traceipt import vc
+        from traceipt.screening import verdict_digest
+        app = self._app()
+        digest = verdict_digest({"verdict": "STOP", "score": 0.1})
+        app.ledger.submit_attestation(digest=digest, type_="blackwall-verdict",
+                                      ref=None, submitted_at="2026-07-31T10:00:00Z")
+        app.create_anchor()
+        aid = app.ledger._connect().execute(
+            "SELECT attestation_id FROM attestations LIMIT 1").fetchone()[0]
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/attest/{aid}/vc") as r:
+            cred = json.loads(r.read())
+        self.assertIn("AnchoredAttestationCredential", cred["type"])
+        self.assertEqual(cred["credentialSubject"]["digest"], digest)
+        self.assertTrue(cred["credentialSubject"]["anchored"])
+        self.assertTrue(vc.verify_vc(cred))
+
 
 class TestCompleteness(unittest.TestCase):
     """Provable completeness: prove the receipt SET is whole, not just that

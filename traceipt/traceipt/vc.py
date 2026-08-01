@@ -29,6 +29,8 @@ from .canonical import canonical_json
 VC_CONTEXT = "https://www.w3.org/ns/credentials/v2"
 TRACEIPT_CONTEXT = "https://traceipt.xyz/credentials/v1"
 RECEIPT_TYPE = "X402PaymentReceiptCredential"
+VERDICT_TYPE = "RiskVerdictCredential"
+ATTESTATION_TYPE = "AnchoredAttestationCredential"
 CRYPTOSUITE = "eddsa-jcs-2022"
 # multicodec prefix for an Ed25519 public key (varint 0xed 0x01).
 _ED25519_MULTICODEC = b"\xed\x01"
@@ -181,3 +183,85 @@ def receipt_vc(payload: dict, signer, base_url: str, created: str) -> dict:
     issuer_did, _vm = did_key(signer.public_bytes())
     credential = receipt_to_credential(payload, issuer_did, base_url)
     return add_proof(credential, signer, created)
+
+
+# --- verdict -> W3C VC (the pre-payment risk credential AP2 lacks) -----------
+def verdict_to_credential(verdict_obj, issuer_did: str, created: str, *,
+                          decision=None, screener=None, subject_id=None) -> dict:
+    """Map a pre-payment risk verdict to an UNSIGNED W3C VC. Hash-first: the
+    subject carries the verdict's digest (byte-identical to Black_Wall's
+    traceipt_attest.verdict_digest and to a receipt's screening.verdict_hash),
+    plus the short decision, so the verdict's contents can stay off-credential
+    and floats (e.g. a score) never reach the JCS canonicalizer. This is the
+    risk-credential slot that sits BEFORE AP2's Payment Mandate; whoever screens
+    (Black_Wall) signs it with their own key."""
+    from .screening import verdict_digest
+    subject = {"type": "PaymentRiskVerdict", "verdictHash": verdict_digest(verdict_obj)}
+    if subject_id is not None:
+        subject["id"] = subject_id
+    if decision is not None:
+        subject["decision"] = decision
+    if screener is not None:
+        subject["screener"] = screener
+    return {
+        "@context": [VC_CONTEXT, TRACEIPT_CONTEXT],
+        "type": ["VerifiableCredential", VERDICT_TYPE],
+        "issuer": issuer_did,
+        "validFrom": created,
+        "credentialSubject": subject,
+    }
+
+
+def verdict_vc(verdict_obj, signer, created: str, *, decision=None,
+               screener=None, subject_id=None) -> dict:
+    """Full path: a risk verdict -> signed W3C RiskVerdictCredential. Reusable
+    machinery -- Black_Wall calls this with its OWN signer so the issuer did:key
+    is Black_Wall's, and the verdictHash matches what it anchors via /attest and
+    what a Traceipt receipt binds via commerce.screening."""
+    issuer_did, _vm = did_key(signer.public_bytes())
+    cred = verdict_to_credential(verdict_obj, issuer_did, created,
+                                 decision=decision, screener=screener,
+                                 subject_id=subject_id)
+    return add_proof(cred, signer, created)
+
+
+# --- Traceipt's anchoring attestation -> W3C VC ------------------------------
+def attestation_to_credential(rec: dict, inclusion, issuer_did: str,
+                              base_url: str) -> dict:
+    """Traceipt's own notary assertion, as a VC: 'I anchored digest D (type T)
+    at time T0, provable against Merkle root R'. This is what Traceipt can
+    honestly attest about a verdict Black_Wall submitted -- it never sees the
+    verdict, only its digest -- so it gives the trustless TIMESTAMP that turns
+    'screened before paid' from self-asserted into provable."""
+    att_id = rec["attestation_id"]
+    subject = {
+        "type": "AnchoredAttestation",
+        "attestationId": att_id,
+        "digest": rec["hash"],
+        "attestationType": rec.get("type"),
+        "submittedAt": rec.get("submitted_at"),
+        "anchored": inclusion is not None,
+        "proofUrl": f"{base_url.rstrip('/')}/attest/{att_id}/proof",
+    }
+    if inclusion is not None:
+        subject["anchor"] = {
+            "root": inclusion.get("root"),
+            "onchainTx": inclusion.get("onchain_tx"),
+            "anchoredAt": inclusion.get("anchored_at"),
+        }
+    return {
+        "@context": [VC_CONTEXT, TRACEIPT_CONTEXT],
+        "type": ["VerifiableCredential", ATTESTATION_TYPE],
+        "id": f"{base_url.rstrip('/')}/attest/{att_id}",
+        "issuer": issuer_did,
+        "validFrom": rec.get("submitted_at"),
+        "credentialSubject": subject,
+    }
+
+
+def attestation_vc(rec: dict, inclusion, signer, base_url: str,
+                   created: str) -> dict:
+    """Full path: a stored attestation -> signed W3C AnchoredAttestationCredential."""
+    issuer_did, _vm = did_key(signer.public_bytes())
+    cred = attestation_to_credential(rec, inclusion, issuer_did, base_url)
+    return add_proof(cred, signer, created)
