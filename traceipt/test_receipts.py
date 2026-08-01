@@ -1733,6 +1733,76 @@ class TestTrustBoundary(unittest.TestCase):
         self.assertEqual(code, 400)
 
 
+class TestLifecycleBundle(unittest.TestCase):
+    """Verify the decide -> pay -> record story as one coherent bundle of W3C
+    VCs / a Verifiable Presentation. See bundle.py."""
+
+    VERDICT = {"verdict": "GO", "score": 0.98, "ofac": "clear"}
+
+    def _setup(self):
+        from traceipt import vc
+        from traceipt.screening import build_screening, verdict_digest
+        bw = Signer.generate()
+        d = tempfile.mkdtemp()
+        app = App(signer=Signer.generate(), ledger=Ledger(os.path.join(d, "b.db")),
+                  verifier=MockVerifier(), gate="off", price_base_units="2000",
+                  pay_to=PAYEE, seller_id="op.example", chain="base-sepolia",
+                  base_url="https://api.traceipt.xyz")
+        sc = build_screening(self.VERDICT, decision="GO", screener="blackwall")
+        c = sample_commerce(screening=sc)
+        rid = app.issue({"settlement": sample_settlement(tx_hash="0x" + "11" * 32),
+                         "commerce": c})[1]["receipt"]["payload"]["receipt_id"]
+        _, receipt_vc = app.receipt_vc(rid)
+        verdict_vc = vc.verdict_vc(self.VERDICT, bw, "2026-07-31T09:00:00Z",
+                                   decision="GO", screener="blackwall")
+        app.ledger.submit_attestation(digest=verdict_digest(self.VERDICT),
+                                      type_="blackwall-verdict", ref=None,
+                                      submitted_at="2026-07-31T09:30:00Z")
+        app.create_anchor()
+        aid = app.ledger._connect().execute(
+            "SELECT attestation_id FROM attestations LIMIT 1").fetchone()[0]
+        _, att_vc = app.attestation_vc(aid)
+        return app, bw, receipt_vc, verdict_vc, att_vc
+
+    def test_coherent_bundle_verifies(self):
+        from traceipt import bundle
+        _, _, r, v, a = self._setup()
+        ok, report = bundle.verify_lifecycle(receipt_vc=r, verdict_vc=v, attestation_vc=a)
+        self.assertTrue(ok, report["problems"])
+        self.assertTrue(all(report["verified"].values()))
+
+    def test_mismatched_verdict_detected(self):
+        from traceipt import bundle, vc
+        _, bw, r, _, a = self._setup()
+        other = vc.verdict_vc({"verdict": "STOP", "score": 0.1}, bw, "2026-07-31T09:00:00Z")
+        ok, report = bundle.verify_lifecycle(receipt_vc=r, verdict_vc=other, attestation_vc=a)
+        self.assertFalse(ok)
+        self.assertTrue(any("do not match" in p for p in report["problems"]))
+
+    def test_expected_issuer_enforced(self):
+        from traceipt import bundle, vc
+        app, bw, r, v, a = self._setup()
+        tr_did = vc.did_key(app.signer.public_bytes())[0]
+        # pin the WRONG issuer for the verdict (Traceipt, not Black_Wall)
+        ok, _ = bundle.verify_lifecycle(receipt_vc=r, verdict_vc=v,
+                                        expected_issuers={"verdict": tr_did})
+        self.assertFalse(ok)
+
+    def test_presentation_roundtrip(self):
+        from traceipt import bundle
+        _, _, r, v, a = self._setup()
+        vp = bundle.make_presentation([r, v, a])
+        self.assertEqual(vp["type"], ["VerifiablePresentation"])
+        ok, report = bundle.verify_presentation(vp)
+        self.assertTrue(ok, report["problems"])
+
+    def test_bare_receipt_bundle_ok(self):
+        from traceipt import bundle
+        _, _, r, _, _ = self._setup()
+        ok, _ = bundle.verify_lifecycle(receipt_vc=r)   # receipt alone
+        self.assertTrue(ok)
+
+
 class TestAP2Linkage(unittest.TestCase):
     """Bind a receipt to the AP2 PaymentMandate it fulfilled, via the hash-first
     commerce.evidence slot. See ap2.py."""
