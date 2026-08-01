@@ -21,6 +21,9 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   Supporting: `ledger.py` (verdict→outcome moat flywheel),
   `reputation_onchain.py` (live Base data spike),
   `settlement_watch.py` (trustless on-chain settlement confirmation),
+  `chain_backfill.py` (seed reputation from PUBLIC Base USDC history with zero
+  customers -- paginate a KNOWN x402 payee's inbound USDC via Blockscout and ingest;
+  targeted not firehose; idempotent),
   `addresses.py` (EVM address validation/normalization),
   `x402.py` (Blackwall's own x402 billing: 402 challenge, facilitator seam,
   replay guard, sessions),
@@ -98,7 +101,7 @@ test states the mutation it kills). Keep new code stdlib-only and match this sty
 
 Run all tests:
 ```sh
-python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py test_aa_cosigner.py
+python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py test_aa_cosigner.py test_chain_backfill.py
 ```
 
 ## Standing working practice: ALWAYS deep audit → eval → verify

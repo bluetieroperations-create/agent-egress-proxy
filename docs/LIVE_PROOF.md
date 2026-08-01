@@ -51,6 +51,21 @@ state, not a gap in the code: the pull/verify pipeline ran against the real JWKS
 the security gate held. A full A→settle→B round-trip needs (a) a funded key for
 `/attest` and (b) real receipt volume.
 
+### Reputation backfill — live, from public Base data (no customers)
+`chain_backfill.py` seeds counterparty reputation from public on-chain USDC history.
+Live run against `base.blockscout.com`:
+```
+picked a real Base USDC payee (0xe903...abf) from the ecosystem feed
+backfill -> fetched 150 real inbound USDC transfers (3 pages), ingested 150
+seeded reputation -> settlement_count=150, distinct_payers=2
+```
+`distinct_payers=2` is the point: this address is paid by only two parties, so the
+Sybil/wash-trade gate would **not** auto-GO it — the defense works on real data. This
+is how the moat is fed **before customer #1**: point it at the payee addresses you
+care about (x402 endpoints' `payTo`) and it accumulates their public settlement
+history. Depth of dispute/outcome signal still comes from Traceipt receipts + the
+verdict flywheel.
+
 ## Reproduce
 
 Python's `urllib` must trust the agent proxy's CA to reach external HTTPS:
