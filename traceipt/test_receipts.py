@@ -1833,6 +1833,37 @@ class TestVerifiableCredential(unittest.TestCase):
         self.assertTrue(cred["proof"]["proofValue"].startswith("z"))
         self.assertTrue(vc.verify_vc(cred))
 
+    def _bare_vc(self, issuer_did, signer):
+        from traceipt import vc
+        return vc.add_proof({
+            "@context": [vc.VC_CONTEXT, vc.TRACEIPT_CONTEXT],
+            "type": ["VerifiableCredential", vc.RECEIPT_TYPE],
+            "issuer": issuer_did, "validFrom": "2026-07-31T12:00:00Z",
+            "credentialSubject": {"a": "1"}}, signer, "2026-07-31T12:00:00Z")
+
+    def test_issuer_spoof_rejected(self):
+        # AUDIT: a VC claiming a victim issuer but signed by the attacker's key
+        # must NOT verify (issuer bound to the signing key's DID).
+        from traceipt import vc
+        real, attacker = Signer.generate(), Signer.generate()
+        victim = vc.did_key(Signer.generate().public_bytes())[0]
+        self.assertTrue(vc.verify_vc(self._bare_vc(vc.did_key(real.public_bytes())[0], real)))
+        self.assertFalse(vc.verify_vc(self._bare_vc(victim, attacker)))
+
+    def test_expected_issuer_pin(self):
+        from traceipt import vc
+        real = Signer.generate()
+        cred = self._bare_vc(vc.did_key(real.public_bytes())[0], real)
+        self.assertTrue(vc.verify_vc(cred, expected_issuer=vc.did_key(real.public_bytes())[0]))
+        self.assertFalse(vc.verify_vc(cred, expected_issuer="did:key:zSOMEONEELSE"))
+
+    def test_wrong_proof_purpose_rejected(self):
+        from traceipt import vc
+        real = Signer.generate()
+        cred = self._bare_vc(vc.did_key(real.public_bytes())[0], real)
+        cred["proof"] = dict(cred["proof"], proofPurpose="authentication")
+        self.assertFalse(vc.verify_vc(cred))
+
     def test_vc_tamper_detected(self):
         from traceipt import vc
         app = self._app()

@@ -120,18 +120,45 @@ def add_proof(credential: dict, signer, created: str) -> dict:
     return {**credential, "proof": proof}
 
 
-def verify_vc(secured: dict) -> bool:
+def _issuer_id(secured: dict):
+    """The issuer DID/URI, whether `issuer` is a string or an object with id."""
+    iss = secured.get("issuer")
+    if isinstance(iss, str):
+        return iss
+    if isinstance(iss, dict):
+        return iss.get("id")
+    return None
+
+
+def verify_vc(secured: dict, *, expected_issuer: str | None = None) -> bool:
     """Verify a secured VC's eddsa-jcs-2022 proof against the did:key in its
     verificationMethod. Fully offline. Never raises -- returns False on any
-    malformed input or bad signature."""
+    malformed input or bad signature.
+
+    Also binds AUTHENTICITY: the proof must be an assertionMethod proof, and the
+    verificationMethod's controller (the DID before '#') MUST equal the credential
+    issuer. Without that, anyone could CLAIM any issuer and sign with their own
+    key -- the signature would still 'verify' against their key. This check works
+    for did:key (issuer == the key's own did) and did:web (issuer == the DID the
+    key lives under). `expected_issuer`, when given, additionally pins the issuer
+    the caller trusts."""
     try:
         proof = secured["proof"]
         if proof.get("type") != "DataIntegrityProof" or \
                 proof.get("cryptosuite") != CRYPTOSUITE:
             return False
+        if proof.get("proofPurpose") != "assertionMethod":
+            return False
+        vm = proof["verificationMethod"]
+        issuer = _issuer_id(secured)
+        # Controller binding: the signing key's DID must be the issuer.
+        if not issuer or issuer != vm.split("#", 1)[0]:
+            return False
+        if expected_issuer is not None and issuer != expected_issuer:
+            return False
         document = {k: v for k, v in secured.items() if k != "proof"}
         sig = unmultibase58(proof["proofValue"])
-        pub = pubkey_from_verification_method(proof["verificationMethod"])
+        pub = pubkey_from_verification_method(vm)
         Ed25519PublicKey.from_public_bytes(pub).verify(
             sig, _hash_data(document, proof))
         return True
