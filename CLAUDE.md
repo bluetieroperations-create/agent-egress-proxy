@@ -33,7 +33,10 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `mcp_server.py` (MCP stdio server wrapping the verdict engine),
   `reputation_store.py` (SQLite indexed reputation store + record merging),
   `facilitator_sim.py` (reference x402 facilitator for the HttpFacilitator path),
-  `discovery.py` (x402 service-discovery descriptor),
+  `discovery.py` (x402 service-discovery descriptor -- Blackwall's OWN),
+  `discovery_crawl.py` (crawl OTHERS' x402 discovery/402 docs -> extract payees +
+  advertised prices -> auto-feed chain_backfill (reputation), peer price baselines,
+  and readiness targets; a self-populating map of the x402 seller ecosystem),
   `sanctions.py` (OFAC sanctions screening -- the "superset of free" layer),
   `readiness.py` (folds an ENDPOINT-readiness grade into the verdict; fail-open,
   conservative-only. Two sources: SELF-OWNED `LocalReadinessSource` (scores public
@@ -101,7 +104,7 @@ test states the mutation it kills). Keep new code stdlib-only and match this sty
 
 Run all tests:
 ```sh
-python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py test_aa_cosigner.py test_chain_backfill.py
+python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py test_aa_cosigner.py test_chain_backfill.py test_discovery_crawl.py
 ```
 
 ## Standing working practice: ALWAYS deep audit → eval → verify
