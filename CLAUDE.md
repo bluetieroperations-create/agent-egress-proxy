@@ -113,6 +113,15 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   captive. Folds into `decide_payment`/`forecast` via `payer_graph_signal` /
   `graph_source`: HOLD-only, never STOP, fail-open; wired into `mcp_server` off the
   same `--store`. Catches wash-farm payees the per-payee distinct count misses),
+  `payer_reputation.py` (reputation for the PAYERS, propagated from trusted anchors:
+  anchors = payees with many distinct on-chain payers (hard to fake); a payer's
+  reputation saturates on the number of distinct anchors it pays (a proven real
+  agent); a payee's `reputable_payers` / `sybil_ring` flag catches a mutually-paying
+  sockpuppet RING -- clears the distinct gate, payers even have breadth>=2, yet NOT
+  ONE pays an anchor -- which breadth-only `captive_sybil` misses. `PayerReputationSource`
+  is a drop-in SUPERSET of `PayerGraphSource` (`.cross_signal` adds the reputation
+  fields + `sybil_ring`); folded into the verdict conservatively (sybil_ring joins
+  the GO-blocking gates, HOLD-only, fail-open) and wired into `mcp_server`),
   `ROADMAP.md`, `docs/DATA_SOURCE_SPIKE.md`. Tests:
   `test_blackwall.py`, `test_ledger.py`, `test_reputation_onchain.py`,
   `test_settlement_watch.py`, `test_addresses.py`, `test_x402.py`,
@@ -126,7 +135,7 @@ test states the mutation it kills). Keep new code stdlib-only and match this sty
 
 Run all tests:
 ```sh
-python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py test_aa_cosigner.py test_chain_backfill.py test_discovery_crawl.py test_ecosystem_scan.py test_http_util.py test_payer_graph.py
+python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py test_aa_cosigner.py test_chain_backfill.py test_discovery_crawl.py test_ecosystem_scan.py test_http_util.py test_payer_graph.py test_payer_reputation.py
 ```
 
 ## Standing working practice: ALWAYS deep audit → eval → verify

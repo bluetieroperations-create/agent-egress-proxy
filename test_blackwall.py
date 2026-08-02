@@ -218,6 +218,19 @@ class TestDecidePayment(unittest.TestCase):
         self.assertTrue(any("captive" in r for r in v["reasons"]))
         self.assertEqual(v["signals"]["cross_counterparty"]["established_payers"], 0)
 
+    def test_sybil_ring_blocks_go_but_never_stops(self):
+        # A ring: clears the distinct gate, payers look "established" (breadth>=2),
+        # but none are reputable -> sybil_ring escalates GO->HOLD, never STOP.
+        # Mutation: dropping sybil_ring from graph_sybil -> this GOes.
+        sig = {"captive_sybil": False, "sybil_ring": True, "distinct_payers": 6,
+               "established_payers": 5, "captive_ratio": 0.167,
+               "reputable_payers": 0, "avg_payer_reputation": 0.0}
+        v = bw.decide_payment("0.09", self.GOOD, self.STABLE_HISTORY,
+                              counterparty="0xA", payer_graph_signal=sig)
+        self.assertEqual(v["verdict"], "HOLD")
+        self.assertTrue(any("ring" in r for r in v["reasons"]))
+        self.assertEqual(v["signals"]["cross_counterparty"]["reputable_payers"], 0)
+
     def test_healthy_graph_signal_surfaced_and_stays_go(self):
         sig = {"captive_sybil": False, "distinct_payers": 40,
                "established_payers": 25, "captive_ratio": 0.375, "cross_score": 0.625}

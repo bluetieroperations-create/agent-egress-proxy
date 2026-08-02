@@ -252,11 +252,12 @@ def main(argv=None):
     if args.store:
         from reputation_store import production_source
         source = production_source(args.store, ledger=ledger, ingest=args.ingest)
-        # Same store -> the cross-counterparty payer graph (built once, cached).
-        # Conservative, fail-open Sybil corroboration on top of the verdict.
+        # Same store -> the cross-counterparty payer graph + propagated payer
+        # reputation (built once, cached). Conservative, fail-open Sybil
+        # corroboration (captive_sybil + sybil_ring) on top of the verdict.
         from reputation_store import ReputationStore
-        from payer_graph import PayerGraphSource
-        graph_source = PayerGraphSource.from_store(ReputationStore(args.store))
+        from payer_reputation import PayerReputationSource
+        graph_source = PayerReputationSource.from_store(ReputationStore(args.store))
 
     sys.stderr.write("blackwall MCP server on stdio (reputation: %s, ledger: %s, graph: %s)\n"
                      % ("MOCK" if source is None else type(source).__name__,

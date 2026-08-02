@@ -380,15 +380,20 @@ def decide_payment(amount, record, price_history,
     sybil_thin = distinct_payers is not None \
         and distinct_payers < MIN_DISTINCT_PAYERS
 
-    # Cross-counterparty guard (payer_graph.py): the naive Sybil gate above counts
-    # distinct payers but not WHO they are. A payee can clear it with N wallets that
-    # each pay ONLY it (captive) -- a wash farm. When the payer graph says the payee
-    # clears the distinct gate yet not one payer is seen paying any OTHER ingested
-    # payee (`captive_sybil`), block the automatic GO. CONSERVATIVE: HOLD only, never
-    # a STOP; fail-open when no graph signal is supplied. "captive" is relative to
-    # what's ingested, so it can only escalate to review, never harden into a block.
-    captive_sybil = bool(payer_graph_signal
-                         and payer_graph_signal.get("captive_sybil"))
+    # Cross-counterparty guard (payer_graph.py / payer_reputation.py): the naive
+    # Sybil gate above counts distinct payers but not WHO they are. Two graph-derived
+    # patterns block the automatic GO:
+    #   * captive_sybil -- clears the distinct gate, yet every payer pays ONLY this
+    #     payee (a wash farm).
+    #   * sybil_ring    -- clears the distinct gate, yet NOT ONE payer is reputable
+    #     (pays a trusted anchor). Catches a mutually-paying sockpuppet RING, whose
+    #     members have breadth >= 2 so captive_sybil misses them.
+    # CONSERVATIVE: HOLD only, never a STOP; fail-open when no graph signal. Both are
+    # relative to what's ingested, so they can only escalate to review.
+    _pgs = payer_graph_signal or {}
+    captive_sybil = bool(_pgs.get("captive_sybil"))
+    sybil_ring = bool(_pgs.get("sybil_ring"))
+    graph_sybil = captive_sybil or sybil_ring
 
     reasons = []
 
@@ -486,7 +491,7 @@ def decide_payment(amount, record, price_history,
         go = (rep >= GO_REPUTATION_MIN
               and not thin
               and not sybil_thin
-              and not captive_sybil
+              and not graph_sybil
               and a_score < HOLD_ANOMALY
               and not over_budget
               and not peer_hold)
@@ -503,7 +508,13 @@ def decide_payment(amount, record, price_history,
                 reasons.append(
                     "all %d payer(s) are captive (none pay any other known payee) "
                     "-- cross-counterparty Sybil pattern; escalating"
-                    % (payer_graph_signal.get("distinct_payers") or 0)
+                    % (_pgs.get("distinct_payers") or 0)
+                )
+            if sybil_ring and not captive_sybil:
+                reasons.append(
+                    "none of the %d payer(s) pay a trusted anchor -- closed "
+                    "sockpuppet-ring pattern; escalating"
+                    % (_pgs.get("distinct_payers") or 0)
                 )
             if thin:
                 extra = ("" if confirmed == settlements
@@ -555,13 +566,17 @@ def decide_payment(amount, record, price_history,
         # the merchant's Blackwall seller-audit grade, when it holds a valid badge
         # (None otherwise). Bounded/earned/revocable -- never a pay-to-whitelist.
         "seller_verified": verified_grade,
-        # cross-counterparty corroboration from the payer graph (None when no graph
-        # supplied). established_payers = payers proven to also pay OTHER known
-        # payees (hard-to-fake); captive_ratio = share paying only this payee.
+        # cross-counterparty corroboration from the payer graph + payer-reputation
+        # layer (None when no graph supplied). established_payers = payers proven to
+        # also pay OTHER known payees; reputable_payers = payers proven to pay a
+        # trusted ANCHOR (present only when a reputation source is wired). Both are
+        # hard-to-fake; captive_ratio = share paying only this payee.
         "cross_counterparty": ({
-            "established_payers": payer_graph_signal.get("established_payers"),
-            "captive_ratio": payer_graph_signal.get("captive_ratio"),
-            "cross_score": payer_graph_signal.get("cross_score"),
+            "established_payers": _pgs.get("established_payers"),
+            "captive_ratio": _pgs.get("captive_ratio"),
+            "cross_score": _pgs.get("cross_score"),
+            "reputable_payers": _pgs.get("reputable_payers"),
+            "avg_payer_reputation": _pgs.get("avg_payer_reputation"),
         } if payer_graph_signal else None),
     }
 

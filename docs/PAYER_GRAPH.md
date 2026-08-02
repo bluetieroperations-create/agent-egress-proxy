@@ -47,6 +47,42 @@ Built from `data/reputation_seed.db` (759 payer wallets, 73 payees):
   captive**. Live, that payee flips **GO → HOLD** with the graph enabled, while a
   richly-corroborated payee's verdict is unchanged and a STOP stays STOP.
 
-A wash-farm payee the per-payee distinct count would have waved through is now caught
-— and the same graph is the seed of a payer-reputation layer (a payer's ecosystem
-breadth is itself a signal) that compounds as more of x402 is ingested.
+A wash-farm payee the per-payee distinct count would have waved through is now caught.
+
+## The payer reputation layer (`payer_reputation.py`)
+
+Breadth-counting has a blind spot: a Sybil **ring** — N sockpuppet payers paying N
+sockpuppet payees — gives every member breadth ≥ 2, so none look captive, yet the
+whole cluster is fake. Counting breadth isn't enough; you have to ask whether a
+payer's breadth touches anything *real*. So we propagate trust from an anchor set:
+
+1. **anchors** — payees with many distinct on-chain payers (≥ `ANCHOR_MIN_DISTINCT`).
+   Funding that many independent USDC-holding wallets is a real, ongoing cost.
+2. **payer reputation** `r(payer)` ∈ [0,1] — saturates on the number of *distinct
+   anchors* a payer pays. Paying several independently-established services makes a
+   wallet a proven real agent; a ring member that only pays its own cluster scores 0.
+3. **payee corroboration** — `reputable_payers` (payers with `r ≥ REPUTABLE_PAYER_MIN`)
+   and a **`sybil_ring`** flag: clears the distinct gate, yet *not one* payer is
+   reputable → a closed, unvouched cluster.
+
+`PayerReputationSource.cross_signal(payee)` is a **superset** of the graph source's
+(it adds the reputation fields + `sybil_ring`), so it drops straight into
+`forecast(graph_source=…)`. `sybil_ring` joins the GO-blocking gates alongside
+`captive_sybil` — HOLD-only, never STOP, fail-open — and `mcp_server` now builds this
+source off the same `--store`.
+
+### Live result (seeded corpus)
+- 17 anchors; 759 payers scored; **72 reputable** (pay ≥2 anchors), 24 maxed at 1.0.
+  The busiest agent pays 35 payees across 6 anchors.
+- `sybil_ring` flags **5** payees vs `captive_sybil`'s 1 — **4 brand-new catches**
+  the breadth signal missed. Example `0x1f81…`: 8 payers, **6 with breadth ≥ 2** (so
+  `captive_sybil` says fine) but **0 reputable** → it flips **GO → HOLD** only once
+  the payer-reputation layer is on. Real payees are corroborated (aidress.ai: 28
+  reputable payers) and big merchants are protected by the distinct ceiling.
+
+### Honesty
+Anchors and "reputable" are measured over **ingested** data, so this **raises the
+cost** of a Sybil — every fake payer must also pay several genuinely-high-diversity
+services, at which point it behaves like a real agent and the payee earns real
+corroboration — rather than making Sybils impossible. Both flags only tighten
+(HOLD), and both sharpen as ingestion covers more of the ecosystem.
