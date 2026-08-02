@@ -42,6 +42,7 @@ from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from addresses import addresses_equal, is_evm_address, normalize_address
+from confidence import assess_confidence
 
 _AMOUNT_RE = re.compile(r"\A\d+(\.\d+)?\Z")  # plain decimal money string only
 
@@ -649,6 +650,10 @@ def decide_payment(amount, record, price_history,
         "score": round(score, 3),
         "reasons": reasons,
         "signals": signals,
+        # How much EVIDENCE backs this verdict (level/score + backed_by/missing).
+        # DESCRIPTIVE only -- it never changed the verdict above; it tells a caller
+        # whether a GO rests on real history + corroboration or a thin cold start.
+        "confidence": assess_confidence(record, signals),
     }
 
 
@@ -1069,6 +1074,8 @@ class _Handler(BaseHTTPRequestHandler):
     readiness_source = None  # readiness.OntarioReadinessSource, or None
     hold_above = None  # amount above which the verdict escalates to HOLD (None = default)
     peer_index = None  # {resource_class: peer_median} for the peer-group check, or None
+    graph_source = None  # payer_reputation.PayerReputationSource (Sybil corroboration)
+    velocity_source = None  # settlement_velocity.VelocitySource (stale gate)
     openapi_server_url = None  # public origin for the openapi.json servers[] (or None)
 
     def _send_json(self, code, obj, extra_headers=None):
@@ -1240,7 +1247,9 @@ class _Handler(BaseHTTPRequestHandler):
         response, err = forecast(payload, self.reputation_source, self.ledger,
                                  readiness_source=self.readiness_source,
                                  hold_above=self.hold_above,
-                                 peer_index=self.peer_index)
+                                 peer_index=self.peer_index,
+                                 graph_source=self.graph_source,
+                                 velocity_source=self.velocity_source)
         if err is not None:
             self._send_json(400, {"error": err})
             return
@@ -1315,7 +1324,8 @@ class BlackwallServer:
 
     def __init__(self, host="127.0.0.1", port=8402, reputation_source=None,
                  ledger=None, billing=None, readiness_source=None,
-                 hold_above=None, peer_index=None, openapi_server_url=None):
+                 hold_above=None, peer_index=None, openapi_server_url=None,
+                 graph_source=None, velocity_source=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -1326,6 +1336,8 @@ class BlackwallServer:
         self.readiness_source = readiness_source
         self.hold_above = hold_above
         self.peer_index = peer_index
+        self.graph_source = graph_source
+        self.velocity_source = velocity_source
         self.openapi_server_url = openapi_server_url
         self._httpd = None
 
@@ -1337,6 +1349,8 @@ class BlackwallServer:
                         "readiness_source": self.readiness_source,
                         "hold_above": self.hold_above,
                         "peer_index": self.peer_index,
+                        "graph_source": self.graph_source,
+                        "velocity_source": self.velocity_source,
                         "openapi_server_url": self.openapi_server_url})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
         self.port = self._httpd.server_address[1]
@@ -1461,10 +1475,17 @@ def main(argv=None):
         led = EventLedger(args.ledger)
 
     reputation_source = None
+    graph_source = velocity_source = None
     if args.store:
-        from reputation_store import production_source
+        from reputation_store import production_source, ReputationStore
         reputation_source = production_source(args.store, ledger=led,
                                               ingest=args.ingest)
+        # Full signal stack off the same store: cross-counterparty Sybil
+        # corroboration (payer graph + reputation) and the temporal `stale` gate.
+        from payer_reputation import PayerReputationSource
+        from settlement_velocity import VelocitySource
+        graph_source = PayerReputationSource.from_store(ReputationStore(args.store))
+        velocity_source = VelocitySource(ReputationStore(args.store))
 
     # Sanctions screening on top of whatever reputation source -- this is what
     # makes Blackwall a SUPERSET of the free facilitator KYT baseline.
@@ -1577,6 +1598,8 @@ def main(argv=None):
                              billing=billing, reputation_source=reputation_source,
                              readiness_source=readiness_source,
                              hold_above=hold_above,
+                             graph_source=graph_source,
+                             velocity_source=velocity_source,
                              openapi_server_url=origin)
     try:
         server.serve_forever()

@@ -85,9 +85,26 @@ volume for `/data` and the secrets above.
    - Deploy the container with the env above. Point `BLACKWALL_FACILITATOR` at a
      real facilitator (e.g. `https://facilitator.x402.rs`, which supports
      `base-sepolia`).
-   - Pre-warm or let `--ingest` populate the reputation store.
+   - **Pre-warm the store from the committed manifest** so the service boots warm
+     (a known payee gets real history, not a cold-start HOLD), then set
+     `BLACKWALL_STORE` to that path on the volume:
+     ```sh
+     python3 chain_backfill.py --store /data/reputation.db \
+       --payees-file data/seed_payees.txt --max-pages 3   # ~198 payees, ~30 anchors
+     ```
+     The same `--store` drives the **full signal stack** — base reputation **plus**
+     the cross-counterparty payer graph / reputation (Sybil corroboration) and the
+     temporal `stale` gate are built off it automatically (no extra flags), and every
+     verdict carries a `confidence` block (`level` + `backed_by` / `missing`).
    - Verify: `GET /healthz` → ok; `GET /.well-known/x402` shows your `payTo` +
-     price; an x402 client gets `402` then a verdict after paying.
+     price; an x402 client gets `402` then a verdict after paying. A quick local
+     smoke test (no billing) — the verdict should include `confidence`,
+     `signals.cross_counterparty`, and `signals.temporal`:
+     ```sh
+     python3 blackwall.py --store /data/reputation.db --port 8402 &
+     curl -s -XPOST localhost:8402/v1/forecast-payment -H 'content-type: application/json' \
+       -d '{"counterparty":"0x0e84dded…","amount":"0.05","asset":"0x8335…2913","chain":"base"}'
+     ```
 3. **Fork + listing.** Only now is it real. Fork `xpaysh/awesome-x402`, add the
    entry from `DISCOVERY.md` (point it at your live endpoint), open the PR.
 
