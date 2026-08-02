@@ -59,7 +59,21 @@ non_usdc_priced_options: 108
 directory top: bitrefill (85 distinct payers) > loyalspark (44) > aidress.ai (42) > anchor-x402 (41)
 ```
 
-## Regression tests added (13)
+## Follow-up hardening (live path robustness, not bugs)
+The M4 fix made `backfill` fail-soft — but "soft" meant a transient 429/timeout
+_skipped_ a payee, silently leaving its reputation missing. Added `http_util.get_json`:
+- **Retry with exponential backoff** on transient 429/5xx/timeout/connection-reset
+  (honors `Retry-After`; permanent 4xx never retried) — a rate-limited public node
+  no longer drops a payee's history; the pager recovers instead of skipping.
+- **Read-size cap** — `urlopen().read()` was unbounded; an oversize/hostile response
+  is now a hard `ResponseTooLarge`, not a memory balloon.
+
+Both live fetchers (`chain_backfill.BlockscoutPager`, `discovery_crawl`) route
+through it. Transport + clock are injectable, so the retry ladder is unit-tested
+with no network and no real sleeping (12 tests). Live re-verified: Bazaar crawl +
+Blockscout backfill succeed through the helper, 0 errors.
+
+## Regression tests added (25)
 - `test_ecosystem_scan`: resource≠option counting; non-USDC/negative/zero price excluded;
   USDC survives amid non-USDC; percentile ≠ max; no-history score 0; CSV-safe helper.
 - `test_chain_backfill`: fetched deduped on non-advancing pager; same-tx different-sender

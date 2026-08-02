@@ -28,8 +28,8 @@ import argparse
 import json
 import sys
 import urllib.parse
-import urllib.request
 
+import http_util
 from addresses import addresses_equal, is_evm_address
 from settlement_watch import (BASE_USDC, DEFAULT_BASE_URL, DEFAULT_UA, HTTP_TIMEOUT,
                               extract_usdc_transfers)
@@ -101,14 +101,20 @@ def backfill(store, payees, fetch, *, usdc=BASE_USDC, max_pages=5):
 
 class BlockscoutPager:
     """Live Base transport: pages a payee's inbound USDC via Blockscout v2
-    (`GET /api/v2/addresses/{addr}/token-transfers?type=ERC-20&filter=to`)."""
+    (`GET /api/v2/addresses/{addr}/token-transfers?type=ERC-20&filter=to`). Fetches
+    through `http_util.get_json`, so a transient 429/5xx/timeout is retried with
+    backoff (a rate-limited public node no longer silently drops a payee's history)
+    and the response is size-capped."""
 
     def __init__(self, base_url=DEFAULT_BASE_URL, usdc=BASE_USDC,
-                 user_agent=DEFAULT_UA, timeout=HTTP_TIMEOUT):
+                 user_agent=DEFAULT_UA, timeout=HTTP_TIMEOUT,
+                 retries=http_util.DEFAULT_RETRIES, backoff=http_util.DEFAULT_BACKOFF):
         self.base_url = base_url.rstrip("/")
         self.usdc = usdc
         self.user_agent = user_agent
         self.timeout = timeout
+        self.retries = retries
+        self.backoff = backoff
 
     def fetch(self, address, page_params):
         if not is_evm_address(address):     # never interpolate an unvalidated addr
@@ -117,10 +123,8 @@ class BlockscoutPager:
         if page_params:
             q += "&" + urllib.parse.urlencode(page_params)
         url = "%s/api/v2/addresses/%s/token-transfers?%s" % (self.base_url, address, q)
-        req = urllib.request.Request(
-            url, headers={"User-Agent": self.user_agent, "Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=self.timeout) as r:
-            data = json.loads(r.read().decode("utf-8"))
+        data = http_util.get_json(url, timeout=self.timeout, user_agent=self.user_agent,
+                                  retries=self.retries, backoff=self.backoff)
         return (data.get("items") or [], data.get("next_page_params"))
 
 

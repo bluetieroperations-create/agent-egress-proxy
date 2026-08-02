@@ -165,5 +165,39 @@ class TestBackfill(unittest.TestCase):
         self.assertEqual(summary["payees"], 1)
 
 
+class TestBlockscoutPager(unittest.TestCase):
+    """The live pager parses items/next_page_params and fetches through http_util
+    (retry/backoff + size cap live there). Transport is stubbed -- no network."""
+
+    def test_fetch_parses_and_delegates_to_http_util(self):
+        import http_util
+        seen = {}
+
+        def fake_get_json(url, **kw):
+            seen["url"] = url
+            return {"items": [{"x": 1}], "next_page_params": {"block": 42}}
+        orig = http_util.get_json
+        http_util.get_json = fake_get_json
+        try:
+            items, nxt = B.BlockscoutPager().fetch(PAYEE, {"block": 41})
+        finally:
+            http_util.get_json = orig
+        self.assertEqual(items, [{"x": 1}])
+        self.assertEqual(nxt, {"block": 42})
+        self.assertIn(PAYEE, seen["url"])
+        self.assertIn("filter=to", seen["url"])
+
+    def test_fetch_rejects_invalid_address_without_calling_out(self):
+        called = {"n": 0}
+        import http_util
+        orig = http_util.get_json
+        http_util.get_json = lambda *a, **k: called.__setitem__("n", called["n"] + 1)
+        try:
+            self.assertEqual(B.BlockscoutPager().fetch("not-an-addr", None), ([], None))
+        finally:
+            http_util.get_json = orig
+        self.assertEqual(called["n"], 0)     # never interpolate an unvalidated addr
+
+
 if __name__ == "__main__":
     unittest.main()

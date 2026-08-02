@@ -25,9 +25,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import urllib.request
 from decimal import Decimal
 
+import http_util
 from addresses import is_evm_address
 
 _MAX_DEPTH = 6
@@ -189,11 +189,9 @@ def crawl_and_backfill(store, sources, *, fetch=None, chain_fetch=None, max_page
 
 
 def _urllib_get_json(url, timeout=12):
-    req = urllib.request.Request(
-        url, headers={"User-Agent": "Blackwall-discovery/0.1",
-                      "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode("utf-8"))
+    # retry/backoff on transient 429/5xx/timeout + size cap (see http_util); a
+    # rate-limited Bazaar page is retried before crawl_bazaar treats it as the end.
+    return http_util.get_json(url, timeout=timeout, user_agent="Blackwall-discovery/0.1")
 
 
 def _read_sources(args):
