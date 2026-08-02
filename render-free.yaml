@@ -26,10 +26,12 @@ services:
         value: "0.0.0.0"
       - key: BLACKWALL_PORT
         value: "8402"
-      # ephemeral (no disk) -- /data exists in the image and is writable, just not
-      # persisted.
+      # Point at the WARM store baked into the image at build time (Dockerfile), so
+      # the free instance boots with real reputation -- known payees get real
+      # verdicts, not cold-start HOLDs -- and re-warms from the image on every cold
+      # start (no persistent disk needed).
       - key: BLACKWALL_STORE
-        value: /data/reputation.db
+        value: /app/data/reputation.db
       - key: BLACKWALL_LEDGER
         value: /data/ledger.jsonl
       # 0: unknown counterparty -> instant cold-start HOLD (no blocking chain call).

@@ -11,16 +11,37 @@ WORKDIR /app
 # Copy everything and never play that whack-a-mole again. (test_*.py ride along unused.)
 COPY *.py ./
 
-# Warm-boot manifest: the payee list to backfill so the engine boots with real
-# history (not cold-start HOLD). Pre-warm on the volume with:
-#   python3 chain_backfill.py --store /data/reputation.db \
-#     --payees-file data/seed_payees.txt --max-pages 3
-COPY data/seed_payees.txt ./data/
+# Warm-boot manifests: seed_payees.txt (full 198, for a paid pre-warm on the volume)
+# and seed_payees_bake.txt (top-40 most-active, baked into the image below for the
+# free tier -- small enough to keep build time reasonable).
+COPY data/seed_payees.txt data/seed_payees_bake.txt ./data/
 
 # OFAC sanctioned-address snapshot (from the published 0xB10C list). Baked in so
 # screening is ON by default -- Blackwall is a SUPERSET of the free KYT baseline.
 # Refresh periodically with:  python sanctions.py sanctions.txt  (then redeploy).
 COPY sanctions.txt ./
+
+# ca-certificates so the build-time backfill's HTTPS to Blockscout verifies.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# BAKE a warm reputation corpus into the image. The free tier has no persistent disk
+# or shell, so there's no way to pre-warm at runtime -- instead we backfill the
+# manifest's payees from PUBLIC Base USDC history at BUILD time into a store baked
+# into the image, so the container boots WARM (known payees get real verdicts, not a
+# cold-start HOLD) and re-warms on every cold start. FAIL-OPEN: a blocked/flaky
+# backfill just yields a thinner store, never a failed build. Baked to /app/data --
+# NOT the /data VOLUME below, whose build-time writes Docker discards. The free deploy
+# points BLACKWALL_STORE here (render-free.yaml); paid deploys use the /data disk.
+# HTTPS_PROXY/SSL_CERT_FILE are build-time-only knobs for local testing behind a proxy
+# (empty on Render -> direct egress + the system CA installed above).
+ARG HTTPS_PROXY=
+ARG SSL_CERT_FILE=
+RUN mkdir -p /app/data \
+    && (HTTPS_PROXY="$HTTPS_PROXY" HTTP_PROXY="$HTTPS_PROXY" SSL_CERT_FILE="$SSL_CERT_FILE" \
+        python3 chain_backfill.py --store /app/data/reputation.db \
+          --payees-file data/seed_payees_bake.txt --max-pages 2 || true) \
+    && chown -R blackwall /app/data
 
 # Persistent state (SQLite reputation store + JSONL ledger) lives on a volume.
 RUN mkdir -p /data && chown -R blackwall /data
