@@ -5,21 +5,30 @@ _Run 2026-08-02._ The cold-start pipeline (`discovery_crawl` → `chain_backfill
 the verdict engine consumes**. This is the loop closing: public data in, real
 GO/HOLD/STOP out, before customer #1.
 
-## The corpus
-`ecosystem_scan.py --backfill-store data/reputation_seed.db --max-pages 30
---backfill-top 75 --backfill-max-pages 3` built:
+## The seed is a manifest, not a binary
+The warm corpus is **regenerated from a committed manifest**, not a checked-in
+database — no multi-MB binary in git, nothing stale, fully reproducible:
 
-- **9,463** real on-chain USDC settlement rows
-- across **73 payees** (the most-active endpoints in a 458-endpoint Bazaar crawl)
-- e.g. Bitrefill: **146 settlements, 134 distinct payers**
+- `data/seed_payees.txt` — **198** x402 payee (`payTo`) addresses to backfill (the
+  most-active endpoints from a 724-endpoint Bazaar crawl).
+- `data/report.json` / `directory.json` / `candidates.csv` — the State-of-x402
+  snapshot, trust directory, and BD funnel from that pass (text, diffable).
+
+Regenerating the store from the manifest yields ~**30 anchors** and, e.g., Bitrefill
+at **134 distinct payers** — the coverage the payer-graph / payer-reputation signals
+need (see `docs/PAYER_GRAPH.md`). `*.db` is git-ignored, so a regenerated store stays
+local.
 
 ## How it feeds the engine
 `blackwall.forecast(payload, reputation_source)` calls `reputation_source.lookup()`.
-The MCP/HTTP service takes a store path and builds that source:
+Regenerate the store from the manifest, then point the service at it:
 
 ```sh
-BLACKWALL_STORE=data/reputation_seed.db python3 mcp_server.py     # or --store <path>
-# -> production_source(store) -> the engine answers from the corpus
+export SSL_CERT_FILE=/root/.ccr/ca-bundle.crt        # proxy CA (env-specific)
+python3 chain_backfill.py --store data/reputation_seed.db \
+  --payees-file data/seed_payees.txt --max-pages 3
+BLACKWALL_STORE=data/reputation_seed.db python3 mcp_server.py   # or --store <path>
+# -> production_source(store) + payer-reputation graph -> answers from the corpus
 ```
 
 No mock. A known payee now resolves to real on-chain history instead of a
@@ -33,8 +42,11 @@ thin payee @ $0.01 (150 settl, 1 payer) -> HOLD  Sybil gate: volume != trust, no
 unknown payee @ $0.09 (cold start)      -> HOLD  rep 0.50, 0 prior settlements
 ```
 
+_(Proof numbers above are from an earlier 73-payee build; the committed manifest now
+covers 198 payees / ~30 anchors — richer, same behavior.)_
+
 Each row is the design working on **real data**:
-- **GO** needs real reputation — now present for 73 payees.
+- **GO** needs real reputation — now present for ~198 payees.
 - **STOP** fires when the *quoted* amount is anomalous vs the payee's *own* on-chain
   price history (the history is what makes the anomaly measurable).
 - **HOLD on a busy-but-thin payee** is the Sybil defense: 150 settlements from a
@@ -42,16 +54,22 @@ Each row is the design working on **real data**:
 - **HOLD on the unknown** is the honest cold-start — and it's now the exception, not
   every payee.
 
-## Reproduce
+## Reproduce / refresh
+From the fixed manifest (deterministic payee set; on-chain history drifts over time):
 ```sh
 export SSL_CERT_FILE=/root/.ccr/ca-bundle.crt        # proxy CA (env-specific)
+python3 chain_backfill.py --store data/reputation_seed.db \
+  --payees-file data/seed_payees.txt --max-pages 3
+```
+Or re-scan the ecosystem from scratch (also refreshes the manifest + snapshots):
+```sh
 python3 ecosystem_scan.py --backfill-store data/reputation_seed.db \
-  --max-pages 30 --backfill-top 75 --backfill-max-pages 3 \
+  --max-pages 80 --backfill-top 200 --backfill-max-pages 3 \
   --out-report data/report.json --out-directory data/directory.json \
   --out-candidates data/candidates.csv
 ```
-`data/reputation_seed.db` is a committed **seed** so the engine boots warm out of the
-box; it is regenerable by the command above and will drift as on-chain history grows.
+The seed lives in git as the **manifest** (`data/seed_payees.txt`), not a binary DB,
+so there's no bloat and nothing stale — the store is a ~2-minute build step.
 
 ## What this proves — and doesn't
 - **Proves:** the public-data corpus feeds the live engine; verdicts differentiate
