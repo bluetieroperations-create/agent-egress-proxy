@@ -74,6 +74,30 @@ class TestAggregate(unittest.TestCase):
         self.assertEqual(recs["0xA"]["settlement_count"], 5)
         self.assertAlmostEqual(recs["0xA"]["dispute_rate"], 0.2)  # 1 of 5
 
+    def test_recent_dispute_rate_windowed(self):
+        # 20 clean settlements then 4 recent disputes: lifetime rate stays low, but
+        # the recency window exposes the counterparty going bad.
+        # Mutation: computing recent over ALL outcomes -> recent == lifetime, misses it.
+        events = []
+        for i in range(20):
+            rid = "g%02d" % i
+            events += [verdict(rid, "0xC", ts="t0%02d" % i),
+                       chain_settled(rid, "tx%02d" % i)]
+        for i in range(4):
+            rid = "b%02d" % i
+            events += [verdict(rid, "0xC", ts="t1%02d" % i),
+                       chain_settled(rid, "txb%02d" % i), self_report(rid, "disputed")]
+        rec = L.aggregate_counterparties(events)["0xC"]
+        self.assertEqual(rec["settlement_count"], 24)
+        self.assertAlmostEqual(rec["dispute_rate"], 4 / 24, places=3)   # lifetime: low
+        self.assertEqual(rec["recent_outcomes"], L.RECENT_WINDOW)       # last 10
+        self.assertAlmostEqual(rec["recent_dispute_rate"], 0.4, places=3)  # 6 good + 4 bad
+
+    def test_recent_dispute_rate_none_without_outcomes(self):
+        rec = L.aggregate_counterparties([verdict("r", "0xC")])["0xC"]
+        self.assertIsNone(rec["recent_dispute_rate"])
+        self.assertEqual(rec["recent_outcomes"], 0)
+
     def test_self_reported_dispute_on_unsettled_is_ignored(self):
         # Dispute on a receipt that never chain-settled -> no effect (anti-poison).
         recs = L.aggregate_counterparties([

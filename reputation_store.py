@@ -176,6 +176,11 @@ def merge_records(records):
         "distinct_payers": max((r.get("distinct_payers") or 0) for r in records),
         "dispute_rate": next((r.get("dispute_rate") for r in records
                               if r.get("dispute_rate") is not None), None),
+        # recency-weighted dispute signal (ledger-only) -- catches a counterparty
+        # going bad that the volume-averaged lifetime rate hides.
+        "recent_dispute_rate": next((r.get("recent_dispute_rate") for r in records
+                                     if r.get("recent_dispute_rate") is not None), None),
+        "recent_outcomes": max((r.get("recent_outcomes") or 0) for r in records),
         "price_history": max((r.get("price_history") or [] for r in records),
                              key=len),
         # UNION the payer-attributed samples across sources. Unlike price_history

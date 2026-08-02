@@ -272,6 +272,30 @@ class TestDecidePayment(unittest.TestCase):
         self.assertEqual(v["verdict"], "GO")
         self.assertIsNone(v["signals"]["temporal"])
 
+    def test_going_bad_holds_despite_clean_lifetime(self):
+        # 1000 clean settlements (lifetime 0.4%) but 40% of the LAST 10 disputed ->
+        # trending bad. reputation_score (volume-averaged) still says GO; the recency
+        # gate escalates to HOLD. Mutation: dropping `going_bad` -> this GOes.
+        rec = {"settlement_count": 1000, "dispute_rate": 0.004,
+               "recent_dispute_rate": 0.4, "recent_outcomes": 10}
+        v = bw.decide_payment("0.09", rec, self.STABLE_HISTORY, counterparty="0xA")
+        self.assertEqual(v["verdict"], "HOLD")
+        self.assertTrue(any("trending bad" in r for r in v["reasons"]))
+        self.assertEqual(v["signals"]["recent_dispute_rate"], 0.4)
+
+    def test_low_recent_disputes_still_go(self):
+        rec = {"settlement_count": 1000, "dispute_rate": 0.004,
+               "recent_dispute_rate": 0.1, "recent_outcomes": 10}
+        self.assertEqual(bw.decide_payment("0.09", rec, self.STABLE_HISTORY,
+                                           counterparty="0xA")["verdict"], "GO")
+
+    def test_going_bad_needs_enough_recent_outcomes(self):
+        # 1 of 2 recent disputed = 50%, but too few outcomes to call a trend -> GO.
+        rec = {"settlement_count": 1000, "dispute_rate": 0.004,
+               "recent_dispute_rate": 0.5, "recent_outcomes": 2}
+        self.assertEqual(bw.decide_payment("0.09", rec, self.STABLE_HISTORY,
+                                           counterparty="0xA")["verdict"], "GO")
+
     def test_hold_over_budget(self):
         # Reputable + normal price, but amount above the auto-approve threshold.
         v = bw.decide_payment("25.00", self.GOOD,

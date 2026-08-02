@@ -66,6 +66,11 @@ PEER_HOLD_RATIO = 3.0             # priced >= Nx the peer market for its class =
 HOLD_AMOUNT_THRESHOLD = Decimal("10.00")  # amounts above this escalate (HOLD)
 HOLD_ANOMALY = 0.30               # price-anomaly score at/above this cannot GO
 STOP_ANOMALY_RATIO = 8.0          # charged >= 8x its own median => STOP (wildly off)
+# "Going bad": recent outcomes turning toxic even while the lifetime dispute rate --
+# drowned by past volume -- still looks clean. This is the compromised/rugging case a
+# stateless engine and a volume-averaged rate both miss.
+GOING_BAD_MIN_OUTCOMES = 4        # need >= this many RECENT outcomes to judge a trend
+GOING_BAD_DISPUTE_RATE = 0.30     # recent dispute rate at/above this => escalate (HOLD)
 MAX_BODY_BYTES = 64 * 1024        # request-body cap (oversize guard)
 
 # Receipts are signed so the agent can keep a tamper-evident audit trail. This
@@ -405,6 +410,17 @@ def decide_payment(amount, record, price_history,
     _tmp = temporal_signal or {}
     stale = bool(_tmp.get("stale"))
 
+    # "Going bad" gate: a counterparty whose RECENT outcomes are disputing, even if
+    # its volume-averaged lifetime dispute_rate still looks clean (1000 good then 4
+    # of the last 10 disputed -> lifetime 0.4%, recent 40%). reputation_score is
+    # dominated by lifetime volume and misses this; the recency window catches it.
+    # HOLD (resolvable) -- escalate; never a STOP on the payer's self-reported outcome.
+    recent_dr = record.get("recent_dispute_rate")
+    recent_n = record.get("recent_outcomes") or 0
+    going_bad = (recent_dr is not None
+                 and recent_n >= GOING_BAD_MIN_OUTCOMES
+                 and recent_dr >= GOING_BAD_DISPUTE_RATE)
+
     reasons = []
 
     # Seller-audit tier: a VALID Blackwall "verified merchant" attestation (issued
@@ -503,6 +519,7 @@ def decide_payment(amount, record, price_history,
               and not sybil_thin
               and not graph_sybil
               and not stale
+              and not going_bad
               and a_score < HOLD_ANOMALY
               and not over_budget
               and not peer_hold)
@@ -553,6 +570,12 @@ def decide_payment(amount, record, price_history,
                     "the endpoint abandoned; confirm it still operates"
                     % (_tmp.get("recency_days"))
                 )
+            if going_bad:
+                reasons.append(
+                    "recent dispute rate %.0f%% over the last %d outcome(s) -- "
+                    "counterparty trending bad despite a clean lifetime record; "
+                    "escalating" % (recent_dr * 100.0, recent_n)
+                )
 
     # sybil_ring is ADVISORY (see the gate note above): surface it as a non-blocking
     # note so a reviewer sees the pattern, without HOLDing an otherwise-clean payee at
@@ -574,6 +597,9 @@ def decide_payment(amount, record, price_history,
 
     signals = {
         "counterparty_reputation": round(rep, 3),
+        # recency-weighted dispute rate over the last window (None until the ledger
+        # has dated outcomes) -- the "going bad" trend the lifetime rate hides.
+        "recent_dispute_rate": (round(recent_dr, 3) if recent_dr is not None else None),
         "price_anomaly": round(a_score, 3),
         # whether the anomaly baseline is wash-trade-resistant (per-payer) or the
         # flat median -- so the caller knows how trustworthy the price norm is.

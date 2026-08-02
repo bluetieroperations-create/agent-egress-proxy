@@ -35,6 +35,7 @@ import time
 # moved) and did it DELIVER (the agent got what it paid for).
 GOOD_OUTCOMES = {"settled", "delivered"}        # counts toward settlement_count
 BAD_OUTCOMES = {"underdelivered", "disputed", "refunded"}  # counts toward disputes
+RECENT_WINDOW = 10   # confirmed outcomes in the recency-weighted dispute window
 NEUTRAL_OUTCOMES = {"abandoned"}                # GO issued but agent never paid
 
 VALID_OUTCOMES = GOOD_OUTCOMES | BAD_OUTCOMES | NEUTRAL_OUTCOMES
@@ -81,7 +82,8 @@ def aggregate_counterparties(events):
         if cp not in agg:
             agg[cp] = {"good": 0, "bad": 0, "amounts": [], "confirmed_txs": set(),
                        "payers": set(), "priced": [], "first_ts": None,
-                       "last_ts": None, "verdicts": 0, "self_reports": 0}
+                       "last_ts": None, "verdicts": 0, "self_reports": 0,
+                       "timeline": []}   # (ts, is_bad) per confirmed settlement
         return agg[cp]
 
     for e in events:
@@ -92,7 +94,7 @@ def aggregate_counterparties(events):
                 continue
             by_receipt[rid] = {"cp": cp, "amount": e.get("amount"),
                                "payer": e.get("payer"),
-                               "resource": e.get("resource")}
+                               "resource": e.get("resource"), "ts": e.get("ts")}
             a = acc(cp)
             a["verdicts"] += 1
             ts = e.get("ts")
@@ -105,6 +107,7 @@ def aggregate_counterparties(events):
     chain_tx = {}        # rid -> settlement_tx of the chain-watch confirmation
     chain_amount = {}    # rid -> on-chain observed amount from that confirmation
     latest_quality = {}  # rid -> latest outcome (delivery quality)
+    latest_outcome_ts = {}  # rid -> ts of that latest outcome (for recency ordering)
     self_reported = set()
     for e in events:
         if e.get("kind") != "outcome":
@@ -115,6 +118,7 @@ def aggregate_counterparties(events):
         outcome = e.get("outcome")
         source = e.get("source", "self-report")
         latest_quality[rid] = outcome
+        latest_outcome_ts[rid] = e.get("ts")
         if source != "chain-watch":
             self_reported.add(rid)
         elif outcome in GOOD_OUTCOMES and rid not in chain_tx:
@@ -130,10 +134,16 @@ def aggregate_counterparties(events):
             if tx in a["confirmed_txs"]:
                 continue
             a["confirmed_txs"].add(tx)
-        if latest_quality.get(rid) in BAD_OUTCOMES:
+        is_bad = latest_quality.get(rid) in BAD_OUTCOMES
+        if is_bad:
             a["bad"] += 1     # payer disputed a payment that really settled
         else:
             a["good"] += 1
+        # timeline for the recency-weighted dispute signal (a clean counterparty
+        # that starts disputing -- compromised/rugging -- which the lifetime rate,
+        # drowned by volume, misses). ts of the outcome, else the verdict ts.
+        a["timeline"].append((latest_outcome_ts.get(rid) or by_receipt[rid].get("ts"),
+                              is_bad))
         amt = chain_amount.get(rid)
         if amt is None:
             amt = by_receipt[rid]["amount"]
@@ -164,6 +174,16 @@ def aggregate_counterparties(events):
         good, bad = a["good"], a["bad"]
         confirmed = good + bad   # all chain-confirmed (deduped by tx)
         dispute_rate = (bad / confirmed) if confirmed else None
+        # Recency-weighted dispute rate over the last RECENT_WINDOW confirmed
+        # outcomes (ordered by ts; undated entries sort oldest). Catches a
+        # counterparty GOING BAD -- recent disputes the volume-averaged lifetime
+        # rate hides. None until there is at least one dated confirmed outcome.
+        dated = [t for t in a["timeline"] if t[0]]
+        dated.sort(key=lambda t: t[0])
+        recent = dated[-RECENT_WINDOW:]
+        recent_total = len(recent)
+        recent_bad = sum(1 for _, is_bad in recent if is_bad)
+        recent_dispute_rate = (recent_bad / recent_total) if recent_total else None
         records[cp] = {
             # settlement_count == confirmed: the ledger's reputation is built ONLY
             # from chain-confirmed settlements, so the count cannot be self-report
@@ -172,6 +192,8 @@ def aggregate_counterparties(events):
             "confirmed_settlement_count": confirmed,
             "distinct_payers": len(a["payers"]),  # Sybil signal: distinct funders
             "dispute_rate": dispute_rate,   # over confirmed settlements only
+            "recent_dispute_rate": recent_dispute_rate,  # last RECENT_WINDOW outcomes
+            "recent_outcomes": recent_total,
             "price_history": a["amounts"],  # on-chain amounts of confirmed settlements
             "price_observations": a["priced"],  # payer-attributed (wash-resistant median)
             "first_seen": a["first_ts"],

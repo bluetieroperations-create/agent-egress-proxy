@@ -18,7 +18,10 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
 - **egress_proxy.py** — network-layer egress control (localhost forward proxy;
   logs/gates every destination an agent reaches). Tests: `test_egress_proxy.py`.
 - **blackwall.py** — action-layer payment verdict (pre-signature x402 GO/HOLD/STOP).
-  Supporting: `ledger.py` (verdict→outcome moat flywheel),
+  Supporting: `ledger.py` (verdict→outcome moat flywheel; also computes a
+  RECENCY-weighted `recent_dispute_rate` over the last `RECENT_WINDOW` confirmed
+  outcomes -- the "going bad" signal a volume-averaged lifetime rate hides; folds
+  into the verdict as a `going_bad` HOLD gate, see `docs/GOING_BAD.md`),
   `reputation_onchain.py` (live Base data spike),
   `settlement_watch.py` (trustless on-chain settlement confirmation),
   `chain_backfill.py` (seed reputation from PUBLIC Base USDC history with zero
