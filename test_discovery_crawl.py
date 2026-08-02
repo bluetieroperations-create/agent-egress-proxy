@@ -44,6 +44,14 @@ class TestExtract(unittest.TestCase):
                "accepts": [{"payTo": P1, "asset": USDC, "network": "base", "amount": "5"}]}
         self.assertEqual(D.extract_resources(doc)[0]["resource"], "https://svc/y")
 
+    def test_accept_level_resource_dict_flattened(self):
+        # a ResourceInfo dict on the ACCEPT itself -> flattened to its url (never a dict)
+        doc = {"accepts": [{"payTo": P1, "amount": "5",
+                            "resource": {"url": "https://svc/z"}}]}
+        rec = D.extract_resources(doc)[0]
+        self.assertEqual(rec["resource"], "https://svc/z")
+        self.assertNotIsInstance(rec["resource"], dict)
+
     def test_bad_payto_dropped(self):
         doc = {"accepts": [{"payTo": "not-an-addr", "amount": "1"},
                            _accept(P1)]}

@@ -53,6 +53,10 @@ def _accept_record(accept, parent_resource):
     if not is_evm_address(payto):
         return None
     resource = accept.get("resource") or parent_resource
+    if isinstance(resource, dict):          # a v2 ResourceInfo {url:...} -> the url
+        resource = resource.get("url")
+    if not isinstance(resource, str):
+        resource = None
     return {"resource": resource, "payTo": payto.lower(),
             "asset": accept.get("asset"), "network": accept.get("network"),
             "price_atomic": _price_atomic(accept)}
