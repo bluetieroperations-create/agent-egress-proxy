@@ -330,7 +330,7 @@ def decide_payment(amount, record, price_history,
                    counterparty=None, expected_recipient=None, hold_above=None,
                    resource=None, peer_median=None, payload_mismatch_reasons=None,
                    verified_floor=None, verified_grade=None,
-                   payer_graph_signal=None):
+                   payer_graph_signal=None, temporal_signal=None):
     """
     The core verdict. Returns a dict:
         {verdict, score, reasons[], signals{...}}
@@ -396,6 +396,14 @@ def decide_payment(amount, record, price_history,
     captive_sybil = bool(_pgs.get("captive_sybil"))
     sybil_ring = bool(_pgs.get("sybil_ring"))
     graph_sybil = captive_sybil               # sybil_ring is advisory, not a gate
+
+    # Temporal axis (settlement_velocity.py). `stale` GATES: last_seen is robust
+    # (the backfill always fetches the most recent settlements), so "no settlement in
+    # STALE_DAYS" reliably flags a possibly-dead/abandoned endpoint -> HOLD (confirm
+    # it still operates). `burst_sybil` is DIAGNOSTIC only -- backfill windowing makes
+    # it flag high-volume payees -- so it is surfaced, never acted on. Fail-open.
+    _tmp = temporal_signal or {}
+    stale = bool(_tmp.get("stale"))
 
     reasons = []
 
@@ -494,6 +502,7 @@ def decide_payment(amount, record, price_history,
               and not thin
               and not sybil_thin
               and not graph_sybil
+              and not stale
               and a_score < HOLD_ANOMALY
               and not over_budget
               and not peer_hold)
@@ -537,6 +546,12 @@ def decide_payment(amount, record, price_history,
                 reasons.append(
                     "priced %.1fx the peer-group market rate for this class -- "
                     "above comparable counterparties" % peer_ratio
+                )
+            if stale:
+                reasons.append(
+                    "no settlement in %s day(s) -- counterparty may be dormant or "
+                    "the endpoint abandoned; confirm it still operates"
+                    % (_tmp.get("recency_days"))
                 )
 
     # sybil_ring is ADVISORY (see the gate note above): surface it as a non-blocking
@@ -586,6 +601,16 @@ def decide_payment(amount, record, price_history,
             # advisory only at current coverage (over-flags) -- surfaced, not gated.
             "sybil_ring_advisory": sybil_ring,
         } if payer_graph_signal else None),
+        # temporal axis: `stale` gated the verdict above; recency/age/peak_day_share
+        # are informational; `burst_sybil_advisory` is DIAGNOSTIC (backfill-windowed),
+        # surfaced but never acted on. None when no timeline supplied.
+        "temporal": ({
+            "recency_days": _tmp.get("recency_days"),
+            "age_days": _tmp.get("age_days"),
+            "stale": stale,
+            "peak_day_share": _tmp.get("peak_day_share"),
+            "burst_sybil_advisory": bool(_tmp.get("burst_sybil")),
+        } if temporal_signal else None),
     }
 
     return {
@@ -826,7 +851,7 @@ def default_billing_asset(network, explicit, base_usdc, sepolia_usdc):
 
 def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              hold_above=None, peer_index=None, seller_registry=None, now=None,
-             graph_source=None):
+             graph_source=None, velocity_source=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
@@ -896,6 +921,14 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         except Exception:
             payer_graph_signal = None
 
+    # Temporal signal (settlement_velocity.py). Fail-open, same contract.
+    temporal_sig = None
+    if velocity_source is not None:
+        try:
+            temporal_sig = velocity_source.temporal(clean["counterparty"])
+        except Exception:
+            temporal_sig = None
+
     verdict = decide_payment(
         amount=clean["amount"],
         record=record,
@@ -909,6 +942,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         payload_mismatch_reasons=sim_mismatches,
         verified_floor=verified_floor, verified_grade=verified_grade,
         payer_graph_signal=payer_graph_signal,
+        temporal_signal=temporal_sig,
     )
     # Surface advisory (non-blocking) simulation warnings, e.g. an expired auth or
     # a bounded approval.

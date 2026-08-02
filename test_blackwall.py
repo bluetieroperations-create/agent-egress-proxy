@@ -246,6 +246,32 @@ class TestDecidePayment(unittest.TestCase):
         self.assertEqual(v["verdict"], "GO")
         self.assertIsNone(v["signals"]["cross_counterparty"])
 
+    def test_stale_blocks_go_but_never_stops(self):
+        # a dormant/abandoned endpoint escalates to HOLD. Mutation: dropping `stale`
+        # from the go gate -> a payee with no recent settlement stays GO.
+        sig = {"stale": True, "recency_days": 200, "age_days": 500,
+               "peak_day_share": 0.2, "burst_sybil": False}
+        v = bw.decide_payment("0.09", self.GOOD, self.STABLE_HISTORY,
+                              counterparty="0xA", temporal_signal=sig)
+        self.assertEqual(v["verdict"], "HOLD")
+        self.assertTrue(any("dormant" in r or "day(s)" in r for r in v["reasons"]))
+        self.assertTrue(v["signals"]["temporal"]["stale"])
+
+    def test_burst_is_diagnostic_never_gates(self):
+        # burst_sybil is backfill-windowed and must NOT block GO -- only surfaced.
+        # Mutation: gating on burst_sybil -> this HOLDs a reputable payee.
+        sig = {"stale": False, "recency_days": 1, "age_days": 0.9,
+               "peak_day_share": 0.95, "burst_sybil": True}
+        v = bw.decide_payment("0.09", self.GOOD, self.STABLE_HISTORY,
+                              counterparty="0xA", temporal_signal=sig)
+        self.assertEqual(v["verdict"], "GO")                       # not blocked
+        self.assertTrue(v["signals"]["temporal"]["burst_sybil_advisory"])
+
+    def test_no_temporal_signal_is_fail_open(self):
+        v = bw.decide_payment("0.09", self.GOOD, self.STABLE_HISTORY, counterparty="0xA")
+        self.assertEqual(v["verdict"], "GO")
+        self.assertIsNone(v["signals"]["temporal"])
+
     def test_hold_over_budget(self):
         # Reputable + normal price, but amount above the auto-approve threshold.
         v = bw.decide_payment("25.00", self.GOOD,

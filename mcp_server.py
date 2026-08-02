@@ -104,10 +104,12 @@ def _tool_text(resp):
 
 
 class BlackwallMCP:
-    def __init__(self, reputation_source=None, ledger=None, graph_source=None):
+    def __init__(self, reputation_source=None, ledger=None, graph_source=None,
+                 velocity_source=None):
         self.src = reputation_source or MockReputationSource()
         self.ledger = ledger
         self.graph_source = graph_source
+        self.velocity_source = velocity_source
 
     # ---- tool catalog ----
     def _tools(self):
@@ -187,7 +189,8 @@ class BlackwallMCP:
 
         if name == "forecast_payment":
             resp, err = forecast(args, self.src, self.ledger,
-                                  graph_source=self.graph_source)
+                                  graph_source=self.graph_source,
+                                  velocity_source=self.velocity_source)
             if err is not None:
                 return self._tool_error(err)
             return {
@@ -284,7 +287,7 @@ def main(argv=None):
         from ledger import EventLedger
         ledger = EventLedger(args.ledger)
 
-    source = graph_source = None
+    source = graph_source = velocity_source = None
     if args.store:
         from reputation_store import production_source
         source = production_source(args.store, ledger=ledger, ingest=args.ingest)
@@ -294,13 +297,19 @@ def main(argv=None):
         from reputation_store import ReputationStore
         from payer_reputation import PayerReputationSource
         graph_source = PayerReputationSource.from_store(ReputationStore(args.store))
+        # Temporal axis off the same store: `stale` gates, burst is diagnostic.
+        from settlement_velocity import VelocitySource
+        velocity_source = VelocitySource(ReputationStore(args.store))
 
-    sys.stderr.write("blackwall MCP server on stdio (reputation: %s, ledger: %s, graph: %s)\n"
+    sys.stderr.write("blackwall MCP server on stdio (reputation: %s, ledger: %s, "
+                     "graph: %s, temporal: %s)\n"
                      % ("MOCK" if source is None else type(source).__name__,
-                        "on" if ledger else "off", "on" if graph_source else "off"))
+                        "on" if ledger else "off", "on" if graph_source else "off",
+                        "on" if velocity_source else "off"))
     sys.stderr.flush()
     BlackwallMCP(reputation_source=source, ledger=ledger,
-                 graph_source=graph_source).serve_stdio()
+                 graph_source=graph_source,
+                 velocity_source=velocity_source).serve_stdio()
     return 0
 
 

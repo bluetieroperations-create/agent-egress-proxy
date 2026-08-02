@@ -98,6 +98,15 @@ class ReputationStore:
                     "WHERE payer IS NOT NULL AND payer != ''"):
                 yield payer, cp
 
+    def iter_settlement_events(self, counterparty):
+        """Yield (ts, payer) for a payee's settlements -- the timeline the temporal
+        / velocity signal (settlement_velocity.py) is built on. Read-only."""
+        cp = (counterparty or "").lower()
+        with self._lock:
+            for ts, payer in self._conn.execute(
+                    "SELECT ts, payer FROM settlements WHERE counterparty=?", (cp,)):
+                yield ts, payer
+
     # ---- hot-path read (sub-ms) ----
     def lookup(self, counterparty):
         cp = (counterparty or "").lower()

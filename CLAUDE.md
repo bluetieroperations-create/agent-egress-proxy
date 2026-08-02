@@ -120,12 +120,23 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   sockpuppet RING -- clears the distinct gate, payers even have breadth>=2, yet NOT
   ONE pays an anchor -- which breadth-only `captive_sybil` misses. `PayerReputationSource`
   is a drop-in SUPERSET of `PayerGraphSource` (`.cross_signal` adds the reputation
-  fields + `sybil_ring`); folded into the verdict conservatively (sybil_ring joins
-  the GO-blocking gates, HOLD-only, fail-open) and wired into `mcp_server`. Also
-  exposes the PAYER side as a queryable output -- `payer_profile()` / `.screen()`
-  and the `screen_payer` MCP tool: a facilitator/wallet screens WHO is paying (tier
-  established/emerging/unknown, anchors paid, breadth) before it settles; unknown is
-  NEUTRAL cold-start, never a block),
+  fields + `sybil_ring`); folded into the verdict conservatively and wired into
+  `mcp_server`. NOTE: after the signal-stability eval, `captive_sybil` GATES (HOLD)
+  but `sybil_ring` is ADVISORY (surfaced, not gated -- it over-flags at partial
+  ingestion coverage); see `docs/PAYER_GRAPH.md`. Also exposes the PAYER side as a
+  queryable output -- `payer_profile()` / `.screen()` and the `screen_payer` MCP
+  tool: a facilitator/wallet screens WHO is paying (tier established/emerging/unknown,
+  anchors paid, breadth) before it settles; unknown is NEUTRAL cold-start, never a
+  block),
+  `settlement_velocity.py` (the TEMPORAL axis: reads the settlement timestamps
+  (ingested, previously unused) -> age/recency + payer-acquisition `peak_day_share`.
+  `stale` (no settlement in STALE_DAYS -> possibly dead/abandoned endpoint) GATES the
+  verdict (HOLD, never STOP, fail-open); last_seen is robust to the backfill window.
+  `burst_sybil` (many distinct payers all first-seen in ONE day) is DIAGNOSTIC ONLY,
+  never gated -- a targeted backfill captures only a recent WINDOW, so a high-volume
+  payee's whole visible history compresses into ~1 day and it flags the MOST reputable
+  payees; real burst detection needs COMPLETE history. Folds via
+  `temporal_signal`/`velocity_source`; wired into `mcp_server`),
   `ROADMAP.md`, `docs/DATA_SOURCE_SPIKE.md`. Tests:
   `test_blackwall.py`, `test_ledger.py`, `test_reputation_onchain.py`,
   `test_settlement_watch.py`, `test_addresses.py`, `test_x402.py`,
@@ -139,7 +150,7 @@ test states the mutation it kills). Keep new code stdlib-only and match this sty
 
 Run all tests:
 ```sh
-python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py test_aa_cosigner.py test_chain_backfill.py test_discovery_crawl.py test_ecosystem_scan.py test_http_util.py test_payer_graph.py test_payer_reputation.py
+python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py test_aa_cosigner.py test_chain_backfill.py test_discovery_crawl.py test_ecosystem_scan.py test_http_util.py test_payer_graph.py test_payer_reputation.py test_settlement_velocity.py
 ```
 
 ## Standing working practice: ALWAYS deep audit → eval → verify
