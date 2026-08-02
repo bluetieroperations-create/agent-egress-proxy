@@ -1,0 +1,56 @@
+# Render blueprint -- FREE variant (for testing, $0).
+#
+# Same as render.yaml but: plan `free` and NO persistent disk. State (the SQLite
+# store + JSONL ledger) is EPHEMERAL -- it lives in the container's /data dir and
+# resets on restart/redeploy, and the free instance spins down after ~15 min idle
+# (first request after that is a slow cold start). The reputation store re-populates
+# itself (BLACKWALL_INGEST=1), so a fresh instance is a cold start, not broken.
+#
+# Use this to prove the endpoint works for free; switch to render.yaml (paid disk)
+# when you want persistence + always-warm for real traffic.
+#
+# Deploy: New > Blueprint, set Branch = claude/blackwall-x402-integration-j3rdab and
+# Blueprint Path = render-free.yaml
+services:
+  - type: web
+    name: blackwall-free
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free               # $0 -- no persistent disk allowed on free
+    region: oregon
+    autoDeploy: false
+    healthCheckPath: /healthz
+
+    envVars:
+      - key: BLACKWALL_HOST
+        value: "0.0.0.0"
+      - key: BLACKWALL_PORT
+        value: "8402"
+      # ephemeral (no disk) -- /data exists in the image and is writable, just not
+      # persisted. The store re-warms via BLACKWALL_INGEST on first sight.
+      - key: BLACKWALL_STORE
+        value: /data/reputation.db
+      - key: BLACKWALL_LEDGER
+        value: /data/ledger.jsonl
+      - key: BLACKWALL_INGEST
+        value: "1"
+      - key: BLACKWALL_VALUE_PRICING
+        value: "1"
+      - key: BLACKWALL_FREE_BELOW
+        value: "10.00"
+      # Secrets -- leave blank for a free public smoke test (billing OFF). Set them
+      # later (Environment tab) to turn billing on for a real paid round-trip.
+      - key: BLACKWALL_PAY_TO
+        sync: false
+      - key: BLACKWALL_FACILITATOR
+        sync: false
+      - key: BLACKWALL_RECEIPT_KEY
+        sync: false
+      - key: CDP_API_KEY_ID
+        sync: false
+      - key: CDP_API_KEY_SECRET
+        sync: false
+      - key: BLACKWALL_SANCTIONS
+        value: /app/sanctions.txt
+      - key: BLACKWALL_SANCTIONS_REFRESH
+        value: "1"
