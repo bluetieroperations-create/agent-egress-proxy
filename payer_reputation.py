@@ -92,6 +92,49 @@ def payee_corroboration(graph, payer_rep, payee, *, min_reputation=REPUTABLE_PAY
     }
 
 
+_TIER_SUMMARY = {
+    "established": "proven cross-ecosystem agent -- pays %d trusted anchor(s); strong "
+                   "positive signal",
+    "emerging": "some cross-ecosystem activity (%d anchor(s), %d payee(s)) -- limited "
+                "history",
+    "unknown": "no cross-ecosystem history -- NEUTRAL (cold start), not a negative "
+               "signal",
+}
+
+
+def payer_profile(graph, anchors, payer_rep, payer, *,
+                  min_reputation=REPUTABLE_PAYER_MIN,
+                  established_min_breadth=PG.ESTABLISHED_MIN_BREADTH):
+    """Screen a PAYER (not a payee): what does the ecosystem know about this wallet?
+    Pure. A facilitator/wallet screening an inbound payment uses this to fast-track a
+    proven agent -- NOT to block unknowns (most real end-users are unknown; that's
+    cold-start, a neutral signal, never a negative one)."""
+    key = PG._norm(payer)
+    paid = graph["payer_to_payees"].get(key, set())
+    breadth = len(paid)
+    anchors_paid = len(paid & anchors)
+    rep = payer_rep.get(key, 0.0)
+    reputable = rep >= min_reputation
+    if reputable:
+        tier = "established"
+    elif anchors_paid >= 1 or breadth >= established_min_breadth:
+        tier = "emerging"
+    else:
+        tier = "unknown"
+    summary = _TIER_SUMMARY[tier] % (
+        (anchors_paid,) if tier == "established"
+        else (anchors_paid, breadth) if tier == "emerging" else ())
+    return {
+        "payer": key,
+        "reputation": rep,
+        "tier": tier,
+        "reputable": reputable,
+        "anchors_paid": anchors_paid,
+        "payees_paid": breadth,
+        "summary": summary,
+    }
+
+
 class PayerReputationSource:
     """Composes the payer graph with propagated payer reputation. `cross_signal` is a
     SUPERSET of PayerGraphSource's (graph fields + reputation fields + sybil_ring), so
@@ -115,6 +158,12 @@ class PayerReputationSource:
     def reputation(self, payer):
         """The payer's own reputation score in [0,1]."""
         return self.payer_rep.get(PG._norm(payer), 0.0)
+
+    def screen(self, payer):
+        """Full reputation profile for a PAYER wallet (the queryable output: a
+        facilitator/wallet screening WHO is paying, before it settles)."""
+        return payer_profile(self.graph, self.anchors, self.payer_rep, payer,
+                             min_reputation=self._min_rep)
 
     def cross_signal(self, payee):
         key = PG._norm(payee)

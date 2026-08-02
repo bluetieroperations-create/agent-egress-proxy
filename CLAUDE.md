@@ -121,7 +121,11 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   ONE pays an anchor -- which breadth-only `captive_sybil` misses. `PayerReputationSource`
   is a drop-in SUPERSET of `PayerGraphSource` (`.cross_signal` adds the reputation
   fields + `sybil_ring`); folded into the verdict conservatively (sybil_ring joins
-  the GO-blocking gates, HOLD-only, fail-open) and wired into `mcp_server`),
+  the GO-blocking gates, HOLD-only, fail-open) and wired into `mcp_server`. Also
+  exposes the PAYER side as a queryable output -- `payer_profile()` / `.screen()`
+  and the `screen_payer` MCP tool: a facilitator/wallet screens WHO is paying (tier
+  established/emerging/unknown, anchors paid, breadth) before it settles; unknown is
+  NEUTRAL cold-start, never a block),
   `ROADMAP.md`, `docs/DATA_SOURCE_SPIKE.md`. Tests:
   `test_blackwall.py`, `test_ledger.py`, `test_reputation_onchain.py`,
   `test_settlement_watch.py`, `test_addresses.py`, `test_x402.py`,

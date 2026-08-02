@@ -78,6 +78,15 @@ _OUTCOME_SCHEMA = {
     "required": ["receipt_id", "report_token", "outcome"],
 }
 
+_SCREEN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "payer": {"type": "string",
+                  "description": "the PAYER wallet address to screen (0x-hex)"},
+    },
+    "required": ["payer"],
+}
+
 
 def _ok(mid, result):
     return {"jsonrpc": "2.0", "id": mid, "result": result}
@@ -116,6 +125,16 @@ class BlackwallMCP:
                                 "(settled/delivered/disputed/...), keyed by "
                                 "receipt_id -- feeds Blackwall's reputation."),
                 "inputSchema": _OUTCOME_SCHEMA,
+            })
+        if self.graph_source is not None and hasattr(self.graph_source, "screen"):
+            tools.append({
+                "name": "screen_payer",
+                "description": ("Reputation profile for a PAYER wallet (WHO is "
+                                "paying): tier established/emerging/unknown, trusted "
+                                "anchors paid, ecosystem breadth -- so a facilitator "
+                                "or wallet can fast-track a proven agent. Unknown is "
+                                "NEUTRAL (cold start), never a block."),
+                "inputSchema": _SCREEN_SCHEMA,
             })
         return tools
 
@@ -174,6 +193,23 @@ class BlackwallMCP:
             return {
                 "content": [{"type": "text", "text": _tool_text(resp)}],
                 "structuredContent": resp,
+                "isError": False,
+            }
+
+        if name == "screen_payer":
+            if self.graph_source is None or not hasattr(self.graph_source, "screen"):
+                return self._tool_error(
+                    "screen_payer unavailable: no payer-reputation source configured")
+            payer = args.get("payer")
+            if not payer or not isinstance(payer, str):
+                return self._tool_error("payer address is required")
+            from addresses import is_evm_address
+            if not is_evm_address(payer):
+                return self._tool_error("payer must be a valid EVM address")
+            profile = self.graph_source.screen(payer)
+            return {
+                "content": [{"type": "text", "text": profile["summary"]}],
+                "structuredContent": profile,
                 "isError": False,
             }
 

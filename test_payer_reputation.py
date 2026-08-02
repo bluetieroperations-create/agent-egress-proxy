@@ -118,5 +118,41 @@ class TestSource(unittest.TestCase):
                           .cross_signal("0x" + "f" * 40))
 
 
+class TestScreenPayer(unittest.TestCase):
+    """Screening a PAYER (the queryable output). Mutation notes: unknown treated as
+    negative -> a cold-start end-user is wrongly de-tiered; anchors miscounted ->
+    tier wrong."""
+    def _source(self):
+        a1, e1 = anchor(1); a2, e2 = anchor(2); a3, e3 = anchor(3)
+        est = payer(600001)                    # pays 3 anchors -> established
+        emg = payer(600002)                    # pays 1 anchor  -> emerging
+        unk = payer(600003)                    # pays 1 non-anchor -> unknown
+        small = "0x" + "7" * 40
+        edges = e1 + e2 + e3 + [
+            (est, a1), (est, a2), (est, a3),
+            (emg, a1),
+            (unk, small)]
+
+        class _Store:
+            def iter_settlement_edges(self):
+                return iter(edges)
+        return PR.PayerReputationSource.from_store(_Store()), est, emg, unk
+
+    def test_tiers(self):
+        src, est, emg, unk = self._source()
+        self.assertEqual(src.screen(est)["tier"], "established")
+        self.assertTrue(src.screen(est)["reputable"])
+        self.assertGreaterEqual(src.screen(est)["anchors_paid"], 2)
+        self.assertEqual(src.screen(emg)["tier"], "emerging")
+        self.assertEqual(src.screen(unk)["tier"], "unknown")
+
+    def test_unknown_is_neutral_not_negative(self):
+        src, est, emg, unk = self._source()
+        prof = src.screen("0x" + "e" * 40)     # never-seen wallet
+        self.assertEqual(prof["tier"], "unknown")
+        self.assertEqual(prof["reputation"], 0.0)
+        self.assertIn("NEUTRAL", prof["summary"])   # not a block/negative
+
+
 if __name__ == "__main__":
     unittest.main()

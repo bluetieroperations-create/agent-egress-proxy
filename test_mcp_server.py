@@ -82,6 +82,39 @@ class TestToolsList(unittest.TestCase):
         names = [t["name"] for t in s.handle(req("tools/list"))["result"]["tools"]]
         self.assertIn("report_outcome", names)
 
+    def test_screen_payer_tool_only_with_graph_source(self):
+        # absent without a screening source...
+        self.assertNotIn("screen_payer",
+                         [t["name"] for t in M.BlackwallMCP()
+                          .handle(req("tools/list"))["result"]["tools"]])
+        # ...present when a payer-reputation source is wired.
+        import payer_reputation as PR
+        gs = PR.PayerReputationSource([("0x" + "%040x" % i, "0x" + "a" * 40)
+                                       for i in range(3)])
+        s = M.BlackwallMCP(graph_source=gs)
+        self.assertIn("screen_payer",
+                      [t["name"] for t in s.handle(req("tools/list"))["result"]["tools"]])
+
+    def test_screen_payer_call(self):
+        import payer_reputation as PR
+        anchor = "0x" + "a" * 40
+        edges = [("0x" + "%040x" % i, anchor) for i in range(PR.ANCHOR_MIN_DISTINCT)]
+        agent = "0x" + "b" * 40
+        edges += [(agent, anchor)]                    # agent pays the anchor
+        s = M.BlackwallMCP(graph_source=PR.PayerReputationSource(edges))
+        r = s.handle(req("tools/call", {"name": "screen_payer",
+                                        "arguments": {"payer": agent}}))["result"]
+        self.assertFalse(r["isError"])
+        self.assertEqual(r["structuredContent"]["payer"], agent)
+        self.assertIn(r["structuredContent"]["tier"], ("established", "emerging"))
+
+    def test_screen_payer_rejects_bad_address(self):
+        import payer_reputation as PR
+        s = M.BlackwallMCP(graph_source=PR.PayerReputationSource([]))
+        r = s.handle(req("tools/call", {"name": "screen_payer",
+                                        "arguments": {"payer": "not-an-addr"}}))["result"]
+        self.assertTrue(r["isError"])
+
 
 class TestToolsCall(unittest.TestCase):
     def setUp(self):
