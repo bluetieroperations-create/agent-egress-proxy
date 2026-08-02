@@ -2450,5 +2450,112 @@ class TestComplianceBinding(unittest.TestCase):
         self.assertNotIn("settlement.amount_base_units", revealed)
 
 
+class TestScreeningProviders(unittest.TestCase):
+    """Consume-to-prove: sanctions providers -> one canonical verdict ->
+    anchored + bound. The provider layer is consumer-side; the service only
+    ever sees the digest."""
+
+    def setUp(self):
+        from traceipt.screening_providers import (
+            CHAINALYSIS_DEMO_SANCTIONED, ChainalysisSanctionsProvider,
+            OfflineSanctionsProvider, build_verdict, providers_from_env, screen,
+            verify_verdict,
+        )
+        self.SANCTIONED = CHAINALYSIS_DEMO_SANCTIONED
+        self.Offline = OfflineSanctionsProvider
+        self.Chainalysis = ChainalysisSanctionsProvider
+        self.build_verdict = build_verdict
+        self.providers_from_env = providers_from_env
+        self.screen = screen
+        self.verify_verdict = verify_verdict
+
+    def test_offline_flags_and_clears(self):
+        p = self.Offline()
+        self.assertTrue(p.screen(self.SANCTIONED).listed)
+        self.assertTrue(p.screen(self.SANCTIONED.upper()).listed)  # case-insensitive
+        clean = p.screen("0x" + "11" * 20)
+        self.assertFalse(clean.listed)
+        self.assertTrue(clean.checked)
+
+    def test_verdict_stop_go_review(self):
+        # STOP: any provider lists it.
+        r = self.screen(self.SANCTIONED, [self.Offline()])
+        v = self.build_verdict(self.SANCTIONED, r, decided_at="2026-08-02T00:00:00Z")
+        self.assertEqual(v["decision"], "STOP")
+        self.assertTrue(self.verify_verdict(v)[0])
+        # GO: everyone ran, none listed.
+        r = self.screen("0x" + "22" * 20, [self.Offline()])
+        v = self.build_verdict("0x" + "22" * 20, r, decided_at="2026-08-02T00:00:00Z")
+        self.assertEqual(v["decision"], "GO")
+        self.assertTrue(self.verify_verdict(v)[0])
+
+    def test_failed_screen_downgrades_to_review_not_go(self):
+        # A provider that could not run must NOT let an address be cleared.
+        def boom(_url):
+            raise urllib.error.URLError("no key")
+        prov = self.Chainalysis("x", transport=boom)
+        r = self.screen("0x" + "33" * 20, [prov])
+        self.assertFalse(r[0].checked)
+        self.assertFalse(r[0].listed)
+        v = self.build_verdict("0x" + "33" * 20, r, decided_at="2026-08-02T00:00:00Z")
+        self.assertEqual(v["decision"], "REVIEW")
+        self.assertTrue(self.verify_verdict(v)[0])
+
+    def test_chainalysis_transport_shape(self):
+        # A stubbed transport in the real response shape -> LISTED.
+        prov = self.Chainalysis(
+            "k", transport=lambda url: {"identifications": [{"category": "sanctions"}]})
+        res = prov.screen(self.SANCTIONED)
+        self.assertTrue(res.listed and res.checked)
+        self.assertEqual(res.matches, ("sanctions",))
+
+    def test_verify_verdict_catches_mislabel(self):
+        r = self.screen(self.SANCTIONED, [self.Offline()])
+        v = self.build_verdict(self.SANCTIONED, r, decided_at="2026-08-02T00:00:00Z")
+        v["decision"] = "GO"  # lie: cited screens say STOP
+        ok, problems = self.verify_verdict(v)
+        self.assertFalse(ok)
+        self.assertTrue(any("STOP" in p for p in problems))
+
+    def test_verdict_digest_is_deterministic_and_order_independent(self):
+        # Two providers in different order must yield the SAME verdict digest,
+        # so two ecosystems agree on the hash Traceipt binds.
+        a, b = self.Offline(source="a"), self.Offline(source="b")
+        r1 = self.screen(self.SANCTIONED, [a, b])
+        r2 = self.screen(self.SANCTIONED, [b, a])
+        v1 = self.build_verdict(self.SANCTIONED, r1, decided_at="2026-08-02T00:00:00Z")
+        v2 = self.build_verdict(self.SANCTIONED, r2, decided_at="2026-08-02T00:00:00Z")
+        self.assertEqual(verdict_digest(v1), verdict_digest(v2))
+
+    def test_end_to_end_bind_matches_black_wall_digest(self):
+        # The digest a receipt is bound to == verdict_digest of the exact
+        # verdict object (the same hash Black_Wall's traceipt_attest computes).
+        r = self.screen(self.SANCTIONED, [self.Offline()])
+        v = self.build_verdict(self.SANCTIONED, r, decided_at="2026-08-02T00:00:00Z")
+        sc = build_screening(v, decision=v["decision"], screener="offline")
+        self.assertEqual(sc["verdict_hash"], verdict_digest(v))
+        payload = build_receipt(
+            seller_id="op", sequence=1, prev_receipt_hash=GENESIS_HASH,
+            issued_at="2026-08-02T00:00:01Z",
+            settlement={"chain": "base-sepolia", "tx_hash": "0x" + "ab" * 32,
+                        "asset": "USDC",
+                        "asset_contract": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+                        "amount_base_units": "2000", "payer": PAYER, "payee": PAYEE,
+                        "verification_method": "mock", "verified": True},
+            commerce={"resource": "https://api.example.com/x", "description": "d",
+                      "quoted_amount_base_units": "2000", "screening": sc})
+        ok, problems = verify_screening(payload, v)
+        self.assertTrue(ok, problems)
+        # bind check catches a swapped verdict
+        ok2, _ = verify_screening(payload, {**v, "subject": {"address": "0x0"}})
+        self.assertFalse(ok2)
+
+    def test_providers_from_env_defaults_offline(self):
+        provs = self.providers_from_env({})
+        self.assertEqual([p.name for p in provs], ["offline-fixture"])
+        provs = self.providers_from_env({"CHAINALYSIS_API_KEY": "k"})
+        self.assertIn("chainalysis", [p.name for p in provs])
+
+
 if __name__ == "__main__":
     unittest.main()

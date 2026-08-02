@@ -125,6 +125,48 @@ lead with proof/verifiability value, let regulation be the tailwind.
 
 ---
 
+## The wedge: consume to prove (not ingest to compete)
+
+We will never out-analyze Chainalysis or TRM, and we do not try. The defensible
+role is **neutral notary**, not risk vendor: we *consume* the free, public
+sanctions-screening APIs those vendors publish (which are designed to be called),
+blend them into one canonical verdict, and then **anchor and bind** that verdict
+into a compliance-bound receipt.
+
+That produces something a risk vendor structurally cannot offer about its own
+output without a conflict of interest: **independent, tamper-evident proof that a
+specific policy check ran before a machine payment settled.** The more engines a
+verdict can cite (Chainalysis, TRM, Black_Wall's on-chain heuristics), the more
+neutral and credible the anchor — so consuming competitors is a *strength* here,
+not a compromise.
+
+Two honesty properties make the claim real, not marketing:
+
+- **The decision is re-derivable, not trusted.** `verify_verdict` recomputes
+  GO / STOP / REVIEW from the cited screens, so a mislabeled verdict is caught.
+- **A failed screen never clears an address.** A provider that could not run
+  (no key, error, rate-limited) is recorded as `checked: false` and downgrades
+  the verdict to REVIEW — it can never masquerade as a clean result.
+
+Runnable proof (real Ed25519 + real Merkle proof, no key or network required —
+the offline fixture flags Chainalysis's documentation sample):
+
+```
+python tools/screen_and_anchor.py
+```
+
+It screens an address, builds the verdict, anchors it (Merkle root + offline-
+verifiable inclusion proof), binds it into a receipt, and shows that swapping the
+bound verdict for any other breaks verification. Set `CHAINALYSIS_API_KEY` /
+`TRM_API_KEY` to fold in the real feeds — the verdict shape and everything
+downstream is identical.
+
+**Honesty guardrail:** the offline fixture's listed address is a Chainalysis
+*documentation sample*, not a claim about any live wallet. Say "we make a risk
+engine's answer provable," never "we screen better than Chainalysis."
+
+---
+
 *Sources for the regulatory section:*
 [OneTrust — AI regulation 2026](https://www.onetrust.com/blog/where-ai-regulation-is-heading-in-2026-a-global-outlook/) ·
 [Nemko — South Korea AI](https://digital.nemko.com/regulations/ai-regulation-in-south-korea) ·
