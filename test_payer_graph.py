@@ -29,6 +29,21 @@ class TestBuildIndex(unittest.TestCase):
         g = PG.build_index([("", A), (P(1), None), (P(2), B)])
         self.assertEqual(set(g["payee_to_payers"]), {B})
 
+    def test_self_edge_dropped(self):
+        # audit F3: a payee paying its OWN address must not count itself as a payer
+        # (self-vouch) -- it would inflate distinct/established and disable captive.
+        g = PG.build_index([(A, A), (P(1), A), (P(2), A)])
+        self.assertEqual(g["payee_to_payers"][A], {P(1), P(2)})   # A not among them
+        self.assertNotIn(A, g["payer_to_payees"])                 # A isn't a payer of itself
+
+    def test_self_dealing_farm_stays_captive_flagged(self):
+        # a fully-captive farm whose payee also pays ITSELF must still flag captive
+        # (the self-edge must not create a fake "established" payer).
+        edges = [(A, A)] + [(P(i), A) for i in range(1, 5)]       # 4 captive + 1 self
+        s = PG.cross_signal(PG.build_index(edges), A)
+        self.assertEqual(s["established_payers"], 0)
+        self.assertTrue(s["captive_sybil"])
+
 
 class TestCrossSignal(unittest.TestCase):
     """

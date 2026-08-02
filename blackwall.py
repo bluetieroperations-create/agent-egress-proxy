@@ -381,19 +381,21 @@ def decide_payment(amount, record, price_history,
         and distinct_payers < MIN_DISTINCT_PAYERS
 
     # Cross-counterparty guard (payer_graph.py / payer_reputation.py): the naive
-    # Sybil gate above counts distinct payers but not WHO they are. Two graph-derived
-    # patterns block the automatic GO:
+    # Sybil gate above counts distinct payers but not WHO they are.
     #   * captive_sybil -- clears the distinct gate, yet every payer pays ONLY this
-    #     payee (a wash farm).
+    #     payee (a wash farm). This BLOCKS the automatic GO (-> HOLD): it needs
+    #     `established_payers == 0`, so it stays rare and doesn't fire on major payees.
     #   * sybil_ring    -- clears the distinct gate, yet NOT ONE payer is reputable
-    #     (pays a trusted anchor). Catches a mutually-paying sockpuppet RING, whose
-    #     members have breadth >= 2 so captive_sybil misses them.
-    # CONSERVATIVE: HOLD only, never a STOP; fail-open when no graph signal. Both are
-    # relative to what's ingested, so they can only escalate to review.
+    #     (pays a trusted anchor). ADVISORY ONLY (surfaced, does not block): the
+    #     signal-stability eval (docs/PAYER_GRAPH.md) shows it over-flags at partial
+    #     ecosystem coverage -- established-looking payees whose payers simply don't
+    #     pay one of the *ingested* anchors yet -- so gating on it would HOLD real
+    #     merchants. It graduates to a gate once coverage is proven high.
+    # CONSERVATIVE: HOLD only, never a STOP; fail-open when no graph signal.
     _pgs = payer_graph_signal or {}
     captive_sybil = bool(_pgs.get("captive_sybil"))
     sybil_ring = bool(_pgs.get("sybil_ring"))
-    graph_sybil = captive_sybil or sybil_ring
+    graph_sybil = captive_sybil               # sybil_ring is advisory, not a gate
 
     reasons = []
 
@@ -510,12 +512,6 @@ def decide_payment(amount, record, price_history,
                     "-- cross-counterparty Sybil pattern; escalating"
                     % (_pgs.get("distinct_payers") or 0)
                 )
-            if sybil_ring and not captive_sybil:
-                reasons.append(
-                    "none of the %d payer(s) pay a trusted anchor -- closed "
-                    "sockpuppet-ring pattern; escalating"
-                    % (_pgs.get("distinct_payers") or 0)
-                )
             if thin:
                 extra = ("" if confirmed == settlements
                          else " (%d reported, only %d chain-confirmed)"
@@ -542,6 +538,16 @@ def decide_payment(amount, record, price_history,
                     "priced %.1fx the peer-group market rate for this class -- "
                     "above comparable counterparties" % peer_ratio
                 )
+
+    # sybil_ring is ADVISORY (see the gate note above): surface it as a non-blocking
+    # note so a reviewer sees the pattern, without HOLDing an otherwise-clean payee at
+    # today's partial coverage.
+    if sybil_ring and not captive_sybil:
+        reasons.append(
+            "advisory: none of the %d payer(s) pay a trusted anchor (possible "
+            "sockpuppet ring, but low ecosystem coverage -- not blocking)"
+            % (_pgs.get("distinct_payers") or 0)
+        )
 
     # Bayesian trust score for the response. Hard STOPs (sanction/known-bad/
     # mismatch) floor it to 0 -- there is no "trust" to report. Otherwise it is
@@ -577,6 +583,8 @@ def decide_payment(amount, record, price_history,
             "cross_score": _pgs.get("cross_score"),
             "reputable_payers": _pgs.get("reputable_payers"),
             "avg_payer_reputation": _pgs.get("avg_payer_reputation"),
+            # advisory only at current coverage (over-flags) -- surfaced, not gated.
+            "sybil_ring_advisory": sybil_ring,
         } if payer_graph_signal else None),
     }
 

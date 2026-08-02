@@ -86,3 +86,44 @@ cost** of a Sybil — every fake payer must also pay several genuinely-high-dive
 services, at which point it behaves like a real agent and the payee earns real
 corroboration — rather than making Sybils impossible. Both flags only tighten
 (HOLD), and both sharpen as ingestion covers more of the ecosystem.
+
+### Signal-stability eval → `sybil_ring` is ADVISORY (not a gate)
+A scaled run (724 endpoints crawled, **200 backfilled, 30 anchors, 27% coverage**)
+plus a convergence readout changed the posture:
+
+- **It converges.** Restricting the graph to the top-50 most-active payees at rising
+  coverage (k = 50 → 100 → 150 → all): anchors grew 13 → 30, reputable payers 84 →
+  226, and **100% of the low-coverage `sybil_ring` flags on major payees cleared** as
+  coverage rose — they were coverage artifacts, and more data resolved them.
+- **But at partial coverage it over-flags.** Full-corpus `sybil_ring` grew 5 → **14**
+  as coverage rose, several on payees with **150 settlements** whose payers simply
+  don't pay one of the *ingested* anchors yet. Gating on that would HOLD real
+  merchants.
+
+So `sybil_ring` is now **advisory** — surfaced under
+`signals.cross_counterparty.sybil_ring_advisory` with a non-blocking note, but it
+does **not** block GO. `captive_sybil` (stricter, `established == 0`; never fired on a
+top-50 payee at any coverage) **remains the gate**. `sybil_ring`
+graduates to a gate once a full-set stability check shows its false-positive rate is
+low — i.e. once ingestion coverage is high enough that "pays no anchor" is meaningful.
+
+### Adversarial audit (2026-08-02)
+An independent audit confirmed the verdict fold is **safe**: the graph signal is
+tighten-only (GO→HOLD, inside the `go` conjunction), never touches STOP/`hard_stop`/
+`score`, is fail-open on a missing/partial/raising source, and `screen_payer`'s input
+validation is sound. All findings were about **detection strength**, not unsafe
+verdicts:
+
+| # | Sev | Finding | Status |
+|---|-----|---------|--------|
+| F1 | High | A wash farm **larger than the ceiling** escapes the graph Sybil gate | **Documented** — the layer adds recall for *small* captive/ring clusters; it is not a complete Sybil defense (baseline missed these too). Larger farms are left to coverage + the price/thin gates. |
+| F3 | Med | **Self-edges** (a payee paying its own address) let it vouch for itself — inflating `established`/`distinct` and disabling `captive_sybil` | **Fixed** — `build_index` drops `payer == payee` (13 such edges were in the live corpus) |
+| F5 | Med | `captive_sybil` ceiling (8) < `sybil_ring` ceiling (12) → a 9–12 captive farm slipped a graph-only deployment | **Fixed** — one shared ceiling (12) |
+| F2 | Med | `sybil_ring` clears if **one** payer pays two anchors — cheaper than the docstring implied | **Documented** + it's advisory anyway (doesn't gate) |
+| F4 | Med | Anchors are **Sybil-mintable** (~20 wallets) | **Documented** in the honesty note — raises cost, not impossible |
+| F6 | Low | `PayerReputationSource` didn't thread `min_distinct` to the ring flag | **Fixed** |
+| F7 | Low | Store's distinct-payer `COUNT` was case-sensitive vs the lower-cased graph | **Fixed** — `lower(payer)` in the SQL |
+
+Regression tests added for F3 (self-edge dropped; self-dealing farm still flagged)
+and F5 (shared ceiling). Net: the fixes harden signal integrity; F1/F2/F4 are honest
+limits of on-chain-only reputation, now stated plainly rather than oversold.

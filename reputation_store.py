@@ -102,11 +102,14 @@ class ReputationStore:
     def lookup(self, counterparty):
         cp = (counterparty or "").lower()
         with self._lock:
-            # NULLIF(payer,'') so a transfer with a missing/blank sender does NOT
-            # add a phantom distinct payer -- that count is the Sybil signal, and a
-            # blank sender must never help an address clear the thin-history gate.
+            # NULLIF(lower(payer),'') so a transfer with a missing/blank sender does
+            # NOT add a phantom distinct payer -- that count is the Sybil signal, and
+            # a blank sender must never help an address clear the thin-history gate.
+            # lower() keeps this case-insensitive in step with the payer graph, so a
+            # future mixed-case ingest can't split one payer into several (audit F7).
             cur = self._conn.execute(
-                "SELECT COUNT(*), MIN(ts), MAX(ts), COUNT(DISTINCT NULLIF(payer,'')) "
+                "SELECT COUNT(*), MIN(ts), MAX(ts), "
+                "COUNT(DISTINCT NULLIF(lower(payer),'')) "
                 "FROM settlements WHERE counterparty=?", (cp,))
             count, first_seen, last_seen, distinct_payers = cur.fetchone()
             rows = list(self._conn.execute(

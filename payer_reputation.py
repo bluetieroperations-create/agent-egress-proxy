@@ -27,11 +27,19 @@ it adds the reputation fields + `sybil_ring` -- so it drops straight into
 `forecast(graph_source=...)`. The verdict fold stays conservative: `sybil_ring`, like
 `captive_sybil`, only escalates GO->HOLD, never STOP, and is fail-open.
 
-Pure + stdlib; edges injected. Honesty: anchors and "reputable" are measured over
-INGESTED data, so this RAISES the cost of a Sybil (every fake payer must also pay
-several genuinely-high-diversity services -- at which point it's behaving like a real
-agent and the payee earns real corroboration) rather than making it impossible. Both
-signals only tighten, and both sharpen as ingestion covers more of the ecosystem.
+Pure + stdlib; edges injected.
+
+Honesty / known limits (audit F1/F2/F4):
+  * anchors are just "payees with >= ANCHOR_MIN_DISTINCT distinct payers" -- they are
+    Sybil-MINTABLE (fund ~20 wallets to pay two attacker payees -> both become
+    anchors). This RAISES the cost of a Sybil, it does not make it impossible.
+  * `sybil_ring` fires only when ZERO payers are reputable, so a ring clears it by
+    making ONE sockpuppet pay two anchors. That's cheap -- which is exactly why
+    `sybil_ring` is ADVISORY (surfaced, not gated) in the verdict; `captive_sybil`
+    (stricter, established==0) is the gate.
+  * everything is relative to INGESTED coverage, so precision rises with ingestion.
+The layer is ADDITIVE Sybil recall for small captive/ring clusters, not a complete
+defense. Both signals only ever tighten (HOLD), never STOP.
 """
 from __future__ import annotations
 
@@ -40,10 +48,10 @@ import payer_graph as PG
 ANCHOR_MIN_DISTINCT = 20          # distinct on-chain payers to qualify as a trust anchor
 PAYER_REP_SATURATION = 3          # paying this many distinct anchors saturates r -> 1.0
 REPUTABLE_PAYER_MIN = 0.5         # r >= this == a "reputable" payer (>= 2 anchors, here)
-# sybil_ring only fires up to this many distinct payers, same rationale as
-# captive_sybil's ceiling: past it a zero-reputable set is more likely an
-# ingestion-coverage gap than an affordable ring.
-RING_MAX_DISTINCT = 12
+# sybil_ring's ceiling, kept equal to payer_graph.CAPTIVE_SYBIL_MAX_DISTINCT so the
+# two flags share one ceiling. Past it a zero-reputable set is more likely an
+# ingestion-coverage gap (or a large consumer merchant) than an affordable ring.
+RING_MAX_DISTINCT = PG.CAPTIVE_SYBIL_MAX_DISTINCT
 
 
 def anchor_payees(graph, *, min_distinct=ANCHOR_MIN_DISTINCT):
@@ -172,7 +180,10 @@ class PayerReputationSource:
             if base is None:
                 self._cache[key] = None
             else:
-                corr = payee_corroboration(self.graph, self.payer_rep, key,
-                                           min_reputation=self._min_rep)
+                # keep the two flags' shared thresholds in step (audit F6): a custom
+                # min_distinct passed for the graph flag also drives the ring flag.
+                corr = payee_corroboration(
+                    self.graph, self.payer_rep, key, min_reputation=self._min_rep,
+                    min_distinct=self._gkw.get("min_distinct", PG.MIN_DISTINCT_PAYERS))
                 self._cache[key] = dict(base, **corr)
         return self._cache[key]

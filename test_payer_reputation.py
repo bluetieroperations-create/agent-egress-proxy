@@ -21,6 +21,12 @@ def anchor(tag):
     return payee, edges
 
 
+class TestCeilingAlignment(unittest.TestCase):
+    def test_ring_and_captive_share_one_ceiling(self):
+        # audit F5: a 9-12 captive/ring farm must not slip through a mismatch.
+        self.assertEqual(PR.RING_MAX_DISTINCT, PG.CAPTIVE_SYBIL_MAX_DISTINCT)
+
+
 class TestAnchorsAndPayerRep(unittest.TestCase):
     def test_anchor_detection(self):
         a, edges = anchor(1)

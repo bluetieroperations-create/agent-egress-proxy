@@ -33,10 +33,14 @@ from __future__ import annotations
 ESTABLISHED_MIN_BREADTH = 2       # pays >= this many distinct payees == "established"
 MIN_DISTINCT_PAYERS = 3           # mirror blackwall's naive Sybil gate
 # captive_sybil only fires up to this many distinct payers: past it, a fully-captive
-# set is more likely an ingestion-coverage artifact than an affordable sockpuppet
-# farm, and the raw distinct gate + amount/anomaly gates already apply. Bounded to
-# keep false HOLDs off big real payees on a partial sample.
-CAPTIVE_SYBIL_MAX_DISTINCT = 8
+# set is more likely a large consumer merchant (many captive end-user payers) than an
+# affordable sockpuppet farm, and the raw distinct gate + amount/anomaly gates already
+# apply. Kept equal to payer_reputation.RING_MAX_DISTINCT so the two flags share one
+# ceiling (a 9-12 captive farm isn't silently missed by a graph-only deployment).
+# NOTE (audit F1): a farm LARGER than this still escapes the graph Sybil gate -- the
+# layer adds recall for SMALL captive/ring clusters, it is not a complete Sybil
+# defense. Larger/well-funded farms are left to coverage growth + the other gates.
+CAPTIVE_SYBIL_MAX_DISTINCT = 12
 
 
 def _norm(a):
@@ -52,6 +56,11 @@ def build_index(edges):
     for payer, payee in edges or ():
         payer, payee = _norm(payer), _norm(payee)
         if not payer or not payee:
+            continue
+        if payer == payee:
+            # a payee paying its OWN address is a self-vouch: it would count itself
+            # as a distinct payer AND (with breadth>=2) as one of its own established
+            # payers, turning off captive_sybil for a self-dealing farm. Drop it.
             continue
         p2e.setdefault(payer, set()).add(payee)
         e2p.setdefault(payee, set()).add(payer)
