@@ -31,8 +31,11 @@ services:
         value: /data/reputation.db
       - key: BLACKWALL_LEDGER
         value: /data/ledger.jsonl
+      # 0: unknown counterparty -> instant cold-start HOLD. Lazy ingest (1) does a
+      # SYNCHRONOUS on-chain fetch on the hot path -> blocks past the request timeout
+      # on a cold store -> 502. Pre-warm from the manifest (data/seed_payees.txt).
       - key: BLACKWALL_INGEST
-        value: "1"
+        value: "0"
       # Pricing posture (see PRICING.md): value-aligned / freemium-on-stakes.
       # Low-stakes verdicts free (incl. sanctions safety); high-stakes pay.
       - key: BLACKWALL_VALUE_PRICING

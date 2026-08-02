@@ -34,7 +34,7 @@ VOLUME ["/data"]
 ENV BLACKWALL_HOST=0.0.0.0 \
     BLACKWALL_STORE=/data/reputation.db \
     BLACKWALL_LEDGER=/data/ledger.jsonl \
-    BLACKWALL_INGEST=1 \
+    BLACKWALL_INGEST=0 \
     BLACKWALL_SANCTIONS=/app/sanctions.txt \
     BLACKWALL_SANCTIONS_REFRESH=1
 # Set at deploy time (NOT baked into the image):

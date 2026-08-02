@@ -30,7 +30,11 @@ primary_region = "iad"
   BLACKWALL_PORT = "8402"
   BLACKWALL_STORE = "/data/reputation.db"
   BLACKWALL_LEDGER = "/data/ledger.jsonl"
-  BLACKWALL_INGEST = "1"
+  # 0: an unknown counterparty returns a cold-start HOLD INSTANTLY. Lazy ingest
+  # (1) does a SYNCHRONOUS on-chain fetch on the hot path, which blocks the request
+  # past the platform's timeout on a cold store -> 502. Pre-warm from the manifest
+  # instead (chain_backfill --payees-file data/seed_payees.txt).
+  BLACKWALL_INGEST = "0"
   # Pricing posture (see PRICING.md): value-aligned / freemium-on-stakes.
   # Low-stakes verdicts are free (incl. sanctions safety); high-stakes pay.
   # Start generous to win adoption while the category has no data moat.

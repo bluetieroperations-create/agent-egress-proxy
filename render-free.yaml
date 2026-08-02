@@ -27,13 +27,17 @@ services:
       - key: BLACKWALL_PORT
         value: "8402"
       # ephemeral (no disk) -- /data exists in the image and is writable, just not
-      # persisted. The store re-warms via BLACKWALL_INGEST on first sight.
+      # persisted.
       - key: BLACKWALL_STORE
         value: /data/reputation.db
       - key: BLACKWALL_LEDGER
         value: /data/ledger.jsonl
+      # 0: unknown counterparty -> instant cold-start HOLD (no blocking chain call).
+      # Lazy ingest (1) does a SYNCHRONOUS on-chain fetch on the hot path, which 502s
+      # on a cold store. To serve real history, pre-warm the store from the manifest
+      # first (chain_backfill --payees-file data/seed_payees.txt) -- not lazy ingest.
       - key: BLACKWALL_INGEST
-        value: "1"
+        value: "0"
       - key: BLACKWALL_VALUE_PRICING
         value: "1"
       - key: BLACKWALL_FREE_BELOW
