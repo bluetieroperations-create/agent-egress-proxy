@@ -5,11 +5,11 @@ FROM python:3.12-slim
 RUN useradd -m -u 10001 blackwall
 WORKDIR /app
 
-# Source (stdlib only -- nothing to pip install).
-COPY blackwall.py x402.py cdp_auth.py ledger.py addresses.py reputation_store.py \
-     reputation_onchain.py settlement_watch.py discovery.py mcp_server.py \
-     facilitator_sim.py sanctions.py readiness.py confidence.py http_util.py \
-     chain_backfill.py payer_graph.py payer_reputation.py settlement_velocity.py ./
+# Source (stdlib only -- nothing to pip install). Copy ALL modules: forecast() lazily
+# imports payload_sim / calldata (-> keccak / secp256k1 / eip712) and others at request
+# time, so a hand-maintained subset silently 502s the verdict path when one is missing.
+# Copy everything and never play that whack-a-mole again. (test_*.py ride along unused.)
+COPY *.py ./
 
 # Warm-boot manifest: the payee list to backfill so the engine boots with real
 # history (not cold-start HOLD). Pre-warm on the volume with:
