@@ -12,9 +12,9 @@ B = "0x" + "b" * 40
 C = "0x" + "c" * 40
 
 
-def _r(payee, price=1000, resource="https://svc/x", network="eip155:8453"):
+def _r(payee, price=1000, resource="https://svc/x", network="eip155:8453", asset=USDC):
     return {"payTo": payee, "price_atomic": price, "resource": resource,
-            "asset": USDC, "network": network}
+            "asset": asset, "network": network}
 
 
 class _Store:
@@ -51,12 +51,68 @@ class TestProfiles(unittest.TestCase):
         p = E.build_profiles([_r(A, price=90000)])[0]
         self.assertEqual(p["min_price"], "0.09")
 
+    def test_resource_count_is_distinct_not_options(self):
+        # one resource URL priced on 3 networks == 3 accepts == 1 distinct resource.
+        # Mutation: counting raw accepts inflates resource_count / multi / prices.
+        recs = [_r(A, resource="https://svc/pay", network="eip155:8453"),
+                _r(A, resource="https://svc/pay", network="eip155:10"),
+                _r(A, resource="https://svc/pay", network="eip155:137")]
+        p = E.build_profiles(recs)[0]
+        self.assertEqual(p["resource_count"], 1)          # ONE distinct URL
+        self.assertEqual(p["option_count"], 3)            # three payment options
+        st = E.ecosystem_stats(E.build_profiles(recs), recs)
+        self.assertEqual(st["resources"], 1)
+        self.assertEqual(st["payment_options"], 3)
+        self.assertEqual(st["multi_resource_endpoints"], 0)   # not "multi" -- one resource
+        self.assertEqual(st["price_usdc"]["count"], 1)        # same price 3x -> counted once
+
     def test_zero_settlements_is_unknown_not_thin(self):
         # a payee with no ingested history -> distinct UNKNOWN (None), not "0 thin"
         store = _Store({A: {"settlement_count": 0, "distinct_payers": 0}})
         p = E.build_profiles([_r(A)], store=store)[0]
         self.assertIsNone(p["distinct_payers"])
         self.assertFalse(p["thin"])
+
+
+class TestPriceDecimals(unittest.TestCase):
+    """The decimals trap: only KNOWN 6-dp USDC assets get a USD price. An 18-dp
+    token amount divided by 10^6 would read ~10^12x too large -> must be excluded,
+    not published as a '$10T price'."""
+    NON_USDC = "0x431d5dff03120afa4bdf332c61a6e1766ef37bdb"   # an 18-dp token
+
+    def test_non_usdc_asset_not_priced_in_usd(self):
+        # 10^19 atomic of an 18-dp token == 10 tokens, NOT $10 trillion.
+        recs = [_r(A, price=10**19, asset=self.NON_USDC, network="eip155:137")]
+        p = E.build_profiles(recs)[0]
+        self.assertIsNone(p["min_price"])                 # unknown decimals -> no USD
+        self.assertIsNone(p["max_price"])
+        self.assertEqual(p["non_usdc_options"], 1)
+        st = E.ecosystem_stats(E.build_profiles(recs), recs)
+        self.assertIsNone(st["price_usdc"])               # nothing to distribute
+        self.assertEqual(st["non_usdc_priced_options"], 1)
+
+    def test_usdc_price_survives_amid_non_usdc(self):
+        recs = [_r(A, price=90000, asset=USDC),                       # $0.09 USDC
+                _r(A, price=10**19, asset=self.NON_USDC)]             # excluded
+        p = E.build_profiles(recs)[0]
+        self.assertEqual(p["max_price"], "0.09")          # not poisoned by the 18-dp row
+        st = E.ecosystem_stats(E.build_profiles(recs), recs)
+        self.assertEqual(st["price_usdc"]["max"], "0.09")
+        self.assertEqual(st["price_usdc"]["count"], 1)
+
+    def test_negative_and_zero_price_excluded(self):
+        recs = [_r(A, price=-100, asset=USDC), _r(A, price=0, asset=USDC)]
+        p = E.build_profiles(recs)[0]
+        self.assertIsNone(p["min_price"])                 # no negative published min
+        st = E.ecosystem_stats(E.build_profiles(recs), recs)
+        self.assertIsNone(st["price_usdc"])
+
+    def test_percentile_does_not_degenerate_to_max(self):
+        # 10 distinct prices; p90 must not equal the max (the int(q*n) bug did).
+        recs = [_r(A, price=(i + 1) * 1000, resource="https://svc/%d" % i, asset=USDC)
+                for i in range(10)]
+        st = E.ecosystem_stats(E.build_profiles(recs), recs)
+        self.assertNotEqual(st["price_usdc"]["p90"], st["price_usdc"]["max"])
 
 
 class TestDirectory(unittest.TestCase):
@@ -83,6 +139,14 @@ class TestDirectory(unittest.TestCase):
 
     def test_top_limit(self):
         self.assertEqual(len(E.rank_directory(self._profiles(), top=2)), 2)
+
+    def test_no_history_scores_zero(self):
+        # an endpoint with no on-chain history must not climb the directory on
+        # attacker-controllable advertised breadth alone.
+        recs = [_r(A, resource="https://svc/%d" % i) for i in range(20)]  # 20 resources
+        p = E.build_profiles(recs)[0]                                     # no store -> None
+        self.assertIsNone(p["distinct_payers"])
+        self.assertEqual(E.trust_score(p), 0.0)
 
 
 class TestAuditCandidates(unittest.TestCase):
@@ -127,6 +191,17 @@ class TestStats(unittest.TestCase):
     def test_scan_returns_all_four(self):
         out = E.scan([_r(A), _r(B)], sanctioned=[])
         self.assertEqual(set(out), {"profiles", "stats", "directory", "candidates"})
+
+
+class TestCsvSafe(unittest.TestCase):
+    """Mutation: writing a raw resource URL starting with = + - @ lets it execute
+    as a formula when the BD team opens candidates.csv in Excel/Sheets."""
+    def test_formula_prefixes_neutralized(self):
+        for bad in ("=cmd()", "+1", "-2", "@x", "\tx", "\rx"):
+            self.assertTrue(E._csv_safe(bad).startswith("'"))
+
+    def test_normal_url_untouched(self):
+        self.assertEqual(E._csv_safe("https://svc/x"), "https://svc/x")
 
 
 if __name__ == "__main__":

@@ -59,6 +59,17 @@ class TestIngestAndLookup(unittest.TestCase):
         self.assertEqual(self.store.ingest_transfers(rows), 0)  # no new rows
         self.assertEqual(self.store.lookup("0xCP")["settlement_count"], 1)
 
+    def test_blank_payer_not_counted_distinct(self):
+        # a transfer with a missing/blank sender must NOT add a phantom distinct
+        # payer (that count is the Sybil gate). Mutation: COUNT(DISTINCT payer)
+        # without NULLIF counts '' as a payer -> 3, clearing the thin gate.
+        self.store.ingest_transfers([
+            xf("0xCP", "0.09", frm="0xaaa", tx="0xt1"),
+            xf("0xCP", "0.09", frm="0xbbb", tx="0xt2"),
+            xf("0xCP", "0.09", frm="", tx="0xt3"),      # blank sender
+        ])
+        self.assertEqual(self.store.lookup("0xCP")["distinct_payers"], 2)
+
     def test_transfer_without_tx_hash_skipped(self):
         # No tx_hash -> not dedupable, not useful -> skipped (would double-count).
         self.assertEqual(self.store.ingest_transfers([

@@ -29,10 +29,45 @@ USDC_DECIMALS = 6
 THIN_DISTINCT = 3          # < this many distinct payers == not broadly used (Sybil-ish)
 CANDIDATE_MIN_RESOURCES = 1
 
+# Canonical native USDC (Circle), 6 decimals, keyed by contract. A price is only
+# rendered in USD when its `asset` is one of these -- otherwise the atomic amount's
+# decimals are UNKNOWN (an 18-dp token divided by 10^6 reads as ~10^12x too large;
+# that decimals mismatch, not a real "$10T price", is what an agent must not sign).
+USDC_6DP = frozenset({
+    "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",  # Base
+    "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",  # Polygon PoS
+    "0xaf88d065e77c8cc2239327c5edb3a432268e5831",  # Arbitrum
+    "0x0b2c639c533813f4aa9d7837caf62653d097ff85",  # Optimism
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",  # Ethereum
+    "0xb97ad0e74fa7d920791e90258a6e2085088b4320",  # Avalanche
+    "0x036cbd53842c5426634e7929541ec2318f3dcf7e",  # Base Sepolia (test)
+    "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238",  # Sepolia (test)
+})
+
+
+def _is_usdc6(asset):
+    return isinstance(asset, str) and asset.lower() in USDC_6DP
+
+
+def _usdc_price_atomic(rec):
+    """The record's price in atomic USDC-6dp, or None when the asset isn't a known
+    6-decimal USDC (unknown decimals -> not comparable in USD) or the amount is
+    non-positive. Guards the whole price layer against the decimals mismatch."""
+    pa = rec.get("price_atomic")
+    if not _is_usdc6(rec.get("asset")):
+        return None
+    try:
+        pa = int(pa)
+    except (TypeError, ValueError):
+        return None
+    return pa if pa > 0 else None
+
 
 def _human(atomic, decimals=USDC_DECIMALS):
     try:
         d = Decimal(int(atomic)) / (Decimal(10) ** decimals)
+        if d <= 0:
+            return None
         return format(d, "f")
     except Exception:
         return None
@@ -55,7 +90,9 @@ def build_profiles(resources, *, sanctioned=None, store=None):
     sanc = {str(s).lower() for s in (sanctioned or [])}
     profiles = []
     for payee, rs in group_by_payee(resources).items():
-        prices = [r["price_atomic"] for r in rs if r.get("price_atomic")]
+        # USD prices only from known 6-dp USDC assets (see _usdc_price_atomic).
+        prices = [pa for pa in (_usdc_price_atomic(r) for r in rs) if pa]
+        non_usdc = sum(1 for r in rs if r.get("price_atomic") and not _is_usdc6(r.get("asset")))
         rec = {}
         if store is not None:
             try:
@@ -68,13 +105,20 @@ def build_profiles(resources, *, sanctioned=None, store=None):
             # no ingested history for this payee (not backfilled, or none on-chain)
             # -> UNKNOWN, not a real "0 distinct payers" -> don't count it as thin.
             distinct = None
+        # A single x402 resource can list MANY `accepts` (same URL priced on several
+        # networks/assets). `resource_count` is DISTINCT resource URLs (real breadth);
+        # `option_count` is the raw accept/payment-option count. Conflating them
+        # inflates "resources", "multi-resource" share, and the price distribution.
+        distinct_resources = sorted({r.get("resource") for r in rs if r.get("resource")})
         profiles.append({
             "payee": payee,
-            "resource_count": len(rs),
-            "resources": sorted({r.get("resource") for r in rs if r.get("resource")}),
+            "resource_count": len(distinct_resources),
+            "option_count": len(rs),
+            "resources": distinct_resources,
             "networks": sorted({r.get("network") for r in rs if r.get("network")}),
             "min_price": _human(min(prices)) if prices else None,
             "max_price": _human(max(prices)) if prices else None,
+            "non_usdc_options": non_usdc,   # priced in a non-USDC / unknown-dp asset
             "sanctioned": (payee in sanc) or bool(rec.get("sanctioned")),
             "settlement_count": int(rec.get("settlement_count", 0) or 0),
             "distinct_payers": distinct,
@@ -87,6 +131,10 @@ def trust_score(profile):
     """Explainable trust score for the directory. Sanctioned -> 0. Otherwise driven
     by DISTINCT PAYERS (real, hard-to-fake diversity), then volume, then breadth."""
     if profile.get("sanctioned"):
+        return 0.0
+    # No on-chain history -> UNKNOWN, score 0. Never let attacker-controllable
+    # advertised breadth alone lift a no-history endpoint up the directory.
+    if profile.get("distinct_payers") is None:
         return 0.0
     distinct = profile.get("distinct_payers") or 0
     settlements = profile.get("settlement_count") or 0
@@ -136,29 +184,53 @@ def audit_candidates(profiles, *, verified=None, min_resources=CANDIDATE_MIN_RES
 def ecosystem_stats(profiles, resources=None):
     """State-of-x402 aggregates for a report."""
     n_endpoints = len(profiles)
-    n_resources = sum(p["resource_count"] for p in profiles)
+    n_resources = sum(p["resource_count"] for p in profiles)          # distinct URLs
+    n_options = sum(p.get("option_count", p["resource_count"]) for p in profiles)
     sanctioned = [p for p in profiles if p["sanctioned"]]
     with_hist = [p for p in profiles if p.get("distinct_payers") is not None]
     thin = [p for p in with_hist if p["thin"]]
-    prices = sorted(r["price_atomic"] for r in (resources or [])
-                    if r.get("price_atomic"))
+    # USD distribution: KNOWN 6-dp USDC assets only (else decimals are unknown and
+    # an 18-dp amount reads ~10^12x too large). One price per DISTINCT
+    # (payee, resource, price) so a resource priced identically across several
+    # networks isn't counted many times. Non-USDC priced options are counted
+    # separately, not folded into the USD numbers.
+    seen_price, prices = set(), []
+    non_usdc_priced = 0
+    for r in (resources or []):
+        if not r.get("price_atomic"):
+            continue
+        pa = _usdc_price_atomic(r)
+        if pa is None:
+            non_usdc_priced += 1
+            continue
+        key = (r.get("payTo"), r.get("resource"), pa)
+        if key in seen_price:
+            continue
+        seen_price.add(key)
+        prices.append(pa)
+    prices.sort()
     price_dist = None
     if prices:
+        n = len(prices)
         def pct(q):
-            return _human(prices[min(len(prices) - 1, int(q * len(prices)))])
+            # nearest-rank on positions 0..n-1 (no interpolation); q=0.9 never
+            # degenerates to max the way int(q*n) does for small n.
+            return _human(prices[min(n - 1, int(q * (n - 1)))])
         price_dist = {"min": _human(prices[0]), "p50": pct(0.5), "p90": pct(0.9),
-                      "max": _human(prices[-1]), "count": len(prices)}
+                      "max": _human(prices[-1]), "count": n}
     # concentration: share of endpoints offering multiple resources
     multi = [p for p in profiles if p["resource_count"] > 1]
     return {
         "endpoints": n_endpoints,
         "resources": n_resources,
+        "payment_options": n_options,
         "networks": sorted({n for p in profiles for n in p["networks"]}),
         "sanctioned": len(sanctioned),
         "with_onchain_history": len(with_hist),
         "thin_distinct_payers": len(thin),
         "multi_resource_endpoints": len(multi),
         "price_usdc": price_dist,
+        "non_usdc_priced_options": non_usdc_priced,
     }
 
 
@@ -173,13 +245,25 @@ def scan(resources, *, sanctioned=None, store=None, verified=None):
     }
 
 
+def _csv_safe(v):
+    """Neutralize CSV/spreadsheet formula injection: a cell a BD analyst opens in
+    Excel/Sheets that starts with = + - @ (or a leading tab/CR) would execute. The
+    `resource` field comes from an untrusted discovery doc, so prefix it with a
+    quote. See OWASP 'CSV Injection'."""
+    s = "" if v is None else str(v)
+    return "'" + s if s[:1] in ("=", "+", "-", "@", "\t", "\r") else s
+
+
 def _load_sanctioned():
+    """Return (addresses, ok). ok=False means screening was UNAVAILABLE (missing/
+    unreadable list) -> the scan must not silently report 'sanctioned: 0' as if it
+    screened. Fails open on data, but flags it."""
     try:
         import sanctions
         with open("sanctions.txt", "r", encoding="utf-8") as f:
-            return list(sanctions.parse_sanctioned_addresses(f.read()))
+            return list(sanctions.parse_sanctioned_addresses(f.read())), True
     except Exception:
-        return []
+        return [], False
 
 
 def main(argv=None):
@@ -210,13 +294,18 @@ def main(argv=None):
     store = ReputationStore(args.backfill_store)                       # <- the #1 corpus
     chain_backfill.backfill(store, sample, chain_backfill.BlockscoutPager().fetch,
                             max_pages=args.backfill_max_pages)
-    out = scan(resources, sanctioned=_load_sanctioned(), store=store)
+    sanc, screened = _load_sanctioned()
+    if not screened:
+        sys.stderr.write("WARNING: sanctions list unavailable -- 'sanctioned: 0' means "
+                         "NOT SCREENED, not clean.\n")
+    out = scan(resources, sanctioned=sanc, store=store)
 
     s = out["stats"]
-    sys.stdout.write("x402 scan: %d endpoints, %d resources, %d chains; backfilled %d "
-                     "(with history %d, thin %d).\n"
-                     % (s["endpoints"], s["resources"], len(s["networks"]), len(sample),
-                        s["with_onchain_history"], s["thin_distinct_payers"]))
+    sys.stdout.write("x402 scan: %d endpoints, %d resources (%d options, %d non-USDC), "
+                     "%d chains; backfilled %d (with history %d, thin %d).\n"
+                     % (s["endpoints"], s["resources"], s["payment_options"],
+                        s.get("non_usdc_priced_options", 0), len(s["networks"]),
+                        len(sample), s["with_onchain_history"], s["thin_distinct_payers"]))
     if args.out_report:
         json.dump(s, open(args.out_report, "w"), indent=2, default=str)
     if args.out_directory:
@@ -231,7 +320,7 @@ def main(argv=None):
             for c in cands:
                 w.writerow([c["payee"], c["resource_count"], c["min_price"],
                             c["max_price"], c["settlement_count"], c["opportunity"],
-                            (c["resources"][0] if c["resources"] else "")])
+                            _csv_safe(c["resources"][0] if c["resources"] else "")])
     return 0
 
 

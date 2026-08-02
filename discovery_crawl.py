@@ -146,7 +146,11 @@ def crawl_bazaar(*, base_url=CDP_BAZAAR, fetch=None, page_limit=100, max_pages=2
     while pages < max_pages:
         try:
             doc = getj("%s?limit=%d&offset=%d" % (base_url, page_limit, offset))
-        except Exception:
+        except Exception as e:
+            # A mid-crawl error truncates the snapshot. Say so on stderr rather than
+            # silently returning a partial map presented as complete.
+            sys.stderr.write("crawl_bazaar: stopped at offset %d after %d page(s): %s\n"
+                             % (offset, pages, type(e).__name__))
             break
         if not (isinstance(doc, dict) and doc.get("items")):
             break

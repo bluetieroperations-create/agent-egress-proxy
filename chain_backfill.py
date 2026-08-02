@@ -50,29 +50,53 @@ def collect_paged(fetch, address, max_pages):
 
 
 def payee_transfers(fetch, address, *, usdc=BASE_USDC, max_pages=5):
-    """Inbound USDC transfers to `address`, paged + normalized + inbound-only."""
+    """Inbound USDC transfers to `address`, paged + normalized + inbound-only, and
+    DEDUPED. A pager that re-serves a page (non-advancing, or Blockscout offset
+    overlap as new txs land) would otherwise double-count `fetched`; the store's
+    idempotent key protects `ingested` but not the reported transfer count."""
     raw = collect_paged(fetch, address, max_pages)
-    return [t for t in extract_usdc_transfers(raw, usdc)
-            if t.get("to") and addresses_equal(t["to"], address)]
+    inbound = [t for t in extract_usdc_transfers(raw, usdc)
+               if t.get("to") and addresses_equal(t["to"], address)]
+    seen, out = set(), []
+    for t in inbound:
+        # keep two same-amount transfers in one tx from DIFFERENT senders (real,
+        # distinct settlements); collapse only byte-identical duplicates.
+        key = (t.get("tx_hash"), t.get("from"), t.get("to"), str(t.get("amount")))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(t)
+    return out
 
 
 def backfill(store, payees, fetch, *, usdc=BASE_USDC, max_pages=5):
     """Ingest inbound USDC for each valid payee. Returns a stage summary
-    {payees, fetched, ingested, per_payee}; invalid addresses are skipped, not
-    silently ingested."""
-    per, total_fetched, total_ingested, ok = {}, 0, 0, 0
+    {payees, fetched, ingested, errors, per_payee}. Invalid addresses are skipped
+    (not silently ingested); a duplicate payee is processed once; a transport error
+    on one payee is recorded and the run CONTINUES (fail-soft), so one 429/timeout
+    can't abort the whole scan."""
+    per, total_fetched, total_ingested, ok, errors, seen = {}, 0, 0, 0, 0, set()
     for p in payees or []:
         if not is_evm_address(p):
             per[str(p)] = {"skipped": "not a valid EVM address"}
             continue
-        xfers = payee_transfers(fetch, p, usdc=usdc, max_pages=max_pages)
+        low = p.lower()
+        if low in seen:                       # de-dupe (checksummed + lowercase, or repeats)
+            continue
+        seen.add(low)
+        try:
+            xfers = payee_transfers(fetch, p, usdc=usdc, max_pages=max_pages)
+        except Exception as e:                # fail-soft: one bad payee != dead scan
+            per[low] = {"error": type(e).__name__}
+            errors += 1
+            continue
         ingested = store.ingest_transfers(xfers) if xfers else 0
-        per[p.lower()] = {"fetched": len(xfers), "ingested": ingested}
+        per[low] = {"fetched": len(xfers), "ingested": ingested}
         total_fetched += len(xfers)
         total_ingested += ingested
         ok += 1
     return {"payees": ok, "fetched": total_fetched, "ingested": total_ingested,
-            "per_payee": per}
+            "errors": errors, "per_payee": per}
 
 
 class BlockscoutPager:

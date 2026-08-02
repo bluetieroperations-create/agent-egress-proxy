@@ -113,6 +113,57 @@ class TestBackfill(unittest.TestCase):
         self.assertEqual(summary["payees"], 2)
         self.assertEqual(summary["ingested"], 2)
 
+    def test_fetched_deduped_on_nonadvancing_pager(self):
+        # a pager that never advances (always returns truthy next_params) re-serves
+        # the same tx every page. Mutation: no dedup -> fetched == max_pages, a
+        # misleading transfer count (store stays correct via idempotency).
+        one = _item(PAYEE, "0x" + "b" * 40, tx="0x" + "1" * 64)
+
+        def stuck(address, params):
+            return ([one], {"page": 1})           # ALWAYS a next page
+        store = self._store()
+        summary = B.backfill(store, [PAYEE], stuck, max_pages=5)
+        self.assertEqual(summary["fetched"], 1)   # deduped, not 5
+        self.assertEqual(summary["ingested"], 1)
+
+    def test_two_same_amount_transfers_one_tx_diff_senders_kept(self):
+        # a disperse/multicall tx paying the payee the same amount from two senders
+        # is two REAL settlements; dedup must keep both (differ by `from`).
+        TX = "0x" + "9" * 64
+        fetch = _pager({PAYEE.lower(): [([
+            _item(PAYEE, "0x" + "b" * 40, tx=TX),
+            _item(PAYEE, "0x" + "c" * 40, tx=TX),     # same tx, same amount, other sender
+        ], None)]})
+        rows = B.payee_transfers(fetch, PAYEE)
+        self.assertEqual(len(rows), 2)                # not collapsed by the dedup
+
+    def test_backfill_failsoft_on_transport_error(self):
+        # one payee's pager raising must NOT abort the whole scan.
+        p2 = "0x" + "f" * 40
+
+        def fetch(address, params):
+            if address.lower() == PAYEE.lower():
+                raise ConnectionError("429 slow down")
+            return ([_item(p2, "0x" + "c" * 40, tx="0x" + "2" * 64)], None)
+        store = self._store()
+        summary = B.backfill(store, [PAYEE, p2], fetch)
+        self.assertEqual(summary["errors"], 1)
+        self.assertEqual(summary["per_payee"][PAYEE.lower()]["error"], "ConnectionError")
+        self.assertEqual(summary["ingested"], 1)      # p2 still processed
+
+    def test_backfill_dedupes_repeated_payee(self):
+        # same address passed twice (e.g. checksummed + lowercase) is fetched once.
+        calls = {"n": 0}
+
+        def fetch(address, params):
+            calls["n"] += 1
+            return ([_item(PAYEE, "0x" + "b" * 40, tx="0x" + "1" * 64)], None)
+        store = self._store()
+        checksummed = "0x" + "A" * 40                 # same address, upper hex, 0x kept
+        summary = B.backfill(store, [PAYEE, checksummed], fetch)
+        self.assertEqual(calls["n"], 1)               # not fetched twice
+        self.assertEqual(summary["payees"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
