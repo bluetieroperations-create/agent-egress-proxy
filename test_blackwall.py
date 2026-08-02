@@ -206,6 +206,32 @@ class TestDecidePayment(unittest.TestCase):
         v = bw.decide_payment("0.09", thin, ["0.09", "0.09"], counterparty="0xA")
         self.assertEqual(v["verdict"], "HOLD")
 
+    def test_captive_sybil_blocks_go_but_never_stops(self):
+        # Reputable, normal price -> would GO. A captive-Sybil payer-graph signal
+        # (clears the distinct gate but all payers captive) escalates to HOLD.
+        # Mutation: drop `not captive_sybil` from the go gate -> this GOes.
+        sig = {"captive_sybil": True, "distinct_payers": 4,
+               "established_payers": 0, "captive_ratio": 1.0, "cross_score": 0.0}
+        v = bw.decide_payment("0.09", self.GOOD, self.STABLE_HISTORY,
+                              counterparty="0xA", payer_graph_signal=sig)
+        self.assertEqual(v["verdict"], "HOLD")             # never STOP -- conservative
+        self.assertTrue(any("captive" in r for r in v["reasons"]))
+        self.assertEqual(v["signals"]["cross_counterparty"]["established_payers"], 0)
+
+    def test_healthy_graph_signal_surfaced_and_stays_go(self):
+        sig = {"captive_sybil": False, "distinct_payers": 40,
+               "established_payers": 25, "captive_ratio": 0.375, "cross_score": 0.625}
+        v = bw.decide_payment("0.09", self.GOOD, self.STABLE_HISTORY,
+                              counterparty="0xA", payer_graph_signal=sig)
+        self.assertEqual(v["verdict"], "GO")               # corroboration doesn't block
+        self.assertEqual(v["signals"]["cross_counterparty"]["established_payers"], 25)
+
+    def test_no_graph_signal_is_fail_open(self):
+        v = bw.decide_payment("0.09", self.GOOD, self.STABLE_HISTORY,
+                              counterparty="0xA")            # no signal
+        self.assertEqual(v["verdict"], "GO")
+        self.assertIsNone(v["signals"]["cross_counterparty"])
+
     def test_hold_over_budget(self):
         # Reputable + normal price, but amount above the auto-approve threshold.
         v = bw.decide_payment("25.00", self.GOOD,
@@ -708,6 +734,31 @@ class TestForecastEndToEnd(unittest.TestCase):
         }
         resp, err = bw.forecast(payload, self.src)
         self.assertEqual(resp["verdict"], "STOP")
+
+    def test_graph_source_captive_sybil_holds_a_known_good(self):
+        # forecast threads a payer-graph source; a captive-Sybil signal escalates
+        # an otherwise-GO counterparty to HOLD. Mutation: not passing the signal
+        # through forecast -> stays GO.
+        import payer_graph as PG
+        good = "0xKNOWNGOOD000000000000000000000000000001"
+        # 4 payers, each pays ONLY `good` -> captive_sybil
+        edges = [("0x%040x" % i, good) for i in range(1, 5)]
+        gs = PG.PayerGraphSource(edges)
+        payload = {"counterparty": good, "amount": "0.09", "asset": "USDC", "chain": "base"}
+        self.assertEqual(bw.forecast(payload, self.src)[0]["verdict"], "GO")   # baseline
+        resp, err = bw.forecast(payload, self.src, graph_source=gs)
+        self.assertEqual(resp["verdict"], "HOLD")
+        self.assertEqual(resp["signals"]["cross_counterparty"]["established_payers"], 0)
+
+    def test_graph_source_failure_is_fail_open(self):
+        class _Boom:
+            def cross_signal(self, cp):
+                raise RuntimeError("graph down")
+        payload = {"counterparty": "0xKNOWNGOOD000000000000000000000000000001",
+                   "amount": "0.09", "asset": "USDC", "chain": "base"}
+        resp, err = bw.forecast(payload, self.src, graph_source=_Boom())
+        self.assertIsNone(err)
+        self.assertEqual(resp["verdict"], "GO")          # graph outage never blocks
 
     def test_unknown_counterparty_holds(self):
         payload = {

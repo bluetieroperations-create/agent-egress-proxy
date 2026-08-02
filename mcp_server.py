@@ -95,9 +95,10 @@ def _tool_text(resp):
 
 
 class BlackwallMCP:
-    def __init__(self, reputation_source=None, ledger=None):
+    def __init__(self, reputation_source=None, ledger=None, graph_source=None):
         self.src = reputation_source or MockReputationSource()
         self.ledger = ledger
+        self.graph_source = graph_source
 
     # ---- tool catalog ----
     def _tools(self):
@@ -166,7 +167,8 @@ class BlackwallMCP:
             return self._tool_error("arguments must be an object")
 
         if name == "forecast_payment":
-            resp, err = forecast(args, self.src, self.ledger)
+            resp, err = forecast(args, self.src, self.ledger,
+                                  graph_source=self.graph_source)
             if err is not None:
                 return self._tool_error(err)
             return {
@@ -246,16 +248,22 @@ def main(argv=None):
         from ledger import EventLedger
         ledger = EventLedger(args.ledger)
 
-    source = None
+    source = graph_source = None
     if args.store:
         from reputation_store import production_source
         source = production_source(args.store, ledger=ledger, ingest=args.ingest)
+        # Same store -> the cross-counterparty payer graph (built once, cached).
+        # Conservative, fail-open Sybil corroboration on top of the verdict.
+        from reputation_store import ReputationStore
+        from payer_graph import PayerGraphSource
+        graph_source = PayerGraphSource.from_store(ReputationStore(args.store))
 
-    sys.stderr.write("blackwall MCP server on stdio (reputation: %s, ledger: %s)\n"
+    sys.stderr.write("blackwall MCP server on stdio (reputation: %s, ledger: %s, graph: %s)\n"
                      % ("MOCK" if source is None else type(source).__name__,
-                        "on" if ledger else "off"))
+                        "on" if ledger else "off", "on" if graph_source else "off"))
     sys.stderr.flush()
-    BlackwallMCP(reputation_source=source, ledger=ledger).serve_stdio()
+    BlackwallMCP(reputation_source=source, ledger=ledger,
+                 graph_source=graph_source).serve_stdio()
     return 0
 
 

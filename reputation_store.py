@@ -88,6 +88,16 @@ class ReputationStore:
         chain = chain or BlockscoutChain()
         return self.ingest_transfers(chain.recent_inbound(counterparty))
 
+    def iter_settlement_edges(self):
+        """Yield (payer, counterparty) for every settlement with a known payer --
+        the bipartite payer->payee edges the cross-counterparty graph is built on.
+        Read-only; blank/NULL payers are excluded."""
+        with self._lock:
+            for payer, cp in self._conn.execute(
+                    "SELECT payer, counterparty FROM settlements "
+                    "WHERE payer IS NOT NULL AND payer != ''"):
+                yield payer, cp
+
     # ---- hot-path read (sub-ms) ----
     def lookup(self, counterparty):
         cp = (counterparty or "").lower()

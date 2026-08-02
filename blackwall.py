@@ -329,7 +329,8 @@ def reputation_score(record):
 def decide_payment(amount, record, price_history,
                    counterparty=None, expected_recipient=None, hold_above=None,
                    resource=None, peer_median=None, payload_mismatch_reasons=None,
-                   verified_floor=None, verified_grade=None):
+                   verified_floor=None, verified_grade=None,
+                   payer_graph_signal=None):
     """
     The core verdict. Returns a dict:
         {verdict, score, reasons[], signals{...}}
@@ -378,6 +379,16 @@ def decide_payment(amount, record, price_history,
     distinct_payers = record.get("distinct_payers")
     sybil_thin = distinct_payers is not None \
         and distinct_payers < MIN_DISTINCT_PAYERS
+
+    # Cross-counterparty guard (payer_graph.py): the naive Sybil gate above counts
+    # distinct payers but not WHO they are. A payee can clear it with N wallets that
+    # each pay ONLY it (captive) -- a wash farm. When the payer graph says the payee
+    # clears the distinct gate yet not one payer is seen paying any OTHER ingested
+    # payee (`captive_sybil`), block the automatic GO. CONSERVATIVE: HOLD only, never
+    # a STOP; fail-open when no graph signal is supplied. "captive" is relative to
+    # what's ingested, so it can only escalate to review, never harden into a block.
+    captive_sybil = bool(payer_graph_signal
+                         and payer_graph_signal.get("captive_sybil"))
 
     reasons = []
 
@@ -475,6 +486,7 @@ def decide_payment(amount, record, price_history,
         go = (rep >= GO_REPUTATION_MIN
               and not thin
               and not sybil_thin
+              and not captive_sybil
               and a_score < HOLD_ANOMALY
               and not over_budget
               and not peer_hold)
@@ -486,6 +498,12 @@ def decide_payment(amount, record, price_history,
                 reasons.append(
                     "settlements from only %d distinct payer(s) (< %d) -- possible "
                     "wash-trading; escalating" % (distinct_payers, MIN_DISTINCT_PAYERS)
+                )
+            if captive_sybil:
+                reasons.append(
+                    "all %d payer(s) are captive (none pay any other known payee) "
+                    "-- cross-counterparty Sybil pattern; escalating"
+                    % (payer_graph_signal.get("distinct_payers") or 0)
                 )
             if thin:
                 extra = ("" if confirmed == settlements
@@ -537,6 +555,14 @@ def decide_payment(amount, record, price_history,
         # the merchant's Blackwall seller-audit grade, when it holds a valid badge
         # (None otherwise). Bounded/earned/revocable -- never a pay-to-whitelist.
         "seller_verified": verified_grade,
+        # cross-counterparty corroboration from the payer graph (None when no graph
+        # supplied). established_payers = payers proven to also pay OTHER known
+        # payees (hard-to-fake); captive_ratio = share paying only this payee.
+        "cross_counterparty": ({
+            "established_payers": payer_graph_signal.get("established_payers"),
+            "captive_ratio": payer_graph_signal.get("captive_ratio"),
+            "cross_score": payer_graph_signal.get("cross_score"),
+        } if payer_graph_signal else None),
     }
 
     return {
@@ -776,7 +802,8 @@ def default_billing_asset(network, explicit, base_usdc, sepolia_usdc):
 
 
 def forecast(payload, reputation_source, ledger=None, readiness_source=None,
-             hold_above=None, peer_index=None, seller_registry=None, now=None):
+             hold_above=None, peer_index=None, seller_registry=None, now=None,
+             graph_source=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
@@ -837,6 +864,15 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
             if live_dispute <= seller_audit.MAX_AUDIT_DISPUTE_RATE:
                 verified_floor, verified_grade = cred["floor"], cred["grade"]
 
+    # Cross-counterparty payer-graph signal (payer_graph.py). Fail-open: a missing
+    # or raising graph source must never break the core verdict.
+    payer_graph_signal = None
+    if graph_source is not None:
+        try:
+            payer_graph_signal = graph_source.cross_signal(clean["counterparty"])
+        except Exception:
+            payer_graph_signal = None
+
     verdict = decide_payment(
         amount=clean["amount"],
         record=record,
@@ -849,6 +885,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
                      if peer_index and clean.get("resource_class") else None),
         payload_mismatch_reasons=sim_mismatches,
         verified_floor=verified_floor, verified_grade=verified_grade,
+        payer_graph_signal=payer_graph_signal,
     )
     # Surface advisory (non-blocking) simulation warnings, e.g. an expired auth or
     # a bounded approval.
