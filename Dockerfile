@@ -8,7 +8,14 @@ WORKDIR /app
 # Source (stdlib only -- nothing to pip install).
 COPY blackwall.py x402.py cdp_auth.py ledger.py addresses.py reputation_store.py \
      reputation_onchain.py settlement_watch.py discovery.py mcp_server.py \
-     facilitator_sim.py sanctions.py readiness.py ./
+     facilitator_sim.py sanctions.py readiness.py confidence.py http_util.py \
+     chain_backfill.py payer_graph.py payer_reputation.py settlement_velocity.py ./
+
+# Warm-boot manifest: the payee list to backfill so the engine boots with real
+# history (not cold-start HOLD). Pre-warm on the volume with:
+#   python3 chain_backfill.py --store /data/reputation.db \
+#     --payees-file data/seed_payees.txt --max-pages 3
+COPY data/seed_payees.txt ./data/
 
 # OFAC sanctioned-address snapshot (from the published 0xB10C list). Baked in so
 # screening is ON by default -- Blackwall is a SUPERSET of the free KYT baseline.
