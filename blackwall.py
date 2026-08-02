@@ -1386,6 +1386,13 @@ class BlackwallServer:
 # ===========================================================================
 # CLI
 # ===========================================================================
+def _env_flag(name):
+    """A BLACKWALL_* boolean env var. Truthy ONLY for 1/true/yes/on
+    (case-insensitive); "0"/"false"/"no"/""/unset -> False. `bool(os.environ.get())`
+    is a trap -- bool("0") is True -- so a flag set to "0" could never be disabled."""
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(
         description="Blackwall pre-signature payment-verdict service (x402, step 1)."
@@ -1410,7 +1417,7 @@ def main(argv=None):
     p.add_argument("--price", default=os.environ.get("BLACKWALL_PRICE", "0.001"),
                    help="flat per-forecast price in USDC (default 0.001)")
     p.add_argument("--value-pricing", action="store_true",
-                   default=bool(os.environ.get("BLACKWALL_VALUE_PRICING")),
+                   default=_env_flag("BLACKWALL_VALUE_PRICING"),
                    help="value-aligned pricing: free under BLACKWALL_FREE_BELOW "
                         "(default $1), else BLACKWALL_PRICE_BPS of the amount "
                         "(default 10bps) capped at BLACKWALL_MAX_FEE (default $0.10)")
@@ -1432,14 +1439,14 @@ def main(argv=None):
                    help="SQLite reputation store path; uses REAL on-chain "
                         "reputation instead of the mock source")
     p.add_argument("--ingest", action="store_true",
-                   default=bool(os.environ.get("BLACKWALL_INGEST")),
+                   default=_env_flag("BLACKWALL_INGEST"),
                    help="with --store, self-populate from chain on first sight "
                         "of a counterparty (first call slow, then cached)")
     p.add_argument("--sanctions", default=os.environ.get("BLACKWALL_SANCTIONS"),
                    help="path to an OFAC sanctioned-address file; STOPs sanctioned "
                         "counterparties (the free-baseline check, in one call)")
     p.add_argument("--sanctions-refresh", action="store_true",
-                   default=bool(os.environ.get("BLACKWALL_SANCTIONS_REFRESH")),
+                   default=_env_flag("BLACKWALL_SANCTIONS_REFRESH"),
                    help="on startup, best-effort refresh the sanctions list from "
                         "the published OFAC URL and merge into the baked-in "
                         "snapshot (fail-open: keeps the snapshot if the fetch "
@@ -1459,7 +1466,7 @@ def main(argv=None):
                         "party per request and reveals your query stream -- prefer "
                         "--readiness-local")
     p.add_argument("--readiness-local", action="store_true",
-                   default=bool(os.environ.get("BLACKWALL_READINESS_LOCAL")),
+                   default=_env_flag("BLACKWALL_READINESS_LOCAL"),
                    help="SELF-OWNED endpoint-readiness: score the `resource` URL "
                         "from public signals we observe ourselves (no third-party "
                         "call, no query-stream leak). Takes precedence over "

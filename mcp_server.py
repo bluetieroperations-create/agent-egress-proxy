@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import sys
 
-from blackwall import MockReputationSource, forecast, verify_report_token
+from blackwall import MockReputationSource, forecast, verify_report_token, _env_flag
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_INFO = {"name": "blackwall", "version": "0.1"}
@@ -278,7 +278,7 @@ def main(argv=None):
                    help="SQLite reputation store path; uses REAL on-chain "
                         "reputation instead of the mock source")
     p.add_argument("--ingest", action="store_true",
-                   default=bool(os.environ.get("BLACKWALL_INGEST")),
+                   default=_env_flag("BLACKWALL_INGEST"),
                    help="with --store, self-populate from chain on first sight")
     args = p.parse_args(argv)
 

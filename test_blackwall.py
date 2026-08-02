@@ -1485,3 +1485,22 @@ class TestPaidResponseCarriesSettlementHeader(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEnvFlag(unittest.TestCase):
+    """Regression: bool(os.environ.get()) treats "0" as True, so a flag set to "0"
+    could never be disabled -- that 502'd the deploy (INGEST=0 stayed on)."""
+    def test_zero_and_false_are_off(self):
+        import os
+        for v in ("0", "false", "no", "off", "", "FALSE"):
+            os.environ["BLACKWALL_TESTFLAG"] = v
+            self.assertFalse(bw._env_flag("BLACKWALL_TESTFLAG"), "%r should be off" % v)
+        os.environ.pop("BLACKWALL_TESTFLAG", None)
+        self.assertFalse(bw._env_flag("BLACKWALL_TESTFLAG"))   # unset -> off
+
+    def test_truthy_values_are_on(self):
+        import os
+        for v in ("1", "true", "TRUE", "yes", "on"):
+            os.environ["BLACKWALL_TESTFLAG"] = v
+            self.assertTrue(bw._env_flag("BLACKWALL_TESTFLAG"), "%r should be on" % v)
+        os.environ.pop("BLACKWALL_TESTFLAG", None)
