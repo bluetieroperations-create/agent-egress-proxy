@@ -35,12 +35,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 # points BLACKWALL_STORE here (render-free.yaml); paid deploys use the /data disk.
 # HTTPS_PROXY/SSL_CERT_FILE are build-time-only knobs for local testing behind a proxy
 # (empty on Render -> direct egress + the system CA installed above).
+#
+# BAKE_MAX_PAGES controls how DEEP the warm bake goes: each Blockscout page is ~50
+# USDC transfers, so N pages caps each payee at ~50*N settlements. 8 -> ~400/payee
+# (enough to clear the thin-history gate with real depth, not just the ~100 a 2-page
+# bake gave). Raise for deeper history (slower build: ~40 payees * N page-fetches,
+# each retried/backed-off), lower for a faster build. Tune at build time, e.g.
+# `docker build --build-arg BAKE_MAX_PAGES=16 .`. FAIL-OPEN: a flaky/rate-limited
+# fetch just yields a thinner store, never a failed build.
 ARG HTTPS_PROXY=
 ARG SSL_CERT_FILE=
+ARG BAKE_MAX_PAGES=8
 RUN mkdir -p /app/data \
     && (HTTPS_PROXY="$HTTPS_PROXY" HTTP_PROXY="$HTTPS_PROXY" SSL_CERT_FILE="$SSL_CERT_FILE" \
         python3 chain_backfill.py --store /app/data/reputation.db \
-          --payees-file data/seed_payees_bake.txt --max-pages 2 || true) \
+          --payees-file data/seed_payees_bake.txt --max-pages "$BAKE_MAX_PAGES" || true) \
     && chown -R blackwall /app/data
 
 # Persistent state (SQLite reputation store + JSONL ledger) lives on a volume.
