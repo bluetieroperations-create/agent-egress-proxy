@@ -154,37 +154,41 @@ class App:
         settlement (no separate signup). Facilitator-agnostic; see MCP.md/DEPLOY
         for pointing at a facilitator whose bazaar the ecosystem reads."""
         if resource == "/attest":
-            info = {
-                "description": "Anchor an external digest (e.g. a risk/sanctions "
-                               "verdict) in the next on-chain Merkle batch.",
-                "input": {"type": "http", "method": "POST",
-                          "bodyExample": {"hash": "sha256:<64 hex>",
-                                          "type": "sanctions-verdict",
-                                          "ref": "policy:ofac-sanctions-v1"}},
-                "output": {"type": "json",
-                           "example": {"attestation": {"attestation_id": "att_…",
-                                                       "status": "pending"},
-                                       "proof_url": self.base_url + "/attest/att_…/proof"}},
-                "tags": ["attestation", "anchoring", "compliance", "audit"],
-            }
+            input_schema = {
+                "type": "object", "required": ["hash"],
+                "properties": {
+                    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$",
+                             "description": "digest to anchor (e.g. a risk-verdict hash)"},
+                    "type": {"type": "string",
+                             "description": "short label, e.g. sanctions-verdict"},
+                    "ref": {"type": "string", "description": "optional reference"}}}
+            output_example = {"attestation": {"attestation_id": "att_…",
+                                              "status": "pending"},
+                              "proof_url": self.base_url + "/attest/att_…/proof"}
+            description = ("Anchor an external digest (e.g. a risk/sanctions "
+                           "verdict) in the next on-chain Merkle batch.")
         else:  # /receipts
-            info = {
-                "description": "Turn a settled x402 USDC payment into a signed, "
-                               "on-chain-verified, independently-verifiable receipt "
-                               "(W3C VC; optional compliance-verdict binding).",
-                "input": {"type": "http", "method": "POST",
-                          "bodyExample": {"settlement": {"chain": self.chain,
-                                                         "tx_hash": "0x…"},
-                                          "commerce": {"resource": "https://…",
-                                                       "description": "…",
-                                                       "quoted_amount_base_units": "…"}}},
-                "output": {"type": "json",
-                           "example": {"receipt": {"payload": {"receipt_id": "rcpt_…"},
-                                                   "signature": "…"},
-                                       "verify_url": self.base_url + "/verify/rcpt_…"}},
-                "tags": ["receipts", "compliance", "verifiable-credentials", "audit"],
-            }
-        return {"bazaar": {"info": info}}
+            input_schema = {
+                "type": "object", "required": ["settlement", "commerce"],
+                "properties": {
+                    "settlement": {"type": "object",
+                                   "description": "the settled on-chain USDC transfer to attest"},
+                    "commerce": {"type": "object",
+                                 "description": "resource, description, quoted amount"}}}
+            output_example = {"receipt": {"payload": {"receipt_id": "rcpt_…"},
+                                          "signature": "…"},
+                              "verify_url": self.base_url + "/verify/rcpt_…"}
+            description = ("Turn a settled x402 USDC payment into a signed, "
+                           "on-chain-verified, independently-verifiable receipt "
+                           "(W3C VC; optional compliance-verdict binding).")
+        # Nesting + field names per the documented example: info.input carries
+        # {type, method, inputSchema}; info.output carries {type, example}.
+        # Non-standard fields are soft-dropped by facilitators, so we keep only
+        # documented ones.
+        return {"bazaar": {"info": {
+            "description": description,
+            "input": {"type": "http", "method": "POST", "inputSchema": input_schema},
+            "output": {"type": "json", "example": output_example}}}}
 
     def payment_required_body(self, resource: str) -> dict:
         """x402 v2 Payment Required body. v2 shape: {x402Version:2, error?,

@@ -1394,15 +1394,21 @@ class TestAttestService(unittest.TestCase):
 
     def test_bazaar_extension_advertised(self):
         # Discoverable in the x402 Bazaar: the 402 carries extensions.bazaar.info
+        # in the documented shape (info.input.{type,method,inputSchema},
+        # info.output.{type,example}, info.description) -- no non-standard fields.
         code, obj = self._req("POST", "/attest", {"hash": "sha256:" + "aa" * 32})
         self.assertEqual(code, 402)
         info = obj["extensions"]["bazaar"]["info"]
+        self.assertEqual(set(info), {"description", "input", "output"})
+        self.assertEqual(info["input"]["type"], "http")
         self.assertEqual(info["input"]["method"], "POST")
-        self.assertIn("compliance", info["tags"])
-        # receipts advertises too
+        self.assertIn("hash", info["input"]["inputSchema"]["properties"])
+        self.assertEqual(info["output"]["type"], "json")
+        # receipts advertises too, describing its own body
         code, r = self._req("POST", "/receipts", {})
         self.assertEqual(code, 402)
-        self.assertIn("receipts", r["extensions"]["bazaar"]["info"]["tags"])
+        rinfo = r["extensions"]["bazaar"]["info"]
+        self.assertIn("settlement", rinfo["input"]["inputSchema"]["properties"])
 
     def test_bad_hash_400(self):
         code, _ = self._req("POST", "/attest", {"hash": "0xnope"},
