@@ -2557,5 +2557,25 @@ class TestScreeningProviders(unittest.TestCase):
         self.assertIn("chainalysis", [p.name for p in provs])
 
 
+class TestSelectSigner(unittest.TestCase):
+    """Regression: RECEIPTS_KEY_PEM must load a Signer. A missing `Signer`
+    import in service.py crash-looped every deploy that set the inline key
+    secret (the file path never references Signer, so it stayed latent)."""
+
+    def test_pem_path_loads_signer(self):
+        from traceipt.service import select_signer
+        pem = Signer.generate().private_pem().decode()
+        s = select_signer(pem, "/nonexistent/key.pem")
+        self.assertIsInstance(s, Signer)
+        # a stable PEM yields a stable identity (same kid on reload)
+        self.assertEqual(select_signer(pem, "/nonexistent/key.pem").kid, s.kid)
+
+    def test_file_path_when_no_pem(self):
+        from traceipt.service import select_signer
+        d = tempfile.mkdtemp()
+        s = select_signer(None, os.path.join(d, "k.pem"))
+        self.assertIsInstance(s, Signer)
+
+
 if __name__ == "__main__":
     unittest.main()

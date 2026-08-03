@@ -52,7 +52,7 @@ from .schema import (
     validate_commerce, validate_credit, validate_settlement,
 )
 from .settlement import CAIP2, EIP712_DOMAINS, USDC_CONTRACTS, make_verifier
-from .signing import load_or_create_signer, verify_envelope
+from .signing import Signer, load_or_create_signer, verify_envelope
 from .x402_gate import (
     Facilitator, GateDecision, _proceed, _reject, encode_payment_response,
     gate_settle, gate_verify,
@@ -64,6 +64,18 @@ BODY_READ_TIMEOUT = 15.0  # seconds a worker will wait on a slow client
 
 def utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def select_signer(key_pem: str | None, key_path: str) -> Signer:
+    """Choose the issuer signer: an inline PEM secret (RECEIPTS_KEY_PEM) when
+    present -- so the key survives on hosts without a persistent disk -- else a
+    key file (created on first run). Factored out and referencing Signer at
+    module scope on purpose: a missing `Signer` import here previously stayed
+    latent (the file path never touches Signer) and crash-looped every deploy
+    the first time RECEIPTS_KEY_PEM was set. Unit-tested so it cannot regress."""
+    if key_pem:
+        return Signer.from_pem(key_pem.encode())
+    return load_or_create_signer(key_path)
 
 
 class App:
@@ -958,11 +970,7 @@ def main(argv=None):
 
     # Signing key: prefer an inline PEM secret (RECEIPTS_KEY_PEM) so the key
     # survives on hosts without a persistent disk; else a key file.
-    key_pem = os.environ.get("RECEIPTS_KEY_PEM")
-    if key_pem:
-        signer = Signer.from_pem(key_pem.encode())
-    else:
-        signer = load_or_create_signer(args.key)
+    signer = select_signer(os.environ.get("RECEIPTS_KEY_PEM"), args.key)
     if args.print_jwk:
         print(json.dumps(signer.jwk(), indent=2))
         return
