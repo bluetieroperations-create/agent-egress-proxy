@@ -1028,12 +1028,14 @@ def main(argv=None):
     if args.gate == "facilitator":
         if not args.facilitator_url:
             p.error("--gate facilitator requires --facilitator-url")
-        # CDP facilitator (mainnet) needs signed Bearer JWTs; auto-enable when
-        # CDP creds are present. Keyless facilitators (testnet) leave auth=None.
+        # CDP facilitator (mainnet) needs signed Bearer JWTs. Activate CDP auth
+        # ONLY when the facilitator URL is CDP, so the creds can be set ahead of
+        # time with no effect while still on a keyless (testnet) facilitator --
+        # the flip to the CDP URL is what turns auth on, in one deploy.
         fac_auth = None
         cdp_id = os.environ.get("CDP_API_KEY_ID")
         cdp_secret = os.environ.get("CDP_API_KEY_SECRET")
-        if cdp_id and cdp_secret:
+        if cdp_id and cdp_secret and "cdp.coinbase.com" in args.facilitator_url:
             fac_auth = make_cdp_auth(cdp_id, cdp_secret)
         facilitator = Facilitator(args.facilitator_url, auth=fac_auth)
 
