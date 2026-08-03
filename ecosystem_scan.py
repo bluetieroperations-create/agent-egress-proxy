@@ -22,12 +22,59 @@ registry) are injected, so the core is fully unit-testable. Prices are atomic US
 """
 from __future__ import annotations
 
+import re
 import sys
 from decimal import Decimal
+from urllib.parse import urlparse
 
 USDC_DECIMALS = 6
 THIN_DISTINCT = 3          # < this many distinct payers == not broadly used (Sybil-ish)
 CANDIDATE_MIN_RESOURCES = 1
+
+# Service-category heuristics for a payee, matched (in order, first hit wins)
+# against each resource's host+path. DESCRIPTIVE ONLY -- a coarse map of WHAT the
+# x402 economy sells; it never touches a verdict. Classification of arbitrary API
+# paths is inherently fuzzy, so ~a third land in "other" -- that's expected, not a
+# bug. Extend the patterns as the ecosystem's vocabulary grows.
+CATEGORY_UNCLASSIFIED = "other"
+CATEGORY_RULES = (
+    ("commerce",  r"gift|product|checkout|invoice|esim|shop|store/|cart|/buy|order|refill|billing|catalog"),
+    ("dev-tools", r"cors|/hash|hmac|/json|/curl|http-status|/echo|/proxy|status-check|base64|/uuid|regex|/dns|whois|domain-|geocode|/resolve|translate"),
+    ("onchain",   r"/chain|/block|/tx|erc20|erc721|token-|/nonce|/receipt|contract|/gas|/rpc|holder|/wallet|/address|/ens|mainnet|quicknode|/node|solana|onchain"),
+    ("ai-agents", r"\.ai|/ai/|llm|gpt|deepseek|/chat|completion|/ask|/agent|inference|/mcp|/model|prompt|embed|/rag|/analyze|generate|summar"),
+    ("finance",   r"quote|/trade|perp|yield|swap|/price|/market|signal|macro|finance|/fund|/risk|portfolio|defi|tradfi|altcoin|sentiment|equity|stablecoin|/rates|/stock|ticker|earnings|coin"),
+    ("search-data", r"search|extract|scrape|/fetch|/data|edgar|filing|/company|weather|timezone|/geo|/trend|lookup|/report|hackernews"),
+    ("content-media", r"content|news|recipe|joke|/fact|/feed|/tick|/image|/video|meme|/story|/blog|entertainment|twitter"),
+    ("email-comms", r"/mail|email|/send|inbox|/message|notify|/sms"),
+    ("storage-files", r"upload|storage|/file|ipfs|/pin"),
+    ("identity-security", r"/auth|verify|sanction|kyc|captcha|identity|/login"),
+)
+
+
+def classify_resource(url):
+    """Category slug for a single resource URL (host+path keyword match), or
+    CATEGORY_UNCLASSIFIED. PURE."""
+    u = urlparse(url or "")
+    hay = ((u.hostname or "") + " " + (u.path or "")).lower()
+    for name, pat in CATEGORY_RULES:
+        if re.search(pat, hay):
+            return name
+    return CATEGORY_UNCLASSIFIED
+
+
+def classify_category(resources):
+    """Best-effort dominant service category for a payee across its resource URLs.
+    A classified category beats 'other' on a tie, so a single unclassifiable URL
+    among classified ones doesn't hide the signal. PURE + heuristic -- descriptive,
+    never gates a verdict."""
+    counts = {}
+    for url in resources or []:
+        c = classify_resource(url)
+        counts[c] = counts.get(c, 0) + 1
+    if not counts:
+        return CATEGORY_UNCLASSIFIED
+    # dominant by count; on ties prefer a real category over 'other', then name.
+    return max(counts, key=lambda c: (counts[c], c != CATEGORY_UNCLASSIFIED, c))
 
 # Canonical native USDC (Circle), 6 decimals, keyed by contract. A price is only
 # rendered in USD when its `asset` is one of these -- otherwise the atomic amount's
@@ -112,6 +159,7 @@ def build_profiles(resources, *, sanctioned=None, store=None):
         distinct_resources = sorted({r.get("resource") for r in rs if r.get("resource")})
         profiles.append({
             "payee": payee,
+            "category": classify_category(distinct_resources),
             "resource_count": len(distinct_resources),
             "option_count": len(rs),
             "resources": distinct_resources,
@@ -220,6 +268,12 @@ def ecosystem_stats(profiles, resources=None):
                       "max": _human(prices[-1]), "count": n}
     # concentration: share of endpoints offering multiple resources
     multi = [p for p in profiles if p["resource_count"] > 1]
+    # what the x402 economy SELLS: payees per service category (descriptive).
+    cat_dist = {}
+    for p in profiles:
+        c = p.get("category", CATEGORY_UNCLASSIFIED)
+        cat_dist[c] = cat_dist.get(c, 0) + 1
+    cat_dist = dict(sorted(cat_dist.items(), key=lambda kv: (-kv[1], kv[0])))
     return {
         "endpoints": n_endpoints,
         "resources": n_resources,
@@ -229,6 +283,7 @@ def ecosystem_stats(profiles, resources=None):
         "with_onchain_history": len(with_hist),
         "thin_distinct_payers": len(thin),
         "multi_resource_endpoints": len(multi),
+        "category_distribution": cat_dist,
         "price_usdc": price_dist,
         "non_usdc_priced_options": non_usdc_priced,
     }
