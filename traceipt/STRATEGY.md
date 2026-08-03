@@ -23,7 +23,7 @@ wish were true. Update it when the evidence changes._
 
 | Player | What it is | Overlap with Traceipt | Neutral? |
 |---|---|---|---|
-| **TrustBench** | Non-custodial routing + audit layer on x402: Ed25519-signed receipts, on-chain settlement evidence, offline-verifiable. npm `@trustbench/verify-receipt`, Base/CDP paywall. | **Near-twin on the receipt layer**, likely more adopted. No evident *verdict* binding. | Facilitator-adjacent |
+| **TrustBench** | x402 **endpoint registry + live telemetry** + a non-custodial **buyer-side router** (spend caps, idempotency, fail-safe paywall). Signed receipts are *one feature*, not the product. | Overlaps ONLY on the signed-receipt primitive — no verdict binding, Merkle anchoring, or selective disclosure. Its real edge is **distribution** (discoverable, in-path). | Facilitator-adjacent |
 | **Pieverse / x402b** (BNB) | Shipping jurisdiction-aware compliance receipts, selective disclosure, immutable on Greenfield, 5-yr retention. | Direct on compliance receipts + selective disclosure. | Rail/chain/token-tied |
 | **Vauban Pay** | IETF **Independent-Submission** drafts (unendorsed) for x402 crypto receipts + Starknet anchor + a "claim algebra" (incl. selective disclosure). Real team, no adoption. | Same JCS canonicalization + anchoring. **Explicitly defers verdict binding.** | Own rail (Starknet) |
 | **EAS** (Ethereum Attestation Service) | Generic neutral on-chain attestation public good; payment-attached attestations; notary use case. | Anyone can build receipts on it. | Yes (generic) |
@@ -86,6 +86,27 @@ real demand first.**
 4. **Do NOT:** claim to "own the neutral notary category," out-build
    TrustBench/Pieverse on generic receipts, or assert an empty slot / a standard.
    The evidence kills all three.
+
+## Our single biggest gap: distribution
+
+Proof-depth is worthless if no agent can find you. TrustBench's real advantage
+over Traceipt isn't its receipts — it's that agents can *discover and route
+through it*. The fix is **not** to copy its router/telemetry (that competes on
+its turf and erodes our neutrality). It's to **plug into distribution that
+already has agent traffic**, with our depth as the differentiator:
+
+- **MCP server** (built — `MCP.md`): expose neutral verification as MCP tools so
+  any agent can discover "verify a payment receipt" — a nearly-empty MCP registry
+  category. Our lane, our control.
+- **x402 Bazaar listing**: register our paid endpoints in Coinbase's discovery
+  layer via the CDP facilitator + `bazaar` extension.
+- **Be the independent proof layer on the CDP facilitator**: CDP screens
+  sanctions but its audit trail is Coinbase-hosted, not neutral or portable —
+  we make it independently verifiable.
+- **Free listings**: awesome-x402, awesome-agentic-commerce, x402.org/ecosystem.
+
+Distribution ≠ demand, but these channels are how we'd *discover* whether demand
+exists — by putting the on-chain-verifiable proof in front of real agents.
 
 ## Honesty guardrails — what we must NOT say
 
