@@ -104,6 +104,15 @@ change so the bridge is updated in lockstep. (`traceipt_verify.py` mirrors
 `traceipt/traceipt/signing.py::verify_envelope` byte-for-byte — the canonical JSON
 uses `ensure_ascii=False`; keep them identical.)
 
+**Open proposal for Traceipt → tag receipts with service category.** `categories.py`
+(Blackwall branch, pure/stdlib/tested) classifies an x402 resource URL into a coarse
+service category. Proposal: Traceipt tags each receipt with
+`categories.classify_resource(resource_url)` as an OPTIONAL advisory field (enables
+spend-by-category + sector analytics). Advisory only, derived-not-asserted, keep the
+field optional so old receipts stay valid. Full write-up + constraints:
+`docs/CATEGORY.md` §1. Import `categories.py` rather than re-implementing so the two
+sides can't drift.
+
 ## 5. Push protocol (both sessions)
 
 ```sh

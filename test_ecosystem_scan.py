@@ -26,38 +26,20 @@ class _Store:
 
 
 class TestCategory(unittest.TestCase):
-    """
+    """Category FOLDING into the scan outputs (the classifier itself is covered by
+    test_categories.py).
+
     Mutation notes:
-      - match path only (not host) -> test_classifies_by_host FAILS.
-      - let 'other' win ties over a real category -> test_dominant_beats_other FAILS.
       - don't fold category into the profile -> test_profile_has_category FAILS.
+      - drop category_distribution from stats -> test_stats_category_distribution FAILS.
     """
-    def test_classifies_by_host_and_path(self):
-        self.assertEqual(E.classify_resource("https://api.deepseek.ai/v1/chat"), "ai-agents")
-        self.assertEqual(E.classify_resource("https://x/api/chain/tx/0xabc"), "onchain")
-        self.assertEqual(E.classify_resource("https://api.bitrefill.com/x402/gift-cards"), "commerce")
-
-    def test_unknown_is_other(self):
-        self.assertEqual(E.classify_resource("https://mystery.example/v1/thing"),
-                         E.CATEGORY_UNCLASSIFIED)
-
-    def test_dominant_beats_other(self):
-        # 2 finance + 1 unclassifiable -> finance (dominant); a lone 'other' can't hide it
-        cat = E.classify_category(["https://x/price/btc", "https://x/market/eth",
-                                   "https://x/v1/mystery"])
-        self.assertEqual(cat, "finance")
-
-    def test_tie_prefers_real_category(self):
-        # 1 other + 1 ai -> ai wins the tie (a real category beats 'other')
-        self.assertEqual(E.classify_category(["https://x/v1/mystery", "https://x/chat"]),
-                         "ai-agents")
-
-    def test_empty_is_other(self):
-        self.assertEqual(E.classify_category([]), E.CATEGORY_UNCLASSIFIED)
-
     def test_profile_has_category(self):
         p = E.build_profiles([_r(A, resource="https://api.foo.ai/v1/chat/completions")])[0]
         self.assertEqual(p["category"], "ai-agents")
+
+    def test_directory_carries_category(self):
+        d = E.rank_directory(E.build_profiles([_r(A, resource="https://x/price/btc")]))[0]
+        self.assertEqual(d["category"], "finance")
 
     def test_stats_category_distribution(self):
         recs = [_r(A, resource="https://x/price/btc"),
