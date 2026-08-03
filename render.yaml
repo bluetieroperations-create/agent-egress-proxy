@@ -55,6 +55,12 @@ services:
       # next request, so a pending item seals within N seconds of activity.
       - key: RECEIPTS_ANCHOR_INTERVAL
         value: "300"                          # 5 min
+      # Publish each sealed Merkle root on-chain (0-value self-send from the
+      # gas wallet carrying the root in calldata), so existence-by-time is
+      # provable against Base Sepolia, not just our DB. Requires the funded
+      # RECEIPTS_GAS_KEY secret (declared below); the boot check enforces it.
+      - key: RECEIPTS_PUBLISHER
+        value: onchain
       # Public URL embedded in verify links + invoice QR. Set to the custom
       # domain you will attach (below). If you test via the *.onrender.com URL
       # before the domain is live, change this to that URL instead.
