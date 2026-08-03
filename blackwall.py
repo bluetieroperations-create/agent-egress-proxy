@@ -42,6 +42,7 @@ from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from addresses import addresses_equal, is_evm_address, normalize_address
+from categories import classify_resource
 from confidence import assess_confidence
 
 _AMOUNT_RE = re.compile(r"\A\d+(\.\d+)?\Z")  # plain decimal money string only
@@ -64,6 +65,15 @@ MIN_DISTINCT_PAYERS = 3           # confirmed settlements must span >= N payers 
 MIN_CLASS_OBSERVATIONS = 3        # same-resource observations needed to trust a per-class median
 MIN_PEER_COUNTERPARTIES = 3       # distinct counterparties needed to define a peer-group market rate
 PEER_HOLD_RATIO = 3.0             # priced >= Nx the peer market for its class => escalate (HOLD)
+# Per-CATEGORY price baseline (category_pricing.py): a much BROADER, fuzzier cohort
+# than a resource class, built from ON-CHAIN settled amounts. Advisory / HOLD-only /
+# never STOP. The threshold is deliberately HIGH: an eval on real on-chain data found
+# legit payees range up to ~20x their category median (premium tiers within a wide
+# cohort -- finance spans cheap price-feeds to premium analytics), while genuine
+# gouges are 1000x+. 50x clears every observed legit payee (0% false positives) yet
+# still catches an order-of-magnitude+ gouge. Catches a COLD-START payee (own/peer
+# median both blind) overcharging vs its whole category. See docs/CATEGORY.md.
+CATEGORY_HOLD_RATIO = 50.0        # quoted >= 50x the category's on-chain median => HOLD
 HOLD_AMOUNT_THRESHOLD = Decimal("10.00")  # amounts above this escalate (HOLD)
 HOLD_ANOMALY = 0.30               # price-anomaly score at/above this cannot GO
 STOP_ANOMALY_RATIO = 8.0          # charged >= 8x its own median => STOP (wildly off)
@@ -336,7 +346,8 @@ def decide_payment(amount, record, price_history,
                    counterparty=None, expected_recipient=None, hold_above=None,
                    resource=None, peer_median=None, payload_mismatch_reasons=None,
                    verified_floor=None, verified_grade=None,
-                   payer_graph_signal=None, temporal_signal=None):
+                   payer_graph_signal=None, temporal_signal=None,
+                   category=None, category_median=None):
     """
     The core verdict. Returns a dict:
         {verdict, score, reasons[], signals{...}}
@@ -511,6 +522,15 @@ def decide_payment(amount, record, price_history,
     peer_ratio = peer_anomaly_ratio(reference_price, peer_median)
     peer_hold = peer_ratio is not None and peer_ratio >= PEER_HOLD_RATIO
 
+    # Per-CATEGORY cross-check (category_pricing.py): is the QUOTED amount an
+    # order-of-magnitude outlier vs what payees in this SERVICE CATEGORY actually
+    # collect on-chain? This is the cold-start gouge signal -- a payee with no own
+    # history (peer/own-median both blind) can still be caught paying 10x the
+    # category norm. Reference = the quoted amount (what the agent is about to sign),
+    # not a median. Advisory: HOLD only, never STOP; fail-open (no baseline -> None).
+    category_ratio = peer_anomaly_ratio(amount_dec, category_median)
+    category_hold = category_ratio is not None and category_ratio >= CATEGORY_HOLD_RATIO
+
     # ---- verdict ----
     if stop:
         verdict = "STOP"
@@ -523,7 +543,8 @@ def decide_payment(amount, record, price_history,
               and not going_bad
               and a_score < HOLD_ANOMALY
               and not over_budget
-              and not peer_hold)
+              and not peer_hold
+              and not category_hold)
         if go:
             verdict = "GO"
         else:
@@ -564,6 +585,12 @@ def decide_payment(amount, record, price_history,
                 reasons.append(
                     "priced %.1fx the peer-group market rate for this class -- "
                     "above comparable counterparties" % peer_ratio
+                )
+            if category_hold:
+                reasons.append(
+                    "quoted %.1fx the on-chain median for the '%s' category "
+                    "(%s) -- far above what comparable services collect; escalating"
+                    % (category_ratio, category or "?", category_median)
                 )
             if stale:
                 reasons.append(
@@ -608,6 +635,12 @@ def decide_payment(amount, record, price_history,
         # how this counterparty's price compares to comparable counterparties for
         # its resource class (None = no peer market / no resource_class supplied).
         "peer_price_ratio": round(peer_ratio, 3) if peer_ratio is not None else None,
+        # service category of the resource being paid for (derived from the resource
+        # URL; None when no resource) + how the quoted amount compares to that
+        # category's ON-CHAIN median (None = no category baseline). Advisory.
+        "category": category,
+        "category_price_ratio": (round(category_ratio, 3)
+                                 if category_ratio is not None else None),
         # x402 settlement is on-chain and final.
         "reversibility": "irreversible",
         "blast_radius": "bounded" if not over_budget else "unbounded",
@@ -882,7 +915,7 @@ def default_billing_asset(network, explicit, base_usdc, sepolia_usdc):
 
 def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              hold_above=None, peer_index=None, seller_registry=None, now=None,
-             graph_source=None, velocity_source=None):
+             graph_source=None, velocity_source=None, category_index=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
@@ -960,6 +993,13 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         except Exception:
             temporal_sig = None
 
+    # Per-category price baseline: classify the RESOURCE being paid for (from its
+    # URL) and look up that category's on-chain median. Derived + advisory (HOLD-only,
+    # fail-open) -- see category_pricing.py / docs/CATEGORY.md.
+    category = classify_resource(clean.get("resource")) if clean.get("resource") else None
+    category_median = (category_index.get(category)
+                       if category_index and category else None)
+
     verdict = decide_payment(
         amount=clean["amount"],
         record=record,
@@ -974,6 +1014,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         verified_floor=verified_floor, verified_grade=verified_grade,
         payer_graph_signal=payer_graph_signal,
         temporal_signal=temporal_sig,
+        category=category, category_median=category_median,
     )
     # Surface advisory (non-blocking) simulation warnings, e.g. an expired auth or
     # a bounded approval.
@@ -1074,6 +1115,7 @@ class _Handler(BaseHTTPRequestHandler):
     readiness_source = None  # readiness.OntarioReadinessSource, or None
     hold_above = None  # amount above which the verdict escalates to HOLD (None = default)
     peer_index = None  # {resource_class: peer_median} for the peer-group check, or None
+    category_index = None  # {category: on-chain median} for the category-price check, or None
     graph_source = None  # payer_reputation.PayerReputationSource (Sybil corroboration)
     velocity_source = None  # settlement_velocity.VelocitySource (stale gate)
     openapi_server_url = None  # public origin for the openapi.json servers[] (or None)
@@ -1250,7 +1292,8 @@ class _Handler(BaseHTTPRequestHandler):
                                  hold_above=self.hold_above,
                                  peer_index=self.peer_index,
                                  graph_source=self.graph_source,
-                                 velocity_source=self.velocity_source)
+                                 velocity_source=self.velocity_source,
+                                 category_index=self.category_index)
         if err is not None:
             self._send_json(400, {"error": err})
             return
@@ -1331,7 +1374,8 @@ class BlackwallServer:
     def __init__(self, host="127.0.0.1", port=8402, reputation_source=None,
                  ledger=None, billing=None, readiness_source=None,
                  hold_above=None, peer_index=None, openapi_server_url=None,
-                 graph_source=None, velocity_source=None, verdict_anchor=None):
+                 graph_source=None, velocity_source=None, verdict_anchor=None,
+                 category_index=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -1346,6 +1390,7 @@ class BlackwallServer:
         self.velocity_source = velocity_source
         self.openapi_server_url = openapi_server_url
         self.verdict_anchor = verdict_anchor
+        self.category_index = category_index
         self._httpd = None
 
     def serve_forever(self):
@@ -1359,6 +1404,7 @@ class BlackwallServer:
                         "graph_source": self.graph_source,
                         "velocity_source": self.velocity_source,
                         "verdict_anchor": self.verdict_anchor,
+                        "category_index": self.category_index,
                         "openapi_server_url": self.openapi_server_url})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
         self.port = self._httpd.server_address[1]
@@ -1610,6 +1656,25 @@ def main(argv=None):
     # Host header, so discovery still works without config.
     origin = args.origin or os.environ.get("BLACKWALL_ORIGIN") or None
 
+    # OPT-IN per-category price baseline: a precomputed {category: on-chain median}
+    # JSON (build it with `python category_pricing.py --store ... --out ...`). Loaded
+    # from BLACKWALL_CATEGORY_INDEX; fail-open -- a missing/garbled file just disables
+    # the category signal, never blocks boot. See docs/CATEGORY.md.
+    category_index = None
+    cat_path = os.environ.get("BLACKWALL_CATEGORY_INDEX")
+    if cat_path:
+        try:
+            with open(cat_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict) and loaded:
+                category_index = {str(k): str(v) for k, v in loaded.items()}
+                sys.stdout.write("blackwall: category price baselines ON (%d categories)\n"
+                                 % len(category_index))
+        except Exception as e:
+            sys.stderr.write("blackwall: WARNING category index %r unusable (%s) -- "
+                             "category price signal OFF\n" % (cat_path, e))
+            sys.stderr.flush()
+
     # OPT-IN (BLACKWALL_ANCHOR=1): anchor every verdict's digest to Traceipt for a
     # tamper-evident audit trail. Non-blocking + fail-open; costs ~0.002 USDC/verdict
     # and needs a funded SIGNER_PRIVATE_KEY (else it 402s and fails open). OFF by
@@ -1631,6 +1696,7 @@ def main(argv=None):
                              graph_source=graph_source,
                              velocity_source=velocity_source,
                              verdict_anchor=anchor,
+                             category_index=category_index,
                              openapi_server_url=origin)
     try:
         server.serve_forever()

@@ -78,15 +78,39 @@ accepts a `peer_median` / `peer_index` (a peer-group price baseline). Compute a
 **per-category price median** and feed it keyed by the counterparty's category. No new
 gate — it flows through the existing peer-price signal (HOLD-only, fail-open).
 
-**Do it right, or not at all:**
-- **Use ON-CHAIN settled amounts, not advertised prices.** The table above is
-  *advertised* prices (seller-controlled, gameable). The robust baseline is what payees
-  in a category *actually collected* on-chain (we have this via `chain_backfill`), which
-  a seller can't inflate by editing a Bazaar listing.
-- **Advisory / HOLD-only, never STOP.** Category is fuzzy (~⅓ `other`) and derived; a
-  wrong category → wrong baseline. It must only ever *escalate to review*, never block.
-- **Fail-open + big margins.** Flag order-of-magnitude outliers (≥10×/≤0.1× the
-  category median), not small deviations — categories are broad and noisy.
+**How it's built:**
+- **ON-CHAIN settled amounts, not advertised prices.** The table above is *advertised*
+  prices (seller-controlled, gameable). The baseline is what payees in a category
+  *actually collected* on-chain (`reputation_store.price_history`, seeded by
+  `chain_backfill`), which a seller can't inflate by editing a Bazaar listing.
+- **Median-of-medians across ≥5 DISTINCT payees.** One high-volume/wash payee can't
+  drag the rate, and a category with too few payees is omitted (`MIN_CATEGORY_PAYEES`).
+  `other` is never indexed (not a coherent cohort).
+- **Advisory / HOLD-only, never STOP; fail-open.** Category is fuzzy and derived from
+  the seller-controlled resource URL; a wrong category → wrong baseline, so it can only
+  ever *escalate to review*, never block, and a missing baseline is a no-op.
 
-**Status:** proposed. It's a genuine new signal (validated above), but wiring a new
-input into the verdict needs its own audit → eval → verify pass before shipping.
+**Calibration (from the audit → eval).** The gate trips at **50×** the category's
+on-chain median. An eval on real on-chain data found legit payees range up to ~20× their
+category median (premium tiers within a wide cohort), while genuine gouges are 1000×+.
+At the initial 10× the gate flagged 16% of *legit* payees (premium AI/finance APIs) —
+false positives. 50× clears every observed legit payee (0% false positives) while still
+catching an order-of-magnitude+ gouge. It targets **over**-pricing only (under-pricing
+isn't a buyer risk).
+
+**Shipped** (`category_pricing.py` + `blackwall.decide_payment`'s `category_median`
+gate + `forecast`'s `category_index`), behind `BLACKWALL_CATEGORY_INDEX` (a precomputed
+`{category: median}` JSON — build with `python category_pricing.py --store … --out …`).
+Passed audit → eval → verify.
+
+### Known limits (audit)
+- **Evadable by resource spoofing.** The category comes from the request's `resource`
+  URL; a gouger can omit it or pick a URL that classifies to `other` (no baseline) to
+  dodge the gate. This is fail-open by design — evading it just forgoes the *extra*
+  scrutiny; every base gate (reputation/Sybil/own-price/sanctions) still applies. The
+  category signal is additive, never load-bearing.
+- **Wrong-category → wrong baseline.** A misclassified resource gets the wrong cohort's
+  median. Because it's HOLD-only, a false hit is a conservative error (human review),
+  and the 50× margin makes it rare.
+- **Baseline coverage.** Only categories with ≥5 distinct on-chain-active payees get a
+  baseline; thin categories simply have no signal (fail-open).

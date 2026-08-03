@@ -1267,6 +1267,63 @@ class TestPeerGroupCrossCheck(unittest.TestCase):
         self.assertEqual(resp["verdict"], "HOLD")  # 5x the peer market
 
 
+class TestCategoryPriceBaseline(unittest.TestCase):
+    """
+    Per-CATEGORY on-chain price baseline: is the QUOTED amount an order-of-magnitude
+    outlier vs what its service category actually collects? Catches a cold-start
+    gouge the per-payee gate is blind to. Advisory: HOLD, never STOP; fail-open.
+
+    Mutation notes:
+      - trip below an order of magnitude -> test_below_ratio_go FAILS (would false-flag).
+      - let category_hold set STOP -> test_outlier_holds_not_stops FAILS.
+      - use the cp's median instead of the quoted amount -> test_cold_start_uses_amount FAILS.
+      - ignore category_median in the GO gate -> test_outlier_holds_not_stops FAILS.
+    """
+    # reputable enough to otherwise GO; NO own price history (cold-start on price)
+    REC = {"settlement_count": 60, "confirmed_settlement_count": 60,
+           "distinct_payers": 8, "dispute_rate": 0.0}
+
+    def test_outlier_holds_not_stops(self):
+        # quote 0.30 vs finance on-chain median 0.005 = 60x -> HOLD (would-be GO)
+        v = bw.decide_payment("0.30", dict(self.REC), ["0.30"], counterparty="0xV",
+                              category="finance", category_median="0.005")
+        self.assertEqual(v["verdict"], "HOLD")
+        self.assertAlmostEqual(v["signals"]["category_price_ratio"], 60.0, places=1)
+        self.assertEqual(v["signals"]["category"], "finance")
+        self.assertTrue(any("category" in r for r in v["reasons"]))
+
+    def test_below_ratio_go(self):
+        # 20x is premium-but-legit (under the 50x bar) -> not a category HOLD
+        v = bw.decide_payment("0.10", dict(self.REC), ["0.10"], counterparty="0xV",
+                              category="finance", category_median="0.005")
+        self.assertEqual(v["verdict"], "GO")
+
+    def test_cold_start_uses_amount(self):
+        # reference is the QUOTED amount (no own median needed) -> 100x -> HOLD
+        v = bw.decide_payment("0.50", dict(self.REC), [], counterparty="0xV",
+                              category="finance", category_median="0.005")
+        self.assertEqual(v["verdict"], "HOLD")
+
+    def test_no_baseline_no_effect(self):
+        v = bw.decide_payment("0.30", dict(self.REC), ["0.30"], counterparty="0xV",
+                              category="finance", category_median=None)
+        self.assertEqual(v["verdict"], "GO")
+        self.assertIsNone(v["signals"]["category_price_ratio"])
+
+    def test_forecast_threads_category_index(self):
+        class _Src:
+            def lookup(self, cp):
+                return {"settlement_count": 60, "confirmed_settlement_count": 60,
+                        "distinct_payers": 8, "dispute_rate": 0.0}
+        payload = {"counterparty": "0xV0000000000000000000000000000000000001",
+                   "amount": "0.30", "asset": "USDC", "chain": "base",
+                   "resource": "https://api.foo/price/btc"}   # -> classifies 'finance'
+        resp, err = bw.forecast(payload, _Src(), category_index={"finance": "0.005"})
+        self.assertIsNone(err)
+        self.assertEqual(resp["verdict"], "HOLD")             # 60x the finance median
+        self.assertEqual(resp["signals"]["category"], "finance")
+
+
 class TestHardStopFlag(unittest.TestCase):
     """
     `hard_stop` distinguishes a non-negotiable block (sanctioned / known-bad /
