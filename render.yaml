@@ -49,6 +49,12 @@ services:
         value: "1"
       - key: RECEIPTS_PRICE_BASE_UNITS
         value: "2000"                         # $0.002 per /attest or /receipts
+      # Hands-free Merkle sealing: auto-seal any pending batch every N seconds
+      # so callers never need an admin POST /anchor. 0 = manual only. On the
+      # free plan the loop pauses while the instance is idle and resumes on the
+      # next request, so a pending item seals within N seconds of activity.
+      - key: RECEIPTS_ANCHOR_INTERVAL
+        value: "300"                          # 5 min
       # Public URL embedded in verify links + invoice QR. Set to the custom
       # domain you will attach (below). If you test via the *.onrender.com URL
       # before the domain is live, change this to that URL instead.
@@ -57,9 +63,12 @@ services:
       # SECRETS -- set in the Render dashboard (Environment tab), not here.
       # sync:false means the Blueprint will NOT manage/overwrite them.
       #   RECEIPTS_KEY_PEM   the durable Ed25519 signing key (root of trust for
-      #                      every receipt; generate once, back it up):
-      #     python3 -c "from traceipt.signing import Signer; \
-      #                 print(Signer.generate().private_pem().decode())"
+      #                      every receipt; generate once, back it up). Prefer
+      #                      the SINGLE-LINE base64 form below -- it has no
+      #                      newlines to be mangled when pasted into a web form,
+      #                      and the loader accepts it (also plain PEM / bare
+      #                      base64 body). Back up whatever you paste:
+      #     python3 -c "import base64;from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey as K;from cryptography.hazmat.primitives import serialization as s;print(base64.b64encode(K.generate().private_bytes(s.Encoding.DER,s.PrivateFormat.PKCS8,s.NoEncryption())).decode())"
       #   RECEIPTS_ADMIN_TOKEN  gates POST /anchor + /credits (random):
       #     python3 -c "import secrets; print(secrets.token_urlsafe(32))"
       - key: RECEIPTS_KEY_PEM
