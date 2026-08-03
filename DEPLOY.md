@@ -79,7 +79,8 @@ volume for `/data` and the secrets above.
 `render-free.yaml` runs on Render's free plan with **no persistent disk**. Since there's
 no volume to pre-warm at runtime and no shell to run `chain_backfill`, the Dockerfile
 **bakes a warm reputation corpus into the image at build time**: it backfills the
-top-40 payees from `data/seed_payees_bake.txt` (a subset of the full manifest) out of
+top-60 payees from `data/seed_payees_bake.txt` (a subset of the full manifest, ranked
+by on-chain distinct payers and sectioned by trust tier) out of
 public Base USDC history into `/app/data/reputation.db`, which `BLACKWALL_STORE` points
 at. The container therefore boots **warm** (known payees get real verdicts, not a
 cold-start HOLD) and re-warms from the image on every cold start. The bake is

@@ -12,7 +12,7 @@ WORKDIR /app
 COPY *.py ./
 
 # Warm-boot manifests: seed_payees.txt (full 198, for a paid pre-warm on the volume)
-# and seed_payees_bake.txt (top-40 most-active, baked into the image below for the
+# and seed_payees_bake.txt (top-60 by on-chain distinct payers, baked into the image for the
 # free tier -- small enough to keep build time reasonable).
 COPY data/seed_payees.txt data/seed_payees_bake.txt ./data/
 

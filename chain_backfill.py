@@ -132,8 +132,13 @@ def _read_payees(args):
     payees = list(args.payee or [])
     if args.payees_file:
         with open(args.payees_file, "r", encoding="utf-8") as f:
-            payees += [ln.strip() for ln in f
-                       if ln.strip() and not ln.lstrip().startswith("#")]
+            for ln in f:
+                # Strip INLINE comments too (addr followed by `# annotation`), not
+                # just whole-line ones -- a self-documenting manifest annotates each
+                # address with its tier/domain, and the bare address is token 0.
+                addr = ln.split("#", 1)[0].strip()
+                if addr:
+                    payees.append(addr)
     return payees
 
 

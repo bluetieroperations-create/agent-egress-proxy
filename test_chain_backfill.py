@@ -199,5 +199,39 @@ class TestBlockscoutPager(unittest.TestCase):
         self.assertEqual(called["n"], 0)     # never interpolate an unvalidated addr
 
 
+class TestReadPayees(unittest.TestCase):
+    """
+    Mutation notes:
+      - keep the whole line (don't split on '#') -> test_inline_comment FAILS: an
+        annotated address "0xabc  # tier" would be read verbatim and never match a
+        real payee, silently emptying an annotated manifest.
+    """
+    def _write(self, text):
+        import os
+        p = os.path.join(tempfile.mkdtemp(), "payees.txt")
+        with open(p, "w") as f:
+            f.write(text)
+        return p
+
+    def _read(self, path):
+        import argparse
+        return B._read_payees(argparse.Namespace(payee=None, payees_file=path))
+
+    def test_inline_comment_stripped(self):
+        addr = "0x" + "a" * 40
+        got = self._read(self._write("%s  # distinct=42  tensorfeed.ai\n" % addr))
+        self.assertEqual(got, [addr])       # annotation stripped, bare address kept
+
+    def test_full_line_and_blank_skipped(self):
+        addr = "0x" + "b" * 40
+        got = self._read(self._write("# --- SECTION ---\n\n%s\n" % addr))
+        self.assertEqual(got, [addr])
+
+    def test_plain_addresses(self):
+        a, b = "0x" + "c" * 40, "0x" + "d" * 40
+        got = self._read(self._write("%s\n%s\n" % (a, b)))
+        self.assertEqual(got, [a, b])
+
+
 if __name__ == "__main__":
     unittest.main()
