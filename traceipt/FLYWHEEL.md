@@ -125,39 +125,52 @@ It fetches the signed envelope, verifies the Ed25519 signature against
 
 ---
 
-## Recorded: first live run (2026-08-03)
+## Recorded: canonical on-chain run (2026-08-03)
 
-The loop turned end-to-end on Base Sepolia with a real x402 payment. Every link
-below was verified independently (the digest recomputed, the Merkle proof checked
-offline). Kept as a concrete reference.
+The full loop, every link verified **independently against Base Sepolia**. This
+is the definitive reference — durable signing key, locked admin, hands-free
+sealing, and the Merkle root published on-chain.
 
 | Link | Value |
 |---|---|
 | Payer (burner) | `0x7Fe662e89bFAA7FAc22891199F7128E434569794` |
-| Payment | 0.002 USDC on base-sepolia (burner 1.000000 → 0.998000; received at `RECEIPTS_PAY_TO` `0x3ec5…04e1`) |
-| Attestation | `att_6d7f255926c6db8fdcc3` (type `blackwall-verdict`, ref `bw_sanctions_demo_0001`) |
-| Verdict | `STOP` on counterparty `0x8589427373D6D84E98730D7795D8f6f8731FDA16` (Tornado Cash, OFAC-listed) |
-| verdict_digest | `sha256:1f3e3a2f47a0146364409b02c19307c6cf584b62bf6efc50485ccdc6ed5f7141` |
-| Merkle anchor | `anchor_id 1`, root `02271b5399b092e5ff4cfe20e9594e24394f9af628af795311f00f0e0f4682a9` |
-| Proof | inclusion proof verifies OFFLINE; leaf == verdict_digest |
-| Credential | `AnchoredAttestationCredential` (W3C VC) at `/attest/att_6d7f…/vc` |
+| Payment | 0.002 USDC on base-sepolia → `RECEIPTS_PAY_TO` `0x3ec5…04e1` |
+| Attestation | `att_452739d4d1db99521d23` (type `blackwall-verdict`, ref `bw_sanctions_demo_0005`) |
+| Verdict | `STOP` (Black_Wall risk verdict) |
+| verdict_digest (leaf) | `sha256:46dbf0f74410520340db947d0c20dfb23d8efd2da3a69e06cd7ec9f1382f673b` |
+| Merkle root | `0205e6e2bf9e7961f7b241052f186203fe4db26f1069efcecd7f37b7251d5b85` |
+| Sealed by | the **auto-anchor loop** (`RECEIPTS_ANCHOR_INTERVAL=300`) — no manual `/anchor` |
+| On-chain tx | `0x1a9b1db1992d157ce1e0da6dc30d854fd0eaa99a524a1862b7838ba960848010` (base-sepolia, **block 44977609, status success**) |
+| Calldata | `TRACEIPT-ANCHOR` + the exact root (0-value self-send from gas wallet `0x3aec…1A77`) |
+| Gas | 22,920 gas; gas wallet 0.000100 → 0.0000998545 ETH |
+| Proof | inclusion proof verifies OFFLINE; `proof.root == the on-chain root` |
+| Basescan | https://sepolia.basescan.org/tx/0x1a9b1db1992d157ce1e0da6dc30d854fd0eaa99a524a1862b7838ba960848010 |
 
-**The point it proves:** Black_Wall (a separate codebase) and Traceipt computed
-the *same* `verdict_digest` byte-for-byte, and the server stored exactly that
-hash — so a risk verdict was bound, anchored, and made independently verifiable
-on a real payment.
+**What it proves:** a Black_Wall risk verdict (a *separate* codebase computing the
+same `verdict_digest` byte-for-byte) became a **paid → bound → auto-sealed →
+on-chain-timestamped → independently-verifiable** record. Existence-by-time is
+provable against Base Sepolia, not just Traceipt's DB — so the "screened-before-
+paid" ordering is trustless.
 
-**Honest caveats (do not overclaim this run):**
-- It was issued under the **pre-configuration signing key**. The durable
-  `RECEIPTS_KEY_PEM` was set afterward (kid `6927e09cfebdbb3c`), so this run's VC
-  does **not** verify against the current issuer key. Runs after that use the
-  stable key.
-- `onchain_tx` is **null** — the Merkle root was recorded locally, not published
-  to a chain. The inclusion proof is valid *relative to that root*, but trustless
-  existence-by-time needs the on-chain publisher (DEPLOY.md §2.F).
-- The batch was sealed via an **open** admin endpoint (the admin token was not
-  yet set). Admin is now locked (`RECEIPTS_ADMIN_TOKEN`) and sealing is hands-free
-  (`RECEIPTS_ANCHOR_INTERVAL=300`), so later runs need no manual `POST /anchor`.
+**Config live at the time of this run:** durable `RECEIPTS_KEY_PEM`
+(kid `6927e09cfebdbb3c`), `RECEIPTS_ADMIN_TOKEN` (admin locked),
+`RECEIPTS_ANCHOR_INTERVAL=300` (hands-free sealing), `RECEIPTS_PUBLISHER=onchain`
+with a funded gas wallet.
+
+**Remaining durability gap (honest):** the on-chain *root* is permanent, but the
+*inclusion proof (audit path)* still lives in the disk-less DB — a redeploy keeps
+the root forever but drops the per-leaf proof. Full durability = on-chain roots
+**+ a persistent disk** (DEPLOY.md §2.A).
+
+### Earlier run (pre-config, local-only anchor)
+
+The first end-to-end run (`att_6d7f255926c6db8fdcc3`, ref `bw_sanctions_demo_0001`,
+verdict `STOP` on the Tornado Cash OFAC address `0x8589…FDA16`, root
+`02271b53…82a9`) proved the payment→bind→anchor→VC path *before* the production
+config was in place. Everything the canonical run above resolves was a caveat
+here: it used the pre-config signing key (its VC won't verify against the durable
+key), its anchor was **local-only** (`onchain_tx` null), and it was sealed via a
+**then-open** admin endpoint. Kept only as the record of the intermediate step.
 
 ---
 
