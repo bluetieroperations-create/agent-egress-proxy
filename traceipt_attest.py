@@ -28,10 +28,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 ATTEST_TYPE = "blackwall-verdict"  # Traceipt attestation `type` (<=40 chars)
+
+# Delivery states for an anchored attestation's Merkle proof (proof_status).
+PROOF_SEALED = "sealed"    # 200: proof resolved -> DELIVERED (root + on-chain tx)
+PROOF_PENDING = "pending"  # 409: accepted, not yet batched -> keep polling
+PROOF_LOST = "lost"        # 404: unknown id -> PAID-BUT-DROPPED (see the finding doc)
+PROOF_ERROR = "error"      # anything else / transport failure -> caller decides
 
 
 def canonical_json(obj) -> bytes:
@@ -160,6 +168,89 @@ def anchor_verdict(base_url, verdict_obj, *, x_payment=None, pay=None,
 
 def _urllib_post(url, data, headers, timeout):
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read().decode("utf-8"))
+        except Exception:
+            return e.code, {}
+
+
+# ---------------------------------------------------------------------------
+# Delivery confirmation: an anchor's POST /attest 201 only means ACCEPTED, not
+# DELIVERED. The attestation sits PENDING until Traceipt seals it into a Merkle
+# batch -- and (see docs/TRACEIPT_ATTEST_FINDING.md) a pending attestation can be
+# DROPPED on a Traceipt restart, going 409 -> 404 while the x402 payment already
+# settled. So "I paid" must be reconciled against "my proof resolved". These
+# helpers classify GET /attest/{id}/proof so a caller can treat a sealed proof as
+# delivered and a lost (404) prior-pending id as UNDERDELIVERED.
+# ---------------------------------------------------------------------------
+_PROOF_PASSTHROUGH = ("root", "onchain_tx", "onchain_network", "tree_size",
+                      "leaf_index", "leaf_data", "anchored_at", "audit_path")
+
+
+def proof_status(base_url, attestation_id, *, timeout=10, _transport=None):
+    """Classify an anchored attestation's delivery state via
+    `GET /attest/{id}/proof`. FAIL-OPEN: returns a dict, NEVER raises.
+
+    Returns {state, attestation_id, http?, ...}. `state` is one of:
+      * PROOF_SEALED  (200) -- proof resolved; DELIVERED. Carries root/onchain_tx.
+      * PROOF_PENDING (409) -- accepted, not yet in a Merkle batch; keep polling.
+      * PROOF_LOST    (404) -- unknown id; PAID-BUT-DROPPED -> treat as
+                               underdelivered (do NOT ingest as a good outcome).
+      * PROOF_ERROR   (else/exception) -- transport/unknown; caller decides.
+
+    `_transport(url, timeout) -> (status, dict)` is injectable for tests.
+    """
+    out = {"attestation_id": attestation_id}
+    try:
+        aid = urllib.parse.quote(str(attestation_id), safe="")
+        url = base_url.rstrip("/") + "/attest/" + aid + "/proof"
+        get = _transport or _urllib_get
+        status, resp = get(url, timeout)
+        out["http"] = status
+        if status == 200:
+            out["state"] = PROOF_SEALED
+            if isinstance(resp, dict):
+                for k in _PROOF_PASSTHROUGH:
+                    if k in resp:
+                        out[k] = resp[k]
+        elif status == 409:
+            out["state"] = PROOF_PENDING
+        elif status == 404:
+            out["state"] = PROOF_LOST
+        else:
+            out["state"] = PROOF_ERROR
+        return out
+    except Exception as e:  # fail-open: confirming delivery never raises
+        out["state"] = PROOF_ERROR
+        out["reason"] = "%s: %s" % (type(e).__name__, e)
+        return out
+
+
+def poll_proof(base_url, attestation_id, *, attempts=5, interval=2.0,
+               timeout=10, _transport=None, _sleep=None):
+    """Poll `proof_status` until it reaches a TERMINAL state (sealed or lost) or
+    `attempts` is exhausted; returns the last status dict. PENDING is the only
+    non-terminal state we retry -- sealed and lost are final. FAIL-OPEN: never
+    raises. `_sleep(seconds)` is injectable for tests (default time.sleep)."""
+    sleep = _sleep or time.sleep
+    attempts = max(1, attempts)
+    last = None
+    for i in range(attempts):
+        last = proof_status(base_url, attestation_id, timeout=timeout,
+                            _transport=_transport)
+        if last.get("state") in (PROOF_SEALED, PROOF_LOST):
+            return last
+        if i < attempts - 1:
+            sleep(interval)
+    return last
+
+
+def _urllib_get(url, timeout):
+    req = urllib.request.Request(url, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, json.loads(r.read().decode("utf-8"))

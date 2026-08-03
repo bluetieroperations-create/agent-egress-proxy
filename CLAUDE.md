@@ -87,7 +87,14 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   WITHHOLD on STOP; explicit fail-open/closed. Posture change -- see
   `docs/AA_COSIGNING.md`),
   `traceipt_attest.py` (anchor a verdict digest via Traceipt `POST /attest`, with
-  x402 auto-pay + spend cap), `traceipt_ingest.py` (map on-chain-verified Traceipt
+  x402 auto-pay + spend cap; also `proof_status`/`poll_proof` -- confirm an anchor
+  was actually SEALED into a Merkle batch vs still pending vs LOST/404, since a 201
+  only means accepted, see `docs/TRACEIPT_ATTEST_FINDING.md`),
+  `verdict_anchor.py` (OPT-IN server-side auto-anchor behind `BLACKWALL_ANCHOR=1`:
+  fire-and-forget each verdict's tokenless digest to Traceipt -- NON-BLOCKING on a
+  daemon thread, FAIL-OPEN, KEY-FREE core (signer lazy-loaded from
+  `SIGNER_PRIVATE_KEY` only when opted in); the verdict response is unchanged. See
+  `docs/TRACEIPT_INTEGRATION.md`), `traceipt_ingest.py` (map on-chain-verified Traceipt
   receipts into reputation), `traceipt_verify.py` (pure-Python Ed25519 JWKS
   verification of Traceipt receipt envelopes -- the authenticity gate for ingest),
   `traceipt_pull.py` (pull signed receipts by id from live Traceipt -- `GET
@@ -159,7 +166,7 @@ test states the mutation it kills). Keep new code stdlib-only and match this sty
 
 Run all tests:
 ```sh
-python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py test_aa_cosigner.py test_chain_backfill.py test_discovery_crawl.py test_ecosystem_scan.py test_http_util.py test_payer_graph.py test_payer_reputation.py test_settlement_velocity.py test_confidence.py test_redteam.py test_demo_flywheel.py
+python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py test_aa_cosigner.py test_chain_backfill.py test_discovery_crawl.py test_ecosystem_scan.py test_http_util.py test_payer_graph.py test_payer_reputation.py test_settlement_velocity.py test_confidence.py test_redteam.py test_demo_flywheel.py test_verdict_anchor.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop

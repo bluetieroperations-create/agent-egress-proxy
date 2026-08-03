@@ -249,5 +249,99 @@ class TestAnchorVerdictAutoPay(unittest.TestCase):
         self.assertEqual(r["reason"], "payment_required")
 
 
+class TestProofStatus(unittest.TestCase):
+    """Delivery confirmation: GET /attest/{id}/proof classification.
+
+    Mutation notes:
+      - map 404 to pending (not lost) -> test_lost FAILS (a dropped, paid attestation
+        would be mistaken for still-pending and ingested as delivered).
+      - map 409 to error -> test_pending FAILS (a normal wait would abort polling).
+      - not passing through root/onchain_tx on 200 -> test_sealed_fields FAILS.
+    """
+    SEALED = {"attestation_id": "att_x", "tree_size": 1, "leaf_index": 0,
+              "root": "abc", "onchain_tx": "0xdead", "onchain_network": "base-sepolia"}
+
+    def test_sealed(self):
+        r = T.proof_status("https://x", "att_x", _transport=lambda u, t: (200, self.SEALED))
+        self.assertEqual(r["state"], T.PROOF_SEALED)
+
+    def test_sealed_fields(self):
+        r = T.proof_status("https://x", "att_x", _transport=lambda u, t: (200, self.SEALED))
+        self.assertEqual(r["root"], "abc")
+        self.assertEqual(r["onchain_tx"], "0xdead")
+
+    def test_pending(self):
+        r = T.proof_status("https://x", "att_x",
+                           _transport=lambda u, t: (409, {"error": "not yet anchored"}))
+        self.assertEqual(r["state"], T.PROOF_PENDING)
+
+    def test_lost(self):
+        r = T.proof_status("https://x", "att_x",
+                           _transport=lambda u, t: (404, {"error": "unknown attestation_id"}))
+        self.assertEqual(r["state"], T.PROOF_LOST)
+
+    def test_other_status_is_error(self):
+        r = T.proof_status("https://x", "att_x", _transport=lambda u, t: (500, {}))
+        self.assertEqual(r["state"], T.PROOF_ERROR)
+
+    def test_transport_exception_fails_open(self):
+        def boom(u, t):
+            raise RuntimeError("dns")
+        r = T.proof_status("https://x", "att_x", _transport=boom)
+        self.assertEqual(r["state"], T.PROOF_ERROR)  # never raises
+
+    def test_url_encodes_id(self):
+        seen = {}
+
+        def cap(url, t):
+            seen["url"] = url
+            return (404, {})
+        T.proof_status("https://x", "att/../evil", _transport=cap)
+        self.assertNotIn("att/../evil", seen["url"])       # id is percent-encoded
+        self.assertIn("/attest/att%2F..%2Fevil/proof", seen["url"])
+
+
+class TestPollProof(unittest.TestCase):
+    """
+    Mutation notes:
+      - stop on the first pending (no retry) -> test_pending_then_sealed FAILS.
+      - retry on lost/sealed (not terminal)  -> test_stops_on_lost FAILS.
+      - sleep on the final attempt           -> test_no_trailing_sleep FAILS.
+    """
+    def _seq(self, states):
+        calls = {"n": 0}
+        code = {"sealed": 200, "pending": 409, "lost": 404}
+
+        def t(url, timeout):
+            i = min(calls["n"], len(states) - 1)
+            calls["n"] += 1
+            return (code[states[i]], {})
+        return t, calls
+
+    def test_pending_then_sealed(self):
+        t, calls = self._seq(["pending", "pending", "sealed"])
+        sleeps = []
+        r = T.poll_proof("https://x", "att", attempts=5, interval=1,
+                         _transport=t, _sleep=lambda s: sleeps.append(s))
+        self.assertEqual(r["state"], T.PROOF_SEALED)
+        self.assertEqual(calls["n"], 3)      # polled until sealed
+        self.assertEqual(sleeps, [1, 1])     # slept between the 3 polls, not after
+
+    def test_stops_on_lost(self):
+        t, calls = self._seq(["lost", "sealed"])
+        r = T.poll_proof("https://x", "att", attempts=5, _transport=t,
+                         _sleep=lambda s: None)
+        self.assertEqual(r["state"], T.PROOF_LOST)
+        self.assertEqual(calls["n"], 1)      # lost is terminal -> no further polls
+
+    def test_exhausts_attempts_returns_last(self):
+        t, _ = self._seq(["pending"])
+        sleeps = []
+        r = T.poll_proof("https://x", "att", attempts=3, interval=2,
+                         _transport=t, _sleep=lambda s: sleeps.append(s))
+        self.assertEqual(r["state"], T.PROOF_PENDING)   # still pending at the end
+        self.assertEqual(len(sleeps), 2)                # 3 polls, 2 gaps (no trailing)
+
+
 if __name__ == "__main__":
     unittest.main()

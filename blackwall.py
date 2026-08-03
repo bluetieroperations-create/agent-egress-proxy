@@ -1077,6 +1077,7 @@ class _Handler(BaseHTTPRequestHandler):
     graph_source = None  # payer_reputation.PayerReputationSource (Sybil corroboration)
     velocity_source = None  # settlement_velocity.VelocitySource (stale gate)
     openapi_server_url = None  # public origin for the openapi.json servers[] (or None)
+    verdict_anchor = None  # verdict_anchor.VerdictAnchor, or None (opt-in audit trail)
 
     def _send_json(self, code, obj, extra_headers=None):
         body = json.dumps(obj, separators=(",", ":")).encode("utf-8")
@@ -1264,6 +1265,11 @@ class _Handler(BaseHTTPRequestHandler):
                            "network": to_caip2(self.billing.cfg.network)}
             extra["PAYMENT-RESPONSE"] = _b64_header(settle_resp)
         self._send_json(200, response, extra_headers=extra or None)
+        # OPT-IN audit trail: anchor the verdict digest to Traceipt. Done AFTER the
+        # response is written and is itself non-blocking (fire-and-forget on a
+        # daemon thread) + fail-open, so it can never delay or break the verdict.
+        if self.verdict_anchor is not None:
+            self.verdict_anchor.submit(response)
 
     def _do_session(self):
         # Fund-once, many-checks: a payment covering the session price returns a
@@ -1325,7 +1331,7 @@ class BlackwallServer:
     def __init__(self, host="127.0.0.1", port=8402, reputation_source=None,
                  ledger=None, billing=None, readiness_source=None,
                  hold_above=None, peer_index=None, openapi_server_url=None,
-                 graph_source=None, velocity_source=None):
+                 graph_source=None, velocity_source=None, verdict_anchor=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -1339,6 +1345,7 @@ class BlackwallServer:
         self.graph_source = graph_source
         self.velocity_source = velocity_source
         self.openapi_server_url = openapi_server_url
+        self.verdict_anchor = verdict_anchor
         self._httpd = None
 
     def serve_forever(self):
@@ -1351,6 +1358,7 @@ class BlackwallServer:
                         "peer_index": self.peer_index,
                         "graph_source": self.graph_source,
                         "velocity_source": self.velocity_source,
+                        "verdict_anchor": self.verdict_anchor,
                         "openapi_server_url": self.openapi_server_url})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
         self.port = self._httpd.server_address[1]
@@ -1601,12 +1609,28 @@ def main(argv=None):
     # BLACKWALL_ORIGIN (or --origin). When unset the handler falls back to the
     # Host header, so discovery still works without config.
     origin = args.origin or os.environ.get("BLACKWALL_ORIGIN") or None
+
+    # OPT-IN (BLACKWALL_ANCHOR=1): anchor every verdict's digest to Traceipt for a
+    # tamper-evident audit trail. Non-blocking + fail-open; costs ~0.002 USDC/verdict
+    # and needs a funded SIGNER_PRIVATE_KEY (else it 402s and fails open). OFF by
+    # default -- see docs/TRACEIPT_INTEGRATION.md and the reliability caveat there.
+    from verdict_anchor import from_env as _anchor_from_env
+    anchor = _anchor_from_env(_env_flag)
+    if anchor is not None:
+        sys.stdout.write(
+            "blackwall: verdict anchoring ON -> %s (opt-in audit trail; "
+            "non-blocking, fail-open, ~0.002 USDC/verdict%s)\n"
+            % (anchor.base_url,
+               "" if anchor.pay else "; NO signer -> will 402/fail-open unsigned"))
+        sys.stdout.flush()
+
     server = BlackwallServer(host=args.host, port=args.port, ledger=led,
                              billing=billing, reputation_source=reputation_source,
                              readiness_source=readiness_source,
                              hold_above=hold_above,
                              graph_source=graph_source,
                              velocity_source=velocity_source,
+                             verdict_anchor=anchor,
                              openapi_server_url=origin)
     try:
         server.serve_forever()
