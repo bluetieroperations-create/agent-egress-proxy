@@ -2613,10 +2613,12 @@ class TestPemNormalization(unittest.TestCase):
         self.pem = self.good.private_pem().decode()
 
     def test_newlines_collapsed_to_spaces(self):
-        mangled = self.pem.replace("\n", " ")  # the classic web-form failure
-        with self.assertRaises(ValueError):  # proves it was genuinely broken
-            from cryptography.hazmat.primitives import serialization
-            serialization.load_pem_private_key(mangled.encode(), password=None)
+        # The classic web-form failure: newlines collapsed to spaces. from_pem
+        # must recover the SAME identity. (We do NOT assert the raw loader
+        # rejects this input -- newer `cryptography` versions tolerate some
+        # framing damage, so that check is version-fragile; what matters, and
+        # what is version-robust, is that recovery yields the right key.)
+        mangled = self.pem.replace("\n", " ")
         self.assertEqual(Signer.from_pem(mangled).kid, self.good.kid)
 
     def test_all_newlines_stripped(self):
@@ -2654,6 +2656,118 @@ class TestPemNormalization(unittest.TestCase):
     def test_garbage_raises(self):
         with self.assertRaises(ValueError):
             Signer.from_pem("not a pem at all")
+
+
+class TestMCPTools(unittest.TestCase):
+    """The MCP tool surface (distribution play): neutral verification wrappers.
+    Exercised directly (no `mcp` SDK needed) against real locally-built creds."""
+
+    SETTLE = {"chain": "base-sepolia", "tx_hash": "0x" + "ab" * 32, "asset": "USDC",
+              "asset_contract": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+              "amount_base_units": "2000", "payer": PAYER, "payee": PAYEE,
+              "verification_method": "mock", "verified": True}
+
+    def setUp(self):
+        from traceipt import mcp_tools as mt
+        from traceipt import vc as vcmod
+        self.mt, self.vcmod = mt, vcmod
+        self.signer = Signer.generate()
+        self.payload = build_receipt(
+            seller_id="op", sequence=1, prev_receipt_hash=GENESIS_HASH,
+            issued_at="2026-08-03T00:00:01Z", settlement=self.SETTLE,
+            commerce={"resource": "https://api.example.com/x", "description": "d",
+                      "quoted_amount_base_units": "2000"})
+
+    def test_verify_credential_data_integrity(self):
+        cred = self.vcmod.receipt_vc(self.payload, self.signer,
+                                     "https://api.traceipt.xyz", "2026-08-03T00:00:02Z")
+        r = self.mt.verify_credential(cred)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["kind"], "credential")
+        # accepts a JSON string too (how an agent passes it)
+        self.assertTrue(self.mt.verify_credential(json.dumps(cred))["ok"])
+        # tamper -> fails
+        bad = copy.deepcopy(cred)
+        bad["credentialSubject"]["seller_id"] = "evil"
+        self.assertFalse(self.mt.verify_credential(bad)["ok"])
+
+    def test_verify_credential_jwt(self):
+        cred = self.vcmod.receipt_vc(self.payload, self.signer,
+                                     "https://api.traceipt.xyz", "2026-08-03T00:00:02Z")
+        tok = self.vcmod.credential_jwt(cred, self.signer)
+        r = self.mt.verify_credential(tok)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["kind"], "credential-jwt")
+
+    def test_verify_compliance_binding(self):
+        from traceipt.screening import build_screening
+        from traceipt.screening_providers import (
+            CHAINALYSIS_DEMO_SANCTIONED, OfflineSanctionsProvider, build_verdict,
+            screen,
+        )
+        results = screen(CHAINALYSIS_DEMO_SANCTIONED, [OfflineSanctionsProvider()])
+        verdict = build_verdict(CHAINALYSIS_DEMO_SANCTIONED, results,
+                                decided_at="2026-08-03T00:00:00Z")
+        sc = build_screening(verdict, decision=verdict["decision"], screener="offline")
+        payload = build_receipt(
+            seller_id="op", sequence=1, prev_receipt_hash=GENESIS_HASH,
+            issued_at="2026-08-03T00:00:01Z", settlement=self.SETTLE,
+            commerce={"resource": "https://api.example.com/x", "description": "d",
+                      "quoted_amount_base_units": "2000", "screening": sc})
+        r = self.mt.verify_compliance_binding(payload, verdict)
+        self.assertTrue(r["ok"], r)
+        self.assertTrue(r["decision_recomputable"])
+        # a swapped verdict breaks the binding
+        r2 = self.mt.verify_compliance_binding(
+            payload, {**verdict, "subject": {"address": "0x0"}})
+        self.assertFalse(r2["ok"])
+
+    def test_verify_receipt_envelope(self):
+        env = self.signer.sign_envelope(self.payload)
+        jwks = {"keys": [self.signer.jwk()]}
+        orig = self.mt._get_json
+        self.mt._get_json = lambda url, timeout=20.0: jwks
+        try:
+            r = self.mt.verify_receipt_envelope(env, "https://x/jwks.json")
+        finally:
+            self.mt._get_json = orig
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["receipt_id"], self.payload["receipt_id"])
+
+    def test_verify_onchain_anchor(self):
+        d = tempfile.mkdtemp()
+        led = Ledger(os.path.join(d, "m.db"))
+        digest = "sha256:" + "cd" * 32
+        rec, _ = led.submit_attestation(digest=digest, type_="verdict", ref=None,
+                                        submitted_at="2026-08-03T00:00:00Z")
+        anchor = led.create_anchor("2026-08-03T00:01:00Z")
+        proof = led.attestation_inclusion(rec["attestation_id"])
+        anchors = [{"root": anchor["root"], "onchain_tx": "0xdead",
+                    "onchain_network": "base-sepolia"}]
+
+        def fake(url, timeout=20.0):
+            if url.endswith("/proof"):
+                return proof
+            if url.endswith("/anchors"):
+                return anchors
+            raise ValueError(url)
+
+        orig = self.mt._get_json
+        self.mt._get_json = fake
+        try:
+            r = self.mt.verify_onchain_anchor("https://x", "att_x")
+        finally:
+            self.mt._get_json = orig
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["leaf"], digest)
+        self.assertEqual(r["onchain_tx"], "0xdead")
+
+    def test_as_obj_coercion(self):
+        self.assertEqual(self.mt._as_obj({"a": 1}), {"a": 1})
+        self.assertEqual(self.mt._as_obj('{"a": 1}'), {"a": 1})
+        self.assertIsNone(self.mt._as_obj("not json"))
+        self.assertEqual(self.mt._origin("https://api.traceipt.xyz/receipts/1/vc"),
+                         "https://api.traceipt.xyz")
 
 
 if __name__ == "__main__":
