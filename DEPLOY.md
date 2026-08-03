@@ -74,6 +74,39 @@ Both bind `0.0.0.0:8402` and route HTTPS to it; health is `GET /healthz`. Also
 deploys to Railway or any Kubernetes/ECS — the only requirements are a persistent
 volume for `/data` and the secrets above.
 
+### Free tier (Render, $0) — warm bake baked into the image
+
+`render-free.yaml` runs on Render's free plan with **no persistent disk**. Since there's
+no volume to pre-warm at runtime and no shell to run `chain_backfill`, the Dockerfile
+**bakes a warm reputation corpus into the image at build time**: it backfills the
+top-40 payees from `data/seed_payees_bake.txt` (a subset of the full manifest) out of
+public Base USDC history into `/app/data/reputation.db`, which `BLACKWALL_STORE` points
+at. The container therefore boots **warm** (known payees get real verdicts, not a
+cold-start HOLD) and re-warms from the image on every cold start. The bake is
+**fail-open** — a rate-limited/flaky fetch just yields a thinner store, never a failed
+build — and writes to `/app/data`, *not* the `/data` VOLUME (Docker discards a volume's
+build-time writes).
+
+- **Bake depth** is the `BAKE_MAX_PAGES` build ARG (default **8**). Each Blockscout page
+  is ~50 USDC transfers, so N pages caps each payee at ~50·N settlements. 8 pages →
+  ~400 settlements and ~15–70 distinct payers per payee (enough to clear the thin-history
+  and Sybil gates with real breadth, which is what feeds the payer-graph / reputation /
+  temporal signals). It adds ~9 min to the image build (~15 s/payee). Tune without editing
+  the Dockerfile: `docker build --build-arg BAKE_MAX_PAGES=4 .` (shallower, faster) or a
+  higher value (deeper, slower — build time scales linearly).
+- **Caveat — the ~50·N cap truncates the busiest payees.** At 8 pages every payee tops out
+  at ~400 settlements, so the handful of *highest-volume* payees have their history clipped
+  to a recent window. That's fine for warm-boot verdicts (the gates still clear on real
+  data), but two second-order effects follow: (1) their true settlement depth and full
+  distinct-payer breadth are understated; (2) the temporal `burst_sybil` diagnostic can
+  false-positive because a clipped window compresses their history (it's advisory-only /
+  never gated for exactly this reason — see `docs/TEMPORAL.md`). Pushing `BAKE_MAX_PAGES`
+  much higher fights this at a linear build-time cost and still caps eventually. **If you
+  need full, untruncated depth, don't deepen the bake — move to the paid tier**: a
+  persistent `/data` disk (`render.yaml`) pre-warmed once from the *full* `seed_payees.txt`
+  (`--max-pages` high or unset), which persists across restarts instead of re-baking a
+  capped window on every cold start.
+
 ## Runbook — the order you asked for
 
 1. **Deploy repo.** Push this codebase (or a fork you control) to the repo you'll
