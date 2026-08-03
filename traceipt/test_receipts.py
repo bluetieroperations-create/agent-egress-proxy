@@ -2577,5 +2577,38 @@ class TestSelectSigner(unittest.TestCase):
         self.assertIsInstance(s, Signer)
 
 
+class TestPemNormalization(unittest.TestCase):
+    """Regression: a PEM whose newlines are collapsed by a web form (Render env
+    var) raised 'MalformedFraming'. from_pem now repairs the framing. The
+    recovered key must be byte-for-byte the same identity (same kid)."""
+
+    def setUp(self):
+        self.good = Signer.generate()
+        self.pem = self.good.private_pem().decode()
+
+    def test_newlines_collapsed_to_spaces(self):
+        mangled = self.pem.replace("\n", " ")  # the classic web-form failure
+        with self.assertRaises(ValueError):  # proves it was genuinely broken
+            from cryptography.hazmat.primitives import serialization
+            serialization.load_pem_private_key(mangled.encode(), password=None)
+        self.assertEqual(Signer.from_pem(mangled).kid, self.good.kid)
+
+    def test_all_newlines_stripped(self):
+        mangled = self.pem.replace("\n", "")
+        self.assertEqual(Signer.from_pem(mangled).kid, self.good.kid)
+
+    def test_escaped_backslash_n(self):
+        mangled = self.pem.replace("\n", "\\n")
+        self.assertEqual(Signer.from_pem(mangled).kid, self.good.kid)
+
+    def test_well_formed_still_works(self):
+        self.assertEqual(Signer.from_pem(self.pem).kid, self.good.kid)
+        self.assertEqual(Signer.from_pem(self.pem.encode()).kid, self.good.kid)
+
+    def test_garbage_raises(self):
+        with self.assertRaises(ValueError):
+            Signer.from_pem("not a pem at all")
+
+
 if __name__ == "__main__":
     unittest.main()

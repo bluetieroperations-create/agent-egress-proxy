@@ -41,6 +41,28 @@ def b64url_decode(s: str) -> bytes:
     return base64.urlsafe_b64decode(s + pad)
 
 
+def normalize_pem(pem: bytes) -> bytes:
+    """Reconstruct valid PEM framing from a value whose line breaks were lost.
+
+    Pasting a multi-line PEM into a web form (Render env vars, etc.) routinely
+    collapses the newlines to spaces or strips them, which makes
+    load_pem_private_key raise 'MalformedFraming'. The base64 body is intact --
+    only the framing is broken -- so we find the BEGIN/END markers, strip all
+    whitespace out of the body, and re-wrap it at 64 columns. Also tolerates
+    literal backslash-n ('\\n') left by some secret pipelines. Raises ValueError
+    if no PEM markers are present at all."""
+    import re
+    text = pem.decode("utf-8", "ignore").replace("\\n", "\n").replace("\\r", "")
+    m = re.search(r"-----BEGIN ([A-Z0-9 ]+?)-----(.*?)-----END \1-----",
+                  text, re.DOTALL)
+    if not m:
+        raise ValueError("no PEM BEGIN/END markers found in key material")
+    label = m.group(1).strip()
+    body = "".join(m.group(2).split())  # drop every space/newline in the body
+    wrapped = "\n".join(body[i:i + 64] for i in range(0, len(body), 64))
+    return f"-----BEGIN {label}-----\n{wrapped}\n-----END {label}-----\n".encode()
+
+
 class Signer:
     """Holds an Ed25519 private key and issues signed envelopes."""
 
@@ -56,7 +78,15 @@ class Signer:
 
     @classmethod
     def from_pem(cls, pem: bytes, password: bytes | None = None) -> "Signer":
-        key = serialization.load_pem_private_key(pem, password=password)
+        if isinstance(pem, str):
+            pem = pem.encode()
+        try:
+            key = serialization.load_pem_private_key(pem, password=password)
+        except ValueError:
+            # Framing likely mangled by a web form (newlines collapsed). Repair
+            # the framing and retry once before giving up.
+            key = serialization.load_pem_private_key(
+                normalize_pem(pem), password=password)
         if not isinstance(key, Ed25519PrivateKey):
             raise ValueError("PEM key is not Ed25519")
         return cls(key)
