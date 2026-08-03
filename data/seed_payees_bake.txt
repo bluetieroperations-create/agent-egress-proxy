@@ -4,7 +4,7 @@
 # ingests all of them; the tiers are for humans. Comments (#) are ignored.
 # Regenerate: see docs/FEEDING.md . Subset of data/seed_payees.txt (292).
 
-# --- INSTITUTIONAL-GRADE / ANCHOR (>=20 distinct payers) : 24 ---
+# --- BROAD PAYER BASE (anchor tier -- >=20 distinct on-chain payers) : 24 ---
 0x45ac00db8bdd4b837abbbf75888cbdfe6b6d8943  # distinct=87  x402.creative-tim.com
 0x54d6c2c08e10f1a1d3da88df513bbe9bcf1a4afa  # distinct=71  ?
 0xa8cc4011eb545ee5d436a599c9a8bd03dd1e1df3  # distinct=62  api.useatelier.ai
@@ -67,5 +67,3 @@
 0x161dbdd73d025e9aedd4918a67c28e5bf9a87fb9  # distinct=10  api.babyblueviper.com
 0xe740d5701749d262da5e4fcb9f814c5b6d91cf46  # distinct=10  api.linkedpanda.com
 0xed617f79201248df99909fbde4269b6eeaee39b6  # distinct=10  ip402.xyz
-
-# --- EMERGING (3-9 distinct payers) : 0 ---
