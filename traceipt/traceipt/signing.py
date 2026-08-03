@@ -63,6 +63,43 @@ def normalize_pem(pem: bytes) -> bytes:
     return f"-----BEGIN {label}-----\n{wrapped}\n-----END {label}-----\n".encode()
 
 
+def load_private_key_flexible(material: bytes, password: bytes | None = None):
+    """Load an Ed25519 private key from key material that may have survived a
+    hostile env-var round-trip. Tries, in order:
+
+      1. PEM exactly as given;
+      2. PEM with repaired framing (newlines collapsed -- see normalize_pem);
+      3. single-line base64 of the DER (or of a whole PEM). This also covers the
+         common case where ONLY the base64 body of a PEM was pasted (no
+         BEGIN/END wrapper) -- that body IS base64-of-DER, so it loads directly.
+
+    Base64 (single line, no newlines) is the paste-safe way to carry a key in an
+    env var, so we accept it as a first-class format. Raises ValueError with the
+    tried strategies if none work."""
+    from cryptography.hazmat.primitives.serialization import (
+        load_der_private_key, load_pem_private_key,
+    )
+    errors = []
+    try:
+        return load_pem_private_key(material, password=password)
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"pem={type(e).__name__}")
+    try:
+        return load_pem_private_key(normalize_pem(material), password=password)
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"repaired-pem={type(e).__name__}")
+    try:
+        raw = base64.b64decode("".join(
+            material.decode("utf-8", "ignore").split()), validate=False)
+        if raw.lstrip().startswith(b"-----BEGIN"):
+            return load_pem_private_key(raw, password=password)
+        return load_der_private_key(raw, password=password)
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"base64/der={type(e).__name__}")
+    raise ValueError("could not load an Ed25519 private key from the provided "
+                     "material (tried " + ", ".join(errors) + ")")
+
+
 class Signer:
     """Holds an Ed25519 private key and issues signed envelopes."""
 
@@ -78,15 +115,11 @@ class Signer:
 
     @classmethod
     def from_pem(cls, pem: bytes, password: bytes | None = None) -> "Signer":
+        """Load from PEM, repaired PEM, or single-line base64/DER -- whatever
+        survived the env-var round-trip (see load_private_key_flexible)."""
         if isinstance(pem, str):
             pem = pem.encode()
-        try:
-            key = serialization.load_pem_private_key(pem, password=password)
-        except ValueError:
-            # Framing likely mangled by a web form (newlines collapsed). Repair
-            # the framing and retry once before giving up.
-            key = serialization.load_pem_private_key(
-                normalize_pem(pem), password=password)
+        key = load_private_key_flexible(pem, password=password)
         if not isinstance(key, Ed25519PrivateKey):
             raise ValueError("PEM key is not Ed25519")
         return cls(key)

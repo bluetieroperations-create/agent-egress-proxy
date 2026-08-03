@@ -2605,6 +2605,26 @@ class TestPemNormalization(unittest.TestCase):
         self.assertEqual(Signer.from_pem(self.pem).kid, self.good.kid)
         self.assertEqual(Signer.from_pem(self.pem.encode()).kid, self.good.kid)
 
+    def test_bare_base64_body_no_markers(self):
+        # ONLY the base64 body of the PEM (BEGIN/END wrapper lost on paste).
+        body = "".join(l for l in self.pem.splitlines() if "-----" not in l)
+        self.assertEqual(Signer.from_pem(body).kid, self.good.kid)
+
+    def test_single_line_base64_of_der(self):
+        # Paste-safe env format: base64(DER), one line, no newlines to mangle.
+        from cryptography.hazmat.primitives import serialization as ser
+        import base64 as b64
+        der = self.good._key.private_bytes(
+            ser.Encoding.DER, ser.PrivateFormat.PKCS8, ser.NoEncryption())
+        self.assertEqual(
+            Signer.from_pem(b64.b64encode(der).decode()).kid, self.good.kid)
+
+    def test_base64_of_whole_pem(self):
+        import base64 as b64
+        self.assertEqual(
+            Signer.from_pem(b64.b64encode(self.pem.encode()).decode()).kid,
+            self.good.kid)
+
     def test_garbage_raises(self):
         with self.assertRaises(ValueError):
             Signer.from_pem("not a pem at all")
