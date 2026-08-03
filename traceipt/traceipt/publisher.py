@@ -68,7 +68,13 @@ class OnchainPublisher:
             self._rpc,
             data=json.dumps({"jsonrpc": "2.0", "id": 1,
                              "method": method, "params": params}).encode(),
-            headers={"Content-Type": "application/json"})
+            # A User-Agent is required in practice: Cloudflare-fronted public
+            # nodes (e.g. sepolia.base.org) answer 403 to the default
+            # Python-urllib UA, which fails every on-chain root publish. Mirror
+            # the settlement/gate transports, which set the same header.
+            headers={"Content-Type": "application/json",
+                     "Accept": "application/json",
+                     "User-Agent": "Traceipt/0.2 anchor-publisher"})
         with urllib.request.urlopen(req, timeout=self._timeout) as r:
             resp = json.loads(r.read().decode())
         if "error" in resp:

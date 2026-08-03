@@ -1532,6 +1532,32 @@ class TestPublisher(unittest.TestCase):
         self.assertEqual(net, "mock")
         self.assertTrue(tx.startswith("0x") and len(tx) == 66)
 
+    def test_onchain_default_transport_sets_user_agent(self):
+        # Regression: Cloudflare-fronted RPCs (sepolia.base.org) 403 the default
+        # urllib UA, so every on-chain publish failed until we set a UA header.
+        import traceipt.publisher as pub_mod
+        from traceipt.publisher import OnchainPublisher
+        captured = {}
+
+        class FakeResp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return b'{"result":"0x1"}'
+
+        def fake_urlopen(req, timeout=None):
+            captured["ua"] = req.get_header("User-agent")
+            return FakeResp()
+
+        orig = pub_mod.urllib.request.urlopen
+        pub_mod.urllib.request.urlopen = fake_urlopen
+        try:
+            p = OnchainPublisher(chain="base-sepolia", rpc_url="http://x",
+                                 private_key="0x" + "11" * 32)
+            p._http_rpc("eth_gasPrice", [])
+        finally:
+            pub_mod.urllib.request.urlopen = orig
+        self.assertTrue(captured["ua"] and "Traceipt" in captured["ua"])
+
     def test_onchain_signs_and_broadcasts(self):
         from traceipt.publisher import make_publisher
         calls = {}
