@@ -125,6 +125,42 @@ It fetches the signed envelope, verifies the Ed25519 signature against
 
 ---
 
+## Recorded: first live run (2026-08-03)
+
+The loop turned end-to-end on Base Sepolia with a real x402 payment. Every link
+below was verified independently (the digest recomputed, the Merkle proof checked
+offline). Kept as a concrete reference.
+
+| Link | Value |
+|---|---|
+| Payer (burner) | `0x7Fe662e89bFAA7FAc22891199F7128E434569794` |
+| Payment | 0.002 USDC on base-sepolia (burner 1.000000 → 0.998000; received at `RECEIPTS_PAY_TO` `0x3ec5…04e1`) |
+| Attestation | `att_6d7f255926c6db8fdcc3` (type `blackwall-verdict`, ref `bw_sanctions_demo_0001`) |
+| Verdict | `STOP` on counterparty `0x8589427373D6D84E98730D7795D8f6f8731FDA16` (Tornado Cash, OFAC-listed) |
+| verdict_digest | `sha256:1f3e3a2f47a0146364409b02c19307c6cf584b62bf6efc50485ccdc6ed5f7141` |
+| Merkle anchor | `anchor_id 1`, root `02271b5399b092e5ff4cfe20e9594e24394f9af628af795311f00f0e0f4682a9` |
+| Proof | inclusion proof verifies OFFLINE; leaf == verdict_digest |
+| Credential | `AnchoredAttestationCredential` (W3C VC) at `/attest/att_6d7f…/vc` |
+
+**The point it proves:** Black_Wall (a separate codebase) and Traceipt computed
+the *same* `verdict_digest` byte-for-byte, and the server stored exactly that
+hash — so a risk verdict was bound, anchored, and made independently verifiable
+on a real payment.
+
+**Honest caveats (do not overclaim this run):**
+- It was issued under the **pre-configuration signing key**. The durable
+  `RECEIPTS_KEY_PEM` was set afterward (kid `6927e09cfebdbb3c`), so this run's VC
+  does **not** verify against the current issuer key. Runs after that use the
+  stable key.
+- `onchain_tx` is **null** — the Merkle root was recorded locally, not published
+  to a chain. The inclusion proof is valid *relative to that root*, but trustless
+  existence-by-time needs the on-chain publisher (DEPLOY.md §2.F).
+- The batch was sealed via an **open** admin endpoint (the admin token was not
+  yet set). Admin is now locked (`RECEIPTS_ADMIN_TOKEN`) and sealing is hands-free
+  (`RECEIPTS_ANCHOR_INTERVAL=300`), so later runs need no manual `POST /anchor`.
+
+---
+
 ## Then: the mainnet flip (later, real money)
 
 Once the testnet run is green: switch `RECEIPTS_CHAIN=base`,

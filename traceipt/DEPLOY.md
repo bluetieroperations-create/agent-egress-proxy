@@ -124,18 +124,27 @@ redeploys, and every prior receipt stops verifying. Fix both:
   `render.yaml` comment block and `fly.toml` already show how; Fly already
   has the volume). Now the ledger survives.
 - **Signing key as a durable secret:** generate the key once and provide it
-  as `RECEIPTS_KEY_PEM` (the full PEM, as a secret env var) — the service
-  loads it in preference to the key file, so the key survives even without a
-  disk. Generate it with:
+  as `RECEIPTS_KEY_PEM` (a secret env var) — the service loads it in preference
+  to the key file, so the key survives even without a disk. **Prefer the
+  single-line base64 form** — a multi-line PEM pasted into a web form (Render,
+  etc.) gets its newlines collapsed and fails to load (`MalformedFraming`).
+  Base64 has no newlines to mangle:
   ```sh
-  python3 -c "from traceipt.signing import Signer; print(Signer.generate().private_pem().decode())"
+  python3 -c "import base64;from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey as K;from cryptography.hazmat.primitives import serialization as s;print(base64.b64encode(K.generate().private_bytes(s.Encoding.DER,s.PrivateFormat.PKCS8,s.NoEncryption())).decode())"
   ```
-  Capture the matching public JWK for your records with
+  The loader accepts base64(DER), base64(PEM), a plain PEM, and even a
+  newline-mangled or bare-body PEM (it repairs the framing), so any of those
+  will work — but single-line base64 is the one that never gets corrupted in
+  transit. Capture the matching public JWK for your records with
   `python3 -m traceipt.service --print-jwk`. **Back the key up** — it is the
   root of trust for every receipt.
 
-**B. Auto-anchor.** Set `RECEIPTS_ANCHOR_INTERVAL=3600` so batches seal
-hourly on their own; otherwise call `POST /anchor` manually.
+**B. Auto-anchor.** Set `RECEIPTS_ANCHOR_INTERVAL` (seconds) so batches seal on
+their own; otherwise callers need an admin `POST /anchor` each time. The
+blueprint sets `300` (5 min) for the demo; `3600` (hourly) is fine for
+lower-traffic prod. On the free plan the loop pauses while the instance is idle
+and resumes on the next request, so a pending item seals within the interval of
+activity.
 
 **C. Admin token.** `RECEIPTS_ADMIN_TOKEN=<random>` so `POST /anchor` and
 `POST /credits` aren't open. Call them with `Authorization: Bearer <token>`.
@@ -185,7 +194,7 @@ proofs still verify).
 | `RECEIPTS_SELLER_ID` | `--seller-id` | — |
 | `RECEIPTS_PRICE_BASE_UNITS` | `--price` | `2000` ($0.002) |
 | `RECEIPTS_KEY` | `--key` | `issuer_ed25519.pem` |
-| `RECEIPTS_KEY_PEM` | (inline) | — (preferred over key file; a durable secret) |
+| `RECEIPTS_KEY_PEM` | (inline) | — (preferred over key file; a durable secret. Accepts base64(DER/PEM) or plain/mangled PEM) |
 | `RECEIPTS_DB` | `--db` | `receipts.db` |
 | `RECEIPTS_ADMIN_TOKEN` | `--admin-token` | — (gates `/anchor`, `/credits`) |
 | `RECEIPTS_JWKS_HISTORY` | `--jwks-history` | — |
