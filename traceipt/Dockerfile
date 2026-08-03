@@ -8,10 +8,13 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Dependencies first for layer caching. Core is stdlib + cryptography only.
-# For on-chain anchor publishing (--publisher onchain), also install
-# requirements-onchain.txt by setting the build arg ONCHAIN=1.
-ARG ONCHAIN=0
+# Dependencies first for layer caching. Core is stdlib + cryptography only;
+# on-chain anchor publishing (--publisher onchain) also needs eth-account.
+# Default ON so the deployed image supports on-chain publishing without a
+# build arg (blueprint hosts like Render can't easily pass one). eth-account
+# is only imported when --publisher onchain is actually selected, so a build
+# with ONCHAIN=0 stays minimal (stdlib + cryptography) if you want that.
+ARG ONCHAIN=1
 COPY requirements.txt requirements-onchain.txt ./
 RUN pip install --no-cache-dir -r requirements.txt && \
     if [ "$ONCHAIN" = "1" ]; then pip install --no-cache-dir -r requirements-onchain.txt; fi

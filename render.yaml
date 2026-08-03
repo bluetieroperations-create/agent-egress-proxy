@@ -75,6 +75,13 @@ services:
         sync: false
       - key: RECEIPTS_ADMIN_TOKEN
         sync: false
+      #   RECEIPTS_GAS_KEY  private key of a DEDICATED gas wallet (never the
+      #     receiving wallet) that signs on-chain Merkle-root txs. Fund it with
+      #     a little Base Sepolia ETH. Only used when RECEIPTS_PUBLISHER=onchain
+      #     (added below once this key is set -- turning it on without a funded
+      #     gas key would crash the boot check).
+      - key: RECEIPTS_GAS_KEY
+        sync: false
 
 # NOTE ON STORAGE: the free plan has NO persistent disk, so /data is
 # ephemeral -- the ledger DB and the Ed25519 signing key reset whenever the
