@@ -32,6 +32,11 @@ services:
       # start (no persistent disk needed).
       - key: BLACKWALL_STORE
         value: /app/data/reputation.db
+      # Per-category on-chain price baselines, baked into the image alongside the
+      # reputation store (Dockerfile). Lets a cold-start payee gouging vs its category
+      # get caught out of the box. Fail-open: absent/thin index -> signal just off.
+      - key: BLACKWALL_CATEGORY_INDEX
+        value: /app/data/category_index.json
       - key: BLACKWALL_LEDGER
         value: /data/ledger.jsonl
       # 0: unknown counterparty -> instant cold-start HOLD (no blocking chain call).

@@ -43,6 +43,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 # each retried/backed-off), lower for a faster build. Tune at build time, e.g.
 # `docker build --build-arg BAKE_MAX_PAGES=16 .`. FAIL-OPEN: a flaky/rate-limited
 # fetch just yields a thinner store, never a failed build.
+#
+# Second bake step: derive the per-CATEGORY on-chain price index from that same store
+# (payee->category from the CDP Bazaar crawl, medians from the baked settled amounts)
+# and write it to /app/data/category_index.json. The image then ships with category
+# price baselines too, so a cold-start payee gouging vs its category is caught out of
+# the box. Also fail-open -- a missing/thin index just disables that one signal.
+# NOTE: coverage is bounded by the bake -- only categories with >= MIN_CATEGORY_PAYEES
+# distinct payees AMONG the baked set get a baseline (often just 2-4 categories on the
+# free tier). A paid deploy can build a richer index from the full seed_payees.txt.
 ARG HTTPS_PROXY=
 ARG SSL_CERT_FILE=
 ARG BAKE_MAX_PAGES=8
@@ -50,6 +59,9 @@ RUN mkdir -p /app/data \
     && (HTTPS_PROXY="$HTTPS_PROXY" HTTP_PROXY="$HTTPS_PROXY" SSL_CERT_FILE="$SSL_CERT_FILE" \
         python3 chain_backfill.py --store /app/data/reputation.db \
           --payees-file data/seed_payees_bake.txt --max-pages "$BAKE_MAX_PAGES" || true) \
+    && (HTTPS_PROXY="$HTTPS_PROXY" HTTP_PROXY="$HTTPS_PROXY" SSL_CERT_FILE="$SSL_CERT_FILE" \
+        python3 category_pricing.py --store /app/data/reputation.db \
+          --out /app/data/category_index.json --max-pages 8 || true) \
     && chown -R blackwall /app/data
 
 # Persistent state (SQLite reputation store + JSONL ledger) lives on a volume.
@@ -66,7 +78,8 @@ ENV BLACKWALL_HOST=0.0.0.0 \
     BLACKWALL_LEDGER=/data/ledger.jsonl \
     BLACKWALL_INGEST=0 \
     BLACKWALL_SANCTIONS=/app/sanctions.txt \
-    BLACKWALL_SANCTIONS_REFRESH=1
+    BLACKWALL_SANCTIONS_REFRESH=1 \
+    BLACKWALL_CATEGORY_INDEX=/app/data/category_index.json
 # Set at deploy time (NOT baked into the image):
 #   BLACKWALL_PAY_TO       -- your funded EVM wallet (turns billing ON)
 #   BLACKWALL_FACILITATOR  -- real x402 facilitator base URL
