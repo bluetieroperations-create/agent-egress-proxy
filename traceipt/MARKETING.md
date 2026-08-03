@@ -100,6 +100,21 @@ Treat regulation as a **directional tailwind, never a current mandate.**
   **below thresholds and outside the intermediary net** — so the Travel Rule does
   not cleanly mandate Traceipt for its core use case.
 
+**US market structure — CLARITY Act (H.R.3633)** — passed House, advanced by
+Senate Banking (May 2026), **not law** (stalled, delegated rulemaking, uncertain
+path). Two things, both *favorable and non-obligating for us*:
+- It **explicitly exempts software developers / wallet / front-end providers**
+  from intermediary registration. Traceipt is that exempt tool category — **zero
+  compliance burden on us.**
+- It would require **intermediaries** to run pre-trade risk programs
+  (AML / **sanctions** / fraud) with recordkeeping, and directs the SEC to
+  **allow blockchain for books-and-records** — a *customer-side* need for exactly
+  the sanctions-screening evidence Traceipt produces, pointed at exactly the
+  on-chain-anchored form we already use.
+- ❗ Same catch, sharper: not law; and whether cent-level USDC agent payments are
+  "trading activity through a DeFi trading protocol" is **unresolved** — they may
+  fall outside CLARITY's framework entirely.
+
 **General corporate audit** — SOX, tax, GAAP, SEC/FINRA WORM records: global,
 old, boring, universal. "An agent spent our money — prove it for the audit" lands
 here most directly, though a spreadsheet satisfies most auditors today.
@@ -115,6 +130,11 @@ here most directly, though a spreadsheet satisfies most auditors today.
   payments." (they don't — intermediary/threshold-scoped or AI-system-scoped)
 - ❌ **CAN'T:** cite a specific article as *mandating* Traceipt. Cite them as
   *context/tailwind* only.
+- ✅ **CAN:** "If US market structure (CLARITY) passes, we're the *exempt* tool
+  that produces the sanctions-screening record an intermediary's risk program
+  needs — and it steers recordkeeping toward the on-chain form we already use."
+- ❌ **CAN'T:** "CLARITY requires Traceipt." (not law; delegated; scope-uncertain;
+  and it *exempts* software tools like us rather than mandating them)
 
 ### The risk this names
 
