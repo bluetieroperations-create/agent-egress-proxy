@@ -55,7 +55,7 @@ from .settlement import CAIP2, EIP712_DOMAINS, USDC_CONTRACTS, make_verifier
 from .signing import Signer, load_or_create_signer, verify_envelope
 from .x402_gate import (
     Facilitator, GateDecision, _proceed, _reject, encode_payment_response,
-    gate_settle, gate_verify,
+    gate_settle, gate_verify, make_cdp_auth,
 )
 
 MAX_BODY = 64 * 1024
@@ -1028,7 +1028,14 @@ def main(argv=None):
     if args.gate == "facilitator":
         if not args.facilitator_url:
             p.error("--gate facilitator requires --facilitator-url")
-        facilitator = Facilitator(args.facilitator_url)
+        # CDP facilitator (mainnet) needs signed Bearer JWTs; auto-enable when
+        # CDP creds are present. Keyless facilitators (testnet) leave auth=None.
+        fac_auth = None
+        cdp_id = os.environ.get("CDP_API_KEY_ID")
+        cdp_secret = os.environ.get("CDP_API_KEY_SECRET")
+        if cdp_id and cdp_secret:
+            fac_auth = make_cdp_auth(cdp_id, cdp_secret)
+        facilitator = Facilitator(args.facilitator_url, auth=fac_auth)
 
     if args.publisher == "onchain" and not (args.gas_key or
                                             os.environ.get("RECEIPTS_GAS_KEY")):

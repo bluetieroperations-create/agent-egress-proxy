@@ -27,9 +27,13 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import secrets as _secrets
+import time
 import urllib.error
 import urllib.request
 from collections import namedtuple
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 X402_VERSION = 2  # protocol version emitted in the facilitator envelope
 
@@ -149,27 +153,71 @@ def payment_satisfies(payment: dict, requirements: dict) -> tuple[bool, str]:
     return True, "ok"
 
 
+def _b64url(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
+
+
+def make_cdp_auth(api_key_id: str, api_key_secret: str):
+    """Auth-header provider for the Coinbase CDP x402 facilitator (mainnet).
+
+    Unlike the keyless testnet facilitator, CDP requires a short-lived EdDSA
+    Bearer JWT per request. Returns a callable `(method, url) -> {Authorization}`
+    that signs a fresh JWT, per CDP's API-key spec:
+      header  = {alg: EdDSA, typ: JWT, kid: <key id>, nonce}
+      claims  = {sub: <key id>, iss: cdp, aud: [cdp_service], nbf, exp: nbf+120,
+                 uri: "<METHOD> <host><path>"}
+    `api_key_secret` is the base64 64-byte Ed25519 keypair (seed||public); we
+    sign with the 32-byte seed. Pure cryptography + stdlib, no CDP SDK."""
+    raw = base64.b64decode(api_key_secret)
+    if len(raw) != 64:
+        raise ValueError("CDP API key secret must decode to 64 bytes (Ed25519 keypair)")
+    key = Ed25519PrivateKey.from_private_bytes(raw[:32])
+
+    def auth(method: str, url: str) -> dict:
+        rest = url.split("://", 1)[-1]
+        host, _, tail = rest.partition("/")
+        path = "/" + tail  # tail has no leading slash after partition
+        now = int(time.time())
+        header = {"alg": "EdDSA", "typ": "JWT", "kid": api_key_id,
+                  "nonce": _secrets.token_hex(8)}
+        claims = {"sub": api_key_id, "iss": "cdp", "aud": ["cdp_service"],
+                  "nbf": now, "exp": now + 120,
+                  "uri": f"{method} {host}{path}"}
+        signing_input = (
+            _b64url(json.dumps(header, separators=(",", ":")).encode())
+            + "." + _b64url(json.dumps(claims, separators=(",", ":")).encode()))
+        token = signing_input + "." + _b64url(key.sign(signing_input.encode()))
+        return {"Authorization": f"Bearer {token}"}
+
+    return auth
+
+
 class Facilitator:
     """Client for an x402 facilitator's /verify and /settle endpoints."""
 
-    def __init__(self, base_url: str, transport=None, timeout: float = 20.0):
+    def __init__(self, base_url: str, transport=None, timeout: float = 20.0,
+                 auth=None):
         self.base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._transport = transport or self._http_transport
+        # Optional per-request auth-header provider: f(method, url) -> headers.
+        # None for keyless facilitators; make_cdp_auth(...) for CDP (mainnet).
+        self._auth = auth
 
     def _http_transport(self, path: str, body: dict) -> dict:
+        url = self.base_url + path
+        # A Cloudflare-fronted facilitator answers 403 to the default
+        # Python-urllib UA, which would fail the gate with "facilitator
+        # unreachable"; send a plain identifying UA + explicit accept.
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "Traceipt/0.2 x402-gate",
+        }
+        if self._auth is not None:
+            headers.update(self._auth("POST", url))
         req = urllib.request.Request(
-            self.base_url + path,
-            data=json.dumps(body).encode("utf-8"),
-            # A Cloudflare-fronted facilitator answers 403 to the default
-            # Python-urllib UA, which would fail the gate with "facilitator
-            # unreachable"; send a plain identifying UA + explicit accept.
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "User-Agent": "Traceipt/0.2 x402-gate",
-            },
-        )
+            url, data=json.dumps(body).encode("utf-8"), headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))

@@ -2788,5 +2788,83 @@ class TestMCPTools(unittest.TestCase):
                          "https://api.traceipt.xyz")
 
 
+class TestCdpFacilitatorAuth(unittest.TestCase):
+    """CDP (mainnet) facilitator auth: a fresh EdDSA Bearer JWT per request.
+    Verifiable offline -- we sign with a throwaway Ed25519 key and check the
+    structure + signature against CDP's documented spec."""
+
+    def _fake_secret(self):
+        import base64
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        k = Ed25519PrivateKey.generate()
+        seed = k.private_bytes(serialization.Encoding.Raw,
+                               serialization.PrivateFormat.Raw,
+                               serialization.NoEncryption())
+        pub = k.public_key().public_bytes(serialization.Encoding.Raw,
+                                           serialization.PublicFormat.Raw)
+        return k, base64.b64encode(seed + pub).decode()
+
+    def test_jwt_structure_and_signature(self):
+        import base64, json
+        from traceipt.x402_gate import make_cdp_auth
+        k, secret = self._fake_secret()
+        auth = make_cdp_auth("key-id-123", secret)
+        hdrs = auth("POST", "https://api.cdp.coinbase.com/platform/v2/x402/verify")
+        self.assertTrue(hdrs["Authorization"].startswith("Bearer "))
+        tok = hdrs["Authorization"][len("Bearer "):]
+        h_b64, p_b64, s_b64 = tok.split(".")
+
+        def ub64(s):
+            return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+        header = json.loads(ub64(h_b64))
+        claims = json.loads(ub64(p_b64))
+        self.assertEqual(header["alg"], "EdDSA")
+        self.assertEqual(header["typ"], "JWT")
+        self.assertEqual(header["kid"], "key-id-123")
+        self.assertEqual(len(header["nonce"]), 16)
+        self.assertEqual(claims["sub"], "key-id-123")
+        self.assertEqual(claims["iss"], "cdp")
+        self.assertEqual(claims["aud"], ["cdp_service"])
+        self.assertEqual(claims["uri"],
+                         "POST api.cdp.coinbase.com/platform/v2/x402/verify")
+        self.assertEqual(claims["exp"] - claims["nbf"], 120)
+        # signature verifies against the public key over header.payload
+        k.public_key().verify(ub64(s_b64), (h_b64 + "." + p_b64).encode())
+
+    def test_rejects_malformed_secret(self):
+        import base64
+        from traceipt.x402_gate import make_cdp_auth
+        with self.assertRaises(ValueError):
+            make_cdp_auth("id", base64.b64encode(b"too short").decode())
+
+    def test_facilitator_attaches_auth_header(self):
+        # The real HTTP transport must attach the Bearer header when auth is set.
+        import traceipt.x402_gate as gate
+        from traceipt.x402_gate import Facilitator, make_cdp_auth
+        _, secret = self._fake_secret()
+        captured = {}
+
+        class FakeResp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return b'{"isValid": true}'
+
+        def fake_urlopen(req, timeout=None):
+            captured["auth"] = req.get_header("Authorization")
+            return FakeResp()
+
+        orig = gate.urllib.request.urlopen
+        gate.urllib.request.urlopen = fake_urlopen
+        try:
+            fac = Facilitator("https://api.cdp.coinbase.com/platform/v2/x402",
+                              auth=make_cdp_auth("kid", secret))
+            fac.verify({}, {})
+        finally:
+            gate.urllib.request.urlopen = orig
+        self.assertTrue(captured["auth"] and captured["auth"].startswith("Bearer "))
+
+
 if __name__ == "__main__":
     unittest.main()
