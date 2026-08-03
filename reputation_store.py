@@ -116,9 +116,15 @@ class ReputationStore:
             # a blank sender must never help an address clear the thin-history gate.
             # lower() keeps this case-insensitive in step with the payer graph, so a
             # future mixed-case ingest can't split one payer into several (audit F7).
+            # SELF-PAYMENTS (payer == counterparty) are EXCLUDED from the distinct
+            # count: an address paying itself is a trivially-manufactured "distinct
+            # payer" and is exactly the wash-trade the Sybil gate defends against
+            # (the payer graph already drops self-edges in build_index; keep the
+            # store's own distinct count in step). They still count as settlements.
             cur = self._conn.execute(
                 "SELECT COUNT(*), MIN(ts), MAX(ts), "
-                "COUNT(DISTINCT NULLIF(lower(payer),'')) "
+                "COUNT(DISTINCT CASE WHEN lower(payer) <> lower(counterparty) "
+                "                    THEN NULLIF(lower(payer),'') END) "
                 "FROM settlements WHERE counterparty=?", (cp,))
             count, first_seen, last_seen, distinct_payers = cur.fetchone()
             rows = list(self._conn.execute(

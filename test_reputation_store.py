@@ -70,6 +70,30 @@ class TestIngestAndLookup(unittest.TestCase):
         ])
         self.assertEqual(self.store.lookup("0xCP")["distinct_payers"], 2)
 
+    def test_self_payment_not_counted_distinct(self):
+        # a payee paying ITSELF (payer == counterparty) is a trivially-manufactured
+        # "distinct payer" -- the exact wash-trade the Sybil gate defends against --
+        # so it must NOT count toward distinct_payers (though it IS a settlement).
+        # Mutation: dropping the `WHEN lower(payer) <> lower(counterparty)` guard
+        # counts self as a 3rd distinct payer -> clears MIN_DISTINCT_PAYERS(3).
+        self.store.ingest_transfers([
+            xf("0xCP", "0.09", frm="0xaaa", tx="0xt1"),
+            xf("0xCP", "0.09", frm="0xbbb", tx="0xt2"),
+            xf("0xCP", "0.09", frm="0xCP", tx="0xt3"),   # self-payment
+        ])
+        rec = self.store.lookup("0xCP")
+        self.assertEqual(rec["distinct_payers"], 2)      # self excluded
+        self.assertEqual(rec["settlement_count"], 3)     # still a settlement
+
+    def test_self_payment_case_insensitive(self):
+        # self-payment detection is case-insensitive: a mixed-case self-payment
+        # must not slip past the guard and inflate the Sybil count.
+        self.store.ingest_transfers([
+            xf("0xcp", "0.09", frm="0xAAA", tx="0xt1"),
+            xf("0xcp", "0.09", frm="0xCp", tx="0xt2"),   # self, different case
+        ])
+        self.assertEqual(self.store.lookup("0xcp")["distinct_payers"], 1)
+
     def test_transfer_without_tx_hash_skipped(self):
         # No tx_hash -> not dedupable, not useful -> skipped (would double-count).
         self.assertEqual(self.store.ingest_transfers([
