@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "traceipt"
+version = "0.1.0"
+description = "Verifiable receipts for x402 machine payments: neutral, compliance-bound, on-chain-anchored, independently verifiable."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["cryptography>=41"]
+
+# Optional extras: `pip install traceipt[mcp]` for the MCP server,
+# `traceipt[onchain]` for on-chain Merkle-root publishing.
+[project.optional-dependencies]
+mcp = ["mcp>=2.0.0"]
+onchain = ["eth-account>=0.11,<0.14"]
+
+[project.scripts]
+traceipt = "traceipt.service:main"
+traceipt-mcp = "traceipt.mcp_server:main"
+
+[tool.setuptools]
+packages = ["traceipt"]

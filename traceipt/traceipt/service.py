@@ -147,9 +147,49 @@ class App:
             req["extra"] = dict(domain)
         return req
 
+    def _bazaar_extension(self, resource: str) -> dict:
+        """x402 Bazaar discovery block. Advertising `extensions.bazaar.info` in
+        the 402 response is the ONLY thing a resource must do to be discoverable
+        -- any facilitator that implements a discovery layer catalogs it on
+        settlement (no separate signup). Facilitator-agnostic; see MCP.md/DEPLOY
+        for pointing at a facilitator whose bazaar the ecosystem reads."""
+        if resource == "/attest":
+            info = {
+                "description": "Anchor an external digest (e.g. a risk/sanctions "
+                               "verdict) in the next on-chain Merkle batch.",
+                "input": {"type": "http", "method": "POST",
+                          "bodyExample": {"hash": "sha256:<64 hex>",
+                                          "type": "sanctions-verdict",
+                                          "ref": "policy:ofac-sanctions-v1"}},
+                "output": {"type": "json",
+                           "example": {"attestation": {"attestation_id": "att_…",
+                                                       "status": "pending"},
+                                       "proof_url": self.base_url + "/attest/att_…/proof"}},
+                "tags": ["attestation", "anchoring", "compliance", "audit"],
+            }
+        else:  # /receipts
+            info = {
+                "description": "Turn a settled x402 USDC payment into a signed, "
+                               "on-chain-verified, independently-verifiable receipt "
+                               "(W3C VC; optional compliance-verdict binding).",
+                "input": {"type": "http", "method": "POST",
+                          "bodyExample": {"settlement": {"chain": self.chain,
+                                                         "tx_hash": "0x…"},
+                                          "commerce": {"resource": "https://…",
+                                                       "description": "…",
+                                                       "quoted_amount_base_units": "…"}}},
+                "output": {"type": "json",
+                           "example": {"receipt": {"payload": {"receipt_id": "rcpt_…"},
+                                                   "signature": "…"},
+                                       "verify_url": self.base_url + "/verify/rcpt_…"}},
+                "tags": ["receipts", "compliance", "verifiable-credentials", "audit"],
+            }
+        return {"bazaar": {"info": info}}
+
     def payment_required_body(self, resource: str) -> dict:
         """x402 v2 Payment Required body. v2 shape: {x402Version:2, error?,
-        resource:{ResourceInfo}, accepts:[...], extensions:{}}."""
+        resource:{ResourceInfo}, accepts:[...], extensions:{bazaar:…}}. The
+        bazaar extension makes this resource discoverable in the x402 Bazaar."""
         desc = ("anchor one external digest in the next Merkle batch"
                 if resource == "/attest" else "issue one signed x402 receipt")
         return {
@@ -162,7 +202,7 @@ class App:
                 "serviceName": "Traceipt",
             },
             "accepts": [self.requirements(resource)],
-            "extensions": {},
+            "extensions": self._bazaar_extension(resource),
         }
 
     def gate_payment(self, headers, resource: str) -> GateDecision:

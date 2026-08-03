@@ -44,29 +44,26 @@ Add to an MCP client (e.g. Claude Desktop `claude_desktop_config.json`):
 ## Publish to the public MCP registry
 
 The verification logic (`traceipt/mcp_tools.py`) is pure + unit-tested; the
-server (`traceipt/mcp_server.py`) is a thin MCPServer shell (mcp>=2.0). To list it in the
-[official registry](https://registry.modelcontextprotocol.io), publish a
-`server.json` with the `mcp-publisher` CLI:
+server (`traceipt/mcp_server.py`) is a thin MCPServer shell (mcp>=2.0).
+`pyproject.toml` makes the package pip-installable with a `traceipt-mcp` console
+entry point, and `server.json` is the registry manifest.
 
-```jsonc
-// server.json
-{
-  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
-  "name": "io.traceipt/verifier",
-  "description": "Independent, neutral verification of x402 machine-payment receipts, credentials, compliance bindings, and on-chain anchors.",
-  "repository": { "url": "https://github.com/bluetieroperations-create/agent-egress-proxy", "source": "github" },
-  "version": "0.1.0",
-  "packages": [
-    { "registry_type": "pypi", "identifier": "traceipt", "version": "0.1.0",
-      "transport": { "type": "stdio" } }
-  ]
-}
-```
+Runbook to list it in the [official registry](https://registry.modelcontextprotocol.io):
 
 ```sh
-mcp-publisher login github
+# 1. Build + publish the package to PyPI (name `traceipt` must be available).
+python -m build            # produces dist/*.whl and *.tar.gz from pyproject.toml
+python -m twine upload dist/*
+
+# 2. Publish the registry manifest (server.json in this dir).
+mcp-publisher login github  # verifies the io.github.bluetieroperations-create/* namespace
 mcp-publisher publish
 ```
 
-(Publishing to PyPI as `traceipt` is a prerequisite for the pypi package entry;
-until then, the server runs fine locally from this repo via the config above.)
+Notes:
+- The namespace `io.github.bluetieroperations-create/...` in `server.json` is
+  verified via the GitHub login, so it must match the repo owner.
+- `server.json` field names track the registry schema; if `mcp-publisher`
+  reports a mismatch, reconcile against the `$schema` URL in the file.
+- Until the PyPI publish lands, the server still runs locally from this repo via
+  the client config above — publishing only affects *discoverability*.

@@ -1392,6 +1392,18 @@ class TestAttestService(unittest.TestCase):
         self.assertEqual(obj["x402Version"], 2)
         self.assertEqual(obj["resource"]["url"], "http://x/attest")  # v2 ResourceInfo
 
+    def test_bazaar_extension_advertised(self):
+        # Discoverable in the x402 Bazaar: the 402 carries extensions.bazaar.info
+        code, obj = self._req("POST", "/attest", {"hash": "sha256:" + "aa" * 32})
+        self.assertEqual(code, 402)
+        info = obj["extensions"]["bazaar"]["info"]
+        self.assertEqual(info["input"]["method"], "POST")
+        self.assertIn("compliance", info["tags"])
+        # receipts advertises too
+        code, r = self._req("POST", "/receipts", {})
+        self.assertEqual(code, 402)
+        self.assertIn("receipts", r["extensions"]["bazaar"]["info"]["tags"])
+
     def test_bad_hash_400(self):
         code, _ = self._req("POST", "/attest", {"hash": "0xnope"},
                             {"X-PAYMENT": "t"})

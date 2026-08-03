@@ -1,0 +1,20 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "io.github.bluetieroperations-create/traceipt-verifier",
+  "description": "Independent, neutral verification of x402 machine-payment receipts, W3C credentials, compliance (risk-verdict) bindings, and on-chain Merkle anchors. Read-only; no keys or payment required.",
+  "version": "0.1.0",
+  "repository": {
+    "url": "https://github.com/bluetieroperations-create/agent-egress-proxy",
+    "source": "github",
+    "subfolder": "traceipt"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "traceipt",
+      "version": "0.1.0",
+      "runtimeHint": "traceipt-mcp",
+      "transport": { "type": "stdio" }
+    }
+  ]
+}
