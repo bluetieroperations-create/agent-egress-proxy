@@ -74,39 +74,39 @@ Both bind `0.0.0.0:8402` and route HTTPS to it; health is `GET /healthz`. Also
 deploys to Railway or any Kubernetes/ECS — the only requirements are a persistent
 volume for `/data` and the secrets above.
 
-### Free tier (Render, $0) — warm bake baked into the image
+### Free tier (Render, $0) — PREBUILT warm corpus committed to the image
 
-`render-free.yaml` runs on Render's free plan with **no persistent disk**. Since there's
-no volume to pre-warm at runtime and no shell to run `chain_backfill`, the Dockerfile
-**bakes a warm reputation corpus into the image at build time**: it backfills the
-top-60 payees from `data/seed_payees_bake.txt` (a subset of the full manifest, ranked
-by on-chain distinct payers and sectioned by trust tier) out of
-public Base USDC history into `/app/data/reputation.db`, which `BLACKWALL_STORE` points
-at. The container therefore boots **warm** (known payees get real verdicts, not a
-cold-start HOLD) and re-warms from the image on every cold start. The bake is
-**fail-open** — a rate-limited/flaky fetch just yields a thinner store, never a failed
-build — and writes to `/app/data`, *not* the `/data` VOLUME (Docker discards a volume's
-build-time writes).
+`render-free.yaml` runs on Render's free plan with **no persistent disk**. Rather than
+crawl the chain at build time, the **full 292-payee reputation store + the per-category
+price index are PREBUILT once and committed** (`data/reputation_seed.db.gz` ≈ 2.8 MB,
+`data/category_index.json`). The Dockerfile just `COPY`s them and decompresses the store
+into `/app/data/reputation.db` (`BLACKWALL_STORE` / `BLACKWALL_CATEGORY_INDEX` point
+there). The container boots **warm with the whole manifest** — ~264 of 292 payees clear
+the thin-history/Sybil gates, and 5+ service-category price baselines are live — and
+re-warms from the image on every cold start.
 
-- **Bake depth** is the `BAKE_MAX_PAGES` build ARG (default **8**). Each Blockscout page
-  is ~50 USDC transfers, so N pages caps each payee at ~50·N settlements. 8 pages →
-  ~400 settlements and ~15–70 distinct payers per payee (enough to clear the thin-history
-  and Sybil gates with real breadth, which is what feeds the payer-graph / reputation /
-  temporal signals). It adds ~9 min to the image build (~15 s/payee). Tune without editing
-  the Dockerfile: `docker build --build-arg BAKE_MAX_PAGES=4 .` (shallower, faster) or a
-  higher value (deeper, slower — build time scales linearly).
-- **Caveat — the ~50·N cap truncates the busiest payees.** At 8 pages every payee tops out
-  at ~400 settlements, so the handful of *highest-volume* payees have their history clipped
-  to a recent window. That's fine for warm-boot verdicts (the gates still clear on real
-  data), but two second-order effects follow: (1) their true settlement depth and full
-  distinct-payer breadth are understated; (2) the temporal `burst_sybil` diagnostic can
-  false-positive because a clipped window compresses their history (it's advisory-only /
-  never gated for exactly this reason — see `docs/TEMPORAL.md`). Pushing `BAKE_MAX_PAGES`
-  much higher fights this at a linear build-time cost and still caps eventually. **If you
-  need full, untruncated depth, don't deepen the bake — move to the paid tier**: a
-  persistent `/data` disk (`render.yaml`) pre-warmed once from the *full* `seed_payees.txt`
-  (`--max-pages` high or unset), which persists across restarts instead of re-baking a
-  capped window on every cold start.
+Why prebuilt (option C) beats a build-time backfill:
+- **Full coverage, free.** The persistent disk buys *persistence* + *always-on*, NOT
+  coverage — coverage is a build-time/image concern. Committing the store gives the free
+  tier the full 292-payee corpus without a disk.
+- **Fast, reliable builds (~1 min).** No build-time crawl, so a build can't be broken or
+  slowed by Blockscout/Bazaar downtime or rate limits.
+- **As deep as you want.** Depth is set when you build the artifact, not capped by build
+  time — no per-payee truncation of the busiest endpoints.
+
+**Regenerate the artifacts periodically** (so reputation doesn't go stale), then commit
++ redeploy:
+```sh
+python3 chain_backfill.py --store /tmp/rep.db --payees-file data/seed_payees.txt --max-pages 2
+python3 category_pricing.py --store /tmp/rep.db --out data/category_index.json --max-pages 8
+python3 -c "import gzip,shutil; shutil.copyfileobj(open('/tmp/rep.db','rb'), gzip.open('data/reputation_seed.db.gz','wb',9))"
+```
+Tradeoff: a ~2.8 MB binary lives in git and goes stale between refreshes. `data/
+seed_payees_bake.txt` (top-60, tier-sectioned) is kept for reference/regeneration.
+
+**Still free-tier-only** (needs the paid `/data` disk, `render.yaml`): runtime-learned
+ledger outcomes reset on restart, and the instance cold-starts after ~15 min idle.
+Neither is about coverage.
 
 ## Runbook — the order you asked for
 

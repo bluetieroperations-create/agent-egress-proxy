@@ -11,9 +11,9 @@ WORKDIR /app
 # Copy everything and never play that whack-a-mole again. (test_*.py ride along unused.)
 COPY *.py ./
 
-# Warm-boot manifests: seed_payees.txt (full 198, for a paid pre-warm on the volume)
-# and seed_payees_bake.txt (top-60 by on-chain distinct payers, baked into the image for the
-# free tier -- small enough to keep build time reasonable).
+# Warm-boot manifests: seed_payees.txt (full 292, the source of the prebuilt store
+# below) and seed_payees_bake.txt (kept for reference/regeneration). Not used at build
+# time anymore -- the store is PREBUILT and committed (see below).
 COPY data/seed_payees.txt data/seed_payees_bake.txt ./data/
 
 # OFAC sanctioned-address snapshot (from the published 0xB10C list). Baked in so
@@ -21,47 +21,31 @@ COPY data/seed_payees.txt data/seed_payees_bake.txt ./data/
 # Refresh periodically with:  python sanctions.py sanctions.txt  (then redeploy).
 COPY sanctions.txt ./
 
-# ca-certificates so the build-time backfill's HTTPS to Blockscout verifies.
+# ca-certificates for the RUNTIME sanctions refresh (BLACKWALL_SANCTIONS_REFRESH=1
+# fetches the live OFAC list over HTTPS). No build-time network is used anymore.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# BAKE a warm reputation corpus into the image. The free tier has no persistent disk
-# or shell, so there's no way to pre-warm at runtime -- instead we backfill the
-# manifest's payees from PUBLIC Base USDC history at BUILD time into a store baked
-# into the image, so the container boots WARM (known payees get real verdicts, not a
-# cold-start HOLD) and re-warms on every cold start. FAIL-OPEN: a blocked/flaky
-# backfill just yields a thinner store, never a failed build. Baked to /app/data --
-# NOT the /data VOLUME below, whose build-time writes Docker discards. The free deploy
-# points BLACKWALL_STORE here (render-free.yaml); paid deploys use the /data disk.
-# HTTPS_PROXY/SSL_CERT_FILE are build-time-only knobs for local testing behind a proxy
-# (empty on Render -> direct egress + the system CA installed above).
+# PREBUILT warm corpus (committed, not backfilled at build time). The free tier has no
+# persistent disk, so the whole 292-payee reputation store + the per-category price
+# index are built ONCE from PUBLIC Base USDC history and COMMITTED (data/
+# reputation_seed.db.gz, data/category_index.json), then decompressed into the image
+# here. The container boots WARM with the FULL manifest (~264 payees clear the gates,
+# 5+ category baselines) -- no build-time crawl, so builds are fast (~1 min) and can't
+# be broken by Blockscout/Bazaar downtime. Baked to /app/data (NOT the /data VOLUME
+# below, whose build-time writes Docker discards); the free deploy points
+# BLACKWALL_STORE / BLACKWALL_CATEGORY_INDEX here (render-free.yaml).
 #
-# BAKE_MAX_PAGES controls how DEEP the warm bake goes: each Blockscout page is ~50
-# USDC transfers, so N pages caps each payee at ~50*N settlements. 8 -> ~400/payee
-# (enough to clear the thin-history gate with real depth, not just the ~100 a 2-page
-# bake gave). Raise for deeper history (slower build: ~40 payees * N page-fetches,
-# each retried/backed-off), lower for a faster build. Tune at build time, e.g.
-# `docker build --build-arg BAKE_MAX_PAGES=16 .`. FAIL-OPEN: a flaky/rate-limited
-# fetch just yields a thinner store, never a failed build.
-#
-# Second bake step: derive the per-CATEGORY on-chain price index from that same store
-# (payee->category from the CDP Bazaar crawl, medians from the baked settled amounts)
-# and write it to /app/data/category_index.json. The image then ships with category
-# price baselines too, so a cold-start payee gouging vs its category is caught out of
-# the box. Also fail-open -- a missing/thin index just disables that one signal.
-# NOTE: coverage is bounded by the bake -- only categories with >= MIN_CATEGORY_PAYEES
-# distinct payees AMONG the baked set get a baseline (often just 2-4 categories on the
-# free tier). A paid deploy can build a richer index from the full seed_payees.txt.
-ARG HTTPS_PROXY=
-ARG SSL_CERT_FILE=
-ARG BAKE_MAX_PAGES=8
+# REGENERATE the artifacts (periodically, so reputation doesn't go stale):
+#   python3 chain_backfill.py --store /tmp/rep.db --payees-file data/seed_payees.txt --max-pages 2
+#   python3 category_pricing.py --store /tmp/rep.db --out data/category_index.json --max-pages 8
+#   python3 -c "import gzip,shutil; shutil.copyfileobj(open('/tmp/rep.db','rb'), gzip.open('data/reputation_seed.db.gz','wb',9))"
+# then commit data/reputation_seed.db.gz + data/category_index.json and redeploy.
+COPY data/reputation_seed.db.gz data/category_index.json /app/prebuilt/
 RUN mkdir -p /app/data \
-    && (HTTPS_PROXY="$HTTPS_PROXY" HTTP_PROXY="$HTTPS_PROXY" SSL_CERT_FILE="$SSL_CERT_FILE" \
-        python3 chain_backfill.py --store /app/data/reputation.db \
-          --payees-file data/seed_payees_bake.txt --max-pages "$BAKE_MAX_PAGES" || true) \
-    && (HTTPS_PROXY="$HTTPS_PROXY" HTTP_PROXY="$HTTPS_PROXY" SSL_CERT_FILE="$SSL_CERT_FILE" \
-        python3 category_pricing.py --store /app/data/reputation.db \
-          --out /app/data/category_index.json --max-pages 8 || true) \
+    && python3 -c "import gzip,shutil; shutil.copyfileobj(gzip.open('/app/prebuilt/reputation_seed.db.gz','rb'), open('/app/data/reputation.db','wb'))" \
+    && cp /app/prebuilt/category_index.json /app/data/category_index.json \
+    && rm -rf /app/prebuilt \
     && chown -R blackwall /app/data
 
 # Persistent state (SQLite reputation store + JSONL ledger) lives on a volume.
