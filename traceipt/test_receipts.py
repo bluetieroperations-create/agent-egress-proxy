@@ -2996,6 +2996,93 @@ class TestCdpFacilitatorAuth(unittest.TestCase):
         self.assertTrue(captured["auth"] and captured["auth"].startswith("Bearer "))
 
 
+class TestBlockscoutSettlement(unittest.TestCase):
+    """BlockscoutVerifier (independent second source) + CrossCheckVerifier."""
+
+    CONTRACT = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+    PAYER = "0x3aec6fb2279D7Dd261482CC8BA9f2830f73A1A77"
+    PAYEE = "0x3ec5e0EC1E1Cb8E2AfA36F3b40EeD9057d9004E1"
+
+    def _settlement(self, amount="10000"):
+        return {"tx_hash": "0x" + "ab" * 32, "asset_contract": self.CONTRACT,
+                "payer": self.PAYER, "payee": self.PAYEE, "amount_base_units": amount}
+
+    def _transport(self, *, status="ok", amount="10000", confirmations=100,
+                   raise_on=None):
+        def t(path):
+            if raise_on and raise_on in path:
+                raise urllib.error.HTTPError(path, 404, "Not Found", {}, None)
+            if path.endswith("token-transfers?type=ERC-20"):
+                return {"items": [{"token": {"address": self.CONTRACT},
+                                   "from": {"hash": self.PAYER}, "to": {"hash": self.PAYEE},
+                                   "total": {"value": amount, "decimals": "6"}}]}
+            return {"status": status, "confirmations": confirmations}
+        return t
+
+    def _verifier(self, **kw):
+        from traceipt.settlement import BlockscoutVerifier
+        return BlockscoutVerifier("base", transport=self._transport(**kw))
+
+    def test_matching_transfer_verifies(self):
+        r = self._verifier().verify(self._settlement())
+        self.assertTrue(r.ok)
+        self.assertEqual(r.method, "blockscout")
+
+    def test_amount_mismatch_is_a_reachable_contradiction(self):
+        r = self._verifier(amount="99999").verify(self._settlement("10000"))
+        self.assertFalse(r.ok)
+        self.assertTrue(r.reachable)          # it HAS the tx and disagrees
+        self.assertIn("mismatch", r.reason)
+
+    def test_reverted_tx_blocks(self):
+        r = self._verifier(status="error").verify(self._settlement())
+        self.assertFalse(r.ok)
+        self.assertTrue(r.reachable)
+
+    def test_unindexed_tx_is_unavailable_not_contradiction(self):
+        from traceipt.settlement import BlockscoutVerifier
+        v = BlockscoutVerifier("base", transport=self._transport(raise_on="transactions"))
+        r = v.verify(self._settlement())
+        self.assertFalse(r.ok)
+        self.assertFalse(r.reachable)         # a 404 is lag, not a contradiction
+
+    def test_confirmations_guard(self):
+        v = self._verifier(confirmations=1)
+        v._min_confirmations = 3
+        r = v.verify(self._settlement())
+        self.assertFalse(r.ok)
+        self.assertIn("confirmations", r.reason)
+
+    def test_crosscheck_agree_upgrades_method(self):
+        from traceipt.settlement import CrossCheckVerifier, SettlementResult
+        prim = type("P", (), {"verify": lambda s, x: SettlementResult(True, "rpc")})()
+        r = CrossCheckVerifier(prim, self._verifier()).verify(self._settlement())
+        self.assertTrue(r.ok)
+        self.assertEqual(r.method, "rpc+blockscout")
+
+    def test_crosscheck_unavailable_does_not_block(self):
+        from traceipt.settlement import CrossCheckVerifier, SettlementResult, BlockscoutVerifier
+        prim = type("P", (), {"verify": lambda s, x: SettlementResult(True, "rpc")})()
+        sec = BlockscoutVerifier("base", transport=self._transport(raise_on="transactions"))
+        r = CrossCheckVerifier(prim, sec).verify(self._settlement())
+        self.assertTrue(r.ok)                 # primary stands
+        self.assertEqual(r.method, "rpc")
+        self.assertEqual(r.cross_check["blockscout"], "unavailable")
+
+    def test_crosscheck_contradiction_blocks(self):
+        from traceipt.settlement import CrossCheckVerifier, SettlementResult
+        prim = type("P", (), {"verify": lambda s, x: SettlementResult(True, "rpc")})()
+        r = CrossCheckVerifier(prim, self._verifier(amount="1")).verify(self._settlement("10000"))
+        self.assertFalse(r.ok)
+        self.assertIn("DISAGREEMENT", r.reason)
+
+    def test_make_verifier_modes(self):
+        from traceipt.settlement import (make_verifier, BlockscoutVerifier,
+                                         CrossCheckVerifier)
+        self.assertIsInstance(make_verifier("blockscout", "base"), BlockscoutVerifier)
+        self.assertIsInstance(make_verifier("rpc+blockscout", "base"), CrossCheckVerifier)
+
+
 class TestVerifyInclusionEndpoint(unittest.TestCase):
     """POST /verify (verify_document) checking a presented inclusion proof
     against the on-chain-backed anchor index."""

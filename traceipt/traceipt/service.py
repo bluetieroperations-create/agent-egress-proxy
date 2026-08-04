@@ -1082,8 +1082,11 @@ def main(argv=None):
                         "settlement's payer (facilitator gate only)")
     p.add_argument("--chain", choices=["base", "base-sepolia"],
                    default=os.environ.get("RECEIPTS_CHAIN", "base-sepolia"))
-    p.add_argument("--settlement", choices=["rpc", "mock"],
-                   default=os.environ.get("RECEIPTS_SETTLEMENT", "rpc"))
+    p.add_argument("--settlement", choices=["rpc", "mock", "blockscout", "rpc+blockscout"],
+                   default=os.environ.get("RECEIPTS_SETTLEMENT", "rpc"),
+                   help="how to verify the on-chain transfer. 'rpc+blockscout' "
+                        "adds a keyless Blockscout cross-check to the RPC "
+                        "(a contradiction blocks; a lagging Blockscout does not).")
     p.add_argument("--rpc-url", default=os.environ.get("RECEIPTS_RPC_URL"))
     p.add_argument("--min-confirmations", type=int,
                    default=int(os.environ.get("RECEIPTS_MIN_CONFIRMATIONS", "0")),

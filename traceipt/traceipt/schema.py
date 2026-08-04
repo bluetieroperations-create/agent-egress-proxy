@@ -30,7 +30,7 @@ _ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _RECEIPT_ID_RE = re.compile(r"^rcpt_[0-9a-f]{20}$")
 
 SUPPORTED_CHAINS = {"base", "base-sepolia"}
-VERIFICATION_METHODS = {"rpc", "mock", "unverified"}
+VERIFICATION_METHODS = {"rpc", "mock", "unverified", "blockscout", "rpc+blockscout"}
 RECEIPT_KINDS = {"payment", "credit"}
 MAX_EVIDENCE = 16
 

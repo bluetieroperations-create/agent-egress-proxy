@@ -47,11 +47,25 @@ EIP712_DOMAINS = {
 }
 
 
+BLOCKSCOUT_BASES = {
+    "base": "https://base.blockscout.com",
+    "base-sepolia": "https://base-sepolia.blockscout.com",
+}
+
+
 class SettlementResult:
-    def __init__(self, ok: bool, method: str, reason: str = ""):
+    def __init__(self, ok: bool, method: str, reason: str = "", *,
+                 reachable: bool = True, cross_check: dict | None = None):
         self.ok = ok
-        self.method = method  # "rpc" | "mock" | "unverified"
+        self.method = method  # "rpc" | "mock" | "blockscout" | "rpc+blockscout" | ...
         self.reason = reason
+        # For a secondary/cross-check source: False means the source could not
+        # be reached / had not indexed the tx (a lag, NOT a contradiction), so a
+        # cross-checker must not fail a settlement on it. True + ok=False is a
+        # real contradiction.
+        self.reachable = reachable
+        # Optional cross-check annotation, e.g. {"blockscout": "agree"}.
+        self.cross_check = cross_check
 
 
 def _topic_to_addr(topic: str) -> str:
@@ -175,6 +189,134 @@ class RpcVerifier:
         return True, ""
 
 
+class BlockscoutVerifier:
+    """Verify a settlement against Blockscout's public API (keyless, free) — an
+    INDEPENDENT second source to the RPC. Confirms the tx succeeded and carries a
+    matching USDC Transfer (contract/payer/payee/amount).
+
+    `reachable` on the result is the honest bit for a cross-checker: an
+    unreachable / not-yet-indexed Blockscout returns reachable=False (a lag, do
+    NOT block a valid settlement), while a tx that Blockscout HAS indexed but
+    whose transfer contradicts the claim returns reachable=True, ok=False (a real
+    contradiction worth blocking on). The transport is injectable for tests."""
+
+    def __init__(self, chain: str, base_url: str | None = None, transport=None,
+                 timeout: float = 15.0, min_confirmations: int = 0):
+        self._base = (base_url or BLOCKSCOUT_BASES[chain]).rstrip("/")
+        self._timeout = timeout
+        self._min_confirmations = max(0, int(min_confirmations))
+        self._transport = transport or self._http_get
+
+    def _http_get(self, path: str) -> dict:
+        req = urllib.request.Request(
+            self._base + path,
+            headers={"Accept": "application/json",
+                     "User-Agent": "Traceipt/0.2 settlement-verifier"})
+        with urllib.request.urlopen(req, timeout=self._timeout) as r:
+            return json.loads(r.read().decode("utf-8"))
+
+    def verify(self, settlement: dict) -> SettlementResult:
+        tx = settlement["tx_hash"]
+        want_contract = settlement["asset_contract"].lower()
+        want_payer = settlement["payer"].lower()
+        want_payee = settlement["payee"].lower()
+        want_amount = int(settlement["amount_base_units"])
+
+        # 1. tx status + confirmations. A 404 / transport error means Blockscout
+        # has not indexed it (or is down): treat as UNAVAILABLE, never a block.
+        try:
+            txo = self._transport(f"/api/v2/transactions/{tx}")
+        except Exception as e:  # noqa: BLE001
+            return SettlementResult(False, "blockscout",
+                                    f"blockscout unavailable: {e}", reachable=False)
+        status = txo.get("status") if isinstance(txo, dict) else None
+        if status == "error":
+            return SettlementResult(False, "blockscout",
+                                    "transaction reverted (status=error)", reachable=True)
+        if status != "ok":
+            return SettlementResult(False, "blockscout",
+                                    f"transaction not confirmed on blockscout (status={status})",
+                                    reachable=False)
+        if self._min_confirmations > 0:
+            try:
+                conf = int(txo.get("confirmations") or 0)
+            except (ValueError, TypeError):
+                conf = 0
+            if conf < self._min_confirmations:
+                return SettlementResult(False, "blockscout",
+                                        f"insufficient confirmations "
+                                        f"({conf} of {self._min_confirmations})",
+                                        reachable=True)
+
+        # 2. the tx's ERC-20 transfers must contain the claimed USDC move.
+        try:
+            tt = self._transport(f"/api/v2/transactions/{tx}/token-transfers?type=ERC-20")
+        except Exception as e:  # noqa: BLE001
+            return SettlementResult(False, "blockscout",
+                                    f"blockscout unavailable: {e}", reachable=False)
+        items = tt.get("items") if isinstance(tt, dict) else None
+        if not isinstance(items, list):
+            return SettlementResult(False, "blockscout",
+                                    "no token-transfer data", reachable=False)
+        near_miss = None
+        for i in items:
+            tok = i.get("token") or {}
+            addr = (tok.get("address") or tok.get("address_hash") or "").lower()
+            frm = ((i.get("from") or {}).get("hash") or "").lower()
+            to = ((i.get("to") or {}).get("hash") or "").lower()
+            if addr != want_contract or frm != want_payer or to != want_payee:
+                continue
+            try:
+                amount = int((i.get("total") or {}).get("value"))
+            except (ValueError, TypeError):
+                continue
+            if amount == want_amount:
+                return SettlementResult(True, "blockscout")
+            near_miss = (f"amount mismatch: blockscout says {amount}, "
+                         f"claim says {want_amount}")
+        return SettlementResult(
+            False, "blockscout",
+            near_miss or "no matching USDC Transfer (contract/payer/payee) on blockscout",
+            reachable=True)
+
+
+class CrossCheckVerifier:
+    """Run a PRIMARY verifier (authoritative) plus a SECONDARY cross-check.
+
+    - primary fails            -> return the primary failure (unchanged).
+    - primary ok, secondary ok -> method upgraded to 'primary+secondary'
+                                  (the receipt now cites TWO independent sources).
+    - primary ok, secondary UNAVAILABLE (unreachable / not indexed) -> the
+                                  primary stands, annotated; a lagging indexer
+                                  must never block a real payment.
+    - primary ok, secondary CONTRADICTS -> FAIL. A second source that has the tx
+                                  and disagrees is the whole point: it catches a
+                                  forged/rogue RPC or a source-visible reorg."""
+
+    def __init__(self, primary, secondary, secondary_name: str = "blockscout"):
+        self._primary = primary
+        self._secondary = secondary
+        self._sname = secondary_name
+
+    def verify(self, settlement: dict) -> SettlementResult:
+        p = self._primary.verify(settlement)
+        if not p.ok:
+            return p
+        s = self._secondary.verify(settlement)
+        if s.ok:
+            return SettlementResult(True, f"{p.method}+{self._sname}",
+                                    cross_check={self._sname: "agree"})
+        if not getattr(s, "reachable", True):
+            return SettlementResult(
+                True, p.method,
+                f"verified by {p.method}; {self._sname} unavailable, not cross-checked",
+                cross_check={self._sname: "unavailable", "reason": s.reason})
+        return SettlementResult(
+            False, f"{p.method}+{self._sname}",
+            f"cross-check DISAGREEMENT: {self._sname} says: {s.reason}",
+            cross_check={self._sname: "contradict", "reason": s.reason})
+
+
 class MockVerifier:
     """Accepts everything. For local development and tests ONLY — receipts
     it produces carry verification_method='mock' so they are visibly
@@ -189,6 +331,15 @@ def make_verifier(mode: str, chain: str, rpc_url: str | None = None,
     if mode == "rpc":
         return RpcVerifier(rpc_url or RPC_DEFAULTS[chain],
                            min_confirmations=min_confirmations)
+    if mode == "blockscout":
+        return BlockscoutVerifier(chain, min_confirmations=min_confirmations)
+    if mode == "rpc+blockscout":
+        # RPC authoritative, Blockscout as an independent second source. A
+        # concrete contradiction blocks; a lagging Blockscout does not.
+        return CrossCheckVerifier(
+            RpcVerifier(rpc_url or RPC_DEFAULTS[chain],
+                        min_confirmations=min_confirmations),
+            BlockscoutVerifier(chain, min_confirmations=min_confirmations))
     if mode == "mock":
         return MockVerifier()
     raise ValueError(f"unknown settlement mode {mode!r}")

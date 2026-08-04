@@ -220,7 +220,7 @@ proofs still verify).
 | `X402_GATE` | `--gate` | `dev` |
 | `RECEIPTS_FACILITATOR_URL` | `--facilitator-url` | — |
 | `RECEIPTS_BIND_PAYER` | `--bind-payer` | off |
-| `RECEIPTS_SETTLEMENT` | `--settlement` | `rpc` |
+| `RECEIPTS_SETTLEMENT` | `--settlement` | `rpc` (`rpc`/`mock`/`blockscout`/`rpc+blockscout`; the last adds a keyless Blockscout cross-check — a contradiction blocks, a lagging Blockscout does not) |
 | `RECEIPTS_RPC_URL` | `--rpc-url` | public node |
 | `RECEIPTS_MIN_CONFIRMATIONS` | `--min-confirmations` | `0` (set a few for mainnet) |
 | `RECEIPTS_PAY_TO` | `--pay-to` | zero address (unset) |
