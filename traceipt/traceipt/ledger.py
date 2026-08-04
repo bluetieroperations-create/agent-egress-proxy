@@ -334,7 +334,8 @@ class Ledger:
         try:
             rows = con.execute(
                 "SELECT anchor_id, created_at, leaf_count, root, "
-                "onchain_network, onchain_tx FROM anchors ORDER BY anchor_id ASC"
+                "onchain_network, onchain_tx, source FROM anchors "
+                "ORDER BY anchor_id ASC"
             ).fetchall()
         finally:
             con.close()
