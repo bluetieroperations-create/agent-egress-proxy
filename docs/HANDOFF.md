@@ -4,7 +4,9 @@
 separate projects, or overwriting each other's pushes. A same-branch overwrite has
 already happened here once — this doc is how we don't repeat it.
 
-_Last updated at commit `806db8d` on `claude/blackwall-x402-integration-j3rdab`._
+_Last updated on `claude/blackwall-x402-integration-j3rdab` after the cold-start
+warm-up → new-signals → Traceipt-integration → category-signal → option-C-deploy
+session (tip `02055d2`, 824 tests green)._
 
 ---
 
@@ -42,9 +44,9 @@ Keep them on separate branches; do not open a PR that merges one into the other.
 
 ## 2. Already built on the Blackwall branch — DO NOT rebuild
 
-Grouped; each has a `test_*.py` and passes (632 core + integration tests green).
+Grouped; each has a `test_*.py` and passes (824 tests green; full command in `CLAUDE.md`).
 
-**Verdict engine & signals**
+**Verdict engine & core signals**
 - `blackwall.py` — the GO/HOLD/STOP engine (`decide_payment`, `forecast`, HTTP server).
 - `sanctions.py`, `readiness.py`, `reputation_store.py`, `reputation_onchain.py`,
   `ledger.py`, `settlement_watch.py`, `addresses.py`, `discovery.py`.
@@ -52,6 +54,37 @@ Grouped; each has a `test_*.py` and passes (632 core + integration tests green).
 - `ap_gate.py` — treasury/AP payout gate.
 - `seller_audit.py` — earned "verified merchant" tier (`SellerRegistry`, bounded
   trust floor, folds into `decide_payment` via `verified_floor`).
+
+**Reputation-depth signals (all fold into `decide_payment`/`forecast`, fail-open)**
+- `payer_graph.py` — cross-counterparty payer graph; `captive_sybil` GATES (HOLD) a
+  wash farm that clears the naive distinct-payer count. Self-edges dropped.
+- `payer_reputation.py` — payer reputation propagated from anchors; `PayerReputationSource`
+  is a drop-in superset of `PayerGraphSource`; `sybil_ring` is ADVISORY (over-flags at
+  partial coverage). Also `screen_payer` (WHO is paying). See `docs/PAYER_GRAPH.md`.
+- `settlement_velocity.py` — temporal axis; `stale` GATES (dormant endpoint), `burst_sybil`
+  is DIAGNOSTIC-ONLY (backfill-window confound). See `docs/TEMPORAL.md`.
+- `confidence.py` — how much EVIDENCE backs a verdict (`assess_confidence`); PURE/
+  descriptive, never changes the verdict; folded into every response.
+- `ledger.py` recency: `recent_dispute_rate` → the `going_bad` HOLD gate (a clean seller
+  turning bad). See `docs/GOING_BAD.md`.
+- `category_pricing.py` + `categories.py` — per-CATEGORY on-chain price baseline
+  (`category_median` gate, HOLD-only, 50x, eval-calibrated) catches a COLD-START gouge
+  the per-payee gate is blind to. `categories.py` is the SHARED classifier (also the
+  Traceipt proposal in §4). `load_category_index()` is the shared HTTP+MCP loader. See
+  `docs/CATEGORY.md`. NOTE: `reputation_store.lookup` excludes self-payments from
+  `distinct_payers` (Sybil-gate fix).
+
+**Ecosystem warm-up & discovery (solve the zero-customer cold start)**
+- `chain_backfill.py` — seed reputation from PUBLIC Base USDC history (Blockscout,
+  paginated, idempotent). `http_util.py` — hardened JSON GET (retry/backoff/size-cap).
+- `discovery_crawl.py` — crawl the live CDP x402 Bazaar (+ others) → payees + prices.
+- `ecosystem_scan.py` — one pass → instant-verdict corpus + State-of-x402 stats +
+  trust directory + BD funnel; each endpoint carries a `category`. See `docs/AUDIT_ZEROCUSTOMER.md`.
+- `redteam.py` — adversarial scorecard (`test_redteam` guards it): **14 caught / 3
+  known-gap / 0 false-positive**. Add new attacks here, never let the caught set shrink.
+
+**MCP** — `mcp_server.py` (stdio JSON-RPC): `forecast_payment`, `report_outcome`,
+`screen_payer`; threads graph/velocity/category sources off `--store`. HTTP↔MCP parity.
 
 **Payload simulation (all 3 phases) + the pure-Python crypto behind it**
 - `payload_sim.py` — cross-check the signed payment vs the claim (Phase 1 fields,
@@ -64,8 +97,26 @@ Grouped; each has a `test_*.py` and passes (632 core + integration tests green).
 decode + screen, sign-on-GO/withhold-on-STOP, fail-open/closed). On-chain validator
 is NOT built (see `docs/AA_COSIGNING.md`).
 
-**Traceipt bridge (the seam — see §4)** — `traceipt_attest.py`, `traceipt_ingest.py`,
-`traceipt_verify.py`, `traceipt_pull.py`.
+**Traceipt bridge (the seam — see §4)** — `traceipt_attest.py` (now also
+`proof_status`/`poll_proof`: a 201 means ACCEPTED not DELIVERED — classify the Merkle
+proof sealed/pending/lost/404), `traceipt_ingest.py`, `traceipt_verify.py`,
+`traceipt_pull.py`. `verdict_anchor.py` — OPT-IN server auto-anchor behind
+`BLACKWALL_ANCHOR=1` (non-blocking daemon thread, fail-open, key-free core; OFF by
+default). See `docs/TRACEIPT_INTEGRATION.md`. ⚠️ Live finding: Traceipt `/attest` DROPS
+pending attestations on restart (paid-but-lost) — `docs/TRACEIPT_ATTEST_FINDING.md`;
+ingest only on a sealed proof.
+
+**Free-tier deploy (option C) + ops** — the free tier ships a **PREBUILT** corpus, no
+disk: `data/reputation_seed.db.gz` (full 292-payee store, gzipped) +
+`data/category_index.json`, `COPY`'d + decompressed by the `Dockerfile` (fast ~1-min
+builds, no build-time crawl). `render-free.yaml` points `BLACKWALL_STORE` /
+`BLACKWALL_CATEGORY_INDEX` at them. **The frozen store has a ~90-day shelf life** (the
+`stale` gate vs frozen timestamps) — `check_seed_age.py` + `make check-seed-age` +
+`.github/workflows/seed-freshness.yml` (nag-only; dormant until this branch is the
+default branch) guard it; `make refresh-seed` (`scripts/refresh_seed.sh`) regenerates.
+`data/seed_payees.txt` (292) / `seed_payees_bake.txt` (top-60, tier-sectioned). See
+`docs/CATEGORY.md`, `docs/FEEDING.md`, and `DEPLOY.md` §Free tier. LIVE at
+`https://blackwall-free.onrender.com`.
 
 **Integrations** (self-contained, own tests run from their dir)
 - `integrations/langchain/` — LangChain guard (tool + guardrail callback).
@@ -75,14 +126,21 @@ is NOT built (see `docs/AA_COSIGNING.md`).
   `customer_message()` customer-facing copy.
 - `clients/` — `x402_pay.py`, `traceipt_anchor.py` (dep: `eth-account`, test-only).
 
-**Customer-facing docs** — `docs/TRANSPARENCY.md`, `docs/AA_COSIGNING.md`,
-`docs/STRATEGY_REVIEW.md` (ranks & tracks the roadmap: payload-sim ✅, seller-audit
-✅, LangChain ✅, AA co-sign off-chain ✅).
+**Docs** — `docs/TRANSPARENCY.md`, `docs/AA_COSIGNING.md`, `docs/STRATEGY_REVIEW.md`
+(roadmap tracker), plus this session's: `docs/CATEGORY.md` (shared classifier +
+Traceipt proposal + category price signal), `docs/TRACEIPT_INTEGRATION.md`,
+`docs/TRACEIPT_ATTEST_FINDING.md`, `docs/PAYER_GRAPH.md`, `docs/TEMPORAL.md`,
+`docs/GOING_BAD.md`, `docs/AUDIT_ZEROCUSTOMER.md`, `docs/FEEDING.md`.
 
 ## 3. What is NOT built (safe to pick up — but claim it here first)
 
 - The **on-chain** ERC-7579 validator + key infra for AA co-signing (testnet first).
-- A **live end-to-end run** against real Traceipt receipt volume / real x402 traffic.
+- A real **MAINNET funded x402 round-trip** (billing ON, real facilitator, real money).
+  Note: real **testnet** anchors already ran — 5 paid `/attest` calls on Base Sepolia
+  from a burner (surfaced the drop-on-restart finding). The operator owns the mainnet run.
+- The **awesome-x402 / discovery listing** (go-to-market step in `DEPLOY.md`'s runbook).
+- Wiring the per-category price signal deeper: today the baseline gate is live; a paid
+  deploy could build a RICHER index from the full manifest (free tier is ~5 categories).
 - More framework/wallet adapters (CrewAI, Vercel, Fireblocks, Dynamic) — same
   pattern as the shipped ones.
 - RLP-decoding in `wallet_guard.claim_from_tx` (today it expects a tx object).
