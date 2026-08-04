@@ -920,6 +920,68 @@ class TestServerHardening(unittest.TestCase):
         self.assertNotIn("501", status)
 
 
+class TestRateLimitAndStats(unittest.TestCase):
+    """Per-client rate limit on POSTs + /stats counters.
+
+    Mutation notes:
+      - don't check the limiter -> test_post_limited FAILS.
+      - limit GET too -> test_health_not_limited FAILS (health checkers must pass).
+      - not counting rate_limited/verdicts -> test_stats FAILS.
+    """
+    def setUp(self):
+        import threading
+        from http.server import ThreadingHTTPServer
+        from ratelimit import RateLimiter
+        self.stats = bw._Stats()
+        handler = type("_H", (bw._Handler,),
+                       {"reputation_source": bw.MockReputationSource(),
+                        "rate_limiter": RateLimiter(60, 60, burst=2),   # burst 2
+                        "stats": self.stats})
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        self.t = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.t.start()
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def _post(self):
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+        c.request("POST", "/v1/forecast-payment",
+                  body='{"counterparty":"0x000000000000000000000000000000000000dEaD",'
+                       '"amount":"0.01","asset":"USDC","chain":"base"}',
+                  headers={"Content-Type": "application/json"})
+        r = c.getresponse(); r.read(); c.close()
+        return r.status
+
+    def _get(self, path):
+        import http.client
+        import json as _json
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+        c.request("GET", path)
+        r = c.getresponse(); body = r.read(); c.close()
+        return r.status, (_json.loads(body) if body else {})
+
+    def test_post_limited_after_burst(self):
+        self.assertEqual(self._post(), 200)   # burst token 1
+        self.assertEqual(self._post(), 200)   # burst token 2
+        self.assertEqual(self._post(), 429)   # bucket empty -> throttled
+
+    def test_health_not_limited(self):
+        for _ in range(5):
+            self.assertEqual(self._get("/healthz")[0], 200)   # never throttled
+
+    def test_stats_counts(self):
+        self._post(); self._post(); self._post()               # 2 ok, 1 blocked
+        status, snap = self._get("/stats")
+        self.assertEqual(status, 200)
+        self.assertEqual(snap.get("requests"), 3)
+        self.assertEqual(snap.get("rate_limited"), 1)
+        self.assertEqual(snap.get("verdict_hold"), 2)          # dEaD -> cold-start HOLD
+
+
 class TestReadinessFailOpen(unittest.TestCase):
     """REGRESSION (audit MED): a raising readiness source must NOT break the core
     verdict -- forecast() must fail open at the consumer."""

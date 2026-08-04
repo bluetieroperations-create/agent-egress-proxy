@@ -49,6 +49,16 @@ services:
       # first (chain_backfill --payees-file data/seed_payees.txt) -- not lazy ingest.
       - key: BLACKWALL_INGEST
         value: "0"
+      # Per-client rate limit for the public endpoint (POST paths only; GET health/
+      # discovery stay unthrottled). 120 req/min per client IP, burst 30 -- generous
+      # for a legit agent, caps hammering/scraping/DoS. Real client IP via the rightmost
+      # X-Forwarded-For (Render's proxy). GET /stats exposes aggregate counters.
+      - key: BLACKWALL_RATE_LIMIT
+        value: "120"
+      - key: BLACKWALL_RATE_WINDOW
+        value: "60"
+      - key: BLACKWALL_RATE_BURST
+        value: "30"
       - key: BLACKWALL_VALUE_PRICING
         value: "1"
       - key: BLACKWALL_FREE_BELOW

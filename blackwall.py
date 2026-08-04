@@ -37,6 +37,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1138,6 +1139,23 @@ def is_compliance_free(reputation_source, payload):
 # ===========================================================================
 # HTTP server (POST /v1/forecast-payment) -- localhost only
 # ===========================================================================
+class _Stats:
+    """Thread-safe integer counters exposed at GET /stats (requests, verdicts,
+    rate_limited). No PII -- just aggregate counts for basic observability."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._c = {}
+
+    def incr(self, key, n=1):
+        with self._lock:
+            self._c[key] = self._c.get(key, 0) + n
+
+    def snapshot(self):
+        with self._lock:
+            return dict(self._c)
+
+
 class _Handler(BaseHTTPRequestHandler):
     server_version = "Blackwall/0.1"
 
@@ -1154,6 +1172,26 @@ class _Handler(BaseHTTPRequestHandler):
     velocity_source = None  # settlement_velocity.VelocitySource (stale gate)
     openapi_server_url = None  # public origin for the openapi.json servers[] (or None)
     verdict_anchor = None  # verdict_anchor.VerdictAnchor, or None (opt-in audit trail)
+    rate_limiter = None  # ratelimit.RateLimiter for POSTs, or None (limiting off)
+    stats = None  # _Stats counter (always set by the server)
+
+    def _client_key(self):
+        from ratelimit import client_ip_from
+        return client_ip_from(self.headers.get("X-Forwarded-For"),
+                              self.client_address[0] if self.client_address else None)
+
+    def _rate_ok(self):
+        """True if this POST is within the per-client rate limit (or limiting is off).
+        On deny, emits 429 + Retry-After and records the block."""
+        if self.rate_limiter is None:
+            return True
+        allowed, retry = self.rate_limiter.allow(self._client_key(), time.monotonic())
+        if not allowed:
+            if self.stats is not None:
+                self.stats.incr("rate_limited")
+            self._send_json(429, {"error": "rate limit exceeded; slow down"},
+                            extra_headers={"Retry-After": str(int(retry) + 1)})
+        return allowed
 
     def _send_json(self, code, obj, extra_headers=None):
         body = json.dumps(obj, separators=(",", ":")).encode("utf-8")
@@ -1174,6 +1212,10 @@ class _Handler(BaseHTTPRequestHandler):
         elif self.path == "/openapi.json":
             # x402scan probes the origin root for this discovery document.
             self._send_json(200, self._openapi())
+        elif self.path == "/stats":
+            # Lightweight observability: request + verdict counters. No PII (IPs are
+            # only kept in-memory for rate-limiting, never logged here).
+            self._send_json(200, self.stats.snapshot() if self.stats else {})
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -1265,6 +1307,13 @@ class _Handler(BaseHTTPRequestHandler):
             return None, "body is not valid JSON"
 
     def do_POST(self):
+        # Per-client rate limit on the (expensive) POST paths only -- GET health/
+        # discovery are cheap and must stay unthrottled for health checkers.
+        if self.path in ("/v1/forecast-payment", "/v1/report-outcome", "/v1/session"):
+            if self.stats is not None:
+                self.stats.incr("requests")
+            if not self._rate_ok():
+                return
         if self.path == "/v1/forecast-payment":
             self._do_forecast()
         elif self.path == "/v1/report-outcome":
@@ -1332,6 +1381,8 @@ class _Handler(BaseHTTPRequestHandler):
         if err is not None:
             self._send_json(400, {"error": err})
             return
+        if self.stats is not None:
+            self.stats.incr("verdict_" + str(response.get("verdict", "?")).lower())
         extra = {}
         if remaining is not None:
             extra["X-PAYMENT-SESSION-REMAINING"] = str(remaining)
@@ -1410,7 +1461,7 @@ class BlackwallServer:
                  ledger=None, billing=None, readiness_source=None,
                  hold_above=None, peer_index=None, openapi_server_url=None,
                  graph_source=None, velocity_source=None, verdict_anchor=None,
-                 category_index=None, divergence_index=None):
+                 category_index=None, divergence_index=None, rate_limiter=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -1427,6 +1478,8 @@ class BlackwallServer:
         self.verdict_anchor = verdict_anchor
         self.category_index = category_index
         self.divergence_index = divergence_index
+        self.rate_limiter = rate_limiter
+        self.stats = _Stats()
         self._httpd = None
 
     def serve_forever(self):
@@ -1442,6 +1495,8 @@ class BlackwallServer:
                         "verdict_anchor": self.verdict_anchor,
                         "category_index": self.category_index,
                         "divergence_index": self.divergence_index,
+                        "rate_limiter": self.rate_limiter,
+                        "stats": self.stats,
                         "openapi_server_url": self.openapi_server_url})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
         self.port = self._httpd.server_address[1]
@@ -1720,6 +1775,29 @@ def main(argv=None):
                          "price-integrity signal OFF\n" % _div_err)
         sys.stderr.flush()
 
+    # OPT-IN per-client rate limit for the public POST paths. BLACKWALL_RATE_LIMIT =
+    # max requests per BLACKWALL_RATE_WINDOW seconds (default 60) per client IP; unset
+    # or <=0 disables it. BLACKWALL_RATE_BURST caps the instantaneous burst (default =
+    # the limit). Fail-open: a bad value just leaves limiting off.
+    rate_limiter = None
+    try:
+        _rl = int(os.environ.get("BLACKWALL_RATE_LIMIT", "0"))
+    except ValueError:
+        _rl = 0
+    if _rl > 0:
+        from ratelimit import RateLimiter
+        try:
+            _win = float(os.environ.get("BLACKWALL_RATE_WINDOW", "60"))
+            _burst = os.environ.get("BLACKWALL_RATE_BURST")
+            rate_limiter = RateLimiter(_rl, _win,
+                                       burst=int(_burst) if _burst else None)
+            sys.stdout.write("blackwall: rate limit ON (%d req / %gs per client, "
+                             "burst %g)\n" % (_rl, _win, rate_limiter.capacity))
+            sys.stdout.flush()
+        except (ValueError, TypeError) as e:
+            sys.stderr.write("blackwall: WARNING bad rate-limit config (%s) -- OFF\n" % e)
+            sys.stderr.flush()
+
     # OPT-IN (BLACKWALL_ANCHOR=1): anchor every verdict's digest to Traceipt for a
     # tamper-evident audit trail. Non-blocking + fail-open; costs ~0.002 USDC/verdict
     # and needs a funded SIGNER_PRIVATE_KEY (else it 402s and fails open). OFF by
@@ -1743,6 +1821,7 @@ def main(argv=None):
                              verdict_anchor=anchor,
                              category_index=category_index,
                              divergence_index=divergence_index,
+                             rate_limiter=rate_limiter,
                              openapi_server_url=origin)
     try:
         server.serve_forever()
