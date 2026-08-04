@@ -1,12 +1,14 @@
-# Render Blueprint for the Traceipt API (Base Sepolia REAL mode).
+# Render Blueprint for the Traceipt API (Base MAINNET -- real money).
 # Render reads render.yaml from the REPO ROOT. The service builds the Docker
 # image in traceipt/ and Render terminates HTTPS at its edge, so the app
 # binds 0.0.0.0.
 #
-# This is the testnet-REAL config (see traceipt/FLYWHEEL.md): real x402 v2
-# facilitator gate + on-chain (rpc) settlement verification on Base Sepolia --
-# real crypto, no real money. The two SECRETS below (sync:false) are set in
-# the Render dashboard's Environment tab, not here.
+# MAINNET config: real x402 v2 gate via the Coinbase CDP facilitator, on-chain
+# (rpc) settlement verification on Base mainnet (min_confirmations=3), on-chain
+# Merkle-root publishing, and RECEIPTS_ATTEST_SEAL=immediate so a paid /attest
+# is durable + self-contained (no paid-but-lost). SECRETS below (sync:false) --
+# RECEIPTS_KEY_PEM, RECEIPTS_ADMIN_TOKEN, RECEIPTS_GAS_KEY (funded with real
+# Base ETH), CDP_API_KEY_ID/SECRET -- are set in the Render Environment tab.
 #
 # New > Blueprint > connect this repo > pick the branch that has this file.
 services:
@@ -26,18 +28,21 @@ services:
       - key: RECEIPTS_PORT
         value: "8402"
       - key: RECEIPTS_CHAIN
-        value: base-sepolia
+        value: base                           # MAINNET (was base-sepolia)
       # REAL mode: charge via a facilitator and verify settlement on-chain.
       - key: X402_GATE
         value: facilitator
+      # MAINNET facilitator = Coinbase CDP (the keyless facilitator.x402.rs is
+      # testnet-only). Auth is a signed EdDSA Bearer JWT from CDP_API_KEY_ID /
+      # CDP_API_KEY_SECRET (declared below), auto-enabled because the URL is CDP.
       - key: RECEIPTS_FACILITATOR_URL
-        value: https://facilitator.x402.rs   # supports base-sepolia, keyless
+        value: https://api.cdp.coinbase.com/platform/v2/x402
       - key: RECEIPTS_SETTLEMENT
         value: rpc
       - key: RECEIPTS_RPC_URL
-        value: https://sepolia.base.org
+        value: https://mainnet.base.org
       - key: RECEIPTS_MIN_CONFIRMATIONS
-        value: "0"                            # testnet; set a few for mainnet
+        value: "3"                            # mainnet: reorg protection
       # Seller-hosted binding: this instance issues receipts ONLY for payments
       # to this wallet, and (bind_payer) only to the wallet that paid the fee.
       # PAY_TO is a public receiving address -- never a private key.
@@ -57,7 +62,12 @@ services:
       # free plan the loop pauses while the instance is idle and resumes on the
       # next request, so a pending item seals within N seconds of activity.
       - key: RECEIPTS_ANCHOR_INTERVAL
-        value: "300"                          # 5 min
+        value: "300"                          # 5 min (batches receipts)
+      # Seal each /attest on submit and return the full inclusion proof in the
+      # 201 -- the payer holds a self-contained, verifiable receipt that survives
+      # a restart. Fixes the paid-but-lost defect (mainnet-safe without a disk).
+      - key: RECEIPTS_ATTEST_SEAL
+        value: immediate
       # Publish each sealed Merkle root on-chain (0-value self-send from the
       # gas wallet carrying the root in calldata), so existence-by-time is
       # provable against Base Sepolia, not just our DB. Requires the funded
@@ -86,10 +96,17 @@ services:
         sync: false
       #   RECEIPTS_GAS_KEY  private key of a DEDICATED gas wallet (never the
       #     receiving wallet) that signs on-chain Merkle-root txs. Fund it with
-      #     a little Base Sepolia ETH. Only used when RECEIPTS_PUBLISHER=onchain
-      #     (added below once this key is set -- turning it on without a funded
-      #     gas key would crash the boot check).
+      #     a little real Base ETH (mainnet). Only used when
+      #     RECEIPTS_PUBLISHER=onchain; the boot check enforces it.
       - key: RECEIPTS_GAS_KEY
+        sync: false
+      #   CDP_API_KEY_ID / CDP_API_KEY_SECRET  Coinbase CDP credentials for the
+      #     mainnet x402 facilitator. Ed25519 Secret API Key; the secret is the
+      #     base64 32- or 64-byte key material. Auth activates only when the
+      #     facilitator URL is CDP (see service.py).
+      - key: CDP_API_KEY_ID
+        sync: false
+      - key: CDP_API_KEY_SECRET
         sync: false
 
 # NOTE ON STORAGE: the free plan has NO persistent disk, so /data is
