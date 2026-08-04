@@ -15,16 +15,32 @@ about their pain, shut up.
 > on-chain-verifiable compliance receipt** — the audit artifact a facilitator's
 > own dashboard can't be, because we didn't move the money or make the verdict.
 
-## The proof to lead with (already live)
+## The proof to lead with (live on MAINNET)
 
-A real Black_Wall risk verdict (STOP on the OFAC-sanctioned Tornado Cash address
-`0x8589…FDA16`), bound to a paid x402 transaction, anchored on Base Sepolia,
-independently verifiable by anyone:
+A compliance verdict bound to a paid x402 transaction, settled with **real USDC
+on Base mainnet** via the Coinbase CDP facilitator, anchored on-chain, and
+independently verifiable by anyone — the receipt checks itself against the chain,
+no call to us required:
 
-**https://sepolia.basescan.org/tx/0x1a9b1db1992d157ce1e0da6dc30d854fd0eaa99a524a1862b7838ba960848010**
+**https://basescan.org/tx/0xab1c79b60a3ca3386eabc654bf163711140ac17a969e1fa526be8314da38821f**
 
 (calldata = `TRACEIPT-ANCHOR` + the Merkle root; inclusion proof verifies offline;
-full chain in `FLYWHEEL.md`.)
+the immediate-seal proof survives even if our server forgets it; full chain in
+`FLYWHEEL.md`.)
+
+**The sanctions teeth** — shown on testnet so it costs nothing to demo — a real
+Black_Wall **STOP** verdict on the OFAC-sanctioned Tornado Cash address, anchored
+and independently verifiable:
+https://sepolia.basescan.org/tx/0x1a9b1db1992d157ce1e0da6dc30d854fd0eaa99a524a1862b7838ba960848010
+
+> Honesty: the mainnet tx above anchored a *verdict* on a real settled payment;
+> the STOP-on-a-sanctioned-address path is the testnet link. Lead with mainnet
+> (real money, undeniable) and cite the STOP as the capability — never imply the
+> mainnet tx was itself a sanctions hit.
+
+**Even stronger once the site is deployed:** point them at
+**`traceipt.xyz/verify`** — they paste the receipt and watch it verify against
+Base *in their own browser*. "Check it yourself" beats "trust our link."
 
 ## Who has the pain (hypotheses, ranked)
 
@@ -59,19 +75,27 @@ independently, not just show a vendor's log — what do I hand them?"**
 
 ## Cold message (ready to adapt — keep it short)
 
-> Subject: proof your agent didn't pay a sanctioned party
+> Subject: proof your agent didn't pay a sanctioned party — now live on mainnet
 >
-> Hi <name> — you're running real x402 payments through <thing>. Quick question:
-> when a customer or auditor asks you to *prove* a payment was screened against
-> sanctions before it settled — independently, not just from a vendor's log — what
-> do you hand them today?
+> Hi <name> — you're running real x402 payments through <thing>. One question:
+> when a customer, auditor, or counterparty asks you to *prove* a payment was
+> sanctions-screened **before** it settled — independently, not just from a
+> vendor's dashboard — what do you hand them today?
 >
-> We built the missing piece and it's live on-chain: a risk verdict bound to a
-> paid x402 tx, anchored on Base, verifiable by anyone —
-> https://sepolia.basescan.org/tx/0x1a9b1db1992d157ce1e0da6dc30d854fd0eaa99a524a1862b7838ba960848010
+> We built that missing piece, and it's now live on **Base mainnet with real
+> USDC**: a compliance verdict bound to a paid x402 transaction, anchored
+> on-chain, verifiable by anyone. You don't have to trust us — the receipt checks
+> itself against the chain:
+> https://basescan.org/tx/0xab1c79b60a3ca3386eabc654bf163711140ac17a969e1fa526be8314da38821f
 >
-> Not selling anything yet — trying to learn if this is a real problem for you or
-> a solution looking for one. 15 min?
+> (And here it is catching an OFAC-sanctioned address — a STOP verdict on Tornado
+> Cash: https://sepolia.basescan.org/tx/0x1a9b1db1992d157ce1e0da6dc30d854fd0eaa99a524a1862b7838ba960848010)
+>
+> I'm not selling anything yet — trying to learn whether this is a real problem
+> for you or a solution looking for one. 15 minutes?
+
+_Once `traceipt.xyz/verify` is deployed, swap the Basescan link for it: a buyer
+verifying the receipt in their own browser is a stronger moment than a link._
 
 ## Honesty guardrails
 
