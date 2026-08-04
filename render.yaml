@@ -37,8 +37,13 @@ services:
       # CDP_API_KEY_SECRET (declared below), auto-enabled because the URL is CDP.
       - key: RECEIPTS_FACILITATOR_URL
         value: https://api.cdp.coinbase.com/platform/v2/x402
+      # RPC authoritative + a keyless Blockscout cross-check (independent second
+      # source). A Blockscout that contradicts the RPC blocks the receipt; a
+      # lagging/unreachable Blockscout never blocks a valid settlement, so this
+      # is strictly safer than 'rpc' alone. Receipts then cite
+      # verification_method="rpc+blockscout" (two independent sources).
       - key: RECEIPTS_SETTLEMENT
-        value: rpc
+        value: rpc+blockscout
       - key: RECEIPTS_RPC_URL
         value: https://mainnet.base.org
       - key: RECEIPTS_MIN_CONFIRMATIONS
