@@ -138,6 +138,16 @@ redeploys, and every prior receipt stops verifying. Fix both:
   transit. Capture the matching public JWK for your records with
   `python3 -m traceipt.service --print-jwk`. **Back the key up** — it is the
   root of trust for every receipt.
+- **`/attest` durability WITHOUT a disk:** set `RECEIPTS_ATTEST_SEAL=immediate`.
+  In `batch` mode (default) a paid `/attest` is queued and sealed later — so a
+  restart before sealing drops the paid attestation ("paid-but-lost"). In
+  `immediate` mode each `/attest` is sealed on submit and the **full inclusion
+  proof is returned in the 201**, so the payer holds a self-contained,
+  verifiable receipt that no longer depends on this server remembering it. With
+  `--publisher onchain` the root is also on-chain (trustless timestamp, durable
+  across restarts). This is the recommended mainnet posture when you are not
+  running a persistent disk. `/receipts` is already safe (the signed receipt is
+  returned in its 201); this closes the same gap for `/attest`.
 
 **B. Auto-anchor.** Set `RECEIPTS_ANCHOR_INTERVAL` (seconds) so batches seal on
 their own; otherwise callers need an admin `POST /anchor` each time. The
@@ -201,6 +211,7 @@ proofs still verify).
 | `RECEIPTS_PUBLISHER` | `--publisher` | `off` (off / mock / onchain) |
 | `RECEIPTS_GAS_KEY` | `--gas-key` | — (onchain only; dedicated gas wallet) |
 | `RECEIPTS_ANCHOR_INTERVAL` | `--anchor-interval` | `0` (seconds; 0 = manual) |
+| `RECEIPTS_ATTEST_SEAL` | `--attest-seal` | `batch` (`immediate` = seal-on-submit + self-contained proof in the 201) |
 
 See the main [README](README.md#security-model--threat-model) for the threat
 model before going to production.

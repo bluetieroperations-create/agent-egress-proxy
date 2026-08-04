@@ -85,7 +85,14 @@ class App:
                  price_base_units: str, pay_to: str, chain: str, base_url: str,
                  seller_id: str | None = None, facilitator=None,
                  bind_payer: bool = False, extra_public_jwks=None,
-                 admin_token: str | None = None, publisher=None):
+                 admin_token: str | None = None, publisher=None,
+                 attest_seal: str = "batch"):
+        # "batch" (default): /attest queues a pending attestation, sealed later
+        # by the anchor loop. "immediate": seal each /attest on submit and return
+        # the FULL inclusion proof in the 201, so the paid deliverable is
+        # self-contained (the payer holds it) and -- with an on-chain publisher --
+        # durable against restarts. Fixes the paid-but-lost failure mode.
+        self.attest_seal = attest_seal
         self.signer = signer
         self.ledger = ledger
         self.verifier = verifier
@@ -597,9 +604,36 @@ class App:
             # cost of that race.
             out["idempotent"] = True
             return 200, out
+        if self.attest_seal == "immediate":
+            proof = self._seal_one(rec["attestation_id"])
+            if proof is not None:
+                # Self-contained 201: the payer now holds the full inclusion
+                # proof and (if published) the on-chain tx, so the deliverable
+                # survives even if this server forgets it.
+                out["attestation"]["status"] = "anchored"
+                out["proof"] = proof
+                out["durable"] = bool(proof.get("onchain_tx"))
+            else:
+                out["note"] = ("accepted, but immediate anchoring did not "
+                               "complete (publish failed?) -- the attestation is "
+                               "pending; poll proof_url until it seals")
         if settle_response is not None:
             out["_payment_response"] = settle_response
         return 201, out
+
+    def _seal_one(self, att_id: str) -> dict | None:
+        """Immediate durability: seal the just-submitted attestation into an
+        anchor (publishing on-chain if a publisher is configured) and return its
+        FULL inclusion proof, so the 201 is self-contained. Returns None if
+        sealing could not complete (e.g. an on-chain publish failed) -- the
+        attestation stays pending and the caller reports that. A concurrent
+        immediate seal that anchored it first is handled naturally: the proof
+        lookup returns it regardless of which seal did the work."""
+        try:
+            self.ledger.create_anchor(utc_now(), publisher=self.publisher)
+        except Exception:  # noqa: BLE001 -- publish failed; leave it pending
+            pass
+        return self.ledger.attestation_inclusion(att_id)
 
     def _jwks(self) -> dict:
         # Active key first, then any retired keys (dedup by kid) so receipts
@@ -1007,6 +1041,12 @@ def main(argv=None):
                    default=int(os.environ.get("RECEIPTS_ANCHOR_INTERVAL", "0")),
                    help="seconds between automatic anchor batches (0 = manual "
                         "only, via POST /anchor)")
+    p.add_argument("--attest-seal", choices=["batch", "immediate"],
+                   default=os.environ.get("RECEIPTS_ATTEST_SEAL", "batch"),
+                   help="'batch' queues /attest for the next anchor; 'immediate' "
+                        "seals each on submit and returns a self-contained proof "
+                        "in the 201 (durable with --publisher onchain -- fixes "
+                        "paid-but-lost without a persistent disk)")
     p.add_argument("--print-jwk", action="store_true",
                    help="print the active key's PUBLIC JWK and exit (capture "
                         "this into --jwks-history before rotating --key)")
@@ -1062,6 +1102,7 @@ def main(argv=None):
         extra_public_jwks=extra_public_jwks,
         admin_token=args.admin_token,
         publisher=publisher,
+        attest_seal=args.attest_seal,
     )
     server = ThreadingHTTPServer((args.host, args.port), make_handler(app))
     pub_addr = getattr(publisher, "address", None)
@@ -1070,7 +1111,8 @@ def main(argv=None):
           f"settlement={args.settlement}, bind_payer={app.bind_payer}, "
           f"publisher={args.publisher}"
           f"{' gas=' + pub_addr if pub_addr else ''}, "
-          f"anchor_interval={args.anchor_interval}s, kid={app.signer.kid})")
+          f"anchor_interval={args.anchor_interval}s, "
+          f"attest_seal={args.attest_seal}, kid={app.signer.kid})")
 
     stop = threading.Event()
     if args.anchor_interval > 0:

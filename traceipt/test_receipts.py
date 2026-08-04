@@ -2788,6 +2788,74 @@ class TestMCPTools(unittest.TestCase):
                          "https://api.traceipt.xyz")
 
 
+class TestAttestImmediateSeal(unittest.TestCase):
+    """Fix for the paid-but-lost /attest defect: seal-on-submit returns a
+    self-contained proof in the 201, so the payer holds a durable, verifiable
+    receipt that does not depend on the server remembering it."""
+
+    def _app(self, publisher=None, seal="immediate"):
+        d = tempfile.mkdtemp()
+        return App(signer=Signer.generate(), ledger=Ledger(os.path.join(d, "a.db")),
+                   verifier=MockVerifier(), gate="off", price_base_units="2000",
+                   pay_to=PAYEE, seller_id="op", chain="base-sepolia",
+                   base_url="http://x", publisher=publisher, attest_seal=seal)
+
+    def _digest(self, tag):
+        import hashlib
+        return "sha256:" + hashlib.sha256(tag.encode()).hexdigest()
+
+    def _proof_verifies(self, proof):
+        return verify_inclusion(
+            proof["leaf_index"], proof["tree_size"], proof["leaf_data"].encode(),
+            [bytes.fromhex(h) for h in proof["audit_path"]],
+            bytes.fromhex(proof["root"]))
+
+    def test_immediate_returns_self_contained_proof(self):
+        app = self._app(publisher=None)  # publisher off
+        code, out = app.issue_attestation({"hash": self._digest("d1"),
+                                           "type": "verdict"})
+        self.assertEqual(code, 201)
+        self.assertEqual(out["attestation"]["status"], "anchored")
+        self.assertIn("proof", out)
+        self.assertTrue(self._proof_verifies(out["proof"]))
+        self.assertFalse(out["durable"])  # no on-chain tx
+        self.assertIsNone(out["proof"]["onchain_tx"])
+
+    def test_proof_survives_server_amnesia(self):
+        # THE paid-but-lost fix: the payer's held proof still verifies with a
+        # brand-new empty ledger (server "forgot" everything).
+        app = self._app(publisher=None)
+        _, out = app.issue_attestation({"hash": self._digest("d2")})
+        held = out["proof"]
+        del app  # server and its ledger are gone
+        self.assertTrue(self._proof_verifies(held))  # payer can still verify
+
+    def test_immediate_onchain_is_durable(self):
+        from traceipt.publisher import make_publisher
+        app = self._app(publisher=make_publisher("mock", "base-sepolia"))
+        code, out = app.issue_attestation({"hash": self._digest("d3")})
+        self.assertEqual(code, 201)
+        self.assertTrue(out["durable"])
+        self.assertTrue(out["proof"]["onchain_tx"].startswith("0x"))
+        self.assertTrue(self._proof_verifies(out["proof"]))
+
+    def test_batch_mode_unchanged(self):
+        app = self._app(publisher=None, seal="batch")
+        code, out = app.issue_attestation({"hash": self._digest("d4")})
+        self.assertEqual(code, 201)
+        self.assertEqual(out["attestation"]["status"], "pending")
+        self.assertNotIn("proof", out)
+
+    def test_immediate_publish_failure_degrades_to_pending(self):
+        def boom(_root):
+            raise RuntimeError("out of gas")
+        app = self._app(publisher=boom)
+        code, out = app.issue_attestation({"hash": self._digest("d5")})
+        self.assertEqual(code, 201)  # accepted (fee settled), delivery pending
+        self.assertEqual(out["attestation"]["status"], "pending")
+        self.assertIn("note", out)
+
+
 class TestCdpFacilitatorAuth(unittest.TestCase):
     """CDP (mainnet) facilitator auth: a fresh EdDSA Bearer JWT per request.
     Verifiable offline -- we sign with a throwaway Ed25519 key and check the
