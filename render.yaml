@@ -48,7 +48,10 @@ services:
       - key: RECEIPTS_BIND_PAYER
         value: "1"
       - key: RECEIPTS_PRICE_BASE_UNITS
-        value: "2000"                         # $0.002 per /attest or /receipts
+        value: "10000"                        # $0.01 per /attest or /receipts
+        # Repriced from $0.002: the x402 market median is ~$0.014 (p90 $0.15),
+        # so $0.01 sits below market and signals "compliance-grade", not cheapest.
+        # See B2B_TARGETING.md.
       # Hands-free Merkle sealing: auto-seal any pending batch every N seconds
       # so callers never need an admin POST /anchor. 0 = manual only. On the
       # free plan the loop pauses while the instance is idle and resumes on the
