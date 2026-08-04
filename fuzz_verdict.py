@@ -274,7 +274,13 @@ def forecast_violations(payload, record, resp, err):
 
 def run_forecast(iterations=5000, seed=1337):
     """Fuzz forecast() end-to-end. A raise is a P7 violation (fail-open contract --
-    even a raising graph/velocity source or garbage signed-payment must not crash it)."""
+    even a raising graph/velocity source or garbage signed-payment must not crash it).
+
+    SCOPE: the reputation_source here never raises. A raising CORE source (locked
+    SQLite) IS allowed to propagate from forecast() -- fail-open there could drop the
+    sanctions flag -- so the SERVICE handles it at the HTTP layer instead: the handler
+    catches it and returns 503 (fail CLOSED, never a GO). See test_blackwall
+    TestFailClosedOnCrash."""
     rng = random.Random(seed)
     violations = []
     for _ in range(iterations):

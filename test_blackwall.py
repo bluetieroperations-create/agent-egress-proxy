@@ -920,6 +920,43 @@ class TestServerHardening(unittest.TestCase):
         self.assertNotIn("501", status)
 
 
+class TestFailClosedOnCrash(unittest.TestCase):
+    """AUDIT (fuzzer finding): a raising reputation source must fail CLOSED gracefully
+    -- a clean 503 (never a GO, never a dropped connection / leaked traceback), not a
+    propagated exception."""
+
+    def setUp(self):
+        import threading
+        from http.server import ThreadingHTTPServer
+
+        class _Boom:
+            def lookup(self, cp):
+                raise RuntimeError("store locked")
+        self.stats = bw._Stats()
+        handler = type("_H", (bw._Handler,),
+                       {"reputation_source": _Boom(), "stats": self.stats})
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        self.t = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.t.start()
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def test_raising_source_gets_503_not_crash(self):
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+        c.request("POST", "/v1/forecast-payment",
+                  body='{"counterparty":"0x0000000000000000000000000000000000000001",'
+                       '"amount":"0.09","asset":"USDC","chain":"base"}',
+                  headers={"Content-Type": "application/json"})
+        r = c.getresponse(); body = r.read(); c.close()
+        self.assertEqual(r.status, 503)                    # fail closed, cleanly
+        self.assertNotIn(b"Traceback", body)               # no leaked internals
+        self.assertEqual(self.stats.snapshot().get("errors"), 1)
+
+
 class TestRateLimitAndStats(unittest.TestCase):
     """Per-client rate limit on POSTs + /stats counters.
 

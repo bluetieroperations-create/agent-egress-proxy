@@ -1314,14 +1314,29 @@ class _Handler(BaseHTTPRequestHandler):
                 self.stats.incr("requests")
             if not self._rate_ok():
                 return
-        if self.path == "/v1/forecast-payment":
-            self._do_forecast()
-        elif self.path == "/v1/report-outcome":
-            self._do_report_outcome()
-        elif self.path == "/v1/session":
-            self._do_session()
-        else:
-            self._send_json(404, {"error": "not found"})
+        try:
+            if self.path == "/v1/forecast-payment":
+                self._do_forecast()
+            elif self.path == "/v1/report-outcome":
+                self._do_report_outcome()
+            elif self.path == "/v1/session":
+                self._do_session()
+            else:
+                self._send_json(404, {"error": "not found"})
+        except Exception as e:
+            # Unexpected crash in a handler (e.g. a raising reputation store / ledger).
+            # Fail CLOSED + gracefully: a 503 is never a GO, so no bad payment is
+            # approved, and the client gets a clean response instead of a dropped
+            # connection or a leaked traceback. The operator sees it in stderr + /stats.
+            if self.stats is not None:
+                self.stats.incr("errors")
+            sys.stderr.write("blackwall: 503 unhandled %s on %s: %s\n"
+                             % (type(e).__name__, self.path, e))
+            sys.stderr.flush()
+            try:
+                self._send_json(503, {"error": "verdict engine temporarily unavailable"})
+            except Exception:
+                pass   # response may already be partly written; don't cascade
 
     def _do_forecast(self):
         payload, err = self._read_json_body()
