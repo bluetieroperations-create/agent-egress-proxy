@@ -116,29 +116,30 @@ def _authorization(payment: dict) -> dict:
     return auth if isinstance(auth, dict) else {}
 
 
-def canonical_payment_payload(payment: dict) -> dict:
-    """Return the payment in the x402-spec canonical PaymentPayload shape that a
-    REAL facilitator (Coinbase CDP) validates against: {x402Version, scheme,
-    network, payload:{signature, authorization}} with scheme+network at the TOP
-    level.
+def facilitator_payment_payload(payment: dict, requirements: dict) -> dict:
+    """Build the x402V2PaymentPayload a REAL facilitator (Coinbase CDP) accepts.
 
-    Traceipt's internal v2 envelope instead carries the chosen requirements
-    under `accepted` (scheme/network/asset/payTo) with no top-level scheme or
-    network. That non-standard shape is accepted by our own gate but rejected by
-    CDP's /verify ("must match one of [x402V2PaymentPayload, x402V1PaymentPayload]"),
-    so we lift scheme+network out of `accepted` before forwarding. A payload
-    already in canonical shape passes through unchanged (idempotent)."""
+    CDP's /verify validates paymentPayload as:
+        {x402Version, accepted:<full PaymentRequirements>, payload:{signature,
+         authorization}}
+    where `accepted` MUST be a complete PaymentRequirements -- crucially with
+    `maxTimeoutSeconds`. Two things it rejects, both observed on the first
+    mainnet run: a payload with no `accepted` at all ("requires 'accepted'"),
+    and an `accepted` missing maxTimeoutSeconds ("x402V2PaymentRequirements
+    requires 'maxTimeoutSeconds'").
+
+    We set `accepted` to the SERVER's own requirements -- the authoritative,
+    complete copy -- rather than whatever partial a client echoed (the client's
+    signed authorization was already matched against these terms by
+    payment_satisfies). Any stray top-level scheme/network is dropped so the
+    payload validates unambiguously as V2, not V1."""
     if not isinstance(payment, dict):
         return payment
-    acc = payment.get("accepted")
-    acc = acc if isinstance(acc, dict) else {}
-    scheme = payment.get("scheme") or acc.get("scheme")
-    network = payment.get("network") or acc.get("network")
     out = {"x402Version": payment.get("x402Version", X402_VERSION)}
-    if scheme is not None:
-        out["scheme"] = scheme
-    if network is not None:
-        out["network"] = network
+    if isinstance(requirements, dict):
+        out["accepted"] = requirements
+    elif isinstance(payment.get("accepted"), dict):
+        out["accepted"] = payment["accepted"]
     if "payload" in payment:
         out["payload"] = payment["payload"]
     return out
@@ -277,14 +278,14 @@ class Facilitator:
     def verify(self, payment: dict, requirements: dict) -> dict:
         return self._transport("/verify", {
             "x402Version": X402_VERSION,
-            "paymentPayload": canonical_payment_payload(payment),
+            "paymentPayload": facilitator_payment_payload(payment, requirements),
             "paymentRequirements": requirements,
         })
 
     def settle(self, payment: dict, requirements: dict) -> dict:
         return self._transport("/settle", {
             "x402Version": X402_VERSION,
-            "paymentPayload": canonical_payment_payload(payment),
+            "paymentPayload": facilitator_payment_payload(payment, requirements),
             "paymentRequirements": requirements,
         })
 

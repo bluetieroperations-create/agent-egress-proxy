@@ -99,13 +99,12 @@ def build_signed_xpayment(accept, payer_key, timeout_s):
     }
     sig = Account.sign_message(encode_typed_data(full_message=typed), payer_key).signature.hex()
     sig = sig if sig.startswith("0x") else "0x" + sig
-    # Canonical x402 v2 PaymentPayload: scheme+network at the top level (what a
-    # real facilitator like CDP validates against); requirements ride in
-    # paymentRequirements, supplied by the server, not in the payload.
+    # x402 v2 PaymentPayload as CDP validates it: {x402Version, accepted:<full
+    # PaymentRequirements incl. maxTimeoutSeconds>, payload:{signature,
+    # authorization}}. Echo the whole challenge requirement as `accepted`.
     envelope = {
         "x402Version": 2,
-        "scheme": accept.get("scheme", "exact"),
-        "network": network,
+        "accepted": accept,
         "payload": {"signature": sig, "authorization": {
             "from": payer, "to": pay_to, "value": value,
             "validAfter": str(valid_after), "validBefore": str(valid_before),
