@@ -27,6 +27,10 @@ echo "refresh_seed: building per-category price index ..."
 python3 category_pricing.py --store "$TMP_STORE" \
     --out data/category_index.json --max-pages 8
 
+echo "refresh_seed: building advertised-vs-settled divergence index ..."
+python3 price_integrity.py --store "$TMP_STORE" \
+    --out data/divergence_index.json --max-pages 8
+
 echo "refresh_seed: gzipping store -> data/reputation_seed.db.gz ..."
 python3 -c "import gzip,shutil,sys; shutil.copyfileobj(open(sys.argv[1],'rb'), gzip.open('data/reputation_seed.db.gz','wb',9))" "$TMP_STORE"
 
@@ -34,6 +38,6 @@ echo "refresh_seed: done. Freshness:"
 python3 check_seed_age.py || true
 echo ""
 echo "Now commit the refreshed artifacts:"
-echo "  git add data/reputation_seed.db.gz data/category_index.json"
+echo "  git add data/reputation_seed.db.gz data/category_index.json data/divergence_index.json"
 echo "  git commit -m 'data: refresh prebuilt seed store'"
 echo "  # then redeploy (Render rebuilds the image)"

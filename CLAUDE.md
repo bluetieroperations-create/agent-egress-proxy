@@ -101,7 +101,18 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   fire-and-forget each verdict's tokenless digest to Traceipt -- NON-BLOCKING on a
   daemon thread, FAIL-OPEN, KEY-FREE core (signer lazy-loaded from
   `SIGNER_PRIVATE_KEY` only when opted in); the verdict response is unchanged. See
-  `docs/TRACEIPT_INTEGRATION.md`), `traceipt_ingest.py` (map on-chain-verified Traceipt
+  `docs/TRACEIPT_INTEGRATION.md`),
+  `categories.py` (SHARED stdlib service-category classifier for an x402 resource URL --
+  finance/ai-agents/onchain/commerce/... else other; DESCRIPTIVE, never gates; also the
+  Traceipt receipt-tag proposal, see `docs/CATEGORY.md`),
+  `category_pricing.py` (per-CATEGORY on-chain price baseline: a COLD-START payee quoting
+  >=50x its category's settled median -> HOLD; `load_category_index`/`load_index_json` is
+  the shared HTTP+MCP index loader),
+  `price_integrity.py` (advertised-vs-settled DIVERGENCE: a payee whose on-chain settled
+  median runs >=10x its most-EXPENSIVE Bazaar-advertised price lists cheap but collects
+  more -> HOLD (bait-and-switch); HOLD-only, fail-open, temporal-confound-aware, eval-
+  calibrated; folded via `divergence_ratio`/`divergence_index`. See `docs/CATEGORY.md`),
+  `traceipt_ingest.py` (map on-chain-verified Traceipt
   receipts into reputation), `traceipt_verify.py` (pure-Python Ed25519 JWKS
   verification of Traceipt receipt envelopes -- the authenticity gate for ingest),
   `traceipt_pull.py` (pull signed receipts by id from live Traceipt -- `GET
@@ -173,7 +184,7 @@ test states the mutation it kills). Keep new code stdlib-only and match this sty
 
 Run all tests:
 ```sh
-python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py test_aa_cosigner.py test_chain_backfill.py test_discovery_crawl.py test_ecosystem_scan.py test_http_util.py test_payer_graph.py test_payer_reputation.py test_settlement_velocity.py test_confidence.py test_redteam.py test_demo_flywheel.py test_verdict_anchor.py test_categories.py test_category_pricing.py test_check_seed_age.py
+python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py test_aa_cosigner.py test_chain_backfill.py test_discovery_crawl.py test_ecosystem_scan.py test_http_util.py test_payer_graph.py test_payer_reputation.py test_settlement_velocity.py test_confidence.py test_redteam.py test_demo_flywheel.py test_verdict_anchor.py test_categories.py test_category_pricing.py test_check_seed_age.py test_price_integrity.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop
@@ -187,7 +198,7 @@ then loses it (going_bad) when recent outcomes turn to disputes. Guarded by
 legit controls through `decide_payment` and derives each disposition (CAUGHT /
 KNOWN GAP / CLEAN / FALSE POSITIVE / MISS). `test_redteam.py` guards it -- the caught
 set may not shrink, no control may become a false positive, and any attack that gets
-GO must be an EXPLICIT `known_gap`. Current: 14 core attacks caught, 3 documented
+GO must be an EXPLICIT `known_gap`. Current: 15 core attacks caught, 3 documented
 gaps, 0 false positives.
 
 ## Standing working practice: ALWAYS deep audit → eval → verify

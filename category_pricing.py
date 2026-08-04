@@ -48,6 +48,11 @@ def load_category_index(path):
         return None, "empty or not a JSON object"
     return {str(k): str(v) for k, v in loaded.items()}, None
 
+
+# The loader is index-agnostic ({str: str} JSON). Alias it for the price-divergence
+# index (price_integrity.py) so callers read clearly and can't drift the parse logic.
+load_index_json = load_category_index
+
 # distinct payees needed to define a category market rate. Broader/fuzzier than a
 # resource class, so require more peers than MIN_PEER_COUNTERPARTIES(3).
 MIN_CATEGORY_PAYEES = 5

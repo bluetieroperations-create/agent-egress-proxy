@@ -114,3 +114,32 @@ Passed audit → eval → verify.
   and the 50× margin makes it rare.
 - **Baseline coverage.** Only categories with ≥5 distinct on-chain-active payees get a
   baseline; thin categories simply have no signal (fail-open).
+
+---
+
+## 3. Advertised-vs-settled divergence (SHIPPED) — bait-and-switch
+
+`price_integrity.py`. A seller can list a cheap price on the CDP Bazaar to rank well in
+discovery, then actually COLLECT far more on-chain. This payee-level trust signal
+compares a payee's on-chain **settled median** to its most-**expensive advertised**
+price: `ratio = settled_median / max_advertised`.
+
+- **Metric uses MAX advertised** (not min) so a payee with a legit expensive *listed*
+  endpoint that people pay is NOT flagged — only one collecting more than *anything* it
+  advertises.
+- **Eval (live corpus, 161 payees with both):** 95% settle at ≤ 2.5× their max-advertised
+  price. The tail (≥10×) is sellers listing ~$0.001 and collecting $0.05–$0.09. Gate
+  (**HOLD**) at **10×** — the 5–6× band is ambiguous with the temporal confound below,
+  10×+ is unambiguous. At 10× only ~5/292 payees gate.
+- **HOLD-only, never STOP, fail-open.** Folded via `blackwall.decide_payment`'s
+  `divergence_ratio` (`DIVERGENCE_HOLD_RATIO=10`) + `forecast`'s `divergence_index`
+  (a `{payee: ratio}` watch-list precomputed by `price_integrity.build_divergence_index`,
+  loaded from `BLACKWALL_DIVERGENCE_INDEX`, baked into the free image).
+
+### Known limits (audit)
+- **Temporal confound.** Advertised price is a CURRENT snapshot; settled amounts are a
+  HISTORICAL window — a seller that legitimately RAISED its price after listing looks the
+  same. The 10× bar + HOLD-only (reviewable) keep it a conservative escalation.
+- **Coarse (payee-level).** The store's `price_history` carries no resource tag, so a
+  settled amount can't be matched to a specific advertised endpoint; the signal compares
+  the payee's settled median to its overall advertised max.

@@ -74,6 +74,14 @@ PEER_HOLD_RATIO = 3.0             # priced >= Nx the peer market for its class =
 # still catches an order-of-magnitude+ gouge. Catches a COLD-START payee (own/peer
 # median both blind) overcharging vs its whole category. See docs/CATEGORY.md.
 CATEGORY_HOLD_RATIO = 50.0        # quoted >= 50x the category's on-chain median => HOLD
+# Advertised-vs-settled divergence (price_integrity.py): a payee whose on-chain SETTLED
+# median runs far above its most EXPENSIVE advertised (Bazaar) price -- lists cheap,
+# collects more (bait-and-switch). Eval on the live corpus: 95% of payees settle <= 2.5x
+# their max-advertised price. Gate at 10x (not 5x) for PRECISION: the 5-6x band is
+# ambiguous with the temporal confound (advertised=now vs settled=historical -- a legit
+# repricer looks the same), while >=10x is unambiguous (a single ~$0.001 listing settling
+# ~$0.05-0.09). At 10x only ~5/292 payees gate. HOLD-only, never STOP, fail-open.
+DIVERGENCE_HOLD_RATIO = 10.0      # settle >= 10x the most-expensive advertised price => HOLD
 HOLD_AMOUNT_THRESHOLD = Decimal("10.00")  # amounts above this escalate (HOLD)
 HOLD_ANOMALY = 0.30               # price-anomaly score at/above this cannot GO
 STOP_ANOMALY_RATIO = 8.0          # charged >= 8x its own median => STOP (wildly off)
@@ -347,7 +355,7 @@ def decide_payment(amount, record, price_history,
                    resource=None, peer_median=None, payload_mismatch_reasons=None,
                    verified_floor=None, verified_grade=None,
                    payer_graph_signal=None, temporal_signal=None,
-                   category=None, category_median=None):
+                   category=None, category_median=None, divergence_ratio=None):
     """
     The core verdict. Returns a dict:
         {verdict, score, reasons[], signals{...}}
@@ -531,6 +539,15 @@ def decide_payment(amount, record, price_history,
     category_ratio = peer_anomaly_ratio(amount_dec, category_median)
     category_hold = category_ratio is not None and category_ratio >= CATEGORY_HOLD_RATIO
 
+    # Advertised-vs-settled price integrity (price_integrity.py): a PAYEE-level trust
+    # signal precomputed as settled_median / max_advertised. A payee that lists cheap
+    # but historically collects far more is a bait-and-switch risk. HOLD-only, fail-open.
+    try:
+        _div = float(divergence_ratio) if divergence_ratio is not None else None
+    except (TypeError, ValueError):
+        _div = None
+    divergence_hold = _div is not None and _div >= DIVERGENCE_HOLD_RATIO
+
     # ---- verdict ----
     if stop:
         verdict = "STOP"
@@ -544,7 +561,8 @@ def decide_payment(amount, record, price_history,
               and a_score < HOLD_ANOMALY
               and not over_budget
               and not peer_hold
-              and not category_hold)
+              and not category_hold
+              and not divergence_hold)
         if go:
             verdict = "GO"
         else:
@@ -591,6 +609,12 @@ def decide_payment(amount, record, price_history,
                     "quoted %.1fx the on-chain median for the '%s' category "
                     "(%s) -- far above what comparable services collect; escalating"
                     % (category_ratio, category or "?", category_median)
+                )
+            if divergence_hold:
+                reasons.append(
+                    "counterparty settles %.1fx its most-expensive ADVERTISED price "
+                    "-- its public listing understates the real cost (possible "
+                    "bait-and-switch); escalating" % _div
                 )
             if stale:
                 reasons.append(
@@ -641,6 +665,9 @@ def decide_payment(amount, record, price_history,
         "category": category,
         "category_price_ratio": (round(category_ratio, 3)
                                  if category_ratio is not None else None),
+        # how far this payee's on-chain SETTLED median runs above its most-expensive
+        # advertised price (None = not on the divergence watch-list). Bait-and-switch.
+        "price_divergence_ratio": (round(_div, 3) if _div is not None else None),
         # x402 settlement is on-chain and final.
         "reversibility": "irreversible",
         "blast_radius": "bounded" if not over_budget else "unbounded",
@@ -915,7 +942,8 @@ def default_billing_asset(network, explicit, base_usdc, sepolia_usdc):
 
 def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              hold_above=None, peer_index=None, seller_registry=None, now=None,
-             graph_source=None, velocity_source=None, category_index=None):
+             graph_source=None, velocity_source=None, category_index=None,
+             divergence_index=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
@@ -999,6 +1027,10 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     category = classify_resource(clean.get("resource")) if clean.get("resource") else None
     category_median = (category_index.get(category)
                        if category_index and category else None)
+    # Advertised-vs-settled divergence: a per-payee watch-list ratio (price_integrity).
+    # Index keys are lowercased payees (build_divergence_index), so look up case-robust.
+    divergence_ratio = (divergence_index.get(clean["counterparty"].lower())
+                        if divergence_index else None)
 
     verdict = decide_payment(
         amount=clean["amount"],
@@ -1015,6 +1047,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         payer_graph_signal=payer_graph_signal,
         temporal_signal=temporal_sig,
         category=category, category_median=category_median,
+        divergence_ratio=divergence_ratio,
     )
     # Surface advisory (non-blocking) simulation warnings, e.g. an expired auth or
     # a bounded approval.
@@ -1116,6 +1149,7 @@ class _Handler(BaseHTTPRequestHandler):
     hold_above = None  # amount above which the verdict escalates to HOLD (None = default)
     peer_index = None  # {resource_class: peer_median} for the peer-group check, or None
     category_index = None  # {category: on-chain median} for the category-price check, or None
+    divergence_index = None  # {payee: settled/advertised ratio} bait-and-switch watch-list, or None
     graph_source = None  # payer_reputation.PayerReputationSource (Sybil corroboration)
     velocity_source = None  # settlement_velocity.VelocitySource (stale gate)
     openapi_server_url = None  # public origin for the openapi.json servers[] (or None)
@@ -1293,7 +1327,8 @@ class _Handler(BaseHTTPRequestHandler):
                                  peer_index=self.peer_index,
                                  graph_source=self.graph_source,
                                  velocity_source=self.velocity_source,
-                                 category_index=self.category_index)
+                                 category_index=self.category_index,
+                                 divergence_index=self.divergence_index)
         if err is not None:
             self._send_json(400, {"error": err})
             return
@@ -1375,7 +1410,7 @@ class BlackwallServer:
                  ledger=None, billing=None, readiness_source=None,
                  hold_above=None, peer_index=None, openapi_server_url=None,
                  graph_source=None, velocity_source=None, verdict_anchor=None,
-                 category_index=None):
+                 category_index=None, divergence_index=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -1391,6 +1426,7 @@ class BlackwallServer:
         self.openapi_server_url = openapi_server_url
         self.verdict_anchor = verdict_anchor
         self.category_index = category_index
+        self.divergence_index = divergence_index
         self._httpd = None
 
     def serve_forever(self):
@@ -1405,6 +1441,7 @@ class BlackwallServer:
                         "velocity_source": self.velocity_source,
                         "verdict_anchor": self.verdict_anchor,
                         "category_index": self.category_index,
+                        "divergence_index": self.divergence_index,
                         "openapi_server_url": self.openapi_server_url})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
         self.port = self._httpd.server_address[1]
@@ -1661,7 +1698,7 @@ def main(argv=None):
     # from BLACKWALL_CATEGORY_INDEX; fail-open -- a missing/garbled file just disables
     # the category signal, never blocks boot. Shared loader with the MCP server so the
     # two can't drift. See docs/CATEGORY.md.
-    from category_pricing import load_category_index
+    from category_pricing import load_category_index, load_index_json
     category_index, _cat_err = load_category_index(
         os.environ.get("BLACKWALL_CATEGORY_INDEX"))
     if category_index:
@@ -1670,6 +1707,17 @@ def main(argv=None):
     elif _cat_err:
         sys.stderr.write("blackwall: WARNING category index unusable (%s) -- "
                          "category price signal OFF\n" % _cat_err)
+        sys.stderr.flush()
+
+    # Advertised-vs-settled price-divergence watch-list (price_integrity.py); fail-open.
+    divergence_index, _div_err = load_index_json(
+        os.environ.get("BLACKWALL_DIVERGENCE_INDEX"))
+    if divergence_index:
+        sys.stdout.write("blackwall: price-divergence watch-list ON (%d payees)\n"
+                         % len(divergence_index))
+    elif _div_err:
+        sys.stderr.write("blackwall: WARNING divergence index unusable (%s) -- "
+                         "price-integrity signal OFF\n" % _div_err)
         sys.stderr.flush()
 
     # OPT-IN (BLACKWALL_ANCHOR=1): anchor every verdict's digest to Traceipt for a
@@ -1694,6 +1742,7 @@ def main(argv=None):
                              velocity_source=velocity_source,
                              verdict_anchor=anchor,
                              category_index=category_index,
+                             divergence_index=divergence_index,
                              openapi_server_url=origin)
     try:
         server.serve_forever()

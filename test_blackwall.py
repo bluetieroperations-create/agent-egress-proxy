@@ -1324,6 +1324,52 @@ class TestCategoryPriceBaseline(unittest.TestCase):
         self.assertEqual(resp["signals"]["category"], "finance")
 
 
+class TestPriceDivergence(unittest.TestCase):
+    """
+    Advertised-vs-settled divergence: a payee that lists cheap but historically settles
+    far above its most-expensive listing (bait-and-switch) -> HOLD, never STOP, fail-open.
+
+    Mutation notes:
+      - ignore divergence_ratio in the GO gate -> test_bait_holds FAILS.
+      - let it STOP -> test_bait_holds FAILS (asserts HOLD).
+      - trip below the ratio -> test_under_threshold_go FAILS.
+    """
+    REC = {"settlement_count": 500, "dispute_rate": 0.0, "distinct_payers": 30}
+
+    def test_bait_holds_not_stops(self):
+        v = bw.decide_payment("0.09", dict(self.REC), ["0.09"], counterparty="0xV",
+                              divergence_ratio="12.0")
+        self.assertEqual(v["verdict"], "HOLD")
+        self.assertEqual(v["signals"]["price_divergence_ratio"], 12.0)
+        self.assertTrue(any("bait-and-switch" in r for r in v["reasons"]))
+
+    def test_under_threshold_go(self):
+        v = bw.decide_payment("0.09", dict(self.REC), ["0.09"], counterparty="0xV",
+                              divergence_ratio="8.0")   # < 10x bar
+        self.assertEqual(v["verdict"], "GO")
+
+    def test_no_ratio_no_effect(self):
+        v = bw.decide_payment("0.09", dict(self.REC), ["0.09"], counterparty="0xV")
+        self.assertEqual(v["verdict"], "GO")
+        self.assertIsNone(v["signals"]["price_divergence_ratio"])
+
+    def test_garbage_ratio_fails_open(self):
+        v = bw.decide_payment("0.09", dict(self.REC), ["0.09"], counterparty="0xV",
+                              divergence_ratio="not-a-number")
+        self.assertEqual(v["verdict"], "GO")   # unparseable -> no gate, no crash
+
+    def test_forecast_threads_divergence_index(self):
+        class _Src:
+            def lookup(self, cp):
+                return {"settlement_count": 500, "dispute_rate": 0.0, "distinct_payers": 30}
+        cp = "0x" + "1" * 40
+        payload = {"counterparty": cp, "amount": "0.09", "asset": "USDC", "chain": "base"}
+        resp, err = bw.forecast(payload, _Src(), divergence_index={cp: "12.0"})
+        self.assertIsNone(err)
+        self.assertEqual(resp["verdict"], "HOLD")
+        self.assertEqual(resp["signals"]["price_divergence_ratio"], 12.0)
+
+
 class TestHardStopFlag(unittest.TestCase):
     """
     `hard_stop` distinguishes a non-negotiable block (sanctioned / known-bad /

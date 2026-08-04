@@ -41,10 +41,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 #   python3 category_pricing.py --store /tmp/rep.db --out data/category_index.json --max-pages 8
 #   python3 -c "import gzip,shutil; shutil.copyfileobj(open('/tmp/rep.db','rb'), gzip.open('data/reputation_seed.db.gz','wb',9))"
 # then commit data/reputation_seed.db.gz + data/category_index.json and redeploy.
-COPY data/reputation_seed.db.gz data/category_index.json /app/prebuilt/
+COPY data/reputation_seed.db.gz data/category_index.json data/divergence_index.json /app/prebuilt/
 RUN mkdir -p /app/data \
     && python3 -c "import gzip,shutil; shutil.copyfileobj(gzip.open('/app/prebuilt/reputation_seed.db.gz','rb'), open('/app/data/reputation.db','wb'))" \
     && cp /app/prebuilt/category_index.json /app/data/category_index.json \
+    && cp /app/prebuilt/divergence_index.json /app/data/divergence_index.json \
     && rm -rf /app/prebuilt \
     && chown -R blackwall /app/data
 
@@ -63,7 +64,8 @@ ENV BLACKWALL_HOST=0.0.0.0 \
     BLACKWALL_INGEST=0 \
     BLACKWALL_SANCTIONS=/app/sanctions.txt \
     BLACKWALL_SANCTIONS_REFRESH=1 \
-    BLACKWALL_CATEGORY_INDEX=/app/data/category_index.json
+    BLACKWALL_CATEGORY_INDEX=/app/data/category_index.json \
+    BLACKWALL_DIVERGENCE_INDEX=/app/data/divergence_index.json
 # Set at deploy time (NOT baked into the image):
 #   BLACKWALL_PAY_TO       -- your funded EVM wallet (turns billing ON)
 #   BLACKWALL_FACILITATOR  -- real x402 facilitator base URL

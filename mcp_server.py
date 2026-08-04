@@ -105,12 +105,13 @@ def _tool_text(resp):
 
 class BlackwallMCP:
     def __init__(self, reputation_source=None, ledger=None, graph_source=None,
-                 velocity_source=None, category_index=None):
+                 velocity_source=None, category_index=None, divergence_index=None):
         self.src = reputation_source or MockReputationSource()
         self.ledger = ledger
         self.graph_source = graph_source
         self.velocity_source = velocity_source
         self.category_index = category_index
+        self.divergence_index = divergence_index
 
     # ---- tool catalog ----
     def _tools(self):
@@ -192,7 +193,8 @@ class BlackwallMCP:
             resp, err = forecast(args, self.src, self.ledger,
                                   graph_source=self.graph_source,
                                   velocity_source=self.velocity_source,
-                                  category_index=self.category_index)
+                                  category_index=self.category_index,
+                                  divergence_index=self.divergence_index)
             if err is not None:
                 return self._tool_error(err)
             return {
@@ -303,13 +305,17 @@ def main(argv=None):
         from settlement_velocity import VelocitySource
         velocity_source = VelocitySource(ReputationStore(args.store))
 
-    # Per-category price baseline, same as the HTTP path: a precomputed {category:
-    # on-chain median} JSON loaded from BLACKWALL_CATEGORY_INDEX (shared loader).
-    from category_pricing import load_category_index
+    # Per-category price baseline + advertised-vs-settled divergence, same as the HTTP
+    # path: precomputed JSON loaded from BLACKWALL_CATEGORY_INDEX / _DIVERGENCE_INDEX.
+    from category_pricing import load_category_index, load_index_json
     category_index, _cat_err = load_category_index(
         os.environ.get("BLACKWALL_CATEGORY_INDEX"))
     if _cat_err:
         sys.stderr.write("mcp: category index unusable (%s) -- signal OFF\n" % _cat_err)
+    divergence_index, _div_err = load_index_json(
+        os.environ.get("BLACKWALL_DIVERGENCE_INDEX"))
+    if _div_err:
+        sys.stderr.write("mcp: divergence index unusable (%s) -- signal OFF\n" % _div_err)
 
     sys.stderr.write("blackwall MCP server on stdio (reputation: %s, ledger: %s, "
                      "graph: %s, temporal: %s)\n"
@@ -320,7 +326,8 @@ def main(argv=None):
     BlackwallMCP(reputation_source=source, ledger=ledger,
                  graph_source=graph_source,
                  velocity_source=velocity_source,
-                 category_index=category_index).serve_stdio()
+                 category_index=category_index,
+                 divergence_index=divergence_index).serve_stdio()
     return 0
 
 

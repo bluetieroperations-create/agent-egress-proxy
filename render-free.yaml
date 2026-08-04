@@ -37,6 +37,10 @@ services:
       # get caught out of the box. Fail-open: absent/thin index -> signal just off.
       - key: BLACKWALL_CATEGORY_INDEX
         value: /app/data/category_index.json
+      # Advertised-vs-settled price-divergence watch-list (bait-and-switch), baked into
+      # the image alongside the store. Fail-open: absent/thin -> signal just off.
+      - key: BLACKWALL_DIVERGENCE_INDEX
+        value: /app/data/divergence_index.json
       - key: BLACKWALL_LEDGER
         value: /data/ledger.jsonl
       # 0: unknown counterparty -> instant cold-start HOLD (no blocking chain call).

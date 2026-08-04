@@ -76,6 +76,11 @@ SCENARIOS = [
     ("category price gouge (cold-start)", "category", "block", False,
      dict(amount="0.30", record=GOOD, price_history=[], counterparty=LEGIT,
           category="finance", category_median="0.005")),   # 0.30 / 0.005 = 60x
+    # bait-and-switch: lists cheap on the Bazaar, historically settles 9x its most
+    # expensive listing -> the public price understates the real cost.
+    ("advertised-vs-settled bait-and-switch", "price-integrity", "block", False,
+     dict(amount="0.09", record=GOOD, price_history=STABLE, counterparty=LEGIT,
+          divergence_ratio="12.0")),
 
     # --- documented GAPS (attack gets GO) ---
     ("large captive farm (>ceiling)", "sybil-graph", "block", True,
