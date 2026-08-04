@@ -108,6 +108,25 @@ If a known-good payee ever flips to HOLD in production, `SYBIL_RING_GATES=False`
 instantly, and `test_coverage_eval`'s seed-regression check independently blocks gating on
 a corpus whose convergence has regressed.
 
+**Stage 3.1 — precision refinement (DONE, from the post-Stage-3 corpus audit).** Running
+the live gate over the shipped 281-payee corpus found it HOLDing **6.8%** (19 payees).
+All had `reputable_payers==0`, but a deep look showed **6 were not closed clusters** —
+their payers each paid a real anchor, just a *single* one, so none cleared the `reputable`
+bar (which needs ~2 anchors via saturation). The gate's own reason says "closed cluster",
+but `reputable==0` also caught these anchor-CONNECTED-but-under-saturated payees. (Note: an
+earlier idea — suppress when `established_payers` is high — was *rejected*: a mutual
+sockpuppet ring shows high `established` too, so that would gut the signal's core purpose.)
+
+The fix tightens the definition in `payer_reputation.payee_corroboration` from
+`reputable == 0` to `anchor_connected == 0` (a payer's reputation is >0 iff it pays ≥1
+anchor, so no new data needed): sybil_ring now means a truly anchor-ISOLATED cluster.
+Impact: 19→13 HOLDs (6.8%→**4.6%**), clearing all 6 under-saturated payees (incl. the 3
+with real cross-breadth) while keeping the 13 genuinely closed clusters. The change is
+UPSTREAM of `decide_payment`, so the oracle golden, redteam, and fuzz invariants (which
+use synthetic `sybil_ring` values) are byte-unchanged; only the live signal computation
+tightens. Convergence re-eval still `gating_reachable=True` (0% at f=0.95).
+`test_payer_reputation` gains a discrimination test (under-saturated payee → NOT flagged).
+
 ## Guardrails (protect "how it should work")
 
 1. **Reversible by config, not redeploy.** Gate the promotion behind a flag/threshold

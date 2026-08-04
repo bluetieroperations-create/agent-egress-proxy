@@ -91,10 +91,30 @@ class TestPayeeCorroboration(unittest.TestCase):
         graph_sig = PG.cross_signal(g, ring)
         self.assertGreater(graph_sig["established_payers"], 0)   # looks "established"
         self.assertFalse(graph_sig["captive_sybil"])            # captive misses it
-        # the reputation layer catches it: no payer pays an anchor.
+        # the reputation layer catches it: NO payer touches any anchor (closed cluster).
         corr = PR.payee_corroboration(g, rep, ring)
         self.assertEqual(corr["reputable_payers"], 0)
+        self.assertEqual(corr["anchor_connected_payers"], 0)
         self.assertTrue(corr["sybil_ring"])
+
+    def test_under_saturated_payee_not_flagged(self):
+        # Stage-3.1 refinement: a LEGIT payee whose payers each pay exactly ONE anchor is
+        # anchor-CONNECTED but not "reputable" (reputable needs ~2 anchors via saturation).
+        # The old `reputable == 0` rule wrongly flagged it; the anchor-connectivity rule
+        # must NOT. Mutation: revert sybil_ring to `reputable == 0` -> this FAILS.
+        a1, e1 = anchor(1); a2, e2 = anchor(2)
+        # payee `us` has 4 distinct payers; each pays a SINGLE (different-ish) anchor, so
+        # each has reputation > 0 but < 0.5 -> reputable==0, anchor_connected==4.
+        us = "0x" + "8" * 40
+        p = [payer(900000 + i) for i in range(4)]
+        edges = e1 + e2 + [(p[0], a1), (p[1], a1), (p[2], a2), (p[3], a2)]
+        edges += [(pi, us) for pi in p]
+        g = PG.build_index(edges)
+        rep, _ = PR.payer_scores(g)
+        corr = PR.payee_corroboration(g, rep, us)
+        self.assertEqual(corr["reputable_payers"], 0)           # under-saturated
+        self.assertEqual(corr["anchor_connected_payers"], 4)    # but anchor-connected
+        self.assertFalse(corr["sybil_ring"])                    # so NOT a closed ring
 
 
 class TestSource(unittest.TestCase):

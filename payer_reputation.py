@@ -89,13 +89,20 @@ def payee_corroboration(graph, payer_rep, payee, *, min_reputation=REPUTABLE_PAY
     reputable = sum(1 for r in reps if r >= min_reputation)
     reputable_ratio = round(reputable / distinct, 3)
     avg_payer_rep = round(sum(reps) / distinct, 3)
-    # Sybil ring: enough distinct payers to clear the naive gate, yet NOT ONE pays a
-    # trusted anchor -> a closed, unvouched cluster.
-    sybil_ring = (reputable == 0 and min_distinct <= distinct <= ring_max_distinct)
+    # A payer's reputation is > 0 iff it pays at least ONE trusted anchor (rep saturates
+    # on distinct anchors paid), so `anchor_connected` counts payers with ANY anchor link.
+    anchor_connected = sum(1 for r in reps if r > 0.0)
+    # Sybil ring: enough distinct payers to clear the naive gate, yet a CLOSED cluster --
+    # NOT ONE payer touches any anchor. (Stage-3.1 refinement, docs/DATA_COMPLETENESS.md:
+    # tightened from `reputable == 0`, which also flagged legit-but-UNDER-SATURATED payees
+    # whose payers each pay a SINGLE anchor -- anchor-connected, not closed. On the shipped
+    # corpus this cleared 6 such payees, 19 -> 13 flagged, all 13 truly anchor-isolated.)
+    sybil_ring = (anchor_connected == 0 and min_distinct <= distinct <= ring_max_distinct)
     return {
         "reputable_payers": reputable,
         "reputable_ratio": reputable_ratio,
         "avg_payer_reputation": avg_payer_rep,
+        "anchor_connected_payers": anchor_connected,
         "sybil_ring": sybil_ring,
     }
 
