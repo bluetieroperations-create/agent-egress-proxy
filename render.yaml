@@ -108,6 +108,15 @@ services:
         sync: false
       - key: CDP_API_KEY_SECRET
         sync: false
+      #   RECEIPTS_EXPLORER_API_KEY  a FREE Basescan API key. Optional. Enables
+      #     startup anchor-recovery: on a disk-less reset the service re-derives
+      #     every published Merkle root from the gas wallet's own on-chain txs
+      #     (recover.py), so /anchors and POST /verify's `anchored_onchain` check
+      #     self-heal with no disk. Unset = recovery is skipped (roots are still
+      #     on-chain + receipts still self-verify via tools/verify.py). Get one
+      #     free at basescan.org/myapikey.
+      - key: RECEIPTS_EXPLORER_API_KEY
+        sync: false
 
 # NOTE ON STORAGE: the free plan has NO persistent disk, so /data is
 # ephemeral -- the ledger DB and the Ed25519 signing key reset whenever the
