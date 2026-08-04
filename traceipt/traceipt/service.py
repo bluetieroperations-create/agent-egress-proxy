@@ -865,7 +865,11 @@ def make_handler(app: App):
             # /verify/rcpt_x?foo=1 and /chain/a%2Eb resolve correctly.
             path = urlsplit(self.path).path
             if path == "/health":
-                return self._send(200, {"ok": True, "gate": app.gate, "chain": app.chain})
+                return self._send(200, {
+                    "ok": True, "gate": app.gate, "chain": app.chain,
+                    "settlement": getattr(app.verifier, "label",
+                                          type(app.verifier).__name__),
+                    "attest_seal": app.attest_seal})
             if path == "/jwks.json":
                 return self._send(200, app._jwks())
             if path == "/.well-known/did.json":

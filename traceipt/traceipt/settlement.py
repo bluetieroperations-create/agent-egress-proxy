@@ -85,6 +85,7 @@ class RpcVerifier:
         # reorgs out is never turned into a durable receipt. See DEPLOY.md.
         self._min_confirmations = max(0, int(min_confirmations))
         self._transport = transport or self._http_transport
+        self.label = "rpc"
 
     def _http_transport(self, request_obj: dict) -> dict:
         req = urllib.request.Request(
@@ -206,6 +207,7 @@ class BlockscoutVerifier:
         self._timeout = timeout
         self._min_confirmations = max(0, int(min_confirmations))
         self._transport = transport or self._http_get
+        self.label = "blockscout"
 
     def _http_get(self, path: str) -> dict:
         req = urllib.request.Request(
@@ -297,6 +299,7 @@ class CrossCheckVerifier:
         self._primary = primary
         self._secondary = secondary
         self._sname = secondary_name
+        self.label = f"{getattr(primary, 'label', 'rpc')}+{secondary_name}"
 
     def verify(self, settlement: dict) -> SettlementResult:
         p = self._primary.verify(settlement)
@@ -321,6 +324,8 @@ class MockVerifier:
     """Accepts everything. For local development and tests ONLY — receipts
     it produces carry verification_method='mock' so they are visibly
     non-attestations."""
+
+    label = "mock"
 
     def verify(self, settlement: dict) -> SettlementResult:
         return SettlementResult(True, "mock")
