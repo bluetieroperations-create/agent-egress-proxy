@@ -163,9 +163,12 @@ redeploys, and every prior receipt stops verifying. Fix both:
   - **Rebuild-the-anchor-index-from-chain.** On startup, if the anchor table is
     empty but the gas wallet has published roots, the service re-derives every
     `(root, tx, timestamp)` straight from the gas wallet's own transactions
-    (`recover.py`), so `/anchors` self-heals with no trusted DB. Set
-    `RECEIPTS_EXPLORER_API_KEY` (a free Basescan key) for reliable enumeration;
-    it is best-effort and never blocks startup. The leaves inside a batch are
+    (`recover.py`), so `/anchors` self-heals with no trusted DB. This uses
+    **Blockscout's public Base API — keyless and free** (Basescan's V1 API is
+    deprecated and Etherscan V2's free tier gates Base behind a paid plan, so we
+    do not use them); `RECEIPTS_EXPLORER_API_KEY` is an optional pass-through for
+    a custom explorer and normally left unset. Best-effort; never blocks startup.
+    The leaves inside a batch are
     not on-chain (only the root is), so a caller presents the inclusion proof and
     it is checked against the on-chain-confirmed root.
 
@@ -232,7 +235,7 @@ proofs still verify).
 | `RECEIPTS_GAS_KEY` | `--gas-key` | — (onchain only; dedicated gas wallet) |
 | `RECEIPTS_ANCHOR_INTERVAL` | `--anchor-interval` | `0` (seconds; 0 = manual) |
 | `RECEIPTS_ATTEST_SEAL` | `--attest-seal` | `batch` (`immediate` = seal-on-submit + self-contained proof in the 201) |
-| `RECEIPTS_EXPLORER_API_KEY` | (inline) | — (free Basescan key; enables startup anchor-recovery from chain) |
+| `RECEIPTS_EXPLORER_API_KEY` | (inline) | — (optional; startup anchor-recovery uses keyless Blockscout, so normally unset) |
 
 See the main [README](README.md#security-model--threat-model) for the threat
 model before going to production.

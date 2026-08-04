@@ -108,13 +108,15 @@ services:
         sync: false
       - key: CDP_API_KEY_SECRET
         sync: false
-      #   RECEIPTS_EXPLORER_API_KEY  a FREE Basescan API key. Optional. Enables
-      #     startup anchor-recovery: on a disk-less reset the service re-derives
-      #     every published Merkle root from the gas wallet's own on-chain txs
-      #     (recover.py), so /anchors and POST /verify's `anchored_onchain` check
-      #     self-heal with no disk. Unset = recovery is skipped (roots are still
-      #     on-chain + receipts still self-verify via tools/verify.py). Get one
-      #     free at basescan.org/myapikey.
+      #   RECEIPTS_EXPLORER_API_KEY  OPTIONAL and usually unnecessary. Startup
+      #     anchor-recovery re-derives every published Merkle root from the gas
+      #     wallet's own on-chain txs (recover.py) so /anchors and POST /verify's
+      #     `anchored_onchain` self-heal after a disk-less reset -- and it does
+      #     this via Blockscout's public Base API, which is KEYLESS and free
+      #     (Basescan's V1 API is deprecated and Etherscan V2's free tier gates
+      #     Base behind a paid plan, so we do not use them). Leave this unset.
+      #     It exists only as a pass-through for a custom explorer that needs a
+      #     key; Blockscout ignores it.
       - key: RECEIPTS_EXPLORER_API_KEY
         sync: false
 

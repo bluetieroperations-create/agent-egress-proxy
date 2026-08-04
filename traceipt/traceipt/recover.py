@@ -27,30 +27,55 @@ import urllib.request
 
 MARKER_HEX = b"TRACEIPT-ANCHOR\x01".hex()  # 54524143454950542d414e43484f5201
 
-# Etherscan-v2-style explorer endpoints that expose account/txlist for free.
+# Default explorers: Blockscout's public Base instances. Keyless and FREE, with
+# an Etherscan-compatible account/txlist API. (Basescan's V1 endpoint is
+# deprecated, and Etherscan's V2 free tier gates Base behind a paid plan -- so
+# Blockscout, not Basescan, is the free path to enumerate the gas wallet.) An
+# api_key, if supplied, is passed through and simply ignored by Blockscout.
 EXPLORERS = {
-    "base": "https://api.basescan.org/api",
-    "base-sepolia": "https://api-sepolia.basescan.org/api",
+    "base": "https://base.blockscout.com/api",
+    "base-sepolia": "https://base-sepolia.blockscout.com/api",
 }
+_PAGE = 1000       # txs per page
+_MAX_PAGES = 25    # cap the walk so a huge wallet can't loop forever
 
 
-def _basescan_txlist(endpoint, api_key):
-    """Return a transport `f(address) -> [tx dicts]` backed by an Etherscan-style
-    account/txlist endpoint. `api_key` may be empty (works at a low rate)."""
-    def fetch(address):
-        q = urllib.parse.urlencode({
-            "module": "account", "action": "txlist", "address": address,
-            "startblock": 0, "endblock": 99999999, "sort": "asc",
-            "apikey": api_key or ""})
+def _explorer_txlist(endpoint, api_key):
+    """Return a transport `f(address) -> [tx dicts]` over an Etherscan-compatible
+    account/txlist endpoint (Blockscout by default), paging through results.
+    Raises on an explorer error so startup logs the real reason; an empty
+    'no transactions' result is a normal []."""
+    def _page(address, page):
+        params = {"module": "account", "action": "txlist", "address": address,
+                  "startblock": 0, "endblock": 99999999, "sort": "asc",
+                  "page": page, "offset": _PAGE}
+        if api_key:
+            params["apikey"] = api_key
         req = urllib.request.Request(
-            f"{endpoint}?{q}",
+            f"{endpoint}?{urllib.parse.urlencode(params)}",
             headers={"Accept": "application/json",
                      "User-Agent": "Traceipt/0.2 anchor-recover"})
         with urllib.request.urlopen(req, timeout=30) as r:
             body = json.loads(r.read().decode())
         result = body.get("result")
-        # Etherscan returns result as a string message on error / empty.
-        return result if isinstance(result, list) else []
+        if isinstance(result, list):
+            return result
+        # status 0 with a "no transactions found" message is an empty wallet,
+        # not an error; anything else (deprecated endpoint, rate limit) is.
+        msg = str(result or body.get("message") or "").lower()
+        if "no transaction" in msg or body.get("message") == "No transactions found":
+            return []
+        raise RuntimeError(f"explorer error: {result or body.get('message')}")
+
+    def fetch(address):
+        out, page = [], 1
+        while page <= _MAX_PAGES:
+            rows = _page(address, page)
+            out.extend(rows)
+            if len(rows) < _PAGE:
+                break
+            page += 1
+        return out
     return fetch
 
 
@@ -96,7 +121,7 @@ def recover_anchors_from_chain(address: str, network: str, *,
         endpoint = EXPLORERS.get(network)
         if endpoint is None:
             raise ValueError(f"no explorer configured for network {network!r}")
-        transport = _basescan_txlist(endpoint, api_key)
+        transport = _explorer_txlist(endpoint, api_key)
     out = []
     seen = set()
     for tx in transport(address):
