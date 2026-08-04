@@ -164,25 +164,172 @@ def run(iterations=5000, seed=1337):
     return {"seed": seed, "iterations": iterations, "violations": violations}
 
 
+# ---------------------------------------------------------------------------
+# forecast() end-to-end fuzz -- covers validation, source lookup, payload-sim /
+# calldata integration, and source->signal wiring that decide_payment fuzzing misses.
+# ---------------------------------------------------------------------------
+class _SingleSource:
+    """reputation_source returning a fixed record for any counterparty."""
+    def __init__(self, record):
+        self._r = record
+
+    def lookup(self, cp):
+        return dict(self._r)
+
+
+class _MockGraph:
+    def __init__(self, rng, raises=False):
+        self._rng, self._raises = rng, raises
+
+    def cross_signal(self, cp):
+        if self._raises:
+            raise RuntimeError("graph source down")   # fail-open contract: must not crash forecast
+        return random_graph_signal(self._rng)
+
+
+class _MockVelocity:
+    def __init__(self, rng, raises=False):
+        self._rng, self._raises = rng, raises
+
+    def temporal(self, cp):
+        if self._raises:
+            raise RuntimeError("velocity source down")
+        return random_temporal_signal(self._rng)
+
+
+def random_payload(rng):
+    """A /v1/forecast-payment request body -- valid, edge, and ~15% malformed (to
+    exercise the validation error paths)."""
+    cp = rng.choice(_ADDRS)
+    p = {"counterparty": cp,
+         "amount": _pick(rng, "0.001", "0.09", "0.5", "1.00", "5.00", "10.00", "25.00", "100.0"),
+         "asset": "USDC", "chain": "base"}
+    if rng.random() < 0.5:
+        p["resource"] = _pick(rng, "https://x/price/btc", "https://x/chat", "r")
+    if rng.random() < 0.3:
+        p["resource_class"] = _pick(rng, "weather", "data", "x")
+    if rng.random() < 0.4:   # context.expected_recipient: same (ok), different (mismatch->STOP)
+        p["context"] = {"expected_recipient": _pick(rng, cp, rng.choice(_ADDRS))}
+    if rng.random() < 0.2:
+        p["payer"] = rng.choice(_ADDRS)
+    if rng.random() < 0.25:  # garbage signed-payment inputs -> payload-sim/calldata must fail-open
+        p["payment_authorization"] = _pick(rng, "not-b64!!", "AAAA", "", "eyJ4Ijp9")
+    if rng.random() < 0.25:
+        p["transaction"] = _pick(rng, {"to": rng.choice(_ADDRS), "data": "0x", "value": "0"},
+                                 {"to": "0x", "data": "0xdeadbeef"}, {}, {"data": "0x" + "f" * 200})
+    r = rng.random()          # malformed variants
+    if r < 0.05:
+        p.pop("amount", None)                                   # missing required field
+    elif r < 0.09:
+        p["amount"] = _pick(rng, "notnum", "0", "-1", "")       # bad/non-positive amount
+    elif r < 0.12:
+        p["asset"] = _pick(rng, None, 123, "")                  # bad type / empty
+    elif r < 0.14:
+        p["context"] = "notadict"                              # bad context type
+    return p
+
+
+def forecast_violations(payload, record, resp, err):
+    """Invariants for one forecast() result. F1 exactly one of (resp, err) is set; on
+    success the P1/P3/P4/P5 safety invariants + the blockable=>STOP guarantee + the
+    response schema hold. PURE."""
+    v = []
+    if (resp is None) == (err is None):
+        v.append("F1 exactly one of (response, error) must be set: resp=%s err=%r"
+                 % ("None" if resp is None else "set", err))
+    if err is not None:
+        if not (isinstance(err, str) and err):
+            v.append("F1 error must be a non-empty string: %r" % err)
+        return v
+    if resp is None:
+        return v
+    verdict, hard, score = resp.get("verdict"), resp.get("hard_stop"), resp.get("score")
+    if verdict not in ("GO", "HOLD", "STOP"):
+        v.append("P1 verdict not in set: %r" % verdict)
+    try:
+        if not (0.0 <= float(score) <= 1.0):
+            v.append("P5 score out of range: %r" % score)
+    except (TypeError, ValueError):
+        v.append("P5 score not numeric: %r" % score)
+    if hard is True and verdict != "STOP":
+        v.append("P3 hard_stop but verdict=%r" % verdict)
+    if hard is True and score != 0.0:
+        v.append("P4 hard_stop but score=%r" % score)
+    cp = payload.get("counterparty") or ""
+    ctx = payload.get("context")
+    exp = ctx.get("expected_recipient") if isinstance(ctx, dict) else None
+    mism = isinstance(exp, str) and exp and not bw.addresses_equal(cp, exp)
+    blockable = bool(record.get("sanctioned")) or bool(record.get("known_bad")) or mism
+    if blockable and verdict != "STOP":
+        v.append("F3 blockable input but verdict=%r (must STOP)" % verdict)
+    if blockable and hard is not True:
+        v.append("F3 blockable input but hard_stop=%r" % hard)
+    if verdict == "GO" and blockable:
+        v.append("F3 GO on a blockable input!")
+    for k in ("verdict", "score", "signals", "reasons", "receipt_id"):
+        if k not in resp:
+            v.append("F4 success response missing key: %s" % k)
+    return v
+
+
+def run_forecast(iterations=5000, seed=1337):
+    """Fuzz forecast() end-to-end. A raise is a P7 violation (fail-open contract --
+    even a raising graph/velocity source or garbage signed-payment must not crash it)."""
+    rng = random.Random(seed)
+    violations = []
+    for _ in range(iterations):
+        payload = random_payload(rng)
+        record = random_record(rng)
+        graph = (_MockGraph(rng, raises=(rng.random() < 0.1))
+                 if rng.random() < 0.6 else None)
+        vel = (_MockVelocity(rng, raises=(rng.random() < 0.1))
+               if rng.random() < 0.6 else None)
+        cat = ({_pick(rng, "finance", "ai-agents"): _pick(rng, "0.001", "0.005")}
+               if rng.random() < 0.3 else None)
+        div = ({rng.choice(_ADDRS).lower(): _pick(rng, "1.0", "12.0", "90.0")}
+               if rng.random() < 0.3 else None)
+        try:
+            resp, err = bw.forecast(payload, _SingleSource(record), None,
+                                    graph_source=graph, velocity_source=vel,
+                                    category_index=cat, divergence_index=div)
+        except Exception as e:
+            violations.append({"case": payload, "result": None,
+                               "problems": ["P7 forecast raised %s: %s"
+                                            % (type(e).__name__, e)]})
+            continue
+        probs = forecast_violations(payload, record, resp, err)
+        if probs:
+            violations.append({"case": payload, "result": {"resp": resp, "err": err},
+                               "problems": probs})
+    return {"seed": seed, "iterations": iterations, "violations": violations}
+
+
 def main(argv=None):
     import argparse
     import json
-    p = argparse.ArgumentParser(description="Property-based fuzzer for decide_payment.")
+    p = argparse.ArgumentParser(description="Property-based fuzzer for the verdict engine.")
     p.add_argument("-n", "--iterations", type=int, default=20000)
     p.add_argument("--seed", type=int, default=1337)
+    p.add_argument("--target", choices=("decide", "forecast", "both"), default="both")
     p.add_argument("--json", help="write the full report JSON here")
     args = p.parse_args(argv)
-    rep = run(args.iterations, args.seed)
-    n = len(rep["violations"])
-    print("fuzz_verdict: %d cases, seed %d -> %d violation(s)"
-          % (rep["iterations"], rep["seed"], n))
-    for x in rep["violations"][:10]:
-        print("  PROBLEMS:", x["problems"])
-        print("    case:", json.dumps(x["case"], default=str))
-        print("    result:", json.dumps(x["result"], default=str)[:200])
+    reps = {}
+    if args.target in ("decide", "both"):
+        reps["decide_payment"] = run(args.iterations, args.seed)
+    if args.target in ("forecast", "both"):
+        reps["forecast"] = run_forecast(args.iterations, args.seed)
+    total = 0
+    for name, rep in reps.items():
+        n = len(rep["violations"])
+        total += n
+        print("fuzz %s: %d cases, seed %d -> %d violation(s)"
+              % (name, rep["iterations"], rep["seed"], n))
+        for x in rep["violations"][:10]:
+            print("  PROBLEMS:", x["problems"])
+            print("    case:", json.dumps(x["case"], default=str)[:300])
     if args.json:
-        json.dump(rep, open(args.json, "w"), default=str, indent=2)
-    return 1 if n else 0
+        json.dump(reps, open(args.json, "w"), default=str, indent=2)
+    return 1 if total else 0
 
 
 if __name__ == "__main__":

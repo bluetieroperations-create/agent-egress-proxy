@@ -34,6 +34,39 @@ class TestFuzzRun(unittest.TestCase):
         self.assertIn("blockable", seen)
 
 
+class TestForecastFuzz(unittest.TestCase):
+    """forecast() end-to-end: validation, source lookup, payload-sim/calldata, wiring."""
+
+    def test_fixed_seed_no_violations(self):
+        rep = F.run_forecast(iterations=3000, seed=1337)
+        self.assertEqual(rep["violations"], [], "forecast invariant violations: %s"
+                         % rep["violations"][:3])
+
+    def test_exercises_error_success_and_raising_sources(self):
+        # non-vacuous: the batch must hit validation errors, successes, AND survive a
+        # raising graph/velocity source (the fail-open contract) without a P7 crash.
+        import random
+        import blackwall as bw
+        rng = random.Random(1337)
+        errors = success = survived_raise = 0
+        for _ in range(3000):
+            payload = F.random_payload(rng)
+            record = F.random_record(rng)
+            raising = rng.random() < 0.3
+            graph = F._MockGraph(rng, raises=raising) if raising else None
+            resp, err = bw.forecast(payload, F._SingleSource(record), None,
+                                    graph_source=graph)
+            if err is not None:
+                errors += 1
+            else:
+                success += 1
+            if raising:
+                survived_raise += 1   # no exception escaped -> fail-open held
+        self.assertGreater(errors, 0)          # validation error path hit
+        self.assertGreater(success, 0)         # success path hit
+        self.assertGreater(survived_raise, 0)  # raising source survived
+
+
 class TestFuzzerCatchesRegressions(unittest.TestCase):
     """Meta-test: the fuzzer must CATCH a real safety regression end-to-end (generator
     -> engine -> checker), not just pass on a healthy engine. Inject a bug into
@@ -72,6 +105,53 @@ class TestFuzzerCatchesRegressions(unittest.TestCase):
             return r
         rep = self._run_with_mutant(audit_override)
         self.assertGreater(len(rep["violations"]), 0)
+
+    def test_forecast_catches_ignored_sanctions(self):
+        # the same regression must be caught through the forecast() path too.
+        import blackwall as bw
+        orig = bw.decide_payment
+
+        def ignore_sanctions(**kw):
+            r = dict(kw.get("record") or {}); r.pop("sanctioned", None)
+            kw = dict(kw); kw["record"] = r
+            return orig(**kw)
+        bw.decide_payment = ignore_sanctions
+        try:
+            rep = F.run_forecast(iterations=3000, seed=1337)
+        finally:
+            bw.decide_payment = orig
+        self.assertGreater(len(rep["violations"]), 0)
+
+
+class TestForecastChecker(unittest.TestCase):
+    """forecast_violations must catch a bad (resp, err) -- kills the vacuous-checker mutation."""
+
+    def test_catches_both_set(self):
+        probs = F.forecast_violations({"record": {}}, {}, {"verdict": "GO"}, "an error")
+        self.assertTrue(any("F1" in p for p in probs))
+
+    def test_catches_both_none(self):
+        probs = F.forecast_violations({"record": {}}, {}, None, None)
+        self.assertTrue(any("F1" in p for p in probs))
+
+    def test_catches_go_on_sanctioned(self):
+        probs = F.forecast_violations(
+            {"counterparty": "0x" + "1" * 40}, {"sanctioned": True},
+            {"verdict": "GO", "hard_stop": False, "score": 0.9,
+             "signals": {}, "reasons": [], "receipt_id": "x"}, None)
+        self.assertTrue(any("F3" in p for p in probs))
+
+    def test_catches_missing_schema_key(self):
+        probs = F.forecast_violations(
+            {"record": {}}, {}, {"verdict": "GO", "hard_stop": False, "score": 0.5}, None)
+        self.assertTrue(any("F4" in p and "signals" in p for p in probs))
+
+    def test_clean_forecast_result_ok(self):
+        probs = F.forecast_violations(
+            {"counterparty": "0x" + "1" * 40}, {},
+            {"verdict": "GO", "hard_stop": False, "score": 0.9,
+             "signals": {}, "reasons": [], "receipt_id": "x"}, None)
+        self.assertEqual(probs, [])
 
 
 class TestChecker(unittest.TestCase):
