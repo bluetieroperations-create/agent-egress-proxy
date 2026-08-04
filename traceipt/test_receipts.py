@@ -2833,6 +2833,22 @@ class TestCdpFacilitatorAuth(unittest.TestCase):
         # signature verifies against the public key over header.payload
         k.public_key().verify(ub64(s_b64), (h_b64 + "." + p_b64).encode())
 
+    def test_accepts_32_and_64_byte_secret(self):
+        # CDP secrets come as the 32-byte seed OR 64-byte (seed||pub). Both work.
+        import base64
+        from cryptography.hazmat.primitives import serialization
+        from traceipt.x402_gate import make_cdp_auth
+        k, secret64 = self._fake_secret()
+        seed = k.private_bytes(serialization.Encoding.Raw,
+                               serialization.PrivateFormat.Raw,
+                               serialization.NoEncryption())
+        secret32 = base64.b64encode(seed).decode()
+        h64 = make_cdp_auth("kid", secret64)("POST", "https://api.cdp.coinbase.com/x")
+        h32 = make_cdp_auth("kid", secret32)("POST", "https://api.cdp.coinbase.com/x")
+        # both sign with the same seed -> both verify; structurally valid
+        for h in (h64, h32):
+            self.assertTrue(h["Authorization"].startswith("Bearer "))
+
     def test_rejects_malformed_secret(self):
         import base64
         from traceipt.x402_gate import make_cdp_auth

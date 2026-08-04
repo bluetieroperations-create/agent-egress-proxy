@@ -168,10 +168,17 @@ def make_cdp_auth(api_key_id: str, api_key_secret: str):
                  uri: "<METHOD> <host><path>"}
     `api_key_secret` is the base64 64-byte Ed25519 keypair (seed||public); we
     sign with the 32-byte seed. Pure cryptography + stdlib, no CDP SDK."""
-    raw = base64.b64decode(api_key_secret)
-    if len(raw) != 64:
-        raise ValueError("CDP API key secret must decode to 64 bytes (Ed25519 keypair)")
-    key = Ed25519PrivateKey.from_private_bytes(raw[:32])
+    # CDP secrets come base64 as EITHER the 32-byte Ed25519 seed OR the 64-byte
+    # (seed || public) form. Accept both (matches Blackwall's working cdp_auth).
+    raw = base64.b64decode(api_key_secret.strip())
+    if len(raw) == 64:
+        seed = raw[:32]
+    elif len(raw) == 32:
+        seed = raw
+    else:
+        raise ValueError(
+            f"CDP API key secret must decode to 32 or 64 bytes, got {len(raw)}")
+    key = Ed25519PrivateKey.from_private_bytes(seed)
 
     def auth(method: str, url: str) -> dict:
         rest = url.split("://", 1)[-1]
