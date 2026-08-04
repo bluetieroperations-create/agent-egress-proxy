@@ -139,6 +139,16 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   transient 429/5xx/timeout -- honors `Retry-After`, permanent 4xx not retried --
   plus a read-size cap; transport+clock injectable. Used by `chain_backfill`'s
   `BlockscoutPager` and `discovery_crawl`. See `docs/AUDIT_ZEROCUSTOMER.md`),
+  `blockscout.py` (FREE keyless on-chain ENRICHMENT for a counterparty via Blockscout's
+  public Base API: `is_scam` crowd tag, contract-vs-EOA, ENS/labels, ERC-20 activity.
+  HARD BOUNDARY -- raw chain data + crowd tags, NOT a sanctions source: it can ONLY
+  push a would-be GO to REVIEW (HOLD) via `is_scam`, and NEVER clears (GO) or produces
+  (STOP/hard_stop) a compliance decision; OFAC/Chainalysis/TRM stay the authority.
+  `address_enrichment()` is the pure derivation; `BlockscoutEnrichmentSource` does the
+  live fetch -- OPT-IN (network on the hot path, behind `BLACKWALL_ONCHAIN_ENRICH=1`)
+  and FAIL-OPEN. Folds into `decide_payment`/`forecast` via `enrichment`/
+  `enrichment_source`, structurally added only to the `go` conditions so it can never
+  reach the STOP path. Tests: `test_blockscout.py`),
   `payer_graph.py` (the cross-counterparty payer graph as a reputation signal:
   build the bipartite payer<->payee graph from ingested settlements and derive per
   payee `established_payers` (payers proven to also pay OTHER known payees --
@@ -184,7 +194,7 @@ test states the mutation it kills). Keep new code stdlib-only and match this sty
 
 Run all tests:
 ```sh
-python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py test_aa_cosigner.py test_chain_backfill.py test_discovery_crawl.py test_ecosystem_scan.py test_http_util.py test_payer_graph.py test_payer_reputation.py test_settlement_velocity.py test_confidence.py test_redteam.py test_demo_flywheel.py test_verdict_anchor.py test_categories.py test_category_pricing.py test_check_seed_age.py test_price_integrity.py test_ratelimit.py test_fuzz_verdict.py
+python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py test_aa_cosigner.py test_chain_backfill.py test_discovery_crawl.py test_ecosystem_scan.py test_http_util.py test_payer_graph.py test_payer_reputation.py test_settlement_velocity.py test_confidence.py test_redteam.py test_demo_flywheel.py test_verdict_anchor.py test_categories.py test_category_pricing.py test_check_seed_age.py test_price_integrity.py test_ratelimit.py test_fuzz_verdict.py test_blockscout.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop
@@ -198,7 +208,7 @@ then loses it (going_bad) when recent outcomes turn to disputes. Guarded by
 legit controls through `decide_payment` and derives each disposition (CAUGHT /
 KNOWN GAP / CLEAN / FALSE POSITIVE / MISS). `test_redteam.py` guards it -- the caught
 set may not shrink, no control may become a false positive, and any attack that gets
-GO must be an EXPLICIT `known_gap`. Current: 15 core attacks caught, 3 documented
+GO must be an EXPLICIT `known_gap`. Current: 16 core attacks caught, 3 documented
 gaps, 0 false positives.
 
 ## Standing working practice: ALWAYS deep audit → eval → verify

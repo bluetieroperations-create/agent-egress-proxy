@@ -104,6 +104,11 @@ def random_case(rng):
         "category": _maybe(rng, lambda: _pick(rng, "finance", "ai-agents"), 0.4),
         "category_median": _maybe(rng, lambda: _pick(rng, "0.001", "0.005"), 0.4),
         "divergence_ratio": _maybe(rng, lambda: _pick(rng, "1.0", "5.0", "12.0", "90.0"), 0.3),
+        # free on-chain enrichment (blockscout): REVIEW-only. The boundary is fuzzed by
+        # P2b/P8 -- it must never set hard_stop or clear a STOP, only push GO->HOLD.
+        "enrichment": _maybe(rng, lambda: {"review": _pick(rng, True, False),
+                                           "is_scam": _pick(rng, True, False),
+                                           "reasons": ["scam tag"]}, 0.4),
     }
     return kw
 
@@ -131,6 +136,15 @@ def invariant_violations(kw, result):
             v.append("P2 blockable input but verdict=%r (must STOP)" % verdict)
         if hard is not True:
             v.append("P2 blockable input but hard_stop=%r (must be True)" % hard)
+    else:
+        # P2b (converse / the enrichment BOUNDARY): only a real blockable condition may
+        # set hard_stop. A REVIEW-only signal (enrichment, category, divergence, ...)
+        # must NEVER reach the hard-stop path.
+        if hard is True:
+            v.append("P2b non-blockable input but hard_stop=True (a soft signal STOPped?)")
+    # P8: a REVIEW-only enrichment signal can push GO->HOLD but must never yield GO.
+    if (kw.get("enrichment") or {}).get("review") and verdict == "GO":
+        v.append("P8 enrichment.review set but verdict==GO (review ignored)")
     if hard is True and verdict != "STOP":
         v.append("P3 hard_stop but verdict=%r" % verdict)
     if hard is True and score != 0.0:

@@ -356,7 +356,8 @@ def decide_payment(amount, record, price_history,
                    resource=None, peer_median=None, payload_mismatch_reasons=None,
                    verified_floor=None, verified_grade=None,
                    payer_graph_signal=None, temporal_signal=None,
-                   category=None, category_median=None, divergence_ratio=None):
+                   category=None, category_median=None, divergence_ratio=None,
+                   enrichment=None):
     """
     The core verdict. Returns a dict:
         {verdict, score, reasons[], signals{...}}
@@ -549,6 +550,13 @@ def decide_payment(amount, record, price_history,
         _div = None
     divergence_hold = _div is not None and _div >= DIVERGENCE_HOLD_RATIO
 
+    # Free on-chain ENRICHMENT (blockscout.py): behavioral/crowd context. HARD BOUNDARY
+    # -- it can ONLY push a would-be GO to HOLD (REVIEW); it must NEVER cause or clear a
+    # STOP and never touches hard_stop or the sanctions decision (that stays with the
+    # real compliance feeds). Structurally enforced: `enrichment_review` is added to the
+    # GO conditions only, so it can turn GO->HOLD but cannot reach the STOP path.
+    enrichment_review = bool((enrichment or {}).get("review"))
+
     # ---- verdict ----
     if stop:
         verdict = "STOP"
@@ -563,7 +571,8 @@ def decide_payment(amount, record, price_history,
               and not over_budget
               and not peer_hold
               and not category_hold
-              and not divergence_hold)
+              and not divergence_hold
+              and not enrichment_review)
         if go:
             verdict = "GO"
         else:
@@ -617,6 +626,9 @@ def decide_payment(amount, record, price_history,
                     "-- its public listing understates the real cost (possible "
                     "bait-and-switch); escalating" % _div
                 )
+            if enrichment_review:
+                for _r in (enrichment or {}).get("reasons", []):
+                    reasons.append(_r)
             if stale:
                 reasons.append(
                     "no settlement in %s day(s) -- counterparty may be dormant or "
@@ -669,6 +681,9 @@ def decide_payment(amount, record, price_history,
         # how far this payee's on-chain SETTLED median runs above its most-expensive
         # advertised price (None = not on the divergence watch-list). Bait-and-switch.
         "price_divergence_ratio": (round(_div, 3) if _div is not None else None),
+        # free on-chain enrichment (Blockscout): behavioral/crowd context. DESCRIPTIVE +
+        # REVIEW-only -- NOT a compliance signal. None when no enrichment source wired.
+        "onchain_enrichment": enrichment,
         # x402 settlement is on-chain and final.
         "reversibility": "irreversible",
         "blast_radius": "bounded" if not over_budget else "unbounded",
@@ -944,7 +959,7 @@ def default_billing_asset(network, explicit, base_usdc, sepolia_usdc):
 def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              hold_above=None, peer_index=None, seller_registry=None, now=None,
              graph_source=None, velocity_source=None, category_index=None,
-             divergence_index=None):
+             divergence_index=None, enrichment_source=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
@@ -1022,6 +1037,14 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         except Exception:
             temporal_sig = None
 
+    # Free on-chain enrichment (blockscout.py). Fail-open; REVIEW-only (never STOP/clear).
+    enrichment = None
+    if enrichment_source is not None:
+        try:
+            enrichment = enrichment_source.enrich(clean["counterparty"])
+        except Exception:
+            enrichment = None
+
     # Per-category price baseline: classify the RESOURCE being paid for (from its
     # URL) and look up that category's on-chain median. Derived + advisory (HOLD-only,
     # fail-open) -- see category_pricing.py / docs/CATEGORY.md.
@@ -1049,6 +1072,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         temporal_signal=temporal_sig,
         category=category, category_median=category_median,
         divergence_ratio=divergence_ratio,
+        enrichment=enrichment,
     )
     # Surface advisory (non-blocking) simulation warnings, e.g. an expired auth or
     # a bounded approval.
@@ -1168,6 +1192,7 @@ class _Handler(BaseHTTPRequestHandler):
     peer_index = None  # {resource_class: peer_median} for the peer-group check, or None
     category_index = None  # {category: on-chain median} for the category-price check, or None
     divergence_index = None  # {payee: settled/advertised ratio} bait-and-switch watch-list, or None
+    enrichment_source = None  # blockscout.BlockscoutEnrichmentSource (REVIEW-only), or None
     graph_source = None  # payer_reputation.PayerReputationSource (Sybil corroboration)
     velocity_source = None  # settlement_velocity.VelocitySource (stale gate)
     openapi_server_url = None  # public origin for the openapi.json servers[] (or None)
@@ -1392,7 +1417,8 @@ class _Handler(BaseHTTPRequestHandler):
                                  graph_source=self.graph_source,
                                  velocity_source=self.velocity_source,
                                  category_index=self.category_index,
-                                 divergence_index=self.divergence_index)
+                                 divergence_index=self.divergence_index,
+                                 enrichment_source=self.enrichment_source)
         if err is not None:
             self._send_json(400, {"error": err})
             return
@@ -1476,7 +1502,8 @@ class BlackwallServer:
                  ledger=None, billing=None, readiness_source=None,
                  hold_above=None, peer_index=None, openapi_server_url=None,
                  graph_source=None, velocity_source=None, verdict_anchor=None,
-                 category_index=None, divergence_index=None, rate_limiter=None):
+                 category_index=None, divergence_index=None, rate_limiter=None,
+                 enrichment_source=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -1494,6 +1521,7 @@ class BlackwallServer:
         self.category_index = category_index
         self.divergence_index = divergence_index
         self.rate_limiter = rate_limiter
+        self.enrichment_source = enrichment_source
         self.stats = _Stats()
         self._httpd = None
 
@@ -1511,6 +1539,7 @@ class BlackwallServer:
                         "category_index": self.category_index,
                         "divergence_index": self.divergence_index,
                         "rate_limiter": self.rate_limiter,
+                        "enrichment_source": self.enrichment_source,
                         "stats": self.stats,
                         "openapi_server_url": self.openapi_server_url})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
@@ -1813,6 +1842,18 @@ def main(argv=None):
             sys.stderr.write("blackwall: WARNING bad rate-limit config (%s) -- OFF\n" % e)
             sys.stderr.flush()
 
+    # OPT-IN (BLACKWALL_ONCHAIN_ENRICH=1): free Blockscout enrichment. Adds a LIVE call
+    # per verdict (latency + keyless rate limits), so it's off by default; fail-open and
+    # REVIEW-only (never a sanctions clear/hit). See blockscout.py.
+    enrichment_source = None
+    if _env_flag("BLACKWALL_ONCHAIN_ENRICH"):
+        from blockscout import BlockscoutEnrichmentSource, BLOCKSCOUT_BASE
+        _bs = os.environ.get("BLACKWALL_BLOCKSCOUT_URL", BLOCKSCOUT_BASE)
+        enrichment_source = BlockscoutEnrichmentSource(base_url=_bs)
+        sys.stdout.write("blackwall: on-chain enrichment ON (Blockscout %s -- REVIEW-only "
+                         "behavioral context; live call per verdict)\n" % _bs)
+        sys.stdout.flush()
+
     # OPT-IN (BLACKWALL_ANCHOR=1): anchor every verdict's digest to Traceipt for a
     # tamper-evident audit trail. Non-blocking + fail-open; costs ~0.002 USDC/verdict
     # and needs a funded SIGNER_PRIVATE_KEY (else it 402s and fails open). OFF by
@@ -1837,6 +1878,7 @@ def main(argv=None):
                              category_index=category_index,
                              divergence_index=divergence_index,
                              rate_limiter=rate_limiter,
+                             enrichment_source=enrichment_source,
                              openapi_server_url=origin)
     try:
         server.serve_forever()

@@ -81,6 +81,11 @@ SCENARIOS = [
     ("advertised-vs-settled bait-and-switch", "price-integrity", "block", False,
      dict(amount="0.09", record=GOOD, price_history=STABLE, counterparty=LEGIT,
           divergence_ratio="12.0")),
+    # free on-chain enrichment: Blockscout flags the address as scam-associated ->
+    # REVIEW (HOLD). Never a STOP (crowd tag, not a compliance decision).
+    ("on-chain scam tag (Blockscout REVIEW)", "onchain-enrich", "block", False,
+     dict(amount="0.09", record=GOOD, price_history=STABLE, counterparty=LEGIT,
+          enrichment={"review": True, "is_scam": True, "reasons": ["scam-associated"]})),
 
     # --- documented GAPS (attack gets GO) ---
     ("large captive farm (>ceiling)", "sybil-graph", "block", True,
