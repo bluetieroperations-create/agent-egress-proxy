@@ -34,6 +34,46 @@ class TestFuzzRun(unittest.TestCase):
         self.assertIn("blockable", seen)
 
 
+class TestFuzzerCatchesRegressions(unittest.TestCase):
+    """Meta-test: the fuzzer must CATCH a real safety regression end-to-end (generator
+    -> engine -> checker), not just pass on a healthy engine. Inject a bug into
+    decide_payment and confirm run() reports violations. Guards the fuzzer's ongoing
+    value as the engine evolves."""
+
+    def _run_with_mutant(self, mutant):
+        import blackwall as bw
+        orig = bw.decide_payment
+        bw.decide_payment = mutant
+        try:
+            return F.run(iterations=3000, seed=1337)
+        finally:
+            bw.decide_payment = orig
+
+    def test_catches_ignored_sanctions(self):
+        import blackwall as bw
+        orig = bw.decide_payment
+
+        def ignore_sanctions(**kw):
+            r = dict(kw.get("record") or {})
+            r.pop("sanctioned", None)          # BUG: sanctions no longer stop
+            kw = dict(kw); kw["record"] = r
+            return orig(**kw)
+        rep = self._run_with_mutant(ignore_sanctions)
+        self.assertGreater(len(rep["violations"]), 0)   # fuzzer must notice
+
+    def test_catches_badge_overrides_stop(self):
+        import blackwall as bw
+        orig = bw.decide_payment
+
+        def audit_override(**kw):
+            r = dict(orig(**kw))
+            if kw.get("verified_floor") is not None and r["verdict"] == "STOP":
+                r["verdict"], r["hard_stop"] = "GO", False   # BUG: badge buys past STOP
+            return r
+        rep = self._run_with_mutant(audit_override)
+        self.assertGreater(len(rep["violations"]), 0)
+
+
 class TestChecker(unittest.TestCase):
     """The checker must CATCH violations -- these kill the 'checker returns []' mutation."""
 
