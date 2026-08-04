@@ -897,6 +897,45 @@ class TestX402GateUnit(unittest.TestCase):
         self.assertIn("paymentPayload", captured["body"])
         self.assertIn("paymentRequirements", captured["body"])
 
+    def test_decode_accepts_v2_canonical_toplevel(self):
+        # A spec-canonical v2 client (scheme+network at the top level, no
+        # `accepted` block) must decode -- this is what a real x402 client and
+        # CDP use. The payer is still recovered from payload.authorization.
+        from traceipt.x402_gate import decode_payment_header
+        h = _b64.b64encode(json.dumps({
+            "x402Version": 2, "scheme": "exact", "network": "eip155:8453",
+            "payload": {"signature": "0x" + "11" * 65,
+                        "authorization": {"from": PAYER, "to": PAYEE,
+                                          "value": "10000", "nonce": "0x" + "22" * 32}},
+        }).encode()).decode()
+        payload = decode_payment_header(h)
+        self.assertEqual(payload["scheme"], "exact")
+        self.assertEqual(payer_from_payload(payload), PAYER.lower())
+
+    def test_facilitator_lifts_accepted_to_canonical_for_cdp(self):
+        # The internal `accepted` envelope must be forwarded to the facilitator
+        # in canonical shape (top-level scheme+network), or CDP rejects it as
+        # not matching x402V2PaymentPayload. Regression for the first mainnet run.
+        from traceipt.x402_gate import canonical_payment_payload
+        captured = {}
+
+        def fake_transport(path, body):
+            captured["body"] = body
+            return {"isValid": True}
+
+        payment = json.loads(_b64.b64decode(make_xpayment_v2(PAYER, network="eip155:8453")))
+        self.assertNotIn("scheme", payment)          # internal shape has no top-level scheme
+        fac = Facilitator("https://f.example", transport=fake_transport)
+        fac.verify(payment, {"scheme": "exact"})
+        pp = captured["body"]["paymentPayload"]
+        self.assertEqual(pp["scheme"], "exact")       # lifted to the top level
+        self.assertEqual(pp["network"], "eip155:8453")
+        self.assertNotIn("accepted", pp)              # non-standard field dropped
+        self.assertEqual(pp["payload"]["authorization"]["from"], PAYER)
+        # idempotent on an already-canonical payload
+        again = canonical_payment_payload(pp)
+        self.assertEqual(again["scheme"], "exact")
+
     def test_gate_verify_absent_payment_402(self):
         d = gate_verify(FakeFacilitator(), {}, {"network": "base-sepolia"},
                         {"error": "pay up"})

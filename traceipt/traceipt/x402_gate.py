@@ -81,10 +81,17 @@ def decode_payment_header(value: str) -> dict:
     if not isinstance(payload.get("payload"), dict):
         raise ValueError("X-PAYMENT missing inner payload")
     if version == 2:
-        # v2 carries the chosen requirements (scheme/network/asset) under
-        # `accepted`; the top level has no scheme/network.
-        if not isinstance(payload.get("accepted"), dict):
-            raise ValueError("X-PAYMENT (v2) missing accepted requirements")
+        # v2 may arrive in EITHER shape: Traceipt's internal envelope carries the
+        # chosen requirements under `accepted` (no top-level scheme/network), while
+        # a spec-canonical client (and CDP) puts scheme+network at the top level.
+        # Accept both so the gate interoperates with real x402 clients, not only
+        # our own; the authorization is read from payload.authorization either way.
+        has_accepted = isinstance(payload.get("accepted"), dict)
+        has_top = isinstance(payload.get("scheme"), str) and isinstance(
+            payload.get("network"), str)
+        if not (has_accepted or has_top):
+            raise ValueError(
+                "X-PAYMENT (v2) needs `accepted` or top-level scheme+network")
     else:
         # v1 legacy: scheme/network live at the top level.
         if not isinstance(payload.get("scheme"), str) or not isinstance(
@@ -107,6 +114,34 @@ def _authorization(payment: dict) -> dict:
         return {}
     auth = inner.get("authorization")
     return auth if isinstance(auth, dict) else {}
+
+
+def canonical_payment_payload(payment: dict) -> dict:
+    """Return the payment in the x402-spec canonical PaymentPayload shape that a
+    REAL facilitator (Coinbase CDP) validates against: {x402Version, scheme,
+    network, payload:{signature, authorization}} with scheme+network at the TOP
+    level.
+
+    Traceipt's internal v2 envelope instead carries the chosen requirements
+    under `accepted` (scheme/network/asset/payTo) with no top-level scheme or
+    network. That non-standard shape is accepted by our own gate but rejected by
+    CDP's /verify ("must match one of [x402V2PaymentPayload, x402V1PaymentPayload]"),
+    so we lift scheme+network out of `accepted` before forwarding. A payload
+    already in canonical shape passes through unchanged (idempotent)."""
+    if not isinstance(payment, dict):
+        return payment
+    acc = payment.get("accepted")
+    acc = acc if isinstance(acc, dict) else {}
+    scheme = payment.get("scheme") or acc.get("scheme")
+    network = payment.get("network") or acc.get("network")
+    out = {"x402Version": payment.get("x402Version", X402_VERSION)}
+    if scheme is not None:
+        out["scheme"] = scheme
+    if network is not None:
+        out["network"] = network
+    if "payload" in payment:
+        out["payload"] = payment["payload"]
+    return out
 
 
 def payer_from_payload(payload: dict) -> str | None:
@@ -242,14 +277,14 @@ class Facilitator:
     def verify(self, payment: dict, requirements: dict) -> dict:
         return self._transport("/verify", {
             "x402Version": X402_VERSION,
-            "paymentPayload": payment,
+            "paymentPayload": canonical_payment_payload(payment),
             "paymentRequirements": requirements,
         })
 
     def settle(self, payment: dict, requirements: dict) -> dict:
         return self._transport("/settle", {
             "x402Version": X402_VERSION,
-            "paymentPayload": payment,
+            "paymentPayload": canonical_payment_payload(payment),
             "paymentRequirements": requirements,
         })
 

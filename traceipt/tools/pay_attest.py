@@ -137,15 +137,14 @@ def build_signed_xpayment(accept: dict, payer_key: str, timeout_s: int) -> tuple
     signature = "0x" + signed.signature.hex() if not signed.signature.hex().startswith("0x") \
         else signed.signature.hex()
 
+    # Spec-canonical x402 v2 PaymentPayload: scheme + network at the TOP level
+    # (what a real facilitator, e.g. Coinbase CDP, validates against). The
+    # requirements (asset/payTo/amount) belong in paymentRequirements, which the
+    # server supplies -- they are NOT part of the payload.
     envelope = {
         "x402Version": 2,
-        "accepted": {
-            "scheme": accept.get("scheme", "exact"),
-            "network": network,
-            "amount": value,
-            "asset": asset,
-            "payTo": pay_to,
-        },
+        "scheme": accept.get("scheme", "exact"),
+        "network": network,
         "payload": {
             "signature": signature,
             "authorization": {
