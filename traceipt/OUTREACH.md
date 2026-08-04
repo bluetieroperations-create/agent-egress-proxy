@@ -64,8 +64,12 @@ independently, not just show a vendor's log — what do I hand them?"**
 
 ## Where to find them
 
-- **x402 Foundation** (Linux Foundation) — Discord / GitHub discussions; the
-  compliance gap is openly acknowledged there.
+- **x402 Foundation Slack** — `slack.x402.org` — the official community hub (NOT
+  Discord, and the GitHub repos have Discussions disabled). Ask questions,
+  discuss ideas, share what you're building; the compliance gap is openly
+  acknowledged here. A GitHub *Issue* on `x402-foundation/x402` is a weaker
+  fallback — Issues are for the project's own roadmap, so a product post reads as
+  self-promo unless framed as a genuine ecosystem/standard question.
 - **The Bazaar** `/discovery/resources` and **[x402.org/ecosystem](https://www.x402.org/ecosystem)**
   — actual live sellers, filterable.
 - **[awesome-x402](https://github.com/xpaysh/awesome-x402)** /
