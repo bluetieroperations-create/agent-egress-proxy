@@ -6,7 +6,8 @@ Endpoints:
   GET  /receipts/{id}   fetch a stored envelope
   GET  /receipts/{id}/vc  the receipt as a W3C Verifiable Credential (AP2-ready)
   GET  /attest/{id}/vc    the anchoring attestation (e.g. a verdict) as a W3C VC
-  POST /verify          neutral verifier: verify any VC / VP / lifecycle bundle (public)
+  POST /verify          neutral verifier: any VC / VP / lifecycle bundle, OR an
+                        inclusion proof / attest 201 (checked vs on-chain anchors) (public)
   POST /receipts/{id}/disclose  (admin) signed redacted disclosure of chosen fields
   GET  /verify/{id}     re-verify signature + chain link, return a report
   GET  /chain/{seller}  full-chain integrity check for a seller
@@ -47,6 +48,7 @@ from .invoice import render_invoice
 from .ledger import Ledger
 from .merkle import verify_inclusion
 from .publisher import make_publisher
+from .screening import verdict_digest
 from .schema import (
     build_receipt, receipt_hash, validate_attestation_request,
     validate_commerce, validate_credit, validate_settlement,
@@ -306,6 +308,12 @@ class App:
                 settlement_time=body.get("settlement_time"),
                 expected_issuers=body.get("expected_issuers"))
             return 200, {"ok": ok, "kind": "lifecycle", **report}
+        # An inclusion proof / /attest 201 body. Detected BEFORE the VC `proof`
+        # branch: our inclusion proof carries root + leaf_data, a VC `proof` does
+        # not, so the two never collide.
+        inc = self._locate_inclusion_proof(body)
+        if inc is not None:
+            return 200, self._verify_inclusion_doc(body, inc)
         types = body.get("type") or []
         if "VerifiablePresentation" in types:
             ok, report = verify_presentation(body)
@@ -316,6 +324,71 @@ class App:
         return 400, {"error": "unrecognized document: expected a VC (with a "
                      "proof), a VerifiablePresentation, or a bundle "
                      "{receipt_vc, verdict_vc, attestation_vc}"}
+
+    @staticmethod
+    def _locate_inclusion_proof(body: dict):
+        """Find the inclusion-proof object in a raw proof, a /attest 201 body,
+        or the payer client's saved run. Returns it, or None. Recognized by
+        carrying both `root` and `leaf_data`."""
+        if {"root", "leaf_data"} <= body.keys():
+            return body
+        p = body.get("proof")
+        if isinstance(p, dict) and {"root", "leaf_data"} <= p.keys():
+            return p
+        resp = body.get("response")
+        if isinstance(resp, dict) and isinstance(resp.get("proof"), dict) \
+                and {"root", "leaf_data"} <= resp["proof"].keys():
+            return resp["proof"]
+        return None
+
+    def _verify_inclusion_doc(self, body: dict, proof: dict) -> dict:
+        """Check a presented inclusion proof: (1) the audit path recomputes the
+        claimed root, (2) that root is one we anchored on-chain (sealed OR
+        recovered from the chain), and (3) if a verdict is present, its digest is
+        the anchored leaf. Public + read-only. This is a convenience over the
+        fully-standalone verifier (tools/verify.py, site/verify.html): it does
+        NOT replace them -- a receipt still verifies against the chain without
+        us. `anchored` reflects OUR record of the root; `onchain_tx` lets the
+        caller confirm it against Base directly."""
+        checks = []
+        leaf = proof.get("leaf_data")
+        root = (proof.get("root") or "").lower()
+        if not isinstance(leaf, str) or not root:
+            return {"ok": False, "kind": "inclusion",
+                    "error": "proof missing leaf_data or root"}
+
+        # 1. inclusion: audit path recomputes the root.
+        inclusion_ok = False
+        try:
+            path = [bytes.fromhex(h) for h in (proof.get("audit_path") or [])]
+            inclusion_ok = verify_inclusion(
+                int(proof.get("leaf_index", 0)), int(proof.get("tree_size", 1)),
+                leaf.encode(), path, bytes.fromhex(root))
+        except (ValueError, TypeError):
+            inclusion_ok = False
+        checks.append({"name": "inclusion_proof", "ok": inclusion_ok})
+
+        # 2. that root is one we published on-chain (sealed or recovered).
+        anchor = self.ledger.anchor_by_root(root)
+        anchored = anchor is not None
+        checks.append({"name": "anchored_onchain", "ok": anchored,
+                       "detail": ("root not in our anchor index" if not anchored
+                                  else f"source={anchor.get('source')}")})
+
+        # 3. optional verdict binding.
+        verdict = body.get("verdict") if isinstance(body.get("verdict"), dict) else None
+        if verdict is not None:
+            want = verdict_digest(verdict)
+            checks.append({"name": "verdict_binding", "ok": want == leaf,
+                           "detail": None if want == leaf else f"verdict hashes to {want}"})
+
+        ok = inclusion_ok and anchored and all(c["ok"] for c in checks)
+        out = {"ok": ok, "kind": "inclusion", "root": root, "checks": checks}
+        if anchor is not None:
+            out["onchain_tx"] = anchor.get("onchain_tx")
+            out["onchain_network"] = anchor.get("onchain_network")
+            out["anchored_at"] = anchor.get("created_at")
+        return out
 
     def receipt_vc_jwt(self, receipt_id: str) -> tuple[int, dict]:
         """The receipt as a compact VC-JWT (W3C VC-JOSE-COSE), for JWT-native

@@ -2996,6 +2996,79 @@ class TestCdpFacilitatorAuth(unittest.TestCase):
         self.assertTrue(captured["auth"] and captured["auth"].startswith("Bearer "))
 
 
+class TestVerifyInclusionEndpoint(unittest.TestCase):
+    """POST /verify (verify_document) checking a presented inclusion proof
+    against the on-chain-backed anchor index."""
+
+    LEAF = "sha256:728c4733c730091d606cfc22368e7787249392fec898ad730f8d59a5396dcace"
+    ROOT = "6d2b25d4f9701dba7d9b6bbe5cfc6a706d7b436a3db09e8c3b8c9cebfbce2985"
+
+    def _app(self):
+        d = tempfile.mkdtemp()
+        return App(signer=Signer.generate(), ledger=Ledger(os.path.join(d, "v.db")),
+                   verifier=MockVerifier(), gate="off", price_base_units="2000",
+                   pay_to=PAYEE, chain="base", base_url="http://x")
+
+    def _proof_body(self):
+        return {"proof": {"leaf_index": 0, "tree_size": 1, "leaf_data": self.LEAF,
+                          "audit_path": [], "root": self.ROOT,
+                          "onchain_network": "base", "onchain_tx": "0x" + "ab" * 32}}
+
+    def test_valid_proof_with_known_anchor(self):
+        app = self._app()
+        app.ledger.record_recovered_anchor(root=self.ROOT, onchain_tx="0x" + "ab" * 32,
+                                           onchain_network="base", created_at="t")
+        code, obj = app.verify_document(self._proof_body())
+        self.assertEqual(code, 200)
+        self.assertEqual(obj["kind"], "inclusion")
+        self.assertTrue(obj["ok"])
+        self.assertEqual(obj["onchain_tx"], "0x" + "ab" * 32)
+        names = {c["name"]: c["ok"] for c in obj["checks"]}
+        self.assertTrue(names["inclusion_proof"] and names["anchored_onchain"])
+
+    def test_inclusion_ok_but_root_not_anchored(self):
+        # audit path recomputes the root, but we have no such anchor -> not ok.
+        app = self._app()
+        code, obj = app.verify_document(self._proof_body())
+        self.assertEqual(code, 200)
+        self.assertFalse(obj["ok"])
+        names = {c["name"]: c["ok"] for c in obj["checks"]}
+        self.assertTrue(names["inclusion_proof"])
+        self.assertFalse(names["anchored_onchain"])
+
+    def test_tampered_root_fails_inclusion(self):
+        app = self._app()
+        body = self._proof_body()
+        body["proof"]["root"] = "00" + self.ROOT[2:]   # flip the root
+        app.ledger.record_recovered_anchor(root=body["proof"]["root"],
+                                           onchain_tx="0xzz", onchain_network="base",
+                                           created_at="t")
+        code, obj = app.verify_document(body)
+        self.assertFalse(obj["ok"])          # audit path no longer recomputes it
+        names = {c["name"]: c["ok"] for c in obj["checks"]}
+        self.assertFalse(names["inclusion_proof"])
+
+    def test_verdict_binding_checked(self):
+        app = self._app()
+        app.ledger.record_recovered_anchor(root=self.ROOT, onchain_tx="0x" + "ab" * 32,
+                                           onchain_network="base", created_at="t")
+        body = self._proof_body()
+        body["verdict"] = {"decision": "GO"}   # wrong verdict -> digest != leaf
+        code, obj = app.verify_document(body)
+        names = {c["name"]: c["ok"] for c in obj["checks"]}
+        self.assertIn("verdict_binding", names)
+        self.assertFalse(names["verdict_binding"])
+        self.assertFalse(obj["ok"])
+
+    def test_real_vc_not_misrouted_to_inclusion(self):
+        # a document with a `proof` that is NOT an inclusion proof (no root) must
+        # still go down the credential path, not the inclusion path.
+        app = self._app()
+        code, obj = app.verify_document({"proof": {"type": "DataIntegrityProof"},
+                                         "issuer": "did:key:z6Mk", "type": ["VerifiableCredential"]})
+        self.assertEqual(obj["kind"], "credential")
+
+
 class TestAnchorRecovery(unittest.TestCase):
     """Rebuild the anchor index from the chain (recover.py) so a disk-less reset
     does not lose the published roots."""
