@@ -105,11 +105,12 @@ def _tool_text(resp):
 
 class BlackwallMCP:
     def __init__(self, reputation_source=None, ledger=None, graph_source=None,
-                 velocity_source=None):
+                 velocity_source=None, category_index=None):
         self.src = reputation_source or MockReputationSource()
         self.ledger = ledger
         self.graph_source = graph_source
         self.velocity_source = velocity_source
+        self.category_index = category_index
 
     # ---- tool catalog ----
     def _tools(self):
@@ -190,7 +191,8 @@ class BlackwallMCP:
         if name == "forecast_payment":
             resp, err = forecast(args, self.src, self.ledger,
                                   graph_source=self.graph_source,
-                                  velocity_source=self.velocity_source)
+                                  velocity_source=self.velocity_source,
+                                  category_index=self.category_index)
             if err is not None:
                 return self._tool_error(err)
             return {
@@ -301,6 +303,20 @@ def main(argv=None):
         from settlement_velocity import VelocitySource
         velocity_source = VelocitySource(ReputationStore(args.store))
 
+    # Per-category price baseline, same as the HTTP path: a precomputed {category:
+    # on-chain median} JSON loaded from BLACKWALL_CATEGORY_INDEX. Fail-open.
+    category_index = None
+    cat_path = os.environ.get("BLACKWALL_CATEGORY_INDEX")
+    if cat_path:
+        try:
+            with open(cat_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict) and loaded:
+                category_index = {str(k): str(v) for k, v in loaded.items()}
+        except Exception as e:
+            sys.stderr.write("mcp: category index %r unusable (%s) -- signal OFF\n"
+                             % (cat_path, e))
+
     sys.stderr.write("blackwall MCP server on stdio (reputation: %s, ledger: %s, "
                      "graph: %s, temporal: %s)\n"
                      % ("MOCK" if source is None else type(source).__name__,
@@ -309,7 +325,8 @@ def main(argv=None):
     sys.stderr.flush()
     BlackwallMCP(reputation_source=source, ledger=ledger,
                  graph_source=graph_source,
-                 velocity_source=velocity_source).serve_stdio()
+                 velocity_source=velocity_source,
+                 category_index=category_index).serve_stdio()
     return 0
 
 

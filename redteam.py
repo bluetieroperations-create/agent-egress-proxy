@@ -64,6 +64,18 @@ SCENARIOS = [
           counterparty=LEGIT)),
     ("cold-start unknown", "cold-start", "block", False,
      dict(amount="0.09", record={}, price_history=STABLE, counterparty=LEGIT)),
+    # self-reported wash: claims 999 settlements but 0 are chain-CONFIRMED -> the
+    # thin gate counts only confirmed, so it can't talk its way out of HOLD.
+    ("self-reported wash (0 confirmed)", "thin", "block", False,
+     dict(amount="0.09",
+          record={"settlement_count": 999, "confirmed_settlement_count": 0,
+                  "distinct_payers": 0, "dispute_rate": 0.0},
+          price_history=STABLE, counterparty=LEGIT)),
+    # cold-start gouge caught by the CATEGORY baseline: reputable, no own price
+    # history, but quoting 60x the on-chain median for its service category.
+    ("category price gouge (cold-start)", "category", "block", False,
+     dict(amount="0.30", record=GOOD, price_history=[], counterparty=LEGIT,
+          category="finance", category_median="0.005")),   # 0.30 / 0.005 = 60x
 
     # --- documented GAPS (attack gets GO) ---
     ("large captive farm (>ceiling)", "sybil-graph", "block", True,
@@ -89,6 +101,11 @@ SCENARIOS = [
           payer_graph_signal={"captive_sybil": False, "sybil_ring": True,
                               "distinct_payers": 6, "established_payers": 5,
                               "reputable_payers": 0})),
+    # premium (15x the category median) is legit, not a gouge -> the category gate
+    # (50x) must NOT false-positive on it. Guards the eval-calibrated threshold.
+    ("premium price (15x, under category bar)", "control", "allow", False,
+     dict(amount="0.30", record=GOOD, price_history=[], counterparty=LEGIT,
+          category="finance", category_median="0.02")),   # 0.30 / 0.02 = 15x
 ]
 
 

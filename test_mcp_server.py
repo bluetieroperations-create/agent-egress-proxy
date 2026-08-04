@@ -137,6 +137,18 @@ class TestToolsCall(unittest.TestCase):
                         "asset": "USDC", "chain": "base"})
         self.assertEqual(r["structuredContent"]["verdict"], "STOP")
 
+    def test_forecast_category_index_threaded(self):
+        # a category_index on the MCP server must reach the verdict: the request's
+        # resource classifies to 'finance', and 0.30 vs the 0.005 finance median is a
+        # 60x category ratio. Mutation: not threading category_index -> ratio is None.
+        s = M.BlackwallMCP(category_index={"finance": "0.005"})
+        r = s.handle(req("tools/call", {"name": "forecast_payment", "arguments": {
+            "counterparty": GOOD, "amount": "0.30", "asset": "USDC", "chain": "base",
+            "resource": "https://api.x/price/btc"}}))["result"]
+        sig = r["structuredContent"]["signals"]
+        self.assertEqual(sig["category"], "finance")
+        self.assertEqual(sig["category_price_ratio"], 60.0)
+
     def test_forecast_validation_error_is_tool_error(self):
         # missing required field -> isError True (NOT a JSON-RPC protocol error).
         r = self._call("forecast_payment", {"counterparty": GOOD})

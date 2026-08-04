@@ -180,7 +180,7 @@ then loses it (going_bad) when recent outcomes turn to disputes. Guarded by
 legit controls through `decide_payment` and derives each disposition (CAUGHT /
 KNOWN GAP / CLEAN / FALSE POSITIVE / MISS). `test_redteam.py` guards it -- the caught
 set may not shrink, no control may become a false positive, and any attack that gets
-GO must be an EXPLICIT `known_gap`. Current: 12 core attacks caught, 3 documented
+GO must be an EXPLICIT `known_gap`. Current: 14 core attacks caught, 3 documented
 gaps, 0 false positives.
 
 ## Standing working practice: ALWAYS deep audit → eval → verify
