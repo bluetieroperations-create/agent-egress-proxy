@@ -304,18 +304,12 @@ def main(argv=None):
         velocity_source = VelocitySource(ReputationStore(args.store))
 
     # Per-category price baseline, same as the HTTP path: a precomputed {category:
-    # on-chain median} JSON loaded from BLACKWALL_CATEGORY_INDEX. Fail-open.
-    category_index = None
-    cat_path = os.environ.get("BLACKWALL_CATEGORY_INDEX")
-    if cat_path:
-        try:
-            with open(cat_path, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-            if isinstance(loaded, dict) and loaded:
-                category_index = {str(k): str(v) for k, v in loaded.items()}
-        except Exception as e:
-            sys.stderr.write("mcp: category index %r unusable (%s) -- signal OFF\n"
-                             % (cat_path, e))
+    # on-chain median} JSON loaded from BLACKWALL_CATEGORY_INDEX (shared loader).
+    from category_pricing import load_category_index
+    category_index, _cat_err = load_category_index(
+        os.environ.get("BLACKWALL_CATEGORY_INDEX"))
+    if _cat_err:
+        sys.stderr.write("mcp: category index unusable (%s) -- signal OFF\n" % _cat_err)
 
     sys.stderr.write("blackwall MCP server on stdio (reputation: %s, ledger: %s, "
                      "graph: %s, temporal: %s)\n"

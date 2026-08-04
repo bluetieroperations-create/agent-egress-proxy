@@ -23,7 +23,30 @@ deploy can precompute it and load it via BLACKWALL_CATEGORY_INDEX.
 """
 from __future__ import annotations
 
+import json
+
 from categories import CATEGORY_UNCLASSIFIED, classify_category
+
+
+def load_category_index(path):
+    """Load a precomputed {category: median} index JSON from `path` (the shared
+    loader for both the HTTP server and the MCP server -- single source of truth so
+    they can't drift). Returns (index|None, error|None):
+      * a falsy path        -> (None, None)   -- signal simply off, nothing to warn
+      * a non-empty path we couldn't use -> (None, "<why>")  -- caller may warn
+      * success             -> ({str: str}, None)
+    FAIL-OPEN: never raises. Values are normalized to strings (Decimal-parseable
+    downstream)."""
+    if not path:
+        return None, None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+    except Exception as e:
+        return None, "%s: %s" % (type(e).__name__, e)
+    if not isinstance(loaded, dict) or not loaded:
+        return None, "empty or not a JSON object"
+    return {str(k): str(v) for k, v in loaded.items()}, None
 
 # distinct payees needed to define a category market rate. Broader/fuzzier than a
 # resource class, so require more peers than MIN_PEER_COUNTERPARTIES(3).

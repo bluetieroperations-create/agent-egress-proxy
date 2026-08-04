@@ -59,6 +59,47 @@ class TestBuildIndex(unittest.TestCase):
         self.assertLess(float(idx["finance"]), 1.0)
 
 
+class TestLoadCategoryIndex(unittest.TestCase):
+    """Shared loader for BLACKWALL_CATEGORY_INDEX (HTTP + MCP use it -- must agree).
+
+    Mutation notes:
+      - return an error for a falsy path -> test_no_path FAILS (would spam a warning).
+      - swallow a bad file silently -> test_bad_file FAILS (caller couldn't warn).
+      - not stringify values -> test_normalizes FAILS.
+    """
+    def _write(self, text):
+        import os
+        import tempfile
+        p = os.path.join(tempfile.mkdtemp(), "idx.json")
+        with open(p, "w") as f:
+            f.write(text)
+        return p
+
+    def test_no_path_silent(self):
+        self.assertEqual(CP.load_category_index(None), (None, None))
+        self.assertEqual(CP.load_category_index(""), (None, None))
+
+    def test_loads_and_normalizes(self):
+        idx, err = CP.load_category_index(self._write('{"finance": 0.005}'))
+        self.assertIsNone(err)
+        self.assertEqual(idx, {"finance": "0.005"})   # value stringified
+
+    def test_missing_file_reports_error(self):
+        idx, err = CP.load_category_index("/no/such/index.json")
+        self.assertIsNone(idx)
+        self.assertIsNotNone(err)                      # caller can warn
+
+    def test_bad_json_reports_error(self):
+        idx, err = CP.load_category_index(self._write("{not json"))
+        self.assertIsNone(idx)
+        self.assertIsNotNone(err)
+
+    def test_empty_object_reports_error(self):
+        idx, err = CP.load_category_index(self._write("{}"))
+        self.assertIsNone(idx)
+        self.assertIsNotNone(err)
+
+
 class TestStoreJoin(unittest.TestCase):
     """
     Mutation notes:

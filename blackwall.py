@@ -1659,21 +1659,18 @@ def main(argv=None):
     # OPT-IN per-category price baseline: a precomputed {category: on-chain median}
     # JSON (build it with `python category_pricing.py --store ... --out ...`). Loaded
     # from BLACKWALL_CATEGORY_INDEX; fail-open -- a missing/garbled file just disables
-    # the category signal, never blocks boot. See docs/CATEGORY.md.
-    category_index = None
-    cat_path = os.environ.get("BLACKWALL_CATEGORY_INDEX")
-    if cat_path:
-        try:
-            with open(cat_path, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-            if isinstance(loaded, dict) and loaded:
-                category_index = {str(k): str(v) for k, v in loaded.items()}
-                sys.stdout.write("blackwall: category price baselines ON (%d categories)\n"
-                                 % len(category_index))
-        except Exception as e:
-            sys.stderr.write("blackwall: WARNING category index %r unusable (%s) -- "
-                             "category price signal OFF\n" % (cat_path, e))
-            sys.stderr.flush()
+    # the category signal, never blocks boot. Shared loader with the MCP server so the
+    # two can't drift. See docs/CATEGORY.md.
+    from category_pricing import load_category_index
+    category_index, _cat_err = load_category_index(
+        os.environ.get("BLACKWALL_CATEGORY_INDEX"))
+    if category_index:
+        sys.stdout.write("blackwall: category price baselines ON (%d categories)\n"
+                         % len(category_index))
+    elif _cat_err:
+        sys.stderr.write("blackwall: WARNING category index unusable (%s) -- "
+                         "category price signal OFF\n" % _cat_err)
+        sys.stderr.flush()
 
     # OPT-IN (BLACKWALL_ANCHOR=1): anchor every verdict's digest to Traceipt for a
     # tamper-evident audit trail. Non-blocking + fail-open; costs ~0.002 USDC/verdict
