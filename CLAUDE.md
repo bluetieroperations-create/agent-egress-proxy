@@ -60,6 +60,13 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   ERC-20 transfers) with a runtime-toggleable FAIL_CLOSED/FAIL_OPEN availability
   policy; thin `turnkey_signer.py` / `privy_signer.py` shims map each provider's
   request. Stdlib; own tests run from that dir),
+  `integrations/openclaw/` (OpenClaw/NemoClaw plugin -- a `before_tool_call` hook
+  that recognizes payment-shaped tool calls (flat payTo/amount, 402-challenge
+  accepts[], or a signed X-PAYMENT header -> passed through for payload-sim),
+  forecasts them, and blocks non-GO. Enforce + fail-closed by default; keyless
+  (free-tier endpoint), claim-only egress. TypeScript + vitest; own tests run
+  from that dir (`npm install && npm test`), not the root command. Canonical
+  source for the nemoclaw-community `blackwall-x402-payment-gate` example),
   `BLACKWALL.md`, `DISCOVERY.md`, `DEPLOY.md`, `COMPETITIVE.md`, `PRICING.md`,
   `ap_gate.py` (treasury/AP payout gate -- folds the verdict into a
   RELEASE/REVIEW/BLOCK decision at the approve-&-release step; see
