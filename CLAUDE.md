@@ -165,9 +165,12 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   ONE pays an anchor -- which breadth-only `captive_sybil` misses. `PayerReputationSource`
   is a drop-in SUPERSET of `PayerGraphSource` (`.cross_signal` adds the reputation
   fields + `sybil_ring`); folded into the verdict conservatively and wired into
-  `mcp_server`. NOTE: after the signal-stability eval, `captive_sybil` GATES (HOLD)
-  but `sybil_ring` is ADVISORY (surfaced, not gated -- it over-flags at partial
-  ingestion coverage); see `docs/PAYER_GRAPH.md`. Also exposes the PAYER side as a
+  `mcp_server`. NOTE: `captive_sybil` and `sybil_ring` now BOTH GATE (HOLD) -- the
+  Stage-3 coverage-convergence eval (`coverage_eval.py`, `docs/DATA_COMPLETENESS.md`)
+  proved `sybil_ring`'s false-flag rate on known-good payees stabilized to ~0 on the
+  shipped corpus, so it graduated from advisory to a gate behind the reversibility lock
+  `SYBIL_RING_GATES` (flip to False to demote instantly; HOLD-only either way). See
+  `docs/PAYER_GRAPH.md`. Also exposes the PAYER side as a
   queryable output -- `payer_profile()` / `.screen()` and the `screen_payer` MCP
   tool: a facilitator/wallet screens WHO is paying (tier established/emerging/unknown,
   anchors paid, breadth) before it settles; unknown is NEUTRAL cold-start, never a
@@ -208,7 +211,7 @@ then loses it (going_bad) when recent outcomes turn to disputes. Guarded by
 legit controls through `decide_payment` and derives each disposition (CAUGHT /
 KNOWN GAP / CLEAN / FALSE POSITIVE / MISS). `test_redteam.py` guards it -- the caught
 set may not shrink, no control may become a false positive, and any attack that gets
-GO must be an EXPLICIT `known_gap`. Current: 16 core attacks caught, 3 documented
+GO must be an EXPLICIT `known_gap`. Current: 17 core attacks caught, 2 documented
 gaps, 0 false positives.
 
 ## Standing working practice: ALWAYS deep audit → eval → verify

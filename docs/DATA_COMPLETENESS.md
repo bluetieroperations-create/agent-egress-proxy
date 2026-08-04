@@ -82,14 +82,31 @@ the refresh, and without automation ever being able to damage the corpus. Oracle
 byte-identical. (`schedule:` is dormant until the branch merges to default; `workflow_dispatch`
 works now. `test_refresh_guard.py` guards the accept/reject logic.)
 
-**Stage 3 — promote `sybil_ring` to a gate (the only behavior change, isolated).** Only
-after Stage 1's false-flag rate is ~0. One branch: add `sybil_ring` to the `go`
-conditions, HOLD-only, structurally unable to reach STOP/hard_stop or clear a sanction
-(mirrors `enrichment_review`). Then: a fuzz invariant (ring gating never STOPs / never
-clears a sanction), flip the redteam "Sybil ring (advisory only)" scenario KNOWN-GAP →
-CAUGHT, and regenerate the oracle golden. **The golden diff must show ONLY genuine
-rings moving to HOLD.** If a single known-good payee flips to HOLD, the data isn't
-complete — demote to advisory and return to Stage 1.
+**Stage 3 — promote `sybil_ring` to a gate (DONE — the only behavior change, isolated).**
+`sybil_ring` now GATES via `ring_gate = sybil_ring and SYBIL_RING_GATES`, folded into
+`graph_sybil` so it joins the existing HOLD-only Sybil path — structurally unable to
+reach STOP/hard_stop or clear a sanction. Behind the reversibility lock `SYBIL_RING_GATES`
+(flip to False to demote to advisory instantly, no logic rewrite — guardrail #1). The
+response surfaces `sybil_ring` + `sybil_ring_gated` (was the misnamed `sybil_ring_advisory`).
+
+Shipped with the full evidence chain:
+- **Oracle golden regenerated** and the diff verified surgical: exactly **2 verdict
+  changes**, both `sybil_ring` rows GO→HOLD (`good|empty_hist`, `good|fair`); every other
+  changed row differs only in `num_reasons` (the advisory note is no longer tacked onto a
+  STOP), with hard_stop/score/blast_radius unchanged. No verdict got less restrictive.
+- **Fuzz invariant P9** (`fuzz_verdict.py`): differential — turning `sybil_ring` on may
+  only tighten GO→HOLD, never introduce a STOP or change hard_stop. 120k cases, 0
+  violations; mutation-verified (routing the ring to STOP → 345 P9 hits).
+- **Redteam**: the ring moved from a documented GAP to CAUGHT (**17 caught / 2 gaps / 0
+  false-positive**). The obsolete "established w/ ring advisory" control was reworked into
+  a boundary control (a ring-band payee WITH a reputable payer → GO), proving the gate
+  keys on `reputable_payers==0`, not on a low distinct count.
+- **Unit tests**: HOLD-only boundary (ring alone → HOLD; ring + sanction → STOP unchanged)
+  and the `SYBIL_RING_GATES` demote-to-advisory path.
+
+If a known-good payee ever flips to HOLD in production, `SYBIL_RING_GATES=False` demotes
+instantly, and `test_coverage_eval`'s seed-regression check independently blocks gating on
+a corpus whose convergence has regressed.
 
 ## Guardrails (protect "how it should work")
 

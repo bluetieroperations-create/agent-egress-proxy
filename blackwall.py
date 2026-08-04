@@ -63,6 +63,12 @@ def _b64_header(obj):
 GO_REPUTATION_MIN = 0.70          # below this trust score, never an automatic GO
 THIN_HISTORY_SETTLEMENTS = 20     # fewer prior settlements => "thin" => cannot GO
 MIN_DISTINCT_PAYERS = 3           # confirmed settlements must span >= N payers (Sybil guard)
+# Stage 3 (docs/DATA_COMPLETENESS.md): sybil_ring GATES (HOLD) now that the coverage-
+# convergence eval (coverage_eval.py) showed its false-flag rate on known-good payees
+# has stabilized to ~0 on the shipped corpus. REVERSIBILITY LOCK: flip to False to
+# demote it back to advisory-only instantly (no logic rewrite) if a live false positive
+# appears. HOLD-only either way -- it can never STOP or clear a sanction.
+SYBIL_RING_GATES = True
 MIN_CLASS_OBSERVATIONS = 3        # same-resource observations needed to trust a per-class median
 MIN_PEER_COUNTERPARTIES = 3       # distinct counterparties needed to define a peer-group market rate
 PEER_HOLD_RATIO = 3.0             # priced >= Nx the peer market for its class => escalate (HOLD)
@@ -413,16 +419,17 @@ def decide_payment(amount, record, price_history,
     #     payee (a wash farm). This BLOCKS the automatic GO (-> HOLD): it needs
     #     `established_payers == 0`, so it stays rare and doesn't fire on major payees.
     #   * sybil_ring    -- clears the distinct gate, yet NOT ONE payer is reputable
-    #     (pays a trusted anchor). ADVISORY ONLY (surfaced, does not block): the
-    #     signal-stability eval (docs/PAYER_GRAPH.md) shows it over-flags at partial
-    #     ecosystem coverage -- established-looking payees whose payers simply don't
-    #     pay one of the *ingested* anchors yet -- so gating on it would HOLD real
-    #     merchants. It graduates to a gate once coverage is proven high.
+    #     (pays a trusted anchor) -- a closed, unvouched cluster. GATES (HOLD) now:
+    #     the coverage-convergence eval (coverage_eval.py, docs/DATA_COMPLETENESS.md)
+    #     showed its false-flag rate on known-good payees has stabilized to ~0 on the
+    #     shipped corpus, so it no longer HOLDs real merchants. Behind SYBIL_RING_GATES
+    #     (flip to False to demote to advisory instantly).
     # CONSERVATIVE: HOLD only, never a STOP; fail-open when no graph signal.
     _pgs = payer_graph_signal or {}
     captive_sybil = bool(_pgs.get("captive_sybil"))
     sybil_ring = bool(_pgs.get("sybil_ring"))
-    graph_sybil = captive_sybil               # sybil_ring is advisory, not a gate
+    ring_gate = sybil_ring and SYBIL_RING_GATES
+    graph_sybil = captive_sybil or ring_gate  # both cross-counterparty Sybil patterns HOLD
 
     # Temporal axis (settlement_velocity.py). `stale` GATES: last_seen is robust
     # (the backfill always fetches the most recent settlements), so "no settlement in
@@ -641,14 +648,19 @@ def decide_payment(amount, record, price_history,
                     "counterparty trending bad despite a clean lifetime record; "
                     "escalating" % (recent_dr * 100.0, recent_n)
                 )
+            if ring_gate and not captive_sybil:
+                reasons.append(
+                    "none of the %d payer(s) pay a trusted anchor -- closed, unvouched "
+                    "cluster (possible sockpuppet ring); escalating"
+                    % (_pgs.get("distinct_payers") or 0)
+                )
 
-    # sybil_ring is ADVISORY (see the gate note above): surface it as a non-blocking
-    # note so a reviewer sees the pattern, without HOLDing an otherwise-clean payee at
-    # today's partial coverage.
-    if sybil_ring and not captive_sybil:
+    # When sybil_ring is DEMOTED to advisory (SYBIL_RING_GATES=False), surface it as a
+    # non-blocking note instead of a gate, so a reviewer still sees the pattern.
+    if sybil_ring and not ring_gate and not captive_sybil:
         reasons.append(
             "advisory: none of the %d payer(s) pay a trusted anchor (possible "
-            "sockpuppet ring, but low ecosystem coverage -- not blocking)"
+            "sockpuppet ring; not blocking -- sybil_ring gating disabled)"
             % (_pgs.get("distinct_payers") or 0)
         )
 
@@ -701,8 +713,11 @@ def decide_payment(amount, record, price_history,
             "cross_score": _pgs.get("cross_score"),
             "reputable_payers": _pgs.get("reputable_payers"),
             "avg_payer_reputation": _pgs.get("avg_payer_reputation"),
-            # advisory only at current coverage (over-flags) -- surfaced, not gated.
-            "sybil_ring_advisory": sybil_ring,
+            # closed unvouched cluster (no payer pays a trusted anchor). `sybil_ring` is
+            # the pattern; `sybil_ring_gated` says whether it actually HOLD-gated this
+            # verdict (True unless demoted via SYBIL_RING_GATES).
+            "sybil_ring": sybil_ring,
+            "sybil_ring_gated": ring_gate,
         } if payer_graph_signal else None),
         # temporal axis: `stale` gated the verdict above; recency/age/peak_day_share
         # are informational; `burst_sybil_advisory` is DIAGNOSTIC (backfill-windowed),

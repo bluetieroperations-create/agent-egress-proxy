@@ -299,7 +299,7 @@
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "cold|gouge|sybil_ring_advisory",
-    "num_reasons": 4,
+    "num_reasons": 3,
     "score": 0.0,
     "verdict": "STOP"
   },
@@ -819,7 +819,7 @@
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "few_payers|gouge|sybil_ring_advisory",
-    "num_reasons": 4,
+    "num_reasons": 3,
     "score": 0.0,
     "verdict": "STOP"
   },
@@ -1339,7 +1339,7 @@
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "going_bad|gouge|sybil_ring_advisory",
-    "num_reasons": 4,
+    "num_reasons": 3,
     "score": 0.0,
     "verdict": "STOP"
   },
@@ -1653,7 +1653,7 @@
     "id": "good|empty_hist|sybil_ring_advisory",
     "num_reasons": 3,
     "score": 0.998,
-    "verdict": "GO"
+    "verdict": "HOLD"
   },
   {
     "blast_radius": "bounded",
@@ -1757,7 +1757,7 @@
     "id": "good|fair|sybil_ring_advisory",
     "num_reasons": 3,
     "score": 0.998,
-    "verdict": "GO"
+    "verdict": "HOLD"
   },
   {
     "blast_radius": "bounded",
@@ -1859,7 +1859,7 @@
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "good|gouge|sybil_ring_advisory",
-    "num_reasons": 4,
+    "num_reasons": 3,
     "score": 0.0,
     "verdict": "STOP"
   },
@@ -2171,7 +2171,7 @@
     "blast_radius": "bounded",
     "hard_stop": true,
     "id": "known_bad|empty_hist|sybil_ring_advisory",
-    "num_reasons": 4,
+    "num_reasons": 3,
     "score": 0.0,
     "verdict": "STOP"
   },
@@ -2275,7 +2275,7 @@
     "blast_radius": "bounded",
     "hard_stop": true,
     "id": "known_bad|fair|sybil_ring_advisory",
-    "num_reasons": 4,
+    "num_reasons": 3,
     "score": 0.0,
     "verdict": "STOP"
   },
@@ -2379,7 +2379,7 @@
     "blast_radius": "bounded",
     "hard_stop": true,
     "id": "known_bad|gouge|sybil_ring_advisory",
-    "num_reasons": 5,
+    "num_reasons": 4,
     "score": 0.0,
     "verdict": "STOP"
   },
@@ -2483,7 +2483,7 @@
     "blast_radius": "bounded",
     "hard_stop": true,
     "id": "known_bad|moderate_anomaly|sybil_ring_advisory",
-    "num_reasons": 4,
+    "num_reasons": 3,
     "score": 0.0,
     "verdict": "STOP"
   },
@@ -2587,7 +2587,7 @@
     "blast_radius": "unbounded",
     "hard_stop": true,
     "id": "known_bad|over_budget|sybil_ring_advisory",
-    "num_reasons": 4,
+    "num_reasons": 3,
     "score": 0.0,
     "verdict": "STOP"
   },
@@ -2691,7 +2691,7 @@
     "blast_radius": "bounded",
     "hard_stop": true,
     "id": "sanctioned|empty_hist|sybil_ring_advisory",
-    "num_reasons": 4,
+    "num_reasons": 3,
     "score": 0.0,
     "verdict": "STOP"
   },
@@ -2795,7 +2795,7 @@
     "blast_radius": "bounded",
     "hard_stop": true,
     "id": "sanctioned|fair|sybil_ring_advisory",
-    "num_reasons": 4,
+    "num_reasons": 3,
     "score": 0.0,
     "verdict": "STOP"
   },
@@ -2899,7 +2899,7 @@
     "blast_radius": "bounded",
     "hard_stop": true,
     "id": "sanctioned|gouge|sybil_ring_advisory",
-    "num_reasons": 5,
+    "num_reasons": 4,
     "score": 0.0,
     "verdict": "STOP"
   },
@@ -3003,7 +3003,7 @@
     "blast_radius": "bounded",
     "hard_stop": true,
     "id": "sanctioned|moderate_anomaly|sybil_ring_advisory",
-    "num_reasons": 4,
+    "num_reasons": 3,
     "score": 0.0,
     "verdict": "STOP"
   },
@@ -3107,7 +3107,7 @@
     "blast_radius": "unbounded",
     "hard_stop": true,
     "id": "sanctioned|over_budget|sybil_ring_advisory",
-    "num_reasons": 4,
+    "num_reasons": 3,
     "score": 0.0,
     "verdict": "STOP"
   },
@@ -3419,7 +3419,7 @@
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "thin|gouge|sybil_ring_advisory",
-    "num_reasons": 4,
+    "num_reasons": 3,
     "score": 0.0,
     "verdict": "STOP"
   },
@@ -3939,7 +3939,7 @@
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "wash|gouge|sybil_ring_advisory",
-    "num_reasons": 4,
+    "num_reasons": 3,
     "score": 0.0,
     "verdict": "STOP"
   },

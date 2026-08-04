@@ -16,6 +16,9 @@ signal combinations at the engine and asserts the SAFETY INVARIANTS never break:
   P5  0.0 <= score <= 1.0
   P6  verdict==GO      =>  NOT any blockable condition
   P7  decide_payment never raises on a well-typed input (fail-open contract)
+  P8  a REVIEW-only enrichment signal can push GO->HOLD but never yields GO
+  P9  sybil_ring is HOLD-only: turning it on only tightens GO->HOLD -- never a STOP,
+      never a hard_stop change (differential vs the same case with the ring off)
 
 Inputs are realistically TYPED (bools for flags, numbers/None for numerics) but
 adversarially VALUED/combined -- the target is logic/interaction bugs, not type abuse.
@@ -145,6 +148,21 @@ def invariant_violations(kw, result):
     # P8: a REVIEW-only enrichment signal can push GO->HOLD but must never yield GO.
     if (kw.get("enrichment") or {}).get("review") and verdict == "GO":
         v.append("P8 enrichment.review set but verdict==GO (review ignored)")
+    # P9 (sybil_ring HOLD-only BOUNDARY): turning sybil_ring ON may only make the verdict
+    # MORE restrictive (GO->HOLD) -- it must never introduce a STOP or change hard_stop.
+    # Differential: recompute with the ring flag flipped off and compare.
+    _pgs = kw.get("payer_graph_signal") or {}
+    if _pgs.get("sybil_ring"):
+        _off = bw.decide_payment(**dict(kw, payer_graph_signal=dict(_pgs, sybil_ring=False)))
+        _order = {"GO": 0, "HOLD": 1, "STOP": 2}
+        if _off.get("hard_stop") != hard:
+            v.append("P9 sybil_ring changed hard_stop (%r -> %r)"
+                     % (_off.get("hard_stop"), hard))
+        if _off.get("verdict") != "STOP" and verdict == "STOP":
+            v.append("P9 sybil_ring introduced a STOP (must be HOLD-only)")
+        if _order.get(verdict, 0) < _order.get(_off.get("verdict"), 0):
+            v.append("P9 sybil_ring relaxed the verdict (%s -> %s)"
+                     % (_off.get("verdict"), verdict))
     if hard is True and verdict != "STOP":
         v.append("P3 hard_stop but verdict=%r" % verdict)
     if hard is True and score != 0.0:

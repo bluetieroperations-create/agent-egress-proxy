@@ -218,19 +218,54 @@ class TestDecidePayment(unittest.TestCase):
         self.assertTrue(any("captive" in r for r in v["reasons"]))
         self.assertEqual(v["signals"]["cross_counterparty"]["established_payers"], 0)
 
-    def test_sybil_ring_is_advisory_not_a_gate(self):
-        # sybil_ring OVER-flags at partial coverage (signal-stability eval), so it is
-        # ADVISORY: surfaced + noted, but it does NOT block GO. Mutation: re-adding
-        # sybil_ring to graph_sybil -> this HOLDs a clean payee (the regression we fix).
+    def test_sybil_ring_gates_hold(self):
+        # Stage 3 (docs/DATA_COMPLETENESS.md): sybil_ring now GATES (HOLD) -- coverage
+        # convergence proven (coverage_eval.py). A closed cluster where NOT ONE payer
+        # pays a trusted anchor escalates. Mutation: drop sybil_ring from graph_sybil
+        # -> this GOes (the old advisory behavior) and the assert FAILS.
         sig = {"captive_sybil": False, "sybil_ring": True, "distinct_payers": 6,
                "established_payers": 5, "captive_ratio": 0.167,
                "reputable_payers": 0, "avg_payer_reputation": 0.0}
         v = bw.decide_payment("0.09", self.GOOD, self.STABLE_HISTORY,
                               counterparty="0xA", payer_graph_signal=sig)
-        self.assertEqual(v["verdict"], "GO")                       # not blocked
-        self.assertTrue(any("advisory" in r and "anchor" in r for r in v["reasons"]))
-        self.assertTrue(v["signals"]["cross_counterparty"]["sybil_ring_advisory"])
-        self.assertEqual(v["signals"]["cross_counterparty"]["reputable_payers"], 0)
+        self.assertEqual(v["verdict"], "HOLD")                     # now blocked
+        self.assertFalse(v["hard_stop"])                           # HOLD-only, never STOP
+        self.assertTrue(any("anchor" in r and "escalating" in r for r in v["reasons"]))
+        self.assertTrue(v["signals"]["cross_counterparty"]["sybil_ring"])
+        self.assertTrue(v["signals"]["cross_counterparty"]["sybil_ring_gated"])
+
+    def test_sybil_ring_is_hold_only_never_stop(self):
+        # BOUNDARY: sybil_ring can turn GO->HOLD but must NEVER cause a STOP or set
+        # hard_stop, and must NEVER downgrade a real STOP. Mutation: route sybil_ring
+        # into the stop/hard_stop path -> these asserts FAIL.
+        ring = {"captive_sybil": False, "sybil_ring": True, "distinct_payers": 6,
+                "established_payers": 5, "reputable_payers": 0}
+        # alone -> HOLD, not STOP
+        v = bw.decide_payment("0.09", self.GOOD, self.STABLE_HISTORY,
+                              counterparty="0xA", payer_graph_signal=ring)
+        self.assertEqual(v["verdict"], "HOLD")
+        self.assertFalse(v["hard_stop"])
+        # with a real STOP (sanctioned) -> still STOP + hard_stop (ring doesn't clear it)
+        v2 = bw.decide_payment("0.09", dict(self.GOOD, sanctioned=True),
+                               self.STABLE_HISTORY, counterparty="0xA",
+                               payer_graph_signal=ring)
+        self.assertEqual(v2["verdict"], "STOP")
+        self.assertTrue(v2["hard_stop"])
+
+    def test_sybil_ring_reversibility_flag(self):
+        # the SYBIL_RING_GATES lock demotes to advisory without a logic change.
+        sig = {"captive_sybil": False, "sybil_ring": True, "distinct_payers": 6,
+               "established_payers": 5, "reputable_payers": 0}
+        orig = bw.SYBIL_RING_GATES
+        try:
+            bw.SYBIL_RING_GATES = False
+            v = bw.decide_payment("0.09", self.GOOD, self.STABLE_HISTORY,
+                                  counterparty="0xA", payer_graph_signal=sig)
+            self.assertEqual(v["verdict"], "GO")                   # demoted -> advisory
+            self.assertFalse(v["signals"]["cross_counterparty"]["sybil_ring_gated"])
+            self.assertTrue(any("advisory" in r for r in v["reasons"]))
+        finally:
+            bw.SYBIL_RING_GATES = orig
 
     def test_healthy_graph_signal_surfaced_and_stays_go(self):
         sig = {"captive_sybil": False, "distinct_payers": 40,

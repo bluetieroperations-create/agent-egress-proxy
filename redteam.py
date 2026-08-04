@@ -86,6 +86,14 @@ SCENARIOS = [
     ("on-chain scam tag (Blockscout REVIEW)", "onchain-enrich", "block", False,
      dict(amount="0.09", record=GOOD, price_history=STABLE, counterparty=LEGIT,
           enrichment={"review": True, "is_scam": True, "reasons": ["scam-associated"]})),
+    # Sybil ring: enough distinct payers to clear the naive gate, yet NOT ONE pays a
+    # trusted anchor -- a closed, unvouched cluster. Now GATES (HOLD) after the coverage-
+    # convergence eval (coverage_eval.py) proved the false-flag rate has stabilized.
+    ("Sybil ring (no payer pays an anchor)", "sybil-graph", "block", False,
+     dict(amount="0.09", record=GOOD, price_history=STABLE, counterparty=LEGIT,
+          payer_graph_signal={"captive_sybil": False, "sybil_ring": True,
+                              "distinct_payers": 6, "established_payers": 5,
+                              "reputable_payers": 0})),
 
     # --- documented GAPS (attack gets GO) ---
     ("large captive farm (>ceiling)", "sybil-graph", "block", True,
@@ -94,11 +102,6 @@ SCENARIOS = [
           # graph does NOT set captive_sybil above the ceiling -> no gate fires
           payer_graph_signal={"captive_sybil": False, "distinct_payers": 13,
                               "established_payers": 0})),
-    ("Sybil ring (advisory only)", "sybil-graph", "block", True,
-     dict(amount="0.09", record=GOOD, price_history=STABLE, counterparty=LEGIT,
-          payer_graph_signal={"captive_sybil": False, "sybil_ring": True,
-                              "distinct_payers": 6, "established_payers": 5,
-                              "reputable_payers": 0})),
     ("burst-acquired Sybil (diagnostic)", "temporal", "block", True,
      dict(amount="0.09", record=GOOD, price_history=STABLE, counterparty=LEGIT,
           temporal_signal={"stale": False, "burst_sybil": True, "peak_day_share": 0.95})),
@@ -106,11 +109,15 @@ SCENARIOS = [
     # --- legit controls: must NOT be blocked ---
     ("established, fair price", "control", "allow", False,
      dict(amount="0.09", record=GOOD, price_history=STABLE, counterparty=LEGIT)),
-    ("established w/ ring advisory", "control", "allow", False,
+    # BOUNDARY control: a payee in the ring band (only 6 distinct payers) that is NOT a
+    # ring -- one of its payers is reputable (pays a trusted anchor), so sybil_ring is
+    # False. Proves the gate keys on reputable_payers==0, NOT on a low distinct count:
+    # an established payee with few payers still GOes.
+    ("established payee, few but reputable payers", "control", "allow", False,
      dict(amount="0.09", record=GOOD, price_history=STABLE, counterparty=LEGIT,
-          payer_graph_signal={"captive_sybil": False, "sybil_ring": True,
+          payer_graph_signal={"captive_sybil": False, "sybil_ring": False,
                               "distinct_payers": 6, "established_payers": 5,
-                              "reputable_payers": 0})),
+                              "reputable_payers": 2, "avg_payer_reputation": 0.6})),
     # premium (15x the category median) is legit, not a gouge -> the category gate
     # (50x) must NOT false-positive on it. Guards the eval-calibrated threshold.
     ("premium price (15x, under category bar)", "control", "allow", False,
