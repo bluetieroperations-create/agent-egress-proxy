@@ -125,6 +125,43 @@ It fetches the signed envelope, verifies the Ed25519 signature against
 
 ---
 
+## Recorded: FIRST MAINNET run — real money (2026-08-04)
+
+The flywheel run for real, on **Base mainnet**, every link verified
+independently against the chain. Real USDC moved; the Coinbase **CDP**
+facilitator verified + settled the EIP-3009 payment; the root is on Base
+mainnet. This supersedes the Sepolia run as the definitive reference.
+
+| Link | Value |
+|---|---|
+| Payer | `0x3aec6fb2279D7Dd261482CC8BA9f2830f73A1A77` (dedicated gas+payer wallet) |
+| Payment | **0.01 USDC on Base mainnet** (`eip155:8453`) → `RECEIPTS_PAY_TO` `0x3ec5…04e1`, via the **CDP facilitator** |
+| Attestation | `att_b91e311aad05a268d8bf` (type `sanctions-verdict`), `status: anchored`, `durable: true` |
+| Verdict | `GO` (offline-fixture screen) |
+| verdict_digest (leaf) | `sha256:728c4733c730091d606cfc22368e7787249392fec898ad730f8d59a5396dcace` |
+| Merkle root | `6d2b25d4f9701dba7d9b6bbe5cfc6a706d7b436a3db09e8c3b8c9cebfbce2985` |
+| Sealed by | **immediate seal** (`RECEIPTS_ATTEST_SEAL=immediate`) — the full inclusion proof was returned **in the 201**, self-contained |
+| On-chain tx | `0xab1c79b60a3ca3386eabc654bf163711140ac17a969e1fa526be8314da38821f` (base **mainnet**, **block 49517014, status success**) |
+| Calldata | `TRACEIPT-ANCHOR\x01` + the exact root (0-value self-send from the gas wallet) |
+| Gas | 22,920 gas; the anchor tx paid ~0.00000014 ETH — **CDP paid the USDC-transfer gas** (payer needs USDC, not ETH) |
+| Money moved | payTo USDC `0.23205 → 0.24205` (+$0.01); payer USDC `2.88 → 2.87` |
+| Proof | inclusion proof verifies OFFLINE (`verify_inclusion(0,1,leaf,[],root) → True`); `proof.root` == the on-chain calldata root |
+| Basescan | https://basescan.org/tx/0xab1c79b60a3ca3386eabc654bf163711140ac17a969e1fa526be8314da38821f |
+
+**What it proves:** the complete chain fired with real money — **CDP verified +
+settled a real USDC payment → immediate seal → on-chain Merkle anchor on Base
+mainnet → self-contained, independently-verifiable proof.** Unlike the Sepolia
+run, the audit path was returned in the 201 (immediate seal), so the payer holds
+a receipt that survives server amnesia — the paid-but-lost defect is closed on
+mainnet without a disk.
+
+**Getting here took three schema fixes** (the first real CDP call surfaced them):
+the gate now surfaces the facilitator's real error rather than a generic reject,
+and the payload forwarded to CDP carries a complete `accepted` PaymentRequirements
+(with `maxTimeoutSeconds`) — the shape CDP's `x402V2PaymentPayload` validates
+against. Reproduce with `tools/pay_attest.py` (or the zero-dependency
+`tools/pay_attest_standalone.py`) against `https://api.traceipt.xyz`.
+
 ## Recorded: canonical on-chain run (2026-08-03)
 
 The full loop, every link verified **independently against Base Sepolia**. This
