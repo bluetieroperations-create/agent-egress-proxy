@@ -94,15 +94,24 @@ Why prebuilt (option C) beats a build-time backfill:
 - **As deep as you want.** Depth is set when you build the artifact, not capped by build
   time — no per-payee truncation of the busiest endpoints.
 
-**Regenerate the artifacts periodically** (so reputation doesn't go stale), then commit
-+ redeploy:
+**⚠️ The frozen store has a ~90-day shelf life.** Its settlement timestamps don't
+advance, but the verdict's `stale` gate (`settlement_velocity`, `STALE_DAYS=90`)
+compares last_seen to *now*. Since most payees' last activity is within a week of the
+build, the whole corpus crosses the threshold together: **~0% stale for ~2 months, then
+~48% HOLD at +90 days, ~100% at +120 days.** A store left un-refreshed silently degrades
+to *all-HOLD* (fail-safe/over-cautious, never a wrong GO — but useless). **Refresh every
+≤60 days.**
+
+**Regenerate + check** (then commit `data/reputation_seed.db.gz` +
+`data/category_index.json` and redeploy):
 ```sh
-python3 chain_backfill.py --store /tmp/rep.db --payees-file data/seed_payees.txt --max-pages 2
-python3 category_pricing.py --store /tmp/rep.db --out data/category_index.json --max-pages 8
-python3 -c "import gzip,shutil; shutil.copyfileobj(open('/tmp/rep.db','rb'), gzip.open('data/reputation_seed.db.gz','wb',9))"
+make refresh-seed        # backfill full manifest -> category index -> gzip + freshness report
+make check-seed-age      # days old + days to the stale cliff; exits non-zero in the refresh window
 ```
-Tradeoff: a ~2.8 MB binary lives in git and goes stale between refreshes. `data/
-seed_payees_bake.txt` (top-60, tier-sectioned) is kept for reference/regeneration.
+`make check-seed-age` is CI-gateable — wire it into a scheduled job to get pinged before
+the corpus goes stale. Tradeoff of option C: a ~2.8 MB binary lives in git and must be
+refreshed on that cadence. `data/seed_payees_bake.txt` (top-60, tier-sectioned) is kept
+for reference/regeneration.
 
 **Still free-tier-only** (needs the paid `/data` disk, `render.yaml`): runtime-learned
 ledger outcomes reset on restart, and the instance cold-starts after ~15 min idle.
