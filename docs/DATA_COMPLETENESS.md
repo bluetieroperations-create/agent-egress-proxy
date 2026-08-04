@@ -61,11 +61,26 @@ signal has stabilized at this corpus — but it can't prove a very different/lar
 wouldn't reveal new sensitivity. The seed-regression test is how we keep watching. No
 verdict logic changed; the oracle stays byte-identical.
 
-**Stage 2 — continuous refresh (infra; still no verdict change).** Turn the one-time
-backfill into a scheduled incremental refresh (`scripts/refresh_seed.sh` +
-`check_seed_age` + the nag workflow are the seed). `chain_backfill` is idempotent, so
-re-runs are safe. **This kills the stale cliff** — same root cause, fixed once. Oracle
-stays green.
+**Stage 2 — continuous, GUARDED refresh (DONE — infra; no verdict change).** Turns the
+one-time backfill into an automated refresh that **cannot ship a bad corpus**. The key
+piece is `refresh_guard.py` (`assess_refresh`): a candidate store may replace the
+committed one only if it RETAINS the old store's size (≥80% of payees AND edges — a
+collapse means a partial crawl) and is GENUINELY FRESHER (progress made, result actually
+fresh). A coverage-convergence regression (the Stage-1 property) is surfaced as a WARNING,
+not a reject — freshness wins, and `test_coverage_eval`'s seed-regression check
+independently keeps `sybil_ring` advisory on a regressed corpus. That separation is the
+design: the guard protects the DATA; the gate protects the RULE.
+
+Both refresh paths are guarded: `scripts/refresh_seed.sh` now builds to a TEMP candidate
+and PROMOTES over the committed artifacts only on ACCEPT; `.github/workflows/seed-refresh.yml`
+runs that guarded refresh on a weekly cron (+ `workflow_dispatch`), and on ACCEPT opens a
+PULL REQUEST with the refreshed artifacts (so the full suite — incl. the seed-regression
+gate — runs on the PR before a human merges), or on REJECT opens a nag issue and changes
+nothing. `chain_backfill` is idempotent, so re-runs are safe. **This kills the stale
+cliff** — same root cause as the coverage gap, fixed once — without a human hand-running
+the refresh, and without automation ever being able to damage the corpus. Oracle stays
+byte-identical. (`schedule:` is dormant until the branch merges to default; `workflow_dispatch`
+works now. `test_refresh_guard.py` guards the accept/reject logic.)
 
 **Stage 3 — promote `sybil_ring` to a gate (the only behavior change, isolated).** Only
 after Stage 1's false-flag rate is ~0. One branch: add `sybil_ring` to the `go`
