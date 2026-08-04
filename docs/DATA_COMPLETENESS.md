@@ -34,12 +34,32 @@ the golden diff is the auditable record of exactly which verdicts changed. (Veri
 simulating the Stage-3 flip moves exactly the two `sybil_ring_advisory` rows, nothing
 else.)
 
-**Stage 1 — widen ingestion coverage (data only; signals stay advisory).** Extend
-`chain_backfill` breadth so the payer graph is dense. **Measurable gate:** track the
-advisory `sybil_ring` false-flag rate on KNOWN-GOOD payees as coverage grows. When it
-converges to ~0, the data is "complete enough." No verdict logic changes — the oracle
-must stay byte-identical (an advisory signal flipping does not change a verdict). This
-is where you *earn* the right to gate; you do not gate on faith.
+**Stage 1 — measure whether coverage clears the false flags (DONE — instrument +
+finding).** `coverage_eval.py` is the go/no-go instrument. It models coverage
+faithfully — the backfill ingests per target-payee, so at fraction `f` a deterministic
+`f`-subset of payees (all their inbound edges) is ingested, the graph/anchors/payer-
+reputation are rebuilt within it, and we count how many KNOWN-GOOD payees (ring-band
+payees the FULL corpus vouches for) spuriously flag `sybil_ring`. It reports a
+convergence curve + a verdict.
+
+Honesty guard baked in: `known_good` is defined at full coverage, so the `f=1.0` rate is
+definitionally 0 and proves nothing — the verdict judges the **sub-full tail** (is the
+rate already ~0 at the highest `f < 1.0`, and did the prior step barely move it?).
+
+**Finding on the shipped 292-payee corpus** (`data/coverage_report.json`): the false-flag
+rate rises mid-coverage (peak ~15% at f=0.4, when there are enough payees to evaluate but
+anchors are still under-observed) then converges — **0.74% at f=0.90, 0.00% at f=0.95** —
+with a flat tail. Verdict: **gating reachable = True**. The current corpus is already past
+the coverage-sensitive regime for `sybil_ring`; Stage 1's completeness goal is met by the
+existing backfill, not blocked on a bigger crawl. `test_coverage_eval.py` guards the
+instrument (synthetic known-answer) AND re-runs the verdict on the shipped seed, so a
+future refresh that regresses convergence fails the suite before anyone gates.
+
+Caveat (honest): this measures convergence *within* the ingested corpus (subsampling it).
+It shows the last slice of our coverage no longer moves the flag set — strong evidence the
+signal has stabilized at this corpus — but it can't prove a very different/larger ecosystem
+wouldn't reveal new sensitivity. The seed-regression test is how we keep watching. No
+verdict logic changed; the oracle stays byte-identical.
 
 **Stage 2 — continuous refresh (infra; still no verdict change).** Turn the one-time
 backfill into a scheduled incremental refresh (`scripts/refresh_seed.sh` +
