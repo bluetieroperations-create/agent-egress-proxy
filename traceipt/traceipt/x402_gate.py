@@ -285,7 +285,17 @@ def gate_verify(facilitator: Facilitator, headers, requirements: dict,
     except Exception as e:
         return _reject(502, {"error": f"facilitator verify unreachable: {e}"})
     if not v.get("isValid"):
-        reason = v.get("invalidReason", "payment did not verify")
+        # Surface the facilitator's REAL reason. A proper x402 verify rejection
+        # carries `invalidReason`; a facilitator-level error (e.g. a CDP 401/403
+        # whose body is {errorType,errorMessage,...}, not the x402 verify schema)
+        # carries none, and swallowing it as the generic "payment did not verify"
+        # hides an auth/config problem behind what looks like a bad signature.
+        # Prefer invalidReason, then common error-envelope fields, then the raw
+        # body, so the caller can tell an auth failure from a real rejection.
+        reason = (v.get("invalidReason") or v.get("errorMessage")
+                  or v.get("message") or v.get("error") or v.get("errorType"))
+        if not reason:
+            reason = "payment did not verify: " + json.dumps(v)[:300]
         return _reject(402, {**challenge_body, "error": reason})
 
     # Authoritative payer: facilitator's verified value, else the signed `from`.
