@@ -1104,8 +1104,29 @@ def main(argv=None):
         publisher=publisher,
         attest_seal=args.attest_seal,
     )
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(app))
+    # Self-heal after a disk-less reset: if the anchor table is empty but we have
+    # been publishing roots on-chain, re-derive them from the gas wallet's own
+    # transactions (recover.py). No trusted DB, no disk -- the chain is the store.
+    # Best-effort: a failure here never blocks startup.
     pub_addr = getattr(publisher, "address", None)
+    if pub_addr and not app.ledger.list_anchors():
+        try:
+            from .recover import recover_anchors_from_chain
+            recs = recover_anchors_from_chain(
+                pub_addr, args.chain,
+                api_key=os.environ.get("RECEIPTS_EXPLORER_API_KEY", ""))
+            n = sum(app.ledger.record_recovered_anchor(
+                        root=r["root"], onchain_tx=r["onchain_tx"],
+                        onchain_network=r["onchain_network"],
+                        created_at=r["created_at"] or utc_now())
+                    for r in recs)
+            if n:
+                print(f"recovered {n} on-chain anchor root(s) from {args.chain} "
+                      f"for gas wallet {pub_addr}")
+        except Exception as e:  # noqa: BLE001 -- recovery is best-effort
+            print(f"anchor recovery skipped: {type(e).__name__}: {e}")
+
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(app))
     print(f"Traceipt listening on {args.host}:{args.port} "
           f"(public={base_url}, gate={args.gate}, chain={args.chain}, "
           f"settlement={args.settlement}, bind_payer={app.bind_payer}, "

@@ -149,6 +149,26 @@ redeploys, and every prior receipt stops verifying. Fix both:
   running a persistent disk. `/receipts` is already safe (the signed receipt is
   returned in its 201); this closes the same gap for `/attest`.
 
+- **Durability WITHOUT a disk (zero-cost path).** You do not strictly need a
+  paid disk. Two mechanisms make a receipt survive a disk-less reset:
+  - **Self-verifying receipts + a standalone verifier.** With
+    `RECEIPTS_ATTEST_SEAL=immediate` the full inclusion proof rides in the 201,
+    and the signing key is a durable secret (`RECEIPTS_KEY_PEM`), so a receipt
+    verifies against the on-chain root + the published JWKS with **no call to
+    this server**. `tools/verify.py` (CLI) and `site/verify.html` (a static page,
+    hosted free on Cloudflare Pages at `/verify`) do exactly that check —
+    Merkle inclusion + on-chain calldata + Ed25519 signature. This is the real
+    expression of "independently verifiable": the issuing server can be down or
+    gone and the receipt still proves out.
+  - **Rebuild-the-anchor-index-from-chain.** On startup, if the anchor table is
+    empty but the gas wallet has published roots, the service re-derives every
+    `(root, tx, timestamp)` straight from the gas wallet's own transactions
+    (`recover.py`), so `/anchors` self-heals with no trusted DB. Set
+    `RECEIPTS_EXPLORER_API_KEY` (a free Basescan key) for reliable enumeration;
+    it is best-effort and never blocks startup. The leaves inside a batch are
+    not on-chain (only the root is), so a caller presents the inclusion proof and
+    it is checked against the on-chain-confirmed root.
+
 **B. Auto-anchor.** Set `RECEIPTS_ANCHOR_INTERVAL` (seconds) so batches seal on
 their own; otherwise callers need an admin `POST /anchor` each time. The
 blueprint sets `300` (5 min) for the demo; `3600` (hourly) is fine for
@@ -212,6 +232,7 @@ proofs still verify).
 | `RECEIPTS_GAS_KEY` | `--gas-key` | — (onchain only; dedicated gas wallet) |
 | `RECEIPTS_ANCHOR_INTERVAL` | `--anchor-interval` | `0` (seconds; 0 = manual) |
 | `RECEIPTS_ATTEST_SEAL` | `--attest-seal` | `batch` (`immediate` = seal-on-submit + self-contained proof in the 201) |
+| `RECEIPTS_EXPLORER_API_KEY` | (inline) | — (free Basescan key; enables startup anchor-recovery from chain) |
 
 See the main [README](README.md#security-model--threat-model) for the threat
 model before going to production.

@@ -2996,5 +2996,79 @@ class TestCdpFacilitatorAuth(unittest.TestCase):
         self.assertTrue(captured["auth"] and captured["auth"].startswith("Bearer "))
 
 
+class TestAnchorRecovery(unittest.TestCase):
+    """Rebuild the anchor index from the chain (recover.py) so a disk-less reset
+    does not lose the published roots."""
+
+    GAS = "0x3aec6fb2279D7Dd261482CC8BA9f2830f73A1A77"
+    ROOT = "6d2b25d4f9701dba7d9b6bbe5cfc6a706d7b436a3db09e8c3b8c9cebfbce2985"
+    MARKER = "54524143454950542d414e43484f5201"  # TRACEIPT-ANCHOR\x01
+
+    def _anchor_tx(self, root=None, frm=None, ts="1754287373"):
+        return {"hash": "0x" + "ab" * 32, "from": frm or self.GAS,
+                "input": "0x" + self.MARKER + (root or self.ROOT), "timeStamp": ts}
+
+    def test_extract_anchor_reads_root_from_calldata(self):
+        from traceipt.recover import extract_anchor
+        rec = extract_anchor(self._anchor_tx(), self.GAS, "base")
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec["root"], self.ROOT)
+        self.assertEqual(rec["onchain_network"], "base")
+        self.assertTrue(rec["created_at"].startswith("2025-"))  # from timeStamp
+
+    def test_extract_ignores_non_anchor_and_inbound(self):
+        from traceipt.recover import extract_anchor
+        # inbound (from someone else) -> ignored even if it carries the marker
+        self.assertIsNone(extract_anchor(
+            self._anchor_tx(frm="0x" + "11" * 20), self.GAS, "base"))
+        # a normal tx with no marker -> ignored
+        self.assertIsNone(extract_anchor(
+            {"from": self.GAS, "input": "0xdeadbeef"}, self.GAS, "base"))
+        # marker but wrong-length payload -> ignored
+        self.assertIsNone(extract_anchor(
+            {"from": self.GAS, "input": "0x" + self.MARKER + "abcd"}, self.GAS, "base"))
+
+    def test_recover_dedupes_and_orders(self):
+        from traceipt.recover import recover_anchors_from_chain
+        other = "aa" * 32
+        txs = [self._anchor_tx(), self._anchor_tx(),  # same root twice
+               self._anchor_tx(root=other),
+               {"from": self.GAS, "input": "0xcafe"}]  # noise
+        recs = recover_anchors_from_chain(self.GAS, "base", transport=lambda a: txs)
+        self.assertEqual([r["root"] for r in recs], [self.ROOT, other])  # deduped
+
+    def test_ledger_record_and_lookup_recovered(self):
+        with tempfile.TemporaryDirectory() as d:
+            led = Ledger(os.path.join(d, "r.db"))
+            first = led.record_recovered_anchor(
+                root=self.ROOT, onchain_tx="0x" + "ab" * 32,
+                onchain_network="base", created_at="2026-08-04T06:02:53Z")
+            self.assertTrue(first)
+            # idempotent: same root again is a no-op
+            self.assertFalse(led.record_recovered_anchor(
+                root=self.ROOT, onchain_tx="0x" + "ab" * 32,
+                onchain_network="base", created_at="2026-08-04T06:02:53Z"))
+            got = led.anchor_by_root(self.ROOT)
+            self.assertEqual(got["onchain_network"], "base")
+            self.assertEqual(got["source"], "recovered")
+            self.assertEqual(got["leaf_count"], 0)  # leaves not on-chain
+            self.assertIsNone(led.anchor_by_root("00" * 32))
+
+    def test_recovered_root_verifies_a_presented_proof(self):
+        # The point of recovery: a caller's inclusion proof still checks against
+        # an on-chain-confirmed root after a reset, with no original leaves stored.
+        from traceipt.merkle import verify_inclusion
+        leaf = b"sha256:728c4733c730091d606cfc22368e7787249392fec898ad730f8d59a5396dcace"
+        with tempfile.TemporaryDirectory() as d:
+            led = Ledger(os.path.join(d, "r.db"))
+            led.record_recovered_anchor(root=self.ROOT, onchain_tx="0x" + "ab" * 32,
+                                        onchain_network="base",
+                                        created_at="2026-08-04T06:02:53Z")
+            anchor = led.anchor_by_root(self.ROOT)
+            self.assertIsNotNone(anchor)
+            self.assertTrue(verify_inclusion(0, 1, leaf, [],
+                                             bytes.fromhex(anchor["root"])))
+
+
 if __name__ == "__main__":
     unittest.main()

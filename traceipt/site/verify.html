@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verify a Traceipt receipt</title>
+<style>
+  :root{
+    --bg:#fff;--fg:#0f172a;--dim:#64748b;--card:#f8fafc;--border:#e2e8f0;
+    --pass:#15803d;--fail:#b91c1c;--skip:#a16207;--accent:#4f46e5;--mono:#334155;
+  }
+  @media (prefers-color-scheme:dark){:root{
+    --bg:#0b1020;--fg:#e5e9f0;--dim:#94a3b8;--card:#111827;--border:#1f2937;
+    --pass:#4ade80;--fail:#f87171;--skip:#fbbf24;--accent:#a5b4fc;--mono:#cbd5e1;
+  }}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  .wrap{max-width:760px;margin:0 auto;padding:32px 20px 64px}
+  h1{font-size:1.5rem;margin:0 0 4px}
+  .sub{color:var(--dim);margin:0 0 24px}
+  textarea{width:100%;min-height:180px;padding:12px;border:1px solid var(--border);
+    border-radius:10px;background:var(--card);color:var(--fg);
+    font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;resize:vertical}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:12px 0}
+  button{background:var(--accent);color:#fff;border:0;border-radius:9px;
+    padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer}
+  button.ghost{background:transparent;color:var(--accent);border:1px solid var(--border)}
+  label.opt{color:var(--dim);font-size:13px;display:flex;gap:6px;align-items:center}
+  input[type=text]{flex:1;min-width:200px;padding:8px 10px;border:1px solid var(--border);
+    border-radius:8px;background:var(--card);color:var(--fg);font:13px ui-monospace,monospace}
+  #result{margin-top:20px}
+  .banner{padding:12px 16px;border-radius:10px;font-weight:700;margin-bottom:14px;
+    display:none}
+  .banner.ok{display:block;background:color-mix(in srgb,var(--pass) 15%,transparent);
+    color:var(--pass);border:1px solid color-mix(in srgb,var(--pass) 40%,transparent)}
+  .banner.bad{display:block;background:color-mix(in srgb,var(--fail) 15%,transparent);
+    color:var(--fail);border:1px solid color-mix(in srgb,var(--fail) 40%,transparent)}
+  .check{display:flex;gap:10px;padding:10px 0;border-top:1px solid var(--border)}
+  .tag{flex:none;width:52px;font-weight:700;font-size:12px;letter-spacing:.04em;
+    text-align:center;padding:3px 0;border-radius:6px;height:fit-content}
+  .tag.pass{color:var(--pass);background:color-mix(in srgb,var(--pass) 14%,transparent)}
+  .tag.fail{color:var(--fail);background:color-mix(in srgb,var(--fail) 14%,transparent)}
+  .tag.skip{color:var(--skip);background:color-mix(in srgb,var(--skip) 14%,transparent)}
+  .ctext b{display:block}
+  .ctext span{color:var(--dim);font:12px/1.5 ui-monospace,monospace;word-break:break-all}
+  .foot{margin-top:32px;color:var(--dim);font-size:13px}
+  a{color:var(--accent)}
+  code{font:12px ui-monospace,monospace;color:var(--mono)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Verify a Traceipt receipt</h1>
+  <p class="sub">Paste a receipt, proof, or <code>/attest</code> response. This page
+  checks it <b>against Base and the issuer's key — in your browser</b>. It never
+  calls Traceipt's server; a receipt stays verifiable even if that server is gone.</p>
+
+  <textarea id="input" placeholder='Paste JSON here — e.g. the mainnet_run.json the payer client writes, or a /attest 201 body.'></textarea>
+
+  <div class="row">
+    <button id="go">Verify</button>
+    <button class="ghost" id="sample">Load the live mainnet example</button>
+  </div>
+  <div class="row">
+    <label class="opt">RPC
+      <input type="text" id="rpc" value="https://mainnet.base.org">
+    </label>
+    <label class="opt"><input type="checkbox" id="offline"> offline (skip on-chain)</label>
+  </div>
+
+  <div id="result"></div>
+
+  <p class="foot">RFC 6962 Merkle inclusion + on-chain calldata check (SHA-256),
+  Ed25519 signature via WebCrypto. Source: <code>tools/verify.py</code> is the
+  same check as a CLI. If the on-chain step is blocked by CORS, try a different
+  RPC endpoint or use the CLI.</p>
+</div>
+
+<script>
+const MARKER = "54524143454950542d414e43484f5201"; // "TRACEIPT-ANCHOR\x01"
+const enc = new TextEncoder();
+
+async function sha256(bytes){ return new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)); }
+function hex(u8){ return [...u8].map(b=>b.toString(16).padStart(2,"0")).join(""); }
+function fromHex(h){ const a=new Uint8Array(h.length/2); for(let i=0;i<a.length;i++) a[i]=parseInt(h.substr(i*2,2),16); return a; }
+function cat(...arrs){ let n=arrs.reduce((s,a)=>s+a.length,0),o=new Uint8Array(n),k=0; for(const a of arrs){o.set(a,k);k+=a.length;} return o; }
+
+// RFC 6962: leaf = SHA256(0x00 || data); node = SHA256(0x01 || left || right)
+async function leafHash(data){ return sha256(cat(new Uint8Array([0]), data)); }
+async function nodeHash(l,r){ return sha256(cat(new Uint8Array([1]), l, r)); }
+
+async function rootFromInclusion(m, n, leafData, proof){
+  let fn=m, sn=n-1, r=await leafHash(leafData);
+  for(const sibHex of proof){
+    const sib=fromHex(sibHex);
+    if(fn===sn || (fn&1)){
+      r=await nodeHash(sib,r);
+      if(!(fn&1)){ while(fn!==0 && !(fn&1)){ fn>>=1; sn>>=1; } }
+    } else { r=await nodeHash(r,sib); }
+    fn>>=1; sn>>=1;
+  }
+  return r;
+}
+
+// canonical JSON matching Python json.dumps(sort_keys=True, separators=(",",":"), ensure_ascii=False)
+function canon(o){
+  if(o===null||typeof o!=="object") return JSON.stringify(o);
+  if(Array.isArray(o)) return "["+o.map(canon).join(",")+"]";
+  return "{"+Object.keys(o).sort().map(k=>JSON.stringify(k)+":"+canon(o[k])).join(",")+"}";
+}
+async function verdictDigest(v){ return "sha256:"+hex(await sha256(enc.encode(canon(v)))); }
+
+function findProof(d){
+  if(!d||typeof d!=="object") return null;
+  if("root" in d && "leaf_data" in d) return d;
+  if(d.proof && typeof d.proof==="object") return d.proof;
+  if(d.response && d.response.proof) return d.response.proof;
+  return null;
+}
+function findVerdict(d){ return (d && typeof d.verdict==="object") ? d.verdict : null; }
+
+async function rpc(url, method, params){
+  const res=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({jsonrpc:"2.0",id:1,method,params})});
+  const j=await res.json(); if(j.error) throw new Error(JSON.stringify(j.error)); return j.result;
+}
+
+function b64urlToBytes(s){ s=s.replace(/-/g,"+").replace(/_/g,"/"); while(s.length%4)s+="="; const bin=atob(s); const a=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)a[i]=bin.charCodeAt(i); return a; }
+
+const checks=[];
+function add(state,name,detail){ checks.push({state,name,detail}); }
+
+async function checkAttestation(doc, rpcUrl, offline){
+  const proof=findProof(doc); if(!proof) return false;
+  const leaf=proof.leaf_data, root=(proof.root||"").toLowerCase();
+  if(!leaf||!root){ add("fail","proof structure","missing leaf_data or root"); return true; }
+
+  const verdict=findVerdict(doc);
+  if(verdict){
+    const want=await verdictDigest(verdict);
+    add(want===leaf?"pass":"fail","verdict binding",
+        want===leaf?"digest matches the anchored leaf":`verdict hashes to ${want}`);
+  }
+  try{
+    const recomputed=hex(await rootFromInclusion(proof.leaf_index|0, proof.tree_size||1, enc.encode(leaf), proof.audit_path||[]));
+    add(recomputed===root?"pass":"fail","inclusion proof",
+        recomputed===root?`root ${root.slice(0,16)}… recomputed from ${(proof.audit_path||[]).length}-node path`
+                          :"audit path does NOT recompute the root");
+  }catch(e){ add("fail","inclusion proof","error: "+e.message); }
+
+  const tx=proof.onchain_tx, net=proof.onchain_network||"base";
+  if(offline){ add("skip","on-chain anchor","skipped (offline)"); }
+  else if(!tx){ add("skip","on-chain anchor","no onchain_tx (not published)"); }
+  else {
+    try{
+      const txo=await rpc(rpcUrl,"eth_getTransactionByHash",[tx]);
+      if(!txo){ add("fail","on-chain anchor",`tx not found on ${net}`); }
+      else{
+        const inp=(txo.input||"").slice(2);
+        const carries=inp.startsWith(MARKER) && inp.slice(MARKER.length)===root;
+        const blk=txo.blockNumber?parseInt(txo.blockNumber,16):null;
+        add(carries?"pass":"fail","on-chain anchor",
+            carries?`${net} block ${blk} — calldata carries the exact root`
+                   :"tx calldata does NOT carry this root");
+      }
+    }catch(e){ add("fail","on-chain anchor","RPC error (CORS? try another endpoint): "+e.message); }
+  }
+  return true;
+}
+
+async function checkSignature(env){
+  try{
+    const jwks=await (await fetch("/jwks.json",{headers:{Accept:"application/json"}})).json();
+    const kid=env.protected&&env.protected.kid;
+    const jwk=(jwks.keys||[]).find(k=>k.kid===kid&&k.crv==="Ed25519");
+    if(!jwk){ add("skip","signature",`no key kid=${kid} at /jwks.json`); return; }
+    const pub=b64urlToBytes(jwk.x);
+    const key=await crypto.subtle.importKey("raw",pub,{name:"Ed25519"},false,["verify"]);
+    const input=enc.encode(canon({payload:env.payload,protected:env.protected}));
+    const ok=await crypto.subtle.verify({name:"Ed25519"},key,b64urlToBytes(env.signature),input);
+    add(ok?"pass":"fail","signature",ok?`Ed25519 verified against issuer key kid=${kid}`:"signature verification FAILED");
+  }catch(e){ add("skip","signature","WebCrypto Ed25519 unavailable here — use the CLI: "+e.message); }
+}
+
+function render(){
+  const box=document.getElementById("result");
+  const failed=checks.some(c=>c.state==="fail");
+  let html=`<div class="banner ${failed?"bad":"ok"}">${failed?"✗ VERIFICATION FAILED":"✓ VERIFIED — independently, against the chain"}</div>`;
+  for(const c of checks){
+    html+=`<div class="check"><div class="tag ${c.state}">${c.state.toUpperCase()}</div>
+      <div class="ctext"><b>${c.name}</b><span>${c.detail||""}</span></div></div>`;
+  }
+  box.innerHTML=html;
+}
+
+document.getElementById("go").onclick=async()=>{
+  checks.length=0;
+  let doc; try{ doc=JSON.parse(document.getElementById("input").value); }
+  catch(e){ document.getElementById("result").innerHTML=`<div class="banner bad">Not valid JSON: ${e.message}</div>`; return; }
+  const rpcUrl=document.getElementById("rpc").value.trim();
+  const offline=document.getElementById("offline").checked;
+  const handled=await checkAttestation(doc,rpcUrl,offline);
+  if(doc&&doc.protected&&doc.payload&&doc.signature){ await checkSignature(doc); }
+  else if(!handled){ document.getElementById("result").innerHTML=`<div class="banner bad">Unrecognized document — paste a /attest 201 body, a proof, or a signed receipt.</div>`; return; }
+  render();
+};
+
+document.getElementById("sample").onclick=()=>{
+  document.getElementById("input").value=JSON.stringify({
+    verdict_digest:"sha256:728c4733c730091d606cfc22368e7787249392fec898ad730f8d59a5396dcace",
+    response:{attestation:{attestation_id:"att_b91e311aad05a268d8bf",status:"anchored"},
+      proof:{leaf_index:0,tree_size:1,
+        leaf_data:"sha256:728c4733c730091d606cfc22368e7787249392fec898ad730f8d59a5396dcace",
+        audit_path:[],root:"6d2b25d4f9701dba7d9b6bbe5cfc6a706d7b436a3db09e8c3b8c9cebfbce2985",
+        onchain_network:"base",onchain_tx:"0xab1c79b60a3ca3386eabc654bf163711140ac17a969e1fa526be8314da38821f"}}
+  },null,2);
+};
+</script>
+</body>
+</html>

@@ -79,6 +79,9 @@ class Ledger:
             for ddl in (
                 "ALTER TABLE receipts ADD COLUMN kind TEXT NOT NULL DEFAULT 'payment'",
                 "ALTER TABLE receipts ADD COLUMN ref_receipt_id TEXT",
+                # 'sealed' = anchored here; 'recovered' = re-derived from the
+                # chain (root + tx known, original leaves not) -- see recover.py.
+                "ALTER TABLE anchors ADD COLUMN source TEXT NOT NULL DEFAULT 'sealed'",
             ):
                 try:
                     con.execute(ddl)
@@ -336,6 +339,42 @@ class Ledger:
         finally:
             con.close()
         return [dict(r) for r in rows]
+
+    def anchor_by_root(self, root_hex: str) -> dict | None:
+        """The anchor row with this root (sealed OR recovered), or None. Lets a
+        verifier confirm a proof's recomputed root is one we published on-chain,
+        without trusting the caller about which tx carries it."""
+        con = self._connect()
+        try:
+            row = con.execute(
+                "SELECT anchor_id, created_at, leaf_count, root, onchain_network, "
+                "onchain_tx, source FROM anchors WHERE root = ?", (root_hex.lower(),)
+            ).fetchone()
+        finally:
+            con.close()
+        return dict(row) if row else None
+
+    def record_recovered_anchor(self, *, root: str, onchain_tx: str | None,
+                                onchain_network: str | None,
+                                created_at: str) -> bool:
+        """Insert an anchor re-derived from the chain (root + tx known, leaves
+        not). Idempotent: a root already present (sealed or recovered) is left
+        untouched. Returns True if a new row was inserted. leaf_count is 0
+        because the batch's leaves are not on-chain -- only the root is."""
+        with self._lock:
+            con = self._connect()
+            try:
+                if con.execute("SELECT 1 FROM anchors WHERE root = ?",
+                               (root.lower(),)).fetchone():
+                    return False
+                con.execute(
+                    "INSERT INTO anchors (created_at, leaf_count, root, "
+                    "onchain_network, onchain_tx, source) VALUES (?,?,?,?,?, 'recovered')",
+                    (created_at, 0, root.lower(), onchain_network, onchain_tx))
+                con.commit()
+                return True
+            finally:
+                con.close()
 
     def inclusion_for(self, receipt_id: str) -> dict | None:
         """Merkle inclusion proof for a receipt, or None if it is not yet
