@@ -66,11 +66,23 @@ Env equivalents: `BLACKWALL_X402_URL`, `BLACKWALL_X402_MODE`,
 npm install && npm test    # vitest; the OpenClaw SDK entry import is stubbed
 ```
 
-32 tests pin the claim extraction (all three shapes + adversarial inputs), the
-exact atomic-unit conversion, the verdict mapping, the enforce/observe ×
-fail-closed matrix, and the zero-overhead pass-through for non-payment calls.
-The HTTP client is a zero-dependency proxy-aware CONNECT tunnel (Node's fetch
-ignores `HTTPS_PROXY`, which matters in proxy-only-egress sandboxes).
+38 tests pin the claim extraction (all three shapes + adversarial inputs,
+including case-variant keys and scientific-notation amounts), the exact
+atomic-unit conversion, the verdict mapping, the enforce/observe × fail-closed
+matrix, the zero-overhead pass-through for non-payment calls, and the HTTP
+client's response-size cap over real loopback sockets. The HTTP client is a
+zero-dependency proxy-aware CONNECT tunnel (Node's fetch ignores
+`HTTPS_PROXY`, which matters in proxy-only-egress sandboxes).
+
+```sh
+npm run eval:live          # opt-in live scorecard against blackwall-free
+```
+
+`eval-live.test.ts` is the redteam-style scenario sweep (network, excluded from
+`npm test`): fair-price GO, gouged HOLD, cold-start HOLD, sanctions STOP, a
+recipient-swap attack (claim pays A, signed X-PAYMENT pays B) killed by
+payload-sim, and case-variant-key recognition — 6/6 verified against the live
+free instance.
 
 ## Consumers
 

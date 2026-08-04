@@ -76,13 +76,17 @@ function normalizeAddress(value: unknown): string | null {
     : null;
 }
 
-/** Positive decimal amount as a canonical string, or null. */
+/** Positive PLAIN-decimal amount as a canonical string, or null. Numbers whose
+ * string form is scientific notation (1e21, 1e-7) are rejected rather than
+ * forwarded as a malformed claim — such magnitudes are not legitimate x402
+ * payments, and the claim format is plain decimal. */
 function parseAmount(value: unknown): string | null {
   if (typeof value === "number") {
-    return Number.isFinite(value) && value > 0 ? String(value) : null;
+    if (!Number.isFinite(value) || value <= 0) return null;
+    value = String(value);
   }
   if (typeof value !== "string") return null;
-  const s = value.trim();
+  const s = (value as string).trim();
   if (!/^\d+(\.\d+)?$/.test(s)) return null;
   return Number(s) > 0 ? s : null;
 }
@@ -135,8 +139,21 @@ const XPAYMENT_KEYS = [
 ];
 const USDC_DECIMALS = 6;
 
+/** First non-empty value under any alias, matching keys CASE-INSENSITIVELY
+ * (payto / PayTo / PAY_TO all count) — exact-case hits win over variants so a
+ * conventional payload is never ambiguous. Underscores are ignored in the
+ * fallback so snake/camel variants collapse. */
 function firstOf(obj: Record<string, unknown>, keys: string[]): unknown {
   for (const k of keys) if (obj[k] != null && obj[k] !== "") return obj[k];
+  const fold = (s: string) => s.toLowerCase().replace(/_/g, "");
+  const folded = new Map<string, unknown>();
+  for (const [k, v] of Object.entries(obj)) {
+    if (v != null && v !== "" && !folded.has(fold(k))) folded.set(fold(k), v);
+  }
+  for (const k of keys) {
+    const v = folded.get(fold(k));
+    if (v !== undefined) return v;
+  }
   return undefined;
 }
 
@@ -245,7 +262,9 @@ function proxyFor(host: string): URL | null {
   }
 }
 
-async function postJson(
+const MAX_RESPONSE_BYTES = 1024 * 1024;
+
+export async function postJson(
   urlStr: string,
   body: unknown,
   timeoutMs: number,
@@ -258,6 +277,7 @@ async function postJson(
 
   const raw = await new Promise<Buffer>((resolve, reject) => {
     const chunks: Buffer[] = [];
+    let received = 0;
     const timer = setTimeout(() => {
       reject(new Error(`blackwall-x402-gate: request timed out after ${timeoutMs}ms`));
       sock?.destroy();
@@ -265,7 +285,18 @@ async function postJson(
     let sock: net.Socket | null = null;
 
     const sendRequest = (stream: net.Socket) => {
-      stream.on("data", (c: Buffer) => chunks.push(c));
+      stream.on("data", (c: Buffer) => {
+        // A verdict is a few KB; cap the read so a compromised or misconfigured
+        // endpoint cannot stream unbounded data into the hook's memory.
+        received += c.length;
+        if (received > MAX_RESPONSE_BYTES) {
+          clearTimeout(timer);
+          stream.destroy();
+          reject(new Error("blackwall-x402-gate: response exceeded size cap"));
+          return;
+        }
+        chunks.push(c);
+      });
       stream.on("end", () => {
         clearTimeout(timer);
         resolve(Buffer.concat(chunks));
@@ -399,9 +430,13 @@ export function resolveConfig(config: GateConfig = {}): ResolvedConfig {
           ? ["1", "true", "yes"].includes(envFailClosed.toLowerCase())
           : true,
     payer: normalizeAddress(config.payer ?? process.env.BLACKWALL_PAYER) ?? undefined,
+    // Lowercased: tool-name tokens compare lowercase, so an uppercase config
+    // entry ("Treasury") must not silently fail to match.
     paymentTools: [
       ...DEFAULT_PAYMENT_TOKENS,
-      ...(Array.isArray(config.paymentTools) ? config.paymentTools.map(String) : []),
+      ...(Array.isArray(config.paymentTools)
+        ? config.paymentTools.map((t) => String(t).toLowerCase())
+        : []),
     ],
     forecastTimeoutMs:
       typeof config.forecastTimeoutMs === "number" ? config.forecastTimeoutMs : DEFAULT_TIMEOUT_MS,

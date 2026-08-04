@@ -17,6 +17,7 @@ import {
   decide,
   extractClaim,
   handleBeforeToolCall,
+  postJson,
   resolveConfig,
   toolLooksLikePayment,
 } from "./index.ts";
@@ -314,5 +315,73 @@ describe("plugin entry", () => {
     const on = vi.fn();
     plugin.register({ on, logger: silent });
     expect(on).toHaveBeenCalledWith("before_tool_call", expect.any(Function), expect.anything());
+  });
+});
+
+describe("audit regressions (session audit of the initial implementation)", () => {
+  // MUTATION NOTES: each of these pins a hole found in adversarial audit —
+  // A1: uppercase config tokens silently never matched (operator believes
+  //     their wallet tool is gated; it is not). A2: case-variant param keys
+  //     (payto/PayTo) escaped recognition entirely. A3: scientific-notation
+  //     numeric amounts produced malformed claims ("1e+21").
+  it("A1: config paymentTools match case-insensitively", () => {
+    const c = cfg({ paymentTools: ["Treasury"] });
+    expect(toolLooksLikePayment("treasury_move", c.paymentTools)).toBe(true);
+  });
+  it("A2: param keys match case-insensitively (payto, PayTo, PAY_TO)", () => {
+    for (const key of ["payto", "PayTo", "PAY_TO", "Recipient"]) {
+      const claim = extractClaim({ [key]: PAYEE, amount: "0.01" });
+      expect(claim, key).not.toBeNull();
+      expect(claim!.counterparty).toBe(PAYEE.toLowerCase());
+    }
+  });
+  it("A2: exact-case keys still win over case-variants", () => {
+    const other = "0x9999999999999999999999999999999999999999";
+    const claim = extractClaim({ payTo: PAYEE, PAYTO: other, amount: "0.01" });
+    expect(claim!.counterparty).toBe(PAYEE.toLowerCase());
+  });
+  it("A3: scientific-notation amounts are rejected, not forwarded", () => {
+    expect(extractClaim({ payTo: PAYEE, amount: 1e21 })).toBeNull();
+    expect(extractClaim({ payTo: PAYEE, amount: 1e-7 })).toBeNull();
+    expect(extractClaim({ payTo: PAYEE, amount: "1e3" })).toBeNull();
+    // plain decimals still fine
+    expect(extractClaim({ payTo: PAYEE, amount: 1000 })!.amount).toBe("1000");
+  });
+});
+
+describe("postJson (loopback: real sockets, no proxy)", () => {
+  // MUTATION NOTES: A4 — the size cap pins "a hostile endpoint cannot stream
+  // unbounded data into the hook"; the happy-path test pins status+JSON parsing
+  // over a real socket.
+  it("round-trips JSON over loopback HTTP", async () => {
+    const http = await import("node:http");
+    const srv = http.createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, path: req.url }));
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+    const port = (srv.address() as any).port;
+    try {
+      const { status, json } = await postJson(`http://127.0.0.1:${port}/v1/x`, { a: 1 }, 5000);
+      expect(status).toBe(200);
+      expect(json).toMatchObject({ ok: true, path: "/v1/x" });
+    } finally {
+      srv.close();
+    }
+  });
+  it("A4: rejects a response that exceeds the size cap instead of buffering it", async () => {
+    const http = await import("node:http");
+    const big = "x".repeat(2 * 1024 * 1024);
+    const srv = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(big);
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+    const port = (srv.address() as any).port;
+    try {
+      await expect(postJson(`http://127.0.0.1:${port}/`, {}, 10000)).rejects.toThrow(/size cap/);
+    } finally {
+      srv.close();
+    }
   });
 });
