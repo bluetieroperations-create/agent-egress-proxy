@@ -3,7 +3,7 @@
   "private": true,
   "description": "Traceipt marketing site (Cloudflare Pages)",
   "scripts": {
-    "deploy": "wrangler pages deploy site --project-name=traceipt --commit-dirty=true",
+    "deploy": "wrangler pages deploy site --project-name=traceipt --branch=main --commit-dirty=true",
     "dev": "wrangler pages dev site"
   },
   "devDependencies": {
