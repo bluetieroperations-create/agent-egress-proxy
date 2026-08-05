@@ -4,22 +4,6 @@ From the session that ran the visibility/distribution workstream (started as
 "SEO/AEO/GEO audit"). Everything below is merged/pushed/live unless marked
 PENDING. Written for the sibling session on `claude/x402-product-ideas-6adgah`.
 
-## ⚡ Immediate: the NemoClaw PR #4692 DCO fix (diagnosed, needs 30 seconds)
-
-The failing "Check DCO sign-off" on NVIDIA/nemoclaw-community PR #4692
-(`add-blackwall-guard-example`, head `0d22cb2`) is **not about the commits**.
-Upstream's `.github/workflows/dco.yml` (tightened today by their #101/#102)
-only checks the **PR description body** for a line matching
-`^Signed-off-by:\s+.+\s+<[^<>]+>$` and rejects the literal placeholder
-"Your Name <your.email@example.com>". Fix: edit the PR description and append:
-
-```
-Signed-off-by: bluetieroperations-create <270213615+bluetieroperations-create@users.noreply.github.com>
-```
-
-(matches the commit author identity; the workflow re-runs on `edited`). No
-rebase, no force-push needed.
-
 ## What exists now (all live)
 
 | Asset | URL | Notes |
