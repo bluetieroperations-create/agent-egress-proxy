@@ -83,9 +83,11 @@
   <div id="result"></div>
 
   <p class="foot">RFC 6962 Merkle inclusion + on-chain calldata check (SHA-256),
-  Ed25519 signature via WebCrypto. Source: <code>tools/verify.py</code> is the
-  same check as a CLI. If the on-chain step is blocked by CORS, try a different
-  RPC endpoint or use the CLI.</p>
+  Ed25519 signature via WebCrypto. The same checks ship as CLIs:
+  <code>npx traceipt-verify receipt.json</code>
+  (<a href="https://www.npmjs.com/package/traceipt-verify" rel="noopener">npm</a>,
+  zero dependencies) or <code>tools/verify.py</code> in the Traceipt codebase.
+  If the on-chain step is blocked by CORS, try a different RPC endpoint or use a CLI.</p>
 </div>
 
 <script>
