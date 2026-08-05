@@ -120,6 +120,14 @@
 
     <p>The x402 protocol gives machines a way to pay for things over HTTP: a server answers <code>402 Payment Required</code> with a price, the agent settles in a stablecoin (typically USDC), and retries the request. What the protocol does <em>not</em> give you is a record. The chain shows that money moved between two addresses — it does not show what was purchased, under what terms, or on whose behalf. A receipt closes that gap.</p>
 
+    <h2>Two senses of "x402 receipt" — don't <em>confuse them</em></h2>
+    <p>The term is used two ways, and they solve different problems:</p>
+    <ul>
+      <li><strong>The protocol's settlement receipt.</strong> In the x402 spec itself, the server returns a <code>PAYMENT-RESPONSE</code> header after settlement, carrying the transaction hash and settlement metadata. This proves <em>this request was paid</em> — it's part of the payment handshake, held briefly by the client, and typically discarded. The <a href="https://www.ietf.org/archive/id/draft-vauban-x402-consolidated-00.html" rel="noopener">draft-vauban</a> IETF work formalizes cryptographic receipts at this protocol layer.</li>
+      <li><strong>The audit-grade receipt</strong> — the sense this page (and Traceipt) is about. A durable record that outlives the request: bound to the settlement <em>and</em> to the commercial context (what was bought, who paid, who was paid), signed, chained, anchored, and independently verifiable years later. The protocol receipt tells the payer "you paid"; the audit receipt lets a payer <em>prove to a third party</em> what the payment was for.</li>
+    </ul>
+    <p>They compose: the protocol's settlement response is one of the inputs an audit-grade receipt binds. If you're asking "did my request get paid," the header answers it. If you're asking "what do I hand my auditor in March," you need the second kind — which is the rest of this page.</p>
+
     <h2>Why agent payments need receipts</h2>
     <p>An autonomous agent making ten thousand micropayments a month produces ten thousand bank-statement lines with no invoice, no vendor, and no reason attached. Three groups of people then have a problem:</p>
     <ul>

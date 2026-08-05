@@ -23,7 +23,7 @@ Traceipt solves the record, not the payment. The payment rail (x402) is solved; 
 
 ## Learn
 - [Ten thousand payments, zero invoices: the agent reconciliation problem](https://traceipt.xyz/agent-reconciliation-problem): the essay — why AI-agent payments outrun record-keeping, what a real receipt must prove (7 properties), and how the Certificate Transparency construction (RFC 6962) solves the hard part.
-- [What is an x402 receipt?](https://traceipt.xyz/x402-receipts): definition, anatomy (settlement-bound, context-bound, signed, chained, anchored, offline-verifiable), how verification works, and receipts vs logs vs block explorers.
+- [What is an x402 receipt?](https://traceipt.xyz/x402-receipts): definition, the two senses of the term (the protocol's PAYMENT-RESPONSE settlement header vs the durable audit-grade record — they compose), anatomy (settlement-bound, context-bound, signed, chained, anchored, offline-verifiable), how verification works, and receipts vs logs vs block explorers.
 
 ## Compare
 - [Traceipt vs x402b](https://traceipt.xyz/vs-x402b): how Traceipt's offline-verifiable receipts (open x402, USDC on Base, self-hostable) differ from Pieverse's x402b platform receipts on BNB Greenfield.
