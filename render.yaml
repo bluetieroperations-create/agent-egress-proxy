@@ -124,6 +124,14 @@ services:
       #     key; Blockscout ignores it.
       - key: RECEIPTS_EXPLORER_API_KEY
         sync: false
+      #   RECEIPTS_PQ_KEY  OPTIONAL. A packed ML-DSA-65 keypair (from
+      #     `python -m traceipt.service --gen-pq-key`) that adds a hybrid
+      #     post-quantum signature to every receipt, alongside Ed25519. The image
+      #     ships dilithium-py (Dockerfile PQC=1); unset = Ed25519-only, exactly
+      #     as before. Generate it in the Render Shell so the key never leaves
+      #     the server, then paste the printed value here.
+      - key: RECEIPTS_PQ_KEY
+        sync: false
 
 # NOTE ON STORAGE: the free plan has NO persistent disk, so /data is
 # ephemeral -- the ledger DB and the Ed25519 signing key reset whenever the

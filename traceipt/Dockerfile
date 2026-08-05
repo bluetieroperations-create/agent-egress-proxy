@@ -14,10 +14,16 @@ WORKDIR /app
 # build arg (blueprint hosts like Render can't easily pass one). eth-account
 # is only imported when --publisher onchain is actually selected, so a build
 # with ONCHAIN=0 stays minimal (stdlib + cryptography) if you want that.
+# PQC=1 (default on) installs dilithium-py so the image supports hybrid
+# post-quantum receipt signatures. Pure Python, tiny, no native build. It stays
+# INERT (Ed25519-only, exactly as before) unless RECEIPTS_PQ_KEY is set, so
+# there is no downside to shipping it; it just avoids a rebuild when you activate.
 ARG ONCHAIN=1
-COPY requirements.txt requirements-onchain.txt ./
+ARG PQC=1
+COPY requirements.txt requirements-onchain.txt requirements-pqc.txt ./
 RUN pip install --no-cache-dir -r requirements.txt && \
-    if [ "$ONCHAIN" = "1" ]; then pip install --no-cache-dir -r requirements-onchain.txt; fi
+    if [ "$ONCHAIN" = "1" ]; then pip install --no-cache-dir -r requirements-onchain.txt; fi && \
+    if [ "$PQC" = "1" ]; then pip install --no-cache-dir -r requirements-pqc.txt; fi
 
 # The package.
 COPY traceipt/ ./traceipt/
