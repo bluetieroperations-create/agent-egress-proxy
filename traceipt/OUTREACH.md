@@ -88,18 +88,56 @@ independently, not just show a vendor's log — what do I hand them?"**
 >
 > We built that missing piece, and it's now live on **Base mainnet with real
 > USDC**: a compliance verdict bound to a paid x402 transaction, anchored
-> on-chain, verifiable by anyone. You don't have to trust us — the receipt checks
-> itself against the chain:
-> https://basescan.org/tx/0xab1c79b60a3ca3386eabc654bf163711140ac17a969e1fa526be8314da38821f
+> on-chain. You don't have to trust us — verify it yourself in your browser:
+> https://traceipt.xyz/verify (or the raw tx:
+> https://basescan.org/tx/0xab1c79b60a3ca3386eabc654bf163711140ac17a969e1fa526be8314da38821f )
 >
-> (And here it is catching an OFAC-sanctioned address — a STOP verdict on Tornado
-> Cash: https://sepolia.basescan.org/tx/0x1a9b1db1992d157ce1e0da6dc30d854fd0eaa99a524a1862b7838ba960848010)
+> The screening layer binds a STOP when an address is OFAC-listed (e.g. a Tornado
+> Cash SDN) — happy to share that verdict + its on-chain anchor so you can check
+> it end-to-end.
 >
 > I'm not selling anything yet — trying to learn whether this is a real problem
 > for you or a solution looking for one. 15 minutes?
 
-_Once `traceipt.xyz/verify` is deployed, swap the Basescan link for it: a buyer
-verifying the receipt in their own browser is a stronger moment than a link._
+## Slack #general post (x402 Foundation Slack — the primary channel)
+
+Post this in `#general`, then stop talking and watch who engages. Audited
+(2026-08-05): the verify page works end-to-end against the live chain, CORS is
+clean, and every claim here is independently checkable EXCEPT the Tornado Cash
+STOP, which is described as capability (its on-chain tx carries only the Merkle
+root, so the subject isn't recoverable from the link) — never linked as
+"verify this."
+
+> Hey all 👋 gut-check from someone building in the compliance corner of x402.
+>
+> The problem I keep hitting: when a customer or auditor asks an x402 operator to
+> *prove* a payment was sanctions/policy-screened **before** it settled —
+> independently, not from a vendor's dashboard — there's no neutral artifact to
+> hand them.
+>
+> Built a take, live on **Base mainnet**: a screening verdict cryptographically
+> bound to a paid x402 tx, Merkle root anchored on-chain. **Don't trust me —
+> verify it yourself in your browser** → https://traceipt.xyz/verify (hit "Load
+> the live mainnet example"; it checks the receipt against Base live). Raw tx:
+> https://basescan.org/tx/0xab1c79b60a3ca3386eabc654bf163711140ac17a969e1fa526be8314da38821f
+>
+> The screening layer binds a **STOP** when an address is OFAC-listed (e.g. a
+> Tornado Cash SDN) — happy to share that verdict + its on-chain anchor so you can
+> check it end-to-end.
+>
+> Also added hybrid **post-quantum** signatures (ML-DSA-65 next to Ed25519), since
+> these are long-retention audit artifacts.
+>
+> I know `draft-hopley` (compliance-screening receipt) and `draft-vauban`
+> (STARK/Starknet receipts) are circling this. I'd like to understand how a live,
+> on-chain-anchored, compliance-bound take relates to those — and whether "prove
+> it was screened, independently" is a real pain here or premature. Not selling;
+> would love 15 min with anyone who's felt it 🙏
+
+_To make the Tornado Cash STOP as verifiable as the mainnet proof: run a real
+screen of the OFAC address `0x8589…FDA16` → STOP and publish the verdict object
+next to its anchor. Then anyone pastes the verdict into `traceipt.xyz/verify` and
+sees `verdict_binding: PASS` on a real Tornado Cash STOP._
 
 ## Honesty guardrails
 
