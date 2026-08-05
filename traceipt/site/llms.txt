@@ -14,7 +14,8 @@ Traceipt solves the record, not the payment. The payment rail (x402) is solved; 
 ## Verify a receipt
 - [In-browser verifier](https://traceipt.xyz/verify): paste a receipt, proof, or /attest response — checks run in your browser (Web Crypto), never against Traceipt's server. A receipt stays verifiable even if that server is gone.
 - Issuer public keys: GET /jwks.json (standard JWKS, Ed25519 OKP) — for offline verification with any library in any language.
-- The same check ships as a CLI (tools/verify.py in the Traceipt codebase).
+- One-command checker: `npx traceipt-verify receipt.json` — zero-dependency npm package, same checks ([npm](https://www.npmjs.com/package/traceipt-verify) | [GitHub](https://github.com/bluetieroperations-create/traceipt-verify)).
+- The same check also ships as a Python CLI (tools/verify.py in the Traceipt codebase).
 
 ## Access
 - [Homepage](https://traceipt.xyz): product overview, how it works, and FAQ (reconciliation, offline verification, EU AI Act / MiCA).
