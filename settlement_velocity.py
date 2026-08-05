@@ -30,6 +30,12 @@ What GATES vs what's DIAGNOSTIC (eval finding, docs/PAYER_GRAPH.md):
     payer looks "acquired at once" -- it flags the MOST reputable payees (aidress.ai,
     Nansen). Real burst detection needs COMPLETE history (a full backfill or the live
     receipt stream), so this flag is surfaced for research, not acted on, until then.
+    ADJUDICATED (see docs/DATA_COMPLETENESS.md): unlike sybil_ring (whose false-flag rate
+    converged to ~0, so it graduated to a gate), burst_sybil measured on the shipped
+    corpus flags 8.1% of ANCHORS (the most-reputable payees) -- gating it would HOLD real
+    merchants. Decision: keep advisory (not retired -- valid given complete history);
+    do NOT re-open without a complete-history source. Locked by
+    test_burst_is_diagnostic_never_gates.
 """
 from __future__ import annotations
 

@@ -182,7 +182,9 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `burst_sybil` (many distinct payers all first-seen in ONE day) is DIAGNOSTIC ONLY,
   never gated -- a targeted backfill captures only a recent WINDOW, so a high-volume
   payee's whole visible history compresses into ~1 day and it flags the MOST reputable
-  payees; real burst detection needs COMPLETE history. Folds via
+  payees; real burst detection needs COMPLETE history. ADJUDICATED (measured 8.1% of
+  anchors flagged on the shipped corpus -- see `docs/DATA_COMPLETENESS.md`): stays
+  advisory, not retired; do NOT re-open without a complete-history source. Folds via
   `temporal_signal`/`velocity_source`; wired into `mcp_server`),
   `ROADMAP.md`, `docs/DATA_SOURCE_SPIKE.md`. Tests:
   `test_blackwall.py`, `test_ledger.py`, `test_reputation_onchain.py`,

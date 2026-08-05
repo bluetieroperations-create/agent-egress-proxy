@@ -140,9 +140,33 @@ tightens. Convergence re-eval still `gating_reachable=True` (0% at f=0.95).
    targeted backfill structurally can't provide. Promoting it is where you'd damage
    things; retire-or-keep-advisory is the honest resolution, not gating.
 
+## `burst_sybil` — adjudicated: stays advisory (measured, not asserted)
+
+`sybil_ring` graduated to a gate because its false-flag rate on known-good payees
+*converged to ~0* (Stage 1). The obvious next question — should `burst_sybil` graduate
+too? — is now **settled with a measurement, so it isn't re-litigated.**
+
+`burst_sybil` fires when ≥ `BURST_MIN_DISTINCT` (5) payers are first-seen with
+`peak_day_share ≥ 0.8` (≥80% acquired in one UTC day). Run over the shipped corpus it
+flags **15/281 payees (5.3%) — including 3 of 37 anchors (8.1%)**. Anchors are the
+*most*-reputable payees (≥20 distinct on-chain payers, hard to fake), so an anchor being
+flagged is the documented failure mode: a **targeted backfill captures only a recent
+window**, compressing a high-volume payee's visible payer-acquisition into ~1 day. Where
+`sybil_ring`'s false-flag rate went to 0, `burst_sybil`'s is a material 8.1% on
+ground-truth-good payees — gating it would HOLD real established merchants.
+
+**Decision: keep it, advisory.** It is NOT retired — it is a valid signal that would work
+given *complete* per-payee history (which targeted backfill structurally cannot provide;
+that needs a full-history source, not just more coverage). Retiring loses that future
+value; gating it now blocks real merchants. So it stays surfaced as `burst_sybil_advisory`
+(a reviewer sees the pattern), never gated — `test_burst_is_diagnostic_never_gates` locks
+that behavior. Reproduce the 8.1% with the snippet in this commit's message / the corpus
+measurement above. This ledger is closed; do not re-open without a complete-history source.
+
 ## What this does NOT fix
 
-- **Complexity (Risk 1)** is capped, not reduced, by the calibration lock — promoting a
-  signal adds gating surface. A separate simplification pass is the real lever there.
+- **Complexity (Risk 1)** — the calibration lock caps it; the `decide_payment` HOLD-gate
+  unification (single gate table) reduced the worst of it. Further consolidation is
+  optional, and now safe (the oracle catches any drift).
 - **The Traceipt drop bug (Risk 3)** is external and stays *contained* (ingest only on
   sealed proof; broader direct on-chain ingestion reduces reliance) — not fixed here.
