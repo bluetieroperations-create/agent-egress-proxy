@@ -99,14 +99,40 @@ independently, not just show a vendor's log — what do I hand them?"**
 > I'm not selling anything yet — trying to learn whether this is a real problem
 > for you or a solution looking for one. 15 minutes?
 
-## Slack #general post (x402 Foundation Slack — the primary channel)
+## Slack #general post — POSTED 2026-08-05
 
-Post this in `#general`, then stop talking and watch who engages. Audited
-(2026-08-05): the verify page works end-to-end against the live chain, CORS is
-clean, and EVERY claim here is independently checkable — including the Tornado
-Cash STOP, which is now anchored on mainnet with its verdict published, so the
-verify page's "Load the OFAC Tornado Cash STOP" button proves it (verdict binding
-+ inclusion + on-chain all pass).
+**The version actually posted** (differentiated from the channel's "👋 hi all +
+link" pattern: opens by calling out the pattern, then dares the reader to break
+the live verify page — this crowd rewards "try to break it" + "what am I
+missing?", not marketing):
+
+> Everyone here opens with 👋 and a link to trust. Instead, here's **something
+> you can try to break in 30 seconds:**
+>
+> → https://traceipt.xyz/verify → click **"Load the OFAC Tornado Cash STOP"** →
+> **Verify**
+>
+> It re-derives a real sanctions **STOP** on the OFAC Tornado Cash address, checks
+> the Merkle proof, and confirms the on-chain anchor **against Base mainnet — in
+> your browser, calling my server zero times.** (There's a clean-payment "GO"
+> example next to it.) If either verifies when it *shouldn't*, that's the bug I
+> want to hear about.
+>
+> The problem I'm chasing: when an auditor asks an x402 operator to *prove* a
+> payment was sanctions-screened **before** it settled — independently, not from a
+> vendor's dashboard — there's no neutral artifact to hand them. So: verdict bound
+> to the paid tx, Merkle root anchored on-chain, Ed25519 **+ a post-quantum
+> (ML-DSA-65)** signature, verifiable offline for years.
+>
+> `draft-hopley` and `draft-vauban` are circling this shape — I'd genuinely like
+> to understand how a live, on-chain-anchored, compliance-bound take fits next to
+> them, and whether "prove it was screened, independently" is real pain for anyone
+> here, or premature. What am I missing?
+
+_Chain-direct txs to drop as the first thread reply: GO `0xab1c79b6…821f` ·
+Tornado Cash STOP `0xe41c540c…7cd3`._
+
+### The formal / email variant (kept for cold outreach)
 
 > Hey all 👋 gut-check from someone building in the compliance corner of x402.
 >
