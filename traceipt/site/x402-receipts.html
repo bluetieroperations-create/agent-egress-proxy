@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What is an x402 receipt? Definition, anatomy, and verification</title>
+<meta name="description" content="An x402 receipt is a cryptographically signed record that an x402 payment settled on chain, binding the payment to what was bought, who paid, and who was paid. What it contains, why agents need it, and how to verify one.">
+<link rel="canonical" href="https://traceipt.xyz/x402-receipts">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://traceipt.xyz/x402-receipts">
+<meta property="og:site_name" content="Traceipt">
+<meta property="og:title" content="What is an x402 receipt?">
+<meta property="og:description" content="A signed, verifiable record that an x402 payment settled on chain — binding the payment to what was bought, who paid, and who was paid. Definition, anatomy, verification.">
+<meta property="og:image" content="https://traceipt.xyz/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="What is an x402 receipt?">
+<meta name="twitter:description" content="Definition, anatomy, and verification of receipts for x402 agent payments.">
+<meta name="twitter:image" content="https://traceipt.xyz/og.png">
+<meta name="theme-color" content="#0F1417">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "TechArticle",
+      "@id": "https://traceipt.xyz/x402-receipts#article",
+      "headline": "What is an x402 receipt?",
+      "description": "An x402 receipt is a cryptographically signed record that an x402 payment settled on chain, binding the payment to what was bought, who paid, and who was paid. This article covers what a receipt contains, why AI-agent payments need one, and how verification works.",
+      "url": "https://traceipt.xyz/x402-receipts",
+      "datePublished": "2026-08-05",
+      "dateModified": "2026-08-05",
+      "author": { "@type": "Organization", "name": "BlueTier Operations", "url": "https://blackwalltier.com" },
+      "publisher": { "@type": "Organization", "name": "BlueTier Operations", "url": "https://blackwalltier.com" }
+    },
+    {
+      "@type": "DefinedTerm",
+      "@id": "https://traceipt.xyz/x402-receipts#term",
+      "name": "x402 receipt",
+      "description": "A cryptographically signed record that a specific x402 (HTTP 402) payment settled on chain, binding the on-chain transaction to what was bought, who paid, and who was paid, so the payment can be reconciled, audited, and verified later — independently of the parties involved.",
+      "url": "https://traceipt.xyz/x402-receipts"
+    },
+    {
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "Traceipt", "item": "https://traceipt.xyz/" },
+        { "@type": "ListItem", "position": 2, "name": "What is an x402 receipt?", "item": "https://traceipt.xyz/x402-receipts" }
+      ]
+    }
+  ]
+}
+</script>
+<style>
+  :root{
+    --bg:#0F1417; --panel:#161F24; --ink:#E8EBED; --dim:#9AA4A9; --muted:#6B757B; --line:#222C32;
+    --teal:#41B49B; --teal-ink:#8FE7D3; --teal-soft:rgba(65,180,155,.10); --brass:#C09A57;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --maxw:860px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:var(--bg); color:var(--ink); font-family:var(--sans); font-size:17px; line-height:1.64; -webkit-font-smoothing:antialiased}
+  .wrap{max-width:var(--maxw); margin:0 auto; padding:0 28px}
+  a{color:var(--teal-ink)}
+  h1,h2{letter-spacing:-.015em; line-height:1.2}
+  h1{font-size:clamp(28px,5vw,40px); margin:14px 0 10px}
+  h1 em,h2 em{font-style:italic; color:var(--teal-ink)}
+  h2{font-size:23px; margin:44px 0 12px}
+  .kick{font-family:var(--mono); font-size:11.5px; letter-spacing:.16em; text-transform:uppercase; color:var(--teal); font-weight:600}
+  .date{font-family:var(--mono); font-size:13px; color:var(--muted)}
+  header.top{border-bottom:1px solid var(--line); padding:18px 0}
+  header.top .wrap{display:flex; justify-content:space-between; align-items:center}
+  header.top .b{font-weight:700}
+  header.top .b span{color:var(--teal)}
+  header.top a{text-decoration:none; color:var(--dim); font-size:15px}
+  main{padding:52px 0 24px}
+  p,li{color:var(--dim)}
+  p strong,li strong{color:var(--ink)}
+  .definition{background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--teal); border-radius:10px; padding:20px 24px; margin:26px 0; font-size:18.5px; line-height:1.6}
+  .definition p{margin:0; color:var(--ink)}
+  code{font-family:var(--mono); font-size:.92em; background:var(--panel); border:1px solid var(--line); border-radius:5px; padding:1.5px 6px; color:var(--teal-ink)}
+  dl{margin:20px 0}
+  dt{font-weight:700; margin-top:16px; color:var(--ink)}
+  dt code{font-size:.95em}
+  dd{margin:6px 0 0 0; color:var(--dim)}
+  ol.flow{padding-left:22px}
+  ol.flow li{margin:10px 0}
+  ul{padding-left:22px}
+  li{margin:8px 0}
+  .foot-note{font-size:14px; color:var(--muted); border-top:1px solid var(--line); margin-top:40px; padding-top:16px}
+  .cta{margin:40px 0; display:flex; gap:14px; flex-wrap:wrap}
+  .btn{display:inline-block; padding:12px 22px; border-radius:8px; text-decoration:none; font-weight:600}
+  .btn.solid{background:var(--teal); color:#08110F}
+  .btn.line{border:1px solid var(--line); color:var(--ink)}
+  footer{border-top:1px solid var(--line); padding:22px 0; margin-top:30px; font-size:14px; color:var(--muted)}
+  footer .wrap{display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <span class="b">Traceipt <span>凭证</span></span>
+    <a href="/">← traceipt.xyz</a>
+  </div>
+</header>
+
+<main>
+  <div class="wrap">
+    <span class="kick">Explainer</span>
+    <h1>What is an <em>x402 receipt?</em></h1>
+    <p class="date">August 2026 · Traceipt team</p>
+
+    <div class="definition">
+      <p>An <strong>x402 receipt</strong> is a cryptographically signed record that a specific <a href="https://x402.org" rel="noopener">x402</a> (HTTP&nbsp;402) payment settled on chain, binding the on-chain transaction to <strong>what was bought, who paid, and who was paid</strong> — so the payment can be reconciled, audited, and verified later, independently of the parties involved.</p>
+    </div>
+
+    <p>The x402 protocol gives machines a way to pay for things over HTTP: a server answers <code>402 Payment Required</code> with a price, the agent settles in a stablecoin (typically USDC), and retries the request. What the protocol does <em>not</em> give you is a record. The chain shows that money moved between two addresses — it does not show what was purchased, under what terms, or on whose behalf. A receipt closes that gap.</p>
+
+    <h2>Why agent payments need receipts</h2>
+    <p>An autonomous agent making ten thousand micropayments a month produces ten thousand bank-statement lines with no invoice, no vendor, and no reason attached. Three groups of people then have a problem:</p>
+    <ul>
+      <li><strong>Finance</strong> cannot reconcile spend against anything — there is no purchase record to match a transaction to.</li>
+      <li><strong>Auditors</strong> will not sign off on unexplained outflows, however small each one is.</li>
+      <li><strong>Regulators</strong> increasingly assume the record exists: the EU AI Act (Article&nbsp;12) expects high-risk systems to log their actions automatically, and MiCA expects transaction records tied to settlement and kept for years.</li>
+    </ul>
+
+    <h2>Anatomy of a good x402 receipt</h2>
+    <p>A receipt is only as strong as what it binds together and how it resists tampering. The properties that matter:</p>
+    <dl>
+      <dt>Settlement-bound</dt>
+      <dd>The receipt should only exist if the money actually moved — issued after the transfer is confirmed on chain, and referencing the transaction hash.</dd>
+      <dt>Context-bound</dt>
+      <dd>It ties the payment to the purchase: what was bought, who paid, who was paid. This is the part the chain alone cannot tell you.</dd>
+      <dt>Signed</dt>
+      <dd>A digital signature (e.g. Ed25519) over the receipt's contents, so any edit invalidates it and the issuer cannot be impersonated.</dd>
+      <dt>Tamper-evident in sequence</dt>
+      <dd>Receipts chained together — so one cannot be quietly edited, inserted, or removed after the fact.</dd>
+      <dt>Anchored</dt>
+      <dd>The chain of receipts folded into a Merkle root published on chain, so anyone can prove a given receipt existed by a given time.</dd>
+      <dt>Independently verifiable</dt>
+      <dd>Signature, chain, and anchor should verify <strong>offline</strong>, against published keys, in any language — with no SDK and no dependence on the issuer still being around. An audit record is only worth what it proves when the vendor is out of the room.</dd>
+      <dt>Filable by a human</dt>
+      <dd>For accounting, the receipt should render to a document an accountant can file — e.g. a VAT-aware PDF with a scan-to-verify code.</dd>
+    </dl>
+
+    <h2>How verification works</h2>
+    <ol class="flow">
+      <li><strong>Check the signature</strong> against the issuer's published public keys — proves the receipt is authentic and unmodified.</li>
+      <li><strong>Check the settlement</strong> — the referenced transaction exists on chain and matches the amount, payer, and payee.</li>
+      <li><strong>Check the chain</strong> — the receipt's position in the tamper-evident sequence is intact; nothing was edited or removed around it.</li>
+      <li><strong>Check the anchor</strong> — the Merkle proof connects the receipt to a root published on chain, establishing it existed by that point in time.</li>
+    </ol>
+    <p>All four checks can run offline. A receipt that passes them is evidence a stranger can trust — an auditor does not have to trust the agent, the merchant, or the receipt issuer. You can watch all of this happen in <a href="/verify">the in-browser verifier</a> — paste a receipt or load the live mainnet example and watch the checks run against Base.</p>
+
+    <h2>Receipts vs. logs vs. block explorers</h2>
+    <ul>
+      <li><strong>Application logs</strong> say what the agent <em>claims</em> it did. They are editable, unsigned, and prove nothing to a third party.</li>
+      <li><strong>A block explorer</strong> proves value moved between addresses — but carries no purchase context and answers nothing about <em>why</em>.</li>
+      <li><strong>A signed receipt</strong> is the join between the two: verifiable settlement <em>plus</em> the commercial context, in a form that outlives both parties' databases.</li>
+    </ul>
+
+    <p>This is the record <a href="/">Traceipt</a> produces: a receipt signed the moment an x402 payment clears in USDC on Base, chained, Merkle-anchored, offline-verifiable against published keys, and exportable as a VAT-aware PDF. Self-hostable if you'd rather run it yourself. For how alternatives approach the same problem, see <a href="/vs-x402b">Traceipt vs x402b</a>.</p>
+
+    <div class="cta">
+      <a class="btn solid" href="mailto:hello@traceipt.xyz?subject=Traceipt%20access">Request Traceipt access</a>
+      <a class="btn line" href="/#how">How Traceipt works</a>
+    </div>
+
+    <p class="foot-note">Related reading: the <a href="https://x402.org" rel="noopener">x402 protocol</a> and <a href="https://x402.org/x402-whitepaper.pdf" rel="noopener nofollow">whitepaper</a> · <a href="/#faq">Traceipt FAQ</a> · <a href="/llms.txt">llms.txt</a>. This page describes engineering properties, not legal requirements; whether a rule applies to your deployment is a question for counsel.</p>
+  </div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span><b>Traceipt</b> — receipts for machines that spend money.</span>
+    <span><a href="/">Home</a> · <a href="/#faq">FAQ</a> · <a href="/vs-x402b">Vs x402b</a></span>
+  </div>
+</footer>
+
+</body>
+</html>

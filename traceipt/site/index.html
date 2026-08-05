@@ -3,9 +3,88 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-</head>
-<body>
-<title>Traceipt: receipts for machines that spend money</title>
+<title>Traceipt — Signed, auditable receipts for x402 AI-agent payments</title>
+<meta name="description" content="Every payment your AI agent makes over x402 becomes a signed receipt you can hand to an auditor. Ed25519-signed, Merkle-anchored, verifies offline against published keys. USDC on Base. Self-hostable.">
+<link rel="canonical" href="https://traceipt.xyz/">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://traceipt.xyz/">
+<meta property="og:site_name" content="Traceipt">
+<meta property="og:title" content="Traceipt — receipts for machines that spend money">
+<meta property="og:description" content="Your agents pay for things. Traceipt proves it. Every x402 payment becomes a signed, Merkle-anchored receipt an auditor will accept — checkable for years, no trust in us required.">
+<meta property="og:image" content="https://traceipt.xyz/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Traceipt — your agents pay for things, Traceipt proves it. A signed x402 payment receipt: Ed25519 signed, Merkle anchored, verifies offline.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Traceipt — receipts for machines that spend money">
+<meta name="twitter:description" content="Every x402 payment your agent makes becomes a signed receipt you can hand to an auditor. Verifies offline. Checkable for years.">
+<meta name="twitter:image" content="https://traceipt.xyz/og.png">
+<meta name="theme-color" content="#0F1417">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": "https://blackwalltier.com/#bluetier-operations",
+      "name": "BlueTier Operations",
+      "url": "https://blackwalltier.com",
+      "sameAs": [
+        "https://github.com/bluetieroperations-create",
+        "https://blackwalltier.com",
+        "https://traceipt.xyz"
+      ]
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://traceipt.xyz/#software",
+      "name": "Traceipt",
+      "applicationCategory": "DeveloperApplication",
+      "operatingSystem": "Any (HTTP API; self-hostable)",
+      "url": "https://traceipt.xyz",
+      "description": "Audit-ready receipts for x402 payments made by AI agents. Each payment is confirmed on chain, signed with Ed25519, chained tamper-evident, and anchored in a published Merkle root — so the receipt verifies offline, years later, without trusting Traceipt.",
+      "provider": { "@id": "https://blackwalltier.com/#bluetier-operations" },
+      "keywords": "x402, x402 receipts, AI agent payments, audit trail, payment reconciliation, USDC, Base, Ed25519, Merkle anchor, agentic commerce"
+    },
+    {
+      "@type": "FAQPage",
+      "@id": "https://traceipt.xyz/#faq",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "What is Traceipt?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Traceipt turns every x402 payment an AI agent makes into a signed receipt. When a payment settles in USDC on Base, Traceipt confirms the transfer on chain, then signs a receipt that ties the payment to what was bought, who paid, and who was paid. Receipts are chained tamper-evident and anchored in a Merkle root published on chain." }
+        },
+        {
+          "@type": "Question",
+          "name": "How do I reconcile thousands of AI-agent micropayments?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Each receipt carries the context your books are missing: the purchase, the payer, the payee, and the on-chain transaction. Every receipt also renders to a VAT-aware PDF with a scan-to-verify code, so the machine checks the math and the accountant files the paper." }
+        },
+        {
+          "@type": "Question",
+          "name": "Can I verify a receipt without Traceipt?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Yes. Signature, chain, and anchor all verify offline against published keys, in any language, with no SDK and no calling home. The receipt stays checkable long after we are out of the room. Try it now — verify a receipt in your browser at traceipt.xyz/verify." }
+        },
+        {
+          "@type": "Question",
+          "name": "Can a receipt be faked or edited later?",
+          "acceptedAnswer": { "@type": "Answer", "text": "No. A receipt only exists if the money actually moved — the transfer is confirmed on chain before signing. Payer and payee are cryptographically bound, each receipt joins a tamper-evident chain, and the chain is folded into a Merkle root published on chain, so edits and forgeries fail verification." }
+        },
+        {
+          "@type": "Question",
+          "name": "What does Traceipt run on, and can I self-host?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Traceipt runs on x402, Base, and USDC, with one dependency. You can host it yourself if you would rather." }
+        },
+        {
+          "@type": "Question",
+          "name": "Does Traceipt help with the EU AI Act and MiCA?",
+          "acceptedAnswer": { "@type": "Answer", "text": "The EU AI Act (Article 12) wants high-risk systems to log their actions automatically, and MiCA wants transaction records tied to settlement and kept for years. A signed Traceipt per payment is that record. This is engineering, not legal advice — whether a deployment is in scope is a call for counsel." }
+        }
+      ]
+    }
+  ]
+}
+</script>
 <style>
   :root{
     --bg:#0F1417; --bg2:#121A1E; --panel:#161F24; --panel2:#1A242A;
@@ -155,7 +234,17 @@
   .ck.a{animation-delay:.7s}.ck.b{animation-delay:.82s}.ck.c{animation-delay:.94s}.ck.d{animation-delay:1.06s}
   @media(prefers-reduced-motion:reduce){.dial,.ck{animation:none; opacity:1; transform:none} .dial .spin{animation:none}}
   :focus-visible{outline:2px solid var(--teal); outline-offset:3px}
+  /* FAQ */
+  .faq details{border-bottom:1px solid var(--line); padding:16px 0}
+  .faq details:first-of-type{border-top:1px solid var(--line); margin-top:22px}
+  .faq summary{cursor:pointer; font-weight:700; font-size:18.5px; list-style:none; display:flex; justify-content:space-between; align-items:baseline; gap:16px}
+  .faq summary::-webkit-details-marker{display:none}
+  .faq summary::after{content:"+"; font-family:var(--mono); color:var(--teal); font-size:20px; flex-shrink:0}
+  .faq details[open] summary::after{content:"–"}
+  .faq details p{color:var(--dim); margin:12px 0 0; max-width:760px}
 </style>
+</head>
+<body>
 
 <header>
   <div class="wrap bar">
@@ -293,6 +382,38 @@
     </div>
   </section>
 
+<section id="faq" class="faq">
+    <div class="wrap">
+      <span class="kick" style="display:block; margin-bottom:16px">FAQ</span>
+      <p class="lead">The questions your auditor <em>will ask.</em></p>
+      <details>
+        <summary>What is Traceipt?</summary>
+        <p>Traceipt turns every x402 payment an AI agent makes into a signed receipt. When a payment settles in USDC on Base, Traceipt confirms the transfer on chain, then signs a receipt that ties the payment to what was bought, who paid, and who was paid. Receipts are chained tamper-evident and anchored in a Merkle root published on chain.</p>
+      </details>
+      <details>
+        <summary>How do I reconcile thousands of AI-agent micropayments?</summary>
+        <p>Each receipt carries the context your books are missing: the purchase, the payer, the payee, and the on-chain transaction. Every receipt also renders to a VAT-aware PDF with a scan-to-verify code, so the machine checks the math and the accountant files the paper.</p>
+      </details>
+      <details>
+        <summary>Can I verify a receipt without Traceipt?</summary>
+        <p>Yes. Signature, chain, and anchor all verify offline against published keys, in any language, with no SDK and no calling home. The receipt stays checkable long after we are out of the room. <a href="/verify" style="color:var(--teal-ink)">Try it now — verify a receipt in your browser.</a></p>
+      </details>
+      <details>
+        <summary>Can a receipt be faked or edited later?</summary>
+        <p>No. A receipt only exists if the money actually moved — the transfer is confirmed on chain before signing. Payer and payee are cryptographically bound, each receipt joins a tamper-evident chain, and the chain is folded into a Merkle root published on chain, so edits and forgeries fail verification.</p>
+      </details>
+      <details>
+        <summary>What does Traceipt run on, and can I self-host?</summary>
+        <p>Traceipt runs on x402, Base, and USDC, with one dependency. You can host it yourself if you would rather.</p>
+      </details>
+      <details>
+        <summary>Does Traceipt help with the EU AI Act and MiCA?</summary>
+        <p>The EU AI Act (Article 12) wants high-risk systems to log their actions automatically, and MiCA wants transaction records tied to settlement and kept for years. A signed Traceipt per payment is that record. This is engineering, not legal advice — whether a deployment is in scope is a call for counsel.</p>
+      </details>
+      <p class="foot" style="margin-top:18px">New to this? Start with <a href="/x402-receipts" style="color:var(--teal-ink); text-decoration:underline">What is an x402 receipt?</a> Comparing options? Read <a href="/vs-x402b" style="color:var(--teal-ink); text-decoration:underline">Traceipt vs x402b</a>.</p>
+    </div>
+  </section>
+
   <section id="get" class="final">
     <div class="wrap">
       <span class="kick">Get access</span>
@@ -314,8 +435,10 @@
     <nav>
       <a href="#why">Why</a>
       <a href="#how">How it works</a>
+      <a href="#faq">FAQ</a>
       <a href="#get">Access</a>
       <a href="/verify">Verify a receipt</a>
+      <a href="/vs-x402b">Vs x402b</a>
     </nav>
   </div>
 </footer>

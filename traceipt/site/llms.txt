@@ -1,0 +1,32 @@
+# Traceipt
+
+> Audit-ready receipts for x402 payments made by AI agents. Every payment an agent makes over x402 (HTTP 402, USDC on Base) becomes a signed receipt you can hand to an auditor: confirmed on chain, Ed25519-signed, chained tamper-evident, and anchored in an RFC 6962 Merkle tree whose root is committed on chain. Receipts verify offline against published issuer keys — no trust in Traceipt required, checkable for years. Self-hostable.
+
+Traceipt solves the record, not the payment. The payment rail (x402) is solved; the paper trail is not. An agent making ten thousand tiny payments a month leaves ten thousand bank-statement lines with no invoice, no vendor, no reason. Traceipt ties each payment to what was bought, who paid, and who was paid — the record finance can reconcile and an auditor will accept.
+
+## How it works
+1. The agent hits a paid endpoint; the server answers 402 Payment Required with a price.
+2. The agent settles in USDC on Base — a real transfer, on a real chain.
+3. Traceipt confirms the transfer on chain, then signs a receipt binding the payment to the purchase, payer, and payee (POST /attest on the API).
+4. Each receipt joins a tamper-evident chain, folded into an RFC 6962 Merkle tree committed on chain (Base).
+5. Anyone can verify offline: Ed25519 signature against the issuer keys at GET /jwks.json, Merkle inclusion, and the on-chain calldata check.
+
+## Verify a receipt
+- [In-browser verifier](https://traceipt.xyz/verify): paste a receipt, proof, or /attest response — checks run in your browser (Web Crypto), never against Traceipt's server. A receipt stays verifiable even if that server is gone.
+- Issuer public keys: GET /jwks.json (standard JWKS, Ed25519 OKP) — for offline verification with any library in any language.
+- The same check ships as a CLI (tools/verify.py in the Traceipt codebase).
+
+## Access
+- [Homepage](https://traceipt.xyz): product overview, how it works, and FAQ (reconciliation, offline verification, EU AI Act / MiCA).
+- Request access: hello@traceipt.xyz
+
+## Learn
+- [What is an x402 receipt?](https://traceipt.xyz/x402-receipts): definition, anatomy (settlement-bound, context-bound, signed, chained, anchored, offline-verifiable), how verification works, and receipts vs logs vs block explorers.
+
+## Compare
+- [Traceipt vs x402b](https://traceipt.xyz/vs-x402b): how Traceipt's offline-verifiable receipts (open x402, USDC on Base, self-hostable) differ from Pieverse's x402b platform receipts on BNB Greenfield.
+
+## Related (same provider: BlueTier Operations)
+- [Black_Wall](https://blackwalltier.com): the pre-action risk gate for AI agents — Black_Wall gates a risky payment before it runs; Traceipt proves it after it clears. Two locks.
+- [Blackwall x402 payment-risk oracle](https://x402.blackwalltier.com): GO / HOLD / STOP verdict before an agent signs an x402 payment.
+- [GitHub](https://github.com/bluetieroperations-create)
