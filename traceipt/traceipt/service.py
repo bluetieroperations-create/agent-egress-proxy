@@ -38,7 +38,7 @@ from .completeness import build_checkpoint
 from .disclosure import commit as disclosure_commit, disclose as disclosure_disclose
 from .bundle import verify_lifecycle, verify_presentation
 from .openapi import spec as openapi_spec
-from .signing import b64url_decode
+from .signing import b64url as _b64url, b64url_decode
 from .vc import (
     JWT_TYP, attestation_vc as build_attestation_vc, context_document,
     did_web_document, enveloped_vc, receipt_vc as build_receipt_vc,
@@ -713,6 +713,11 @@ class App:
         # signed before a rotation still verify.
         keys = [self.signer.jwk()]
         seen = {keys[0]["kid"]}
+        # Publish the post-quantum key too (if configured) so a PQ-aware verifier
+        # can check the hybrid ML-DSA signature.
+        pq = self.signer.pq_jwk()
+        if pq is not None:
+            keys.append(pq)
         for jwk in self.extra_public_jwks:
             if jwk.get("kid") not in seen:
                 keys.append(jwk)
@@ -1130,13 +1135,36 @@ def main(argv=None):
     p.add_argument("--print-jwk", action="store_true",
                    help="print the active key's PUBLIC JWK and exit (capture "
                         "this into --jwks-history before rotating --key)")
+    p.add_argument("--gen-pq-key", action="store_true",
+                   help="generate an ML-DSA-65 keypair, print the packed secret "
+                        "to set as RECEIPTS_PQ_KEY (enables hybrid post-quantum "
+                        "receipt signatures) + its public JWK, and exit")
     args = p.parse_args(argv)
+
+    if args.gen_pq_key:
+        from . import pqsign
+        if not pqsign.pq_available():
+            p.error("post-quantum key generation requires dilithium-py "
+                    "(pip install -r requirements-pqc.txt)")
+        pk, sk = pqsign.pq_generate()
+        print("# Set this as the RECEIPTS_PQ_KEY secret (single line):")
+        print(pqsign.pack_keypair(pk, sk))
+        print("\n# Public JWK (published at /jwks.json):")
+        print(json.dumps({"kty": "MLDSA", "alg": pqsign.PQ_ALG,
+                          "kid": pqsign.pq_kid(pk), "pub": _b64url(pk),
+                          "use": "sig"}, indent=2))
+        return
 
     # Signing key: prefer an inline PEM secret (RECEIPTS_KEY_PEM) so the key
     # survives on hosts without a persistent disk; else a key file.
     signer = select_signer(os.environ.get("RECEIPTS_KEY_PEM"), args.key)
+    # Optional hybrid post-quantum signature (ML-DSA-65) alongside Ed25519.
+    pq_material = os.environ.get("RECEIPTS_PQ_KEY")
+    if pq_material:
+        signer.load_pq(pq_material)
     if args.print_jwk:
-        print(json.dumps(signer.jwk(), indent=2))
+        out = {"keys": [signer.jwk()] + ([signer.pq_jwk()] if signer.has_pq else [])}
+        print(json.dumps(out if signer.has_pq else signer.jwk(), indent=2))
         return
 
     extra_public_jwks = []

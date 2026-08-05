@@ -209,6 +209,26 @@ holds a few dollars of ETH and does nothing but sign root transactions. With
 the publisher off, anchoring still works locally (`onchain_tx` stays null;
 proofs still verify).
 
+**G. Hybrid post-quantum signatures (optional).** Receipts are long-lived audit
+artifacts, so the promise is "un-forgeable years from now." The on-chain Merkle
+anchor is SHA-256 and already quantum-sound; the one quantum-exposed piece is the
+Ed25519 envelope signature. Add a SECOND signature (ML-DSA-65 / FIPS 204)
+alongside Ed25519 so a receipt survives even if elliptic-curve signatures fall to
+a quantum attacker. Ed25519 stays primary (today's verifiers); ML-DSA is the
+forward hedge.
+- Install the optional dep: `pip install -r requirements-pqc.txt` (pure Python,
+  no native build). Without it, Traceipt signs Ed25519-only, exactly as before.
+- Generate a keypair and set it as a secret:
+  ```sh
+  python3 -m traceipt.service --gen-pq-key   # prints the packed secret + public JWK
+  ```
+  Set the printed value as `RECEIPTS_PQ_KEY`. `/jwks.json` then publishes the
+  ML-DSA public key (kty `MLDSA`) next to the Ed25519 one, and every envelope
+  carries a `pq_signature`. `verify_envelope` (and `tools/verify.py`) verify it
+  when the key + library are present; a PQ-unaware verifier checks Ed25519 and
+  proceeds (backward compatible). The `traceipt-verify` JS lib reports the PQ
+  signature as present-but-unchecked (it verifies the classical path).
+
 ### Env var reference
 
 | Env | Flag | Default |
@@ -236,6 +256,7 @@ proofs still verify).
 | `RECEIPTS_ANCHOR_INTERVAL` | `--anchor-interval` | `0` (seconds; 0 = manual) |
 | `RECEIPTS_ATTEST_SEAL` | `--attest-seal` | `batch` (`immediate` = seal-on-submit + self-contained proof in the 201) |
 | `RECEIPTS_EXPLORER_API_KEY` | (inline) | — (optional; startup anchor-recovery uses keyless Blockscout, so normally unset) |
+| `RECEIPTS_PQ_KEY` | (inline) | — (optional; packed ML-DSA-65 keypair from `--gen-pq-key`; adds a hybrid post-quantum signature. Needs `requirements-pqc.txt`) |
 
 See the main [README](README.md#security-model--threat-model) for the threat
 model before going to production.

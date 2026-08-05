@@ -2996,6 +2996,72 @@ class TestCdpFacilitatorAuth(unittest.TestCase):
         self.assertTrue(captured["auth"] and captured["auth"].startswith("Bearer "))
 
 
+class TestPostQuantumHybrid(unittest.TestCase):
+    """Optional hybrid ML-DSA-65 signature alongside Ed25519. Skips cleanly when
+    dilithium-py isn't installed (it's an optional dependency)."""
+
+    def setUp(self):
+        from traceipt import pqsign
+        if not pqsign.pq_available():
+            self.skipTest("dilithium-py not installed (optional PQ dependency)")
+        self.pqsign = pqsign
+
+    def _hybrid_signer(self):
+        s = Signer.generate()
+        pk, sk = self.pqsign.pq_generate()
+        s.load_pq(self.pqsign.pack_keypair(pk, sk))
+        return s
+
+    def test_pack_unpack_roundtrip(self):
+        pk, sk = self.pqsign.pq_generate()
+        pk2, sk2 = self.pqsign.unpack_keypair(self.pqsign.pack_keypair(pk, sk))
+        self.assertEqual((pk, sk), (pk2, sk2))
+
+    def test_ed25519_only_has_no_pq_fields(self):
+        env = Signer.generate().sign_envelope({"hello": "world"})
+        self.assertNotIn("pq_signature", env)
+        self.assertNotIn("pq_alg", env["protected"])
+
+    def test_hybrid_envelope_has_both_signatures(self):
+        s = self._hybrid_signer()
+        env = s.sign_envelope({"receipt_id": "r1"})
+        self.assertIn("pq_signature", env)
+        self.assertEqual(env["protected"]["pq_alg"], "ML-DSA-65")
+        self.assertEqual(env["protected"]["pq_kid"], s.pq_kid)
+
+    def test_hybrid_verifies_with_both_keys(self):
+        s = self._hybrid_signer()
+        env = s.sign_envelope({"receipt_id": "r1"})
+        jwks = {"keys": [s.jwk(), s.pq_jwk()]}
+        self.assertEqual(verify_envelope(env, jwks)["receipt_id"], "r1")
+
+    def test_tampered_pq_signature_is_rejected(self):
+        s = self._hybrid_signer()
+        env = s.sign_envelope({"receipt_id": "r1"})
+        # flip the PQ signature; Ed25519 still valid, so this proves the PQ check runs
+        bad = _b64.urlsafe_b64encode(b"\x00" * len(_b64.urlsafe_b64decode(
+            env["pq_signature"] + "=="))).rstrip(b"=").decode()
+        env["pq_signature"] = bad
+        with self.assertRaises(ValueError):
+            verify_envelope(env, {"keys": [s.jwk(), s.pq_jwk()]})
+
+    def test_pq_unaware_verifier_still_accepts_hybrid(self):
+        # A verifier without the PQ key (or PQ lib) checks Ed25519 and proceeds --
+        # backward compatible. Simulate by omitting the MLDSA key from the JWKS.
+        s = self._hybrid_signer()
+        env = s.sign_envelope({"receipt_id": "r1"})
+        self.assertEqual(verify_envelope(env, {"keys": [s.jwk()]})["receipt_id"], "r1")
+
+    def test_jwks_publishes_pq_key(self):
+        s = self._hybrid_signer()
+        app = App(signer=s, ledger=Ledger(os.path.join(tempfile.mkdtemp(), "p.db")),
+                  verifier=MockVerifier(), gate="off", price_base_units="2000",
+                  pay_to=PAYEE, chain="base", base_url="http://x")
+        keys = app._jwks()["keys"]
+        self.assertTrue(any(k.get("kty") == "MLDSA" for k in keys))
+        self.assertTrue(any(k.get("crv") == "Ed25519" for k in keys))
+
+
 class TestBlockscoutSettlement(unittest.TestCase):
     """BlockscoutVerifier (independent second source) + CrossCheckVerifier."""
 

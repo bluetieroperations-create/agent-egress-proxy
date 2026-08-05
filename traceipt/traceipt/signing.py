@@ -101,17 +101,48 @@ def load_private_key_flexible(material: bytes, password: bytes | None = None):
 
 
 class Signer:
-    """Holds an Ed25519 private key and issues signed envelopes."""
+    """Holds an Ed25519 private key and issues signed envelopes. Optionally also
+    holds an ML-DSA-65 keypair, in which case every envelope carries a second,
+    post-quantum signature alongside the Ed25519 one (see load_pq / pqsign.py)."""
 
     def __init__(self, private_key: Ed25519PrivateKey):
         self._key = private_key
         pub = self.public_bytes()
         # kid = first 16 hex chars of the sha256 of the raw public key.
         self.kid = sha256_hex(pub)[len("sha256:"):][:16]
+        self._pq_pk: bytes | None = None
+        self._pq_sk: bytes | None = None
+        self.pq_kid: str | None = None
 
     @classmethod
     def generate(cls) -> "Signer":
         return cls(Ed25519PrivateKey.generate())
+
+    def load_pq(self, material: str) -> "Signer":
+        """Attach an ML-DSA-65 keypair (packed base64, from pqsign.pack_keypair /
+        `--gen-pq-key`) so envelopes get a hybrid post-quantum signature. Raises
+        if the PQ library isn't installed or the material is malformed."""
+        from . import pqsign
+        if not pqsign.pq_available():
+            raise ValueError("post-quantum signing requires dilithium-py "
+                             "(pip install -r requirements-pqc.txt)")
+        self._pq_pk, self._pq_sk = pqsign.unpack_keypair(material)
+        self.pq_kid = pqsign.pq_kid(self._pq_pk)
+        return self
+
+    @property
+    def has_pq(self) -> bool:
+        return self._pq_sk is not None
+
+    def pq_jwk(self) -> dict | None:
+        """The public ML-DSA key as a JWK-shaped object for /jwks.json. Uses
+        kty 'MLDSA' with the raw public key in `pub` (there is no ratified JWK
+        type for ML-DSA yet; this is self-consistent with our own verifier)."""
+        if self._pq_pk is None:
+            return None
+        from . import pqsign
+        return {"kty": "MLDSA", "alg": pqsign.PQ_ALG, "kid": self.pq_kid,
+                "pub": b64url(self._pq_pk), "use": "sig"}
 
     @classmethod
     def from_pem(cls, pem: bytes, password: bytes | None = None) -> "Signer":
@@ -166,9 +197,19 @@ class Signer:
 
     def sign_envelope(self, payload: dict) -> dict:
         protected = {"alg": ALG, "kid": self.kid, "typ": TYP}
+        if self.has_pq:
+            # Declare the PQ alg/kid INSIDE protected so BOTH signatures cover
+            # them (no downgrade games), then sign the same input with each.
+            from . import pqsign
+            protected["pq_alg"] = pqsign.PQ_ALG
+            protected["pq_kid"] = self.pq_kid
         signing_input = canonical_json({"payload": payload, "protected": protected})
         sig = self._key.sign(signing_input)
-        return {"protected": protected, "payload": payload, "signature": b64url(sig)}
+        env = {"protected": protected, "payload": payload, "signature": b64url(sig)}
+        if self.has_pq:
+            from . import pqsign
+            env["pq_signature"] = b64url(pqsign.pq_sign(self._pq_sk, signing_input))
+        return env
 
 
 def verify_envelope(envelope: dict, jwks: dict) -> dict:
@@ -200,6 +241,28 @@ def verify_envelope(envelope: dict, jwks: dict) -> dict:
         key_obj.verify(sig, signing_input)
     except InvalidSignature:
         raise ValueError("signature verification FAILED")
+
+    # Hybrid post-quantum check: if the envelope carries an ML-DSA signature AND
+    # the matching PQ key is published AND the PQ library is available, it must
+    # also verify (a present-but-invalid PQ signature is tampering). If the key
+    # isn't published or the library is absent, we cannot check it -- the
+    # Ed25519 signature already passed, so we proceed rather than fail.
+    pq_alg = protected.get("pq_alg")
+    pq_sig_b64 = envelope.get("pq_signature")
+    if pq_alg and pq_sig_b64:
+        pq_kid = protected.get("pq_kid")
+        pq_jwk = next((k for k in jwks.get("keys", [])
+                       if k.get("kty") == "MLDSA" and k.get("kid") == pq_kid), None)
+        if pq_jwk is not None:
+            try:
+                from . import pqsign
+                available = pqsign.pq_available()
+            except Exception:  # noqa: BLE001
+                available = False
+            if available:
+                pk = b64url_decode(pq_jwk["pub"])
+                if not pqsign.pq_verify(pk, signing_input, b64url_decode(pq_sig_b64)):
+                    raise ValueError("post-quantum signature verification FAILED")
     return payload
 
 

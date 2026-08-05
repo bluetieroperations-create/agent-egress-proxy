@@ -1,0 +1,4 @@
+# OPTIONAL: hybrid post-quantum receipt signatures (ML-DSA-65 / FIPS 204).
+# Pure Python, no native build. Only needed if you set RECEIPTS_PQ_KEY;
+# without it Traceipt signs Ed25519-only, exactly as before.
+dilithium-py>=1.0.0
