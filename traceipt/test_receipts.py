@@ -2567,6 +2567,19 @@ class TestScreeningProviders(unittest.TestCase):
         self.assertFalse(clean.listed)
         self.assertTrue(clean.checked)
 
+    def test_offline_flags_ofac_tornado_cash(self):
+        # The real OFAC SDN Tornado Cash address deterministically screens to a
+        # STOP verdict, offline, so "STOP on Tornado Cash" is reproducible by
+        # anyone (verify_verdict re-derives the STOP from the cited evidence).
+        from traceipt.screening_providers import OFAC_TORNADO_CASH
+        tc = OFAC_TORNADO_CASH[0]
+        r = self.screen(tc, [self.Offline()])
+        self.assertTrue(r[0].listed)
+        v = self.build_verdict(tc, r, decided_at="2026-08-05T00:00:00Z")
+        self.assertEqual(v["decision"], "STOP")
+        self.assertEqual(v["subject"]["address"], tc.lower())
+        self.assertTrue(self.verify_verdict(v)[0])
+
     def test_verdict_stop_go_review(self):
         # STOP: any provider lists it.
         r = self.screen(self.SANCTIONED, [self.Offline()])

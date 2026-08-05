@@ -41,6 +41,18 @@ DEFAULT_POLICY = "ofac-sanctions-v1"
 # documentation sample, not a claim about any live wallet.
 CHAINALYSIS_DEMO_SANCTIONED = "0x7f367cc41522ce07553e823bf3be79a889debe1b"
 
+# A publicly-known OFAC SDN Tornado Cash Ethereum address (Aug 2022 designation).
+# Seeding the offline fixture with a REAL sanctioned address makes the STOP path a
+# faithful demo, not a synthetic one -- screening it deterministically yields STOP,
+# so anyone can reproduce the "STOP on Tornado Cash" verdict offline. This is a
+# small PUBLIC-DATA fixture, NOT a live sanctions feed; set CHAINALYSIS_API_KEY /
+# TRM_API_KEY for real screening.
+OFAC_TORNADO_CASH = ("0x8589427373D6D84E98730D7795D8f6f8731FDA16",)
+
+# The offline provider's default listed set: the Chainalysis doc sample + the
+# public OFAC Tornado Cash address.
+DEFAULT_SANCTIONED = (CHAINALYSIS_DEMO_SANCTIONED,) + OFAC_TORNADO_CASH
+
 _UA = {"User-Agent": "Traceipt/0.2 screening-consumer",
        "Accept": "application/json"}
 
@@ -84,7 +96,7 @@ class OfflineSanctionsProvider:
 
     def __init__(self, sanctioned=None, *, source="offline-fixture"):
         self._set = frozenset(
-            a.lower() for a in (sanctioned or [CHAINALYSIS_DEMO_SANCTIONED]))
+            a.lower() for a in (sanctioned or DEFAULT_SANCTIONED))
         self._source = source
 
     def screen(self, address: str, *, chain: str = "ethereum") -> ScreeningResult:

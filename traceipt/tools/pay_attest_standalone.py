@@ -16,7 +16,13 @@ submits + pays gas for the transfer, so the payer needs USDC, not ETH.
 import argparse, base64, hashlib, json, os, sys, urllib.request, urllib.error
 from datetime import datetime, timezone
 
-DEMO_SANCTIONED = "0x7f367cc41522ce07553e823bf3be79a889debe1b"  # doc sample -> STOP path
+# Offline fixture: the Chainalysis doc sample + a public OFAC SDN Tornado Cash
+# address, so screening either deterministically yields STOP (reproducible by
+# anyone). Public-data fixture, NOT a live sanctions feed.
+SANCTIONED = {
+    "0x7f367cc41522ce07553e823bf3be79a889debe1b",   # Chainalysis doc sample
+    "0x8589427373d6d84e98730d7795d8f6f8731fda16",   # OFAC SDN Tornado Cash (lower-cased)
+}
 POLICY = "ofac-sanctions-v1"
 
 
@@ -26,7 +32,7 @@ def utc_now_iso():
 
 def build_verdict(address):
     """Offline-fixture screen -> the exact canonical verdict Traceipt hashes."""
-    listed = address.lower() in {DEMO_SANCTIONED}
+    listed = address.lower() in SANCTIONED
     screen = {"provider": "offline-fixture", "listed": listed, "checked": True,
               "source": "offline-fixture", "matches": ["OFAC-SDN"] if listed else []}
     decision = "STOP" if listed else "GO"
