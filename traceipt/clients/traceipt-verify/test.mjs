@@ -1,6 +1,6 @@
 // node test.mjs — verifies the real mainnet run and a tampered copy.
 import assert from "node:assert";
-import { verifyReceipt, verifyInclusion, canon } from "./index.mjs";
+import { verifyReceipt, verifyInclusion, canon, asciiEscape } from "./index.mjs";
 
 const REAL = {
   verdict_digest: "sha256:728c4733c730091d606cfc22368e7787249392fec898ad730f8d59a5396dcace",
@@ -45,6 +45,21 @@ try {
   ok(online.ok === true, "verifyReceipt ok (online)");
 } catch (e) {
   console.log("skip: on-chain check (no network):", e.message);
+}
+
+
+// Regression: the verdict digest must match Python screening.verdict_digest
+// (ensure_ascii=True) even for a non-ASCII entity name — else verdict_binding
+// falsely fails. Authoritative value computed by the Python impl.
+{
+  const enc = new TextEncoder();
+  const sha = async b => new Uint8Array(await crypto.subtle.digest("SHA-256", b));
+  const hx = u => [...u].map(b=>b.toString(16).padStart(2,"0")).join("");
+  const v = {policy:"ofac-sanctions-v1",subject:{address:"0xabc"},decided_at:"2026-08-05T00:00:00Z",decision:"STOP",
+    screens:[{provider:"trm",listed:true,checked:true,source:"trm",matches:["Soci\u00e9t\u00e9 G\u00e9n\u00e9rale (SDN)"]}]};
+  const got = "sha256:"+hx(await sha(enc.encode(asciiEscape(canon(v)))));
+  ok(got === "sha256:84f58c9258500c2b61a7d8a802c1eeeccb215700e5b3224b524d745f9a584771",
+     "non-ASCII verdict digest matches Python ensure_ascii=True authoritative");
 }
 
 assert.strictEqual(failures, 0, `${failures} failure(s)`);

@@ -54,11 +54,19 @@ function b64urlToBytes(s) {
 async function leafHash(data) { return sha256(cat(new Uint8Array([0]), data)); }
 async function nodeHash(l, r) { return sha256(cat(new Uint8Array([1]), l, r)); }
 
-// canonical JSON == Python json.dumps(sort_keys=True, separators=(",",":"), ensure_ascii=False)
+// canonical JSON == Python json.dumps(sort_keys=True, separators=(",",":"), ensure_ascii=False).
+// Used for the envelope signing-input (signing.py uses ensure_ascii=False — keep it raw here).
 export function canon(o) {
   if (o === null || typeof o !== "object") return JSON.stringify(o);
   if (Array.isArray(o)) return "[" + o.map(canon).join(",") + "]";
   return "{" + Object.keys(o).sort().map((k) => JSON.stringify(k) + ":" + canon(o[k])).join(",") + "}";
+}
+
+// The VERDICT digest (screening.verdict_digest) uses json.dumps with DEFAULT
+// ensure_ascii=True — non-ASCII escaped as \uXXXX per UTF-16 code unit. Escape to
+// match, or verdict_binding falsely fails for a verdict with a non-ASCII entity name.
+export function asciiEscape(s) {
+  return s.replace(/[^\x00-\x7f]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
 }
 
 // ---- Merkle inclusion (RFC 6962 §2.1.1) ------------------------------------
@@ -151,7 +159,7 @@ export async function verifyReceipt(doc, opts = {}) {
     // verdict binding (optional)
     const verdict = doc && typeof doc.verdict === "object" ? doc.verdict : null;
     if (verdict) {
-      const want = "sha256:" + hex(await sha256(enc.encode(canon(verdict))));
+      const want = "sha256:" + hex(await sha256(enc.encode(asciiEscape(canon(verdict)))));
       add("verdict_binding", want === proof.leaf_data,
           want === proof.leaf_data ? "digest matches anchored leaf" : `verdict hashes to ${want}`);
     }

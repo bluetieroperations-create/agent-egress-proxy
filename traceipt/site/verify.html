@@ -124,7 +124,14 @@ function canon(o){
   if(Array.isArray(o)) return "["+o.map(canon).join(",")+"]";
   return "{"+Object.keys(o).sort().map(k=>JSON.stringify(k)+":"+canon(o[k])).join(",")+"}";
 }
-async function verdictDigest(v){ return "sha256:"+hex(await sha256(enc.encode(canon(v)))); }
+// The verdict digest (screening.verdict_digest) is json.dumps with DEFAULT
+// ensure_ascii=True, which escapes non-ASCII as \uXXXX per UTF-16 code unit.
+// JSON.stringify does NOT, so we escape here to match — otherwise verdict_binding
+// falsely fails for a verdict with non-ASCII (e.g. a sanctioned entity name).
+// NOTE: the envelope-signature canon must stay raw (ensure_ascii=False, matching
+// signing.py) — only the verdict digest gets this.
+function asciiEscape(s){ return s.replace(/[^\x00-\x7f]/g, c=>"\\u"+c.charCodeAt(0).toString(16).padStart(4,"0")); }
+async function verdictDigest(v){ return "sha256:"+hex(await sha256(enc.encode(asciiEscape(canon(v))))); }
 
 function findProof(d){
   if(!d||typeof d!=="object") return null;
