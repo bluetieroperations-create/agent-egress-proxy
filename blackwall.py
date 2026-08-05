@@ -564,96 +564,62 @@ def decide_payment(amount, record, price_history,
     # GO conditions only, so it can turn GO->HOLD but cannot reach the STOP path.
     enrichment_review = bool((enrichment or {}).get("review"))
 
+    # ---- HOLD gates: single source of truth --------------------------------------
+    # Each entry is (fired, reason-thunk). `go` is simply "no gate fired"; a fired gate's
+    # reason is appended in order. The reason is a THUNK because several format signal
+    # values that are only valid when the gate fired (e.g. peer_ratio is None unless
+    # peer_hold). This unifies the old parallel go-conditions and reason blocks: adding a
+    # HOLD signal is ONE entry here, so the two can never drift (a gate with no reason ->
+    # an unexplained HOLD). STOP conditions are handled above; these only ever HOLD.
+    def _thin_reason():
+        extra = ("" if confirmed == settlements
+                 else " (%d reported, only %d chain-confirmed)" % (settlements, confirmed))
+        return ("counterparty thin on confirmed history (%d < %d) -- escalating%s"
+                % (confirmed, THIN_HISTORY_SETTLEMENTS, extra))
+
+    hold_gates = [
+        (sybil_thin, lambda: "settlements from only %d distinct payer(s) (< %d) -- "
+            "possible wash-trading; escalating" % (distinct_payers, MIN_DISTINCT_PAYERS)),
+        (captive_sybil, lambda: "all %d payer(s) are captive (none pay any other known "
+            "payee) -- cross-counterparty Sybil pattern; escalating"
+            % (_pgs.get("distinct_payers") or 0)),
+        (thin, _thin_reason),
+        (rep < GO_REPUTATION_MIN, lambda: "trust score %.2f below the auto-approve floor "
+            "%.2f" % (rep, GO_REPUTATION_MIN)),
+        (a_score >= HOLD_ANOMALY, lambda: "price anomaly above the auto-approve ceiling"),
+        (over_budget, lambda: "amount %s exceeds the auto-approve threshold %s -- hand to "
+            "spending-cap layer" % (amount_dec, threshold)),
+        (peer_hold, lambda: "priced %.1fx the peer-group market rate for this class -- "
+            "above comparable counterparties" % peer_ratio),
+        (category_hold, lambda: "quoted %.1fx the on-chain median for the '%s' category "
+            "(%s) -- far above what comparable services collect; escalating"
+            % (category_ratio, category or "?", category_median)),
+        (divergence_hold, lambda: "counterparty settles %.1fx its most-expensive "
+            "ADVERTISED price -- its public listing understates the real cost (possible "
+            "bait-and-switch); escalating" % _div),
+        # enrichment carries its OWN (pre-worded) reason list -> the thunk returns a list.
+        (enrichment_review, lambda: list((enrichment or {}).get("reasons", []))),
+        (stale, lambda: "no settlement in %s day(s) -- counterparty may be dormant or the "
+            "endpoint abandoned; confirm it still operates" % (_tmp.get("recency_days"))),
+        (going_bad, lambda: "recent dispute rate %.0f%% over the last %d outcome(s) -- "
+            "counterparty trending bad despite a clean lifetime record; escalating"
+            % (recent_dr * 100.0, recent_n)),
+        (ring_gate and not captive_sybil, lambda: "none of the %d payer(s) pay a trusted "
+            "anchor -- closed, unvouched cluster (possible sockpuppet ring); escalating"
+            % (_pgs.get("distinct_payers") or 0)),
+    ]
+
     # ---- verdict ----
     if stop:
         verdict = "STOP"
+    elif not any(fired for fired, _reason in hold_gates):
+        verdict = "GO"
     else:
-        go = (rep >= GO_REPUTATION_MIN
-              and not thin
-              and not sybil_thin
-              and not graph_sybil
-              and not stale
-              and not going_bad
-              and a_score < HOLD_ANOMALY
-              and not over_budget
-              and not peer_hold
-              and not category_hold
-              and not divergence_hold
-              and not enrichment_review)
-        if go:
-            verdict = "GO"
-        else:
-            verdict = "HOLD"
-            if sybil_thin:
-                reasons.append(
-                    "settlements from only %d distinct payer(s) (< %d) -- possible "
-                    "wash-trading; escalating" % (distinct_payers, MIN_DISTINCT_PAYERS)
-                )
-            if captive_sybil:
-                reasons.append(
-                    "all %d payer(s) are captive (none pay any other known payee) "
-                    "-- cross-counterparty Sybil pattern; escalating"
-                    % (_pgs.get("distinct_payers") or 0)
-                )
-            if thin:
-                extra = ("" if confirmed == settlements
-                         else " (%d reported, only %d chain-confirmed)"
-                         % (settlements, confirmed))
-                reasons.append(
-                    "counterparty thin on confirmed history (%d < %d) -- escalating%s"
-                    % (confirmed, THIN_HISTORY_SETTLEMENTS, extra)
-                )
-            if rep < GO_REPUTATION_MIN:
-                reasons.append(
-                    "trust score %.2f below the auto-approve floor %.2f"
-                    % (rep, GO_REPUTATION_MIN)
-                )
-            if a_score >= HOLD_ANOMALY:
-                reasons.append("price anomaly above the auto-approve ceiling")
-            if over_budget:
-                reasons.append(
-                    "amount %s exceeds the auto-approve threshold %s -- "
-                    "hand to spending-cap layer"
-                    % (amount_dec, threshold)
-                )
-            if peer_hold:
-                reasons.append(
-                    "priced %.1fx the peer-group market rate for this class -- "
-                    "above comparable counterparties" % peer_ratio
-                )
-            if category_hold:
-                reasons.append(
-                    "quoted %.1fx the on-chain median for the '%s' category "
-                    "(%s) -- far above what comparable services collect; escalating"
-                    % (category_ratio, category or "?", category_median)
-                )
-            if divergence_hold:
-                reasons.append(
-                    "counterparty settles %.1fx its most-expensive ADVERTISED price "
-                    "-- its public listing understates the real cost (possible "
-                    "bait-and-switch); escalating" % _div
-                )
-            if enrichment_review:
-                for _r in (enrichment or {}).get("reasons", []):
-                    reasons.append(_r)
-            if stale:
-                reasons.append(
-                    "no settlement in %s day(s) -- counterparty may be dormant or "
-                    "the endpoint abandoned; confirm it still operates"
-                    % (_tmp.get("recency_days"))
-                )
-            if going_bad:
-                reasons.append(
-                    "recent dispute rate %.0f%% over the last %d outcome(s) -- "
-                    "counterparty trending bad despite a clean lifetime record; "
-                    "escalating" % (recent_dr * 100.0, recent_n)
-                )
-            if ring_gate and not captive_sybil:
-                reasons.append(
-                    "none of the %d payer(s) pay a trusted anchor -- closed, unvouched "
-                    "cluster (possible sockpuppet ring); escalating"
-                    % (_pgs.get("distinct_payers") or 0)
-                )
+        verdict = "HOLD"
+        for fired, _reason in hold_gates:
+            if fired:
+                _r = _reason()
+                reasons.extend(_r if isinstance(_r, list) else [_r])
 
     # When sybil_ring is DEMOTED to advisory (SYBIL_RING_GATES=False), surface it as a
     # non-blocking note instead of a gate, so a reviewer still sees the pattern.
