@@ -125,6 +125,32 @@ It fetches the signed envelope, verifies the Ed25519 signature against
 
 ---
 
+## Recorded: MAINNET OFAC Tornado Cash STOP — real money (2026-08-05)
+
+The compliance teeth, on mainnet and fully verifiable. Screening the OFAC SDN
+Tornado Cash address `0x8589427373D6D84E98730D7795D8f6f8731FDA16` yields a **STOP**
+verdict, bound to a paid x402 tx and anchored on Base mainnet. Unlike a testnet
+STOP whose subject isn't recoverable from the tx, the verdict is **published**, so
+anyone re-derives the whole chain.
+
+| Link | Value |
+|---|---|
+| Subject | `0x8589…FDA16` (OFAC SDN Tornado Cash) |
+| Verdict | `STOP` (offline fixture seeded with the public OFAC address; `verify_verdict` re-derives STOP from the OFAC-SDN screen) |
+| verdict_digest (leaf) | `sha256:7f42baea4ea12c9853735355a5cce5ca180ce07aa41754a0979a0b34e3b56c7a` |
+| Attestation | `att_1c4b627ea116e9fec0c4` (type `sanctions-verdict`, ref `ofac-tornado-cash`) |
+| Merkle root | `83817d3c9cd48cf4676923c5ee78d51981f29752f95971925814b7f1e5ab6b61` |
+| On-chain tx | `0xe41c540c7e6f21a3042c52f50e5799fc32af2560d117752be36fe720d3327cd3` (base **mainnet**, block 49580913, status success) |
+| Payment | 0.01 USDC (payer/gas wallet 2.87 → 2.86) |
+| Published verdict | `traceipt.xyz/proofs/tornado-stop.json` |
+| Verify | verify page "Load the OFAC Tornado Cash STOP" → verdict binding + inclusion + on-chain all PASS |
+| Basescan | https://basescan.org/tx/0xe41c540c7e6f21a3042c52f50e5799fc32af2560d117752be36fe720d3327cd3 |
+
+**What it proves:** "STOP on an OFAC-sanctioned address" is now as independently
+verifiable as the GO run — a real sanctioned address, screened, bound to a real
+mainnet payment, anchored, with the verdict published so the subject + decision
+are visible and re-derivable. Closes the one gap the outreach audit flagged.
+
 ## Recorded: FIRST MAINNET run — real money (2026-08-04)
 
 The flywheel run for real, on **Base mainnet**, every link verified

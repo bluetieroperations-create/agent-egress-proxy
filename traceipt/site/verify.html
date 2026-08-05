@@ -71,6 +71,7 @@
   <div class="row">
     <button id="go">Verify</button>
     <button class="ghost" id="sample">Load the live mainnet example</button>
+    <button class="ghost" id="sampleStop">Load the OFAC Tornado Cash STOP</button>
   </div>
   <div class="row">
     <label class="opt">RPC
@@ -225,6 +226,18 @@ document.getElementById("sample").onclick=()=>{
         audit_path:[],root:"6d2b25d4f9701dba7d9b6bbe5cfc6a706d7b436a3db09e8c3b8c9cebfbce2985",
         onchain_network:"base",onchain_tx:"0xab1c79b60a3ca3386eabc654bf163711140ac17a969e1fa526be8314da38821f"}}
   },null,2);
+};
+
+// A real STOP: an OFAC-sanctioned Tornado Cash address, screened -> STOP,
+// bound to a paid x402 tx and anchored on Base mainnet. Includes the verdict,
+// so the verdict_binding check confirms the STOP hashes to the anchored leaf.
+document.getElementById("sampleStop").onclick=async()=>{
+  try{
+    const r=await fetch("/proofs/tornado-stop.json",{headers:{Accept:"application/json"}});
+    document.getElementById("input").value=JSON.stringify(await r.json(),null,2);
+  }catch(e){
+    document.getElementById("input").value="could not load /proofs/tornado-stop.json: "+e.message;
+  }
 };
 </script>
 </body>

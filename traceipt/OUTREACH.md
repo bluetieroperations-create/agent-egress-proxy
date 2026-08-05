@@ -103,10 +103,10 @@ independently, not just show a vendor's log — what do I hand them?"**
 
 Post this in `#general`, then stop talking and watch who engages. Audited
 (2026-08-05): the verify page works end-to-end against the live chain, CORS is
-clean, and every claim here is independently checkable EXCEPT the Tornado Cash
-STOP, which is described as capability (its on-chain tx carries only the Merkle
-root, so the subject isn't recoverable from the link) — never linked as
-"verify this."
+clean, and EVERY claim here is independently checkable — including the Tornado
+Cash STOP, which is now anchored on mainnet with its verdict published, so the
+verify page's "Load the OFAC Tornado Cash STOP" button proves it (verdict binding
++ inclusion + on-chain all pass).
 
 > Hey all 👋 gut-check from someone building in the compliance corner of x402.
 >
@@ -117,13 +117,15 @@ root, so the subject isn't recoverable from the link) — never linked as
 >
 > Built a take, live on **Base mainnet**: a screening verdict cryptographically
 > bound to a paid x402 tx, Merkle root anchored on-chain. **Don't trust me —
-> verify it yourself in your browser** → https://traceipt.xyz/verify (hit "Load
-> the live mainnet example"; it checks the receipt against Base live). Raw tx:
-> https://basescan.org/tx/0xab1c79b60a3ca3386eabc654bf163711140ac17a969e1fa526be8314da38821f
+> verify it yourself in your browser** → https://traceipt.xyz/verify. Two one-click
+> examples, each checked against Base live: **"Load the live mainnet example"** (a
+> clean GO) and **"Load the OFAC Tornado Cash STOP"** (a real sanctioned address →
+> STOP, verdict + anchor).
 >
-> The screening layer binds a **STOP** when an address is OFAC-listed (e.g. a
-> Tornado Cash SDN) — happy to share that verdict + its on-chain anchor so you can
-> check it end-to-end.
+> Raw txs if you prefer the chain directly: GO
+> https://basescan.org/tx/0xab1c79b60a3ca3386eabc654bf163711140ac17a969e1fa526be8314da38821f
+> · Tornado Cash STOP
+> https://basescan.org/tx/0xe41c540c7e6f21a3042c52f50e5799fc32af2560d117752be36fe720d3327cd3
 >
 > Also added hybrid **post-quantum** signatures (ML-DSA-65 next to Ed25519), since
 > these are long-retention audit artifacts.
@@ -134,10 +136,11 @@ root, so the subject isn't recoverable from the link) — never linked as
 > it was screened, independently" is a real pain here or premature. Not selling;
 > would love 15 min with anyone who's felt it 🙏
 
-_To make the Tornado Cash STOP as verifiable as the mainnet proof: run a real
-screen of the OFAC address `0x8589…FDA16` → STOP and publish the verdict object
-next to its anchor. Then anyone pastes the verdict into `traceipt.xyz/verify` and
-sees `verdict_binding: PASS` on a real Tornado Cash STOP._
+_Done (2026-08-05): the OFAC Tornado Cash STOP is anchored on Base mainnet
+(`att_1c4b627ea116e9fec0c4`, tx `0xe41c540c…`), its verdict published at
+`traceipt.xyz/proofs/tornado-stop.json`, and the verify page's "Load the OFAC
+Tornado Cash STOP" button proves it live — verdict binding + inclusion + on-chain
+all PASS. The STOP is now as verifiable as the GO proof._
 
 ## Honesty guardrails
 
