@@ -132,6 +132,30 @@ Traceipt proposal + category price signal), `docs/TRACEIPT_INTEGRATION.md`,
 `docs/TRACEIPT_ATTEST_FINDING.md`, `docs/PAYER_GRAPH.md`, `docs/TEMPORAL.md`,
 `docs/GOING_BAD.md`, `docs/AUDIT_ZEROCUSTOMER.md`, `docs/FEEDING.md`.
 
+**OpenClaw adapter** — `integrations/openclaw/` (2026-08-06): a `before_tool_call`
+plugin enforcing "call Blackwall before you sign" at the runtime layer. Pure
+`extractClaim` (flat payTo/amount, 402-challenge `accepts[]`, signed X-PAYMENT →
+passed through for payload-sim) + family `decide` contract (GO allow / HOLD
+confirm→block-with-detail / STOP block); enforce + fail-closed defaults; keyless
+claim-only egress; zero-dep proxy-aware CONNECT client with a 1 MiB response cap.
+38 vitest tests + `npm run eval:live` scorecard (6/6 incl. a recipient-swap
+attack killed by payload-sim, live). Own tests run from that dir, not the root
+command. Audit fixes landed test-first (case-insensitive tokens/keys,
+scientific-notation amount rejection, response cap).
+
+**Go-to-market (nemoclaw-community)** — two upstream PRs to NVIDIA/nemoclaw-community
+from the bluetieroperations-create fork, both single verified commits on current main:
+- **#52** `blackwall-guard` (BLACK_WALL tool-call gate, `recipes/partners/bluetier/
+  blackwall-guard/`): requested-changes round fully answered (metadata-only forecasts
+  by default, fail-closed default, complete OpenShell lifecycle incl. live
+  credential-injection probe, defense-in-depth framing). Awaiting re-review +
+  answers on Supervisor-middleware coordination and provider-schema validation.
+- **#105** `x402-payment-gate` (`recipes/partners/bluetier/x402-payment-gate/`):
+  skill + vendored openclaw adapter (canonical source is this repo's
+  `integrations/openclaw/`), keyless, lifecycle scripts, live-verified demo.
+  NB: #52 and #105 both add a BlueTier row to the partner catalog table —
+  whichever merges second needs a one-line rebase.
+
 ## 3. What is NOT built (safe to pick up — but claim it here first)
 
 - The **on-chain** ERC-7579 validator + key infra for AA co-signing (testnet first).
