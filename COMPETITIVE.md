@@ -57,6 +57,7 @@ depth and the data moat**, not "the only one doing this."
 | **ERC-8004** | On-chain identity + reputation **registry standard** for agents | Agents | n/a (standard) | n/a | No (substrate, not a verdict) | **Med** — EIP + repo |
 | **Blockaid / Blowfish** | Pre-sign transaction/contract malice detection (wallets) | The **transaction** | Yes | No | No (not x402, not payment-counterparty) | **High** — well-known, but from prior knowledge |
 | **Chainalysis / TRM / Elliptic** | KYT, sanctions, illicit-flow tracing | Wallet (compliance) | Screen | No | Overlaps OFAC layer; enterprise-priced, not agent-facing | **High** — prior knowledge |
+| **PaySafe** (paysafe-agent.com) | allow/flag/block "payment security firewall" before settlement; Ed25519 attestations; prompt-injection payments, replay, overpay, **PII/secret leakage**, lookalike tokens/address poisoning, reputation registry, velocity limits | **Payment + payload** (for the paying agent) | Yes | No (advisory, non-custodial) | **Partial** — reputation registry + overpay, but **no OFAC/sanctions, no on-chain Sybil/graph, no advertised-vs-settled price**; and it verifies payload metadata, not the recovered EIP-3009 signer | **High** — marketing site + `#pricing`, 2026-08 |
 
 ### Unverified — do not cite without checking
 A search summary named **"Frisk"** and **"AgentRadar"** as pre-payment allow/block
@@ -133,6 +134,45 @@ verified set:
    the **seller** can gate (MolTrust, Larkinsh, Crest, ERC-8004's "sellers check
    an agent's history"). Blackwall scores the **payee** so the **buyer** can
    decide to pay — the rarer direction.
+
+## Direct competitor: PaySafe (2026-08) — same job, differentiated on depth + compliance
+
+`paysafe-agent.com` is the closest thing yet to Blackwall's *actual* job: an **advisory,
+non-custodial, pre-settlement payment firewall for AI agents** on x402, emitting signed
+**Ed25519 attestations** with machine-readable reasons. Positioning is nearly
+interchangeable ("scan before you pay" vs "call before you sign"). The differences:
+
+**Where PaySafe leads (gaps for us):**
+- **Broader framework reach** — drop-in packages for LangChain, **CrewAI, Vercel AI SDK,
+  Coinbase AgentKit, NVIDIA NeMo** (we have LangChain + Turnkey/Privy wallets + OpenClaw +
+  MCP). More GTM surface.
+- **PII/secret-leakage detection** (private keys, seed phrases, API keys, SSNs) — a real
+  capability we lacked. **→ ADOPTED: `secret_scan.py`** (HIGH credential → STOP, PII →
+  HOLD; redacted, free-text-only to avoid flagging tx hashes).
+- **Published perf** — advertises "0.60ms/scan" and "100% uptime / 90d". Treat as
+  marketing (0.6ms *round-trip incl. HTTP* is implausible over a network — likely
+  in-process). We publish neither yet; our pure `decide_payment` can likely beat it
+  honestly + verifiably.
+
+**Where Blackwall leads:**
+- **Actual compliance.** PaySafe's site never mentions sanctions/OFAC. Blackwall treats
+  OFAC as a hard-STOP authority with a strict "crowd-tags are not compliance" boundary.
+- **Depth of on-chain counterparty analysis** — graph Sybil (captive/ring/anchor-isolation),
+  advertised-vs-settled bait-and-switch, going-bad recency. PaySafe's reputation is a
+  report-driven registry; ours self-populates from public Base history (zero-customer).
+- **Verifies the actual signed payment** — recovers the EIP-3009 signer + calldata drainer
+  detection + AA co-signing, not just scanning metadata strings.
+- **Tamper-evident audit trail** (Traceipt Merkle anchoring) beyond a bare signature.
+
+**Pricing philosophy is opposite.** PaySafe: flat **per-scan** ($0.01→$0.002) + subscription
+tiers ($4.99 / $19.99 per 30d), 100 free calls/key. Blackwall: **value-aligned** — free
+under $1, else 0.1% of amount-at-risk clamped $0.001–$0.10 (`PRICING.md`). PaySafe is
+cheaper on high-value payments and simpler to predict; Blackwall is free on the long tail
+and captures more on genuinely risky payments. Neither strictly wins — depends on the
+customer's payment-size distribution.
+
+**Confidence: High** (marketing site + `#pricing`, 2026-08). Claims (latency/uptime) are
+self-reported, not verified.
 
 ## What is NOT a moat (honest)
 

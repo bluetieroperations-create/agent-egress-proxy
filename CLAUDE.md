@@ -139,6 +139,17 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   transient 429/5xx/timeout -- honors `Retry-After`, permanent 4xx not retried --
   plus a read-size cap; transport+clock injectable. Used by `chain_backfill`'s
   `BlockscoutPager` and `discovery_crawl`. See `docs/AUDIT_ZEROCUSTOMER.md`),
+  `secret_scan.py` (leaked-SECRET / PII guard for the payment PAYLOAD -- an x402 payment
+  and its memo settle ON-CHAIN, public + irreversible, so a private key / seed phrase /
+  API credential in a free-text field is catastrophic; a common prompt-injection
+  exfiltration vector. HIGH (credential) -> STOP; MEDIUM (SSN / bare hex / mnemonic-shape)
+  -> HOLD. TWO HARD RULES: never echoes/logs the secret (findings carry TYPE + FIELD +
+  REDACTED hint only), and scans FREE-TEXT fields ONLY -- never the structural crypto
+  fields (counterparty/asset/tx `to`/`data`/hash), which legitimately hold 64-hex, so a
+  tx hash is never mis-flagged as a private key. `scan_payload`/`scan_text` pure+stdlib;
+  folds into `decide_payment` via `secret_findings` and is scanned in `forecast` from the
+  raw request body. Tests: `test_secret_scan.py`. Built to close a gap vs the PaySafe
+  competitor -- see `COMPETITIVE.md`),
   `blockscout.py` (FREE keyless on-chain ENRICHMENT for a counterparty via Blockscout's
   public Base API: `is_scam` crowd tag, contract-vs-EOA, ENS/labels, ERC-20 activity.
   HARD BOUNDARY -- raw chain data + crowd tags, NOT a sanctions source: it can ONLY
@@ -199,7 +210,7 @@ test states the mutation it kills). Keep new code stdlib-only and match this sty
 
 Run all tests:
 ```sh
-python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py test_aa_cosigner.py test_chain_backfill.py test_discovery_crawl.py test_ecosystem_scan.py test_http_util.py test_payer_graph.py test_payer_reputation.py test_settlement_velocity.py test_confidence.py test_redteam.py test_demo_flywheel.py test_verdict_anchor.py test_categories.py test_category_pricing.py test_check_seed_age.py test_price_integrity.py test_ratelimit.py test_fuzz_verdict.py test_blockscout.py test_verdict_oracle.py test_calibration_lock.py test_coverage_eval.py test_refresh_guard.py
+python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py test_aa_cosigner.py test_chain_backfill.py test_discovery_crawl.py test_ecosystem_scan.py test_http_util.py test_payer_graph.py test_payer_reputation.py test_settlement_velocity.py test_confidence.py test_redteam.py test_demo_flywheel.py test_verdict_anchor.py test_categories.py test_category_pricing.py test_check_seed_age.py test_price_integrity.py test_ratelimit.py test_fuzz_verdict.py test_blockscout.py test_verdict_oracle.py test_calibration_lock.py test_coverage_eval.py test_refresh_guard.py test_secret_scan.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop

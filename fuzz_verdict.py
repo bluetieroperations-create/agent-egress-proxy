@@ -112,6 +112,12 @@ def random_case(rng):
         "enrichment": _maybe(rng, lambda: {"review": _pick(rng, True, False),
                                            "is_scam": _pick(rng, True, False),
                                            "reasons": ["scam tag"]}, 0.4),
+        # leaked-secret findings: HIGH -> STOP (blockable), MEDIUM -> HOLD. Boundary
+        # fuzzed by P2 (high => STOP+hard_stop) and P2b (medium => never hard_stop).
+        "secret_findings": _maybe(rng, lambda: [{
+            "type": _pick(rng, "aws_access_key_id", "ssn", "hex64_in_freetext"),
+            "severity": _pick(rng, "high", "medium"), "field": "memo",
+            "hint": "x***y"}], 0.3),
     }
     return kw
 
@@ -121,8 +127,10 @@ def _blockable(kw):
     cp, exp = kw.get("counterparty"), kw.get("expected_recipient")
     mismatch = (exp is not None and cp is not None
                 and not bw.addresses_equal(cp, exp))
+    high_secret = any(s.get("severity") == "high"
+                      for s in (kw.get("secret_findings") or []))
     return (bool(rec.get("sanctioned")) or bool(rec.get("known_bad"))
-            or bool(kw.get("payload_mismatch_reasons")) or mismatch)
+            or bool(kw.get("payload_mismatch_reasons")) or mismatch or high_secret)
 
 
 def invariant_violations(kw, result):

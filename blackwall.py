@@ -363,7 +363,7 @@ def decide_payment(amount, record, price_history,
                    verified_floor=None, verified_grade=None,
                    payer_graph_signal=None, temporal_signal=None,
                    category=None, category_median=None, divergence_ratio=None,
-                   enrichment=None):
+                   enrichment=None, secret_findings=None):
     """
     The core verdict. Returns a dict:
         {verdict, score, reasons[], signals{...}}
@@ -479,6 +479,18 @@ def decide_payment(amount, record, price_history,
     for _m in (payload_mismatch_reasons or []):
         stop = hard_stop = True
         reasons.append(_m)
+    # Leaked-secret guard (secret_scan.py): a private key / seed phrase / API credential
+    # in a FREE-TEXT payment field would be published on-chain (public, irreversible) the
+    # moment this is signed. HIGH severity -> hard STOP, non-negotiable. The reason names
+    # only the TYPE and FIELD -- NEVER the secret value (secret_scan already redacts).
+    _secret_high = [s for s in (secret_findings or []) if s.get("severity") == "high"]
+    for _s in _secret_high:
+        stop = hard_stop = True
+        reasons.append(
+            "payment payload contains a leaked secret (%s in field '%s') -- do NOT "
+            "sign; it would be published on-chain and cannot be undone"
+            % (_s.get("type", "credential"), _s.get("field", "payload"))
+        )
     if expected_recipient is not None and counterparty is not None \
             and not addresses_equal(counterparty, expected_recipient):
         # Case-INSENSITIVE: an EIP-55 checksummed recipient and its lowercase
@@ -564,6 +576,13 @@ def decide_payment(amount, record, price_history,
     # GO conditions only, so it can turn GO->HOLD but cannot reach the STOP path.
     enrichment_review = bool((enrichment or {}).get("review"))
 
+    # MEDIUM-severity secret/PII findings (SSN, bare hex, mnemonic-shape) -> HOLD (review):
+    # lower stakes or higher false-positive risk than a HIGH credential, so escalate to a
+    # human rather than block. HIGH findings already STOPped above.
+    _secret_medium = sorted({s.get("type") for s in (secret_findings or [])
+                             if s.get("severity") == "medium"})
+    secret_hold = bool(_secret_medium)
+
     # ---- HOLD gates: single source of truth --------------------------------------
     # Each entry is (fired, reason-thunk). `go` is simply "no gate fired"; a fired gate's
     # reason is appended in order. The reason is a THUNK because several format signal
@@ -607,6 +626,9 @@ def decide_payment(amount, record, price_history,
         (ring_gate and not captive_sybil, lambda: "none of the %d payer(s) pay a trusted "
             "anchor -- closed, unvouched cluster (possible sockpuppet ring); escalating"
             % (_pgs.get("distinct_payers") or 0)),
+        (secret_hold, lambda: "payment payload contains possible sensitive data (%s) -- "
+            "review before signing (would be published on-chain)"
+            % ", ".join(_secret_medium)),
     ]
 
     # ---- verdict ----
@@ -662,6 +684,11 @@ def decide_payment(amount, record, price_history,
         # free on-chain enrichment (Blockscout): behavioral/crowd context. DESCRIPTIVE +
         # REVIEW-only -- NOT a compliance signal. None when no enrichment source wired.
         "onchain_enrichment": enrichment,
+        # leaked-secret/PII scan of the payment payload (secret_scan.py). REDACTED --
+        # types + fields only, never the value. None when nothing was scanned/found.
+        "secret_scan": ({"types": sorted({s.get("type") for s in secret_findings}),
+                         "severity": ("high" if _secret_high else "medium")}
+                        if secret_findings else None),
         # x402 settlement is on-chain and final.
         "reversibility": "irreversible",
         "blast_radius": "bounded" if not over_budget else "unbounded",
@@ -1037,6 +1064,14 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     divergence_ratio = (divergence_index.get(clean["counterparty"].lower())
                         if divergence_index else None)
 
+    # Leaked-secret / PII scan of the RAW request body's free-text fields (secret_scan.py).
+    # HIGH (credential) -> STOP; MEDIUM (PII) -> HOLD. Pure regex; wrapped defensively.
+    try:
+        import secret_scan
+        secret_findings = secret_scan.scan_payload(payload)
+    except Exception:
+        secret_findings = None
+
     verdict = decide_payment(
         amount=clean["amount"],
         record=record,
@@ -1054,6 +1089,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         category=category, category_median=category_median,
         divergence_ratio=divergence_ratio,
         enrichment=enrichment,
+        secret_findings=secret_findings,
     )
     # Surface advisory (non-blocking) simulation warnings, e.g. an expired auth or
     # a bounded approval.

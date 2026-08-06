@@ -86,6 +86,12 @@ SCENARIOS = [
     ("on-chain scam tag (Blockscout REVIEW)", "onchain-enrich", "block", False,
      dict(amount="0.09", record=GOOD, price_history=STABLE, counterparty=LEGIT,
           enrichment={"review": True, "is_scam": True, "reasons": ["scam-associated"]})),
+    # leaked-secret guard: a credential in a free-text payment field would be published
+    # on-chain the moment it's signed -> hard STOP (secret_scan.py). Reason is redacted.
+    ("leaked secret in payload (API key)", "secret-scan", "block", False,
+     dict(amount="0.09", record=GOOD, price_history=STABLE, counterparty=LEGIT,
+          secret_findings=[{"type": "aws_access_key_id", "severity": "high",
+                            "field": "memo", "hint": "AKIA***"}])),
     # Sybil ring: enough distinct payers to clear the naive gate, yet NOT ONE pays a
     # trusted anchor -- a closed, unvouched cluster. Now GATES (HOLD) after the coverage-
     # convergence eval (coverage_eval.py) proved the false-flag rate has stabilized.

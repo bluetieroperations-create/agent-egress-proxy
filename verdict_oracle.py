@@ -93,6 +93,11 @@ OVERLAYS = [
                                           "reasons": ["scam-associated"]}}),
     ("enrichment_clean", {"enrichment": {"review": False}}),
     ("verified_floor", {"verified_floor": 0.6, "verified_grade": "B"}),
+    ("secret_high", {"secret_findings": [{"type": "aws_access_key_id",
+                                          "severity": "high", "field": "memo",
+                                          "hint": "AKIA***"}]}),   # -> STOP
+    ("secret_medium", {"secret_findings": [{"type": "ssn", "severity": "medium",
+                                            "field": "note", "hint": "1***9"}]}),  # -> HOLD
 ]
 
 
