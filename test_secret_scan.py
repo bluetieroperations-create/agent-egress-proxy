@@ -58,6 +58,21 @@ class TestScanText(unittest.TestCase):
         self.assertTrue(f)
         self.assertTrue(all(x["severity"] == "medium" for x in f))
 
+    def test_sk_short_sku_not_flagged(self):
+        # REGRESSION (audit): a hyphenated SKU/promo like "sk-SUMMERSALE2024PROMO" must
+        # NOT be flagged as an API key (that was a false STOP). Bare sk- needs 40+ chars.
+        for benign in ["sku sk-SUMMERSALE2024PROMO50", "code sk-PRODUCTREF1234567890AB"]:
+            self.assertEqual(S.scan_text(benign), [], benign)
+
+    def test_real_sk_key_forms_flagged(self):
+        # REGRESSION (audit): real key forms the old pattern MISSED must be caught.
+        self.assertTrue(any(x["severity"] == "high" for x in
+                            S.scan_text("key sk-proj-abcdEFGH1234567890ijklmnop")))
+        self.assertTrue(any(x["severity"] == "high" for x in
+                            S.scan_text("key sk_live_" + "a" * 24)))
+        self.assertTrue(any(x["severity"] == "high" for x in       # legacy bare 48-char
+                            S.scan_text("key sk-" + "A1b2" * 12)))
+
 
 class TestScanPayload(unittest.TestCase):
     def test_structural_fields_are_not_scanned(self):
@@ -83,6 +98,19 @@ class TestScanPayload(unittest.TestCase):
                    "context": {"metadata": {"note": "AKIAIOSFODNN7EXAMPLE"}}}
         f = S.scan_payload(payload)
         self.assertTrue(any(x["type"] == "aws_access_key_id" for x in f))
+
+    def test_credential_hidden_in_structural_field_is_caught(self):
+        # REGRESSION (audit bypass): a CREDENTIAL nested under a structural key name
+        # ("data"/"value") must still be caught -- HIGH patterns never collide with hex,
+        # so they run on structural fields too. Mutation: skip structural fields entirely
+        # -> this MISSES the credential and FAILS.
+        self.assertTrue(any(x["type"] == "aws_access_key_id"
+                            for x in S.scan_payload({"memo": {"data": "AKIAIOSFODNN7EXAMPLE"}})))
+        self.assertTrue(any(x["severity"] == "high"
+                            for x in S.scan_payload({"value": "ghp_" + "a" * 36})))
+        # ...but a real tx hash in a structural field is STILL not flagged (the FP guard).
+        self.assertEqual(S.scan_payload({"transaction": {"data": "0x" + "f" * 200},
+                                         "hash": "0x" + "c" * 64}), [])
 
     def test_top_severity_and_summary(self):
         self.assertIsNone(S.top_severity([]))
