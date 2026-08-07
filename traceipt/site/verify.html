@@ -34,8 +34,9 @@
   .wrap{position:relative; z-index:1; max-width:1060px; margin:0 auto; padding:0 24px 56px}
   header.top{border-bottom:1px solid var(--line); padding:16px 0; position:relative; z-index:1}
   header.top .inner{max-width:1060px; margin:0 auto; padding:0 24px; display:flex; justify-content:space-between; align-items:center}
-  header.top .b{font-weight:700}
-  header.top .b span{color:var(--teal)}
+  header.top .b{font-weight:800; font-size:21px; letter-spacing:-.01em; display:flex; align-items:center; gap:11px}
+  header.top .b img{width:30px; height:30px; border-radius:7px; box-shadow:0 0 14px rgba(65,180,155,.45)}
+  header.top .b span{color:var(--teal-ink); text-shadow:0 0 14px rgba(65,180,155,.85), 0 0 34px rgba(65,180,155,.4)}
   header.top a{text-decoration:none; color:var(--dim); font-size:14.5px}
   /* hero */
   .hero{padding:46px 0 30px; text-align:left}
@@ -98,7 +99,7 @@
 <body>
 <header class="top">
   <div class="inner">
-    <span class="b">Traceipt <span>凭证</span></span>
+    <span class="b"><img src="/favicon.png" alt="" width="30" height="30">Traceipt <span>凭证</span></span>
     <a href="/">← traceipt.xyz</a>
   </div>
 </header>
