@@ -1,0 +1,147 @@
+# Render Blueprint for the Traceipt API (Base MAINNET -- real money).
+# Render reads render.yaml from the REPO ROOT. The service builds the Docker
+# image in traceipt/ and Render terminates HTTPS at its edge, so the app
+# binds 0.0.0.0.
+#
+# MAINNET config: real x402 v2 gate via the Coinbase CDP facilitator, on-chain
+# (rpc) settlement verification on Base mainnet (min_confirmations=3), on-chain
+# Merkle-root publishing, and RECEIPTS_ATTEST_SEAL=immediate so a paid /attest
+# is durable + self-contained (no paid-but-lost). SECRETS below (sync:false) --
+# RECEIPTS_KEY_PEM, RECEIPTS_ADMIN_TOKEN, RECEIPTS_GAS_KEY (funded with real
+# Base ETH), CDP_API_KEY_ID/SECRET -- are set in the Render Environment tab.
+#
+# New > Blueprint > connect this repo > pick the branch that has this file.
+services:
+  - type: web
+    name: traceipt                 # -> https://traceipt.onrender.com (or a suffix if taken)
+    runtime: docker
+    rootDir: traceipt              # build context = the traceipt/ project dir
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    region: virginia
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: RECEIPTS_HOST
+        value: "0.0.0.0"
+      - key: RECEIPTS_PORT
+        value: "8402"
+      - key: RECEIPTS_CHAIN
+        value: base                           # MAINNET (was base-sepolia)
+      # REAL mode: charge via a facilitator and verify settlement on-chain.
+      - key: X402_GATE
+        value: facilitator
+      # MAINNET facilitator = Coinbase CDP (the keyless facilitator.x402.rs is
+      # testnet-only). Auth is a signed EdDSA Bearer JWT from CDP_API_KEY_ID /
+      # CDP_API_KEY_SECRET (declared below), auto-enabled because the URL is CDP.
+      - key: RECEIPTS_FACILITATOR_URL
+        value: https://api.cdp.coinbase.com/platform/v2/x402
+      # RPC authoritative + a keyless Blockscout cross-check (independent second
+      # source). A Blockscout that contradicts the RPC blocks the receipt; a
+      # lagging/unreachable Blockscout never blocks a valid settlement, so this
+      # is strictly safer than 'rpc' alone. Receipts then cite
+      # verification_method="rpc+blockscout" (two independent sources).
+      - key: RECEIPTS_SETTLEMENT
+        value: rpc+blockscout
+      - key: RECEIPTS_RPC_URL
+        value: https://mainnet.base.org
+      - key: RECEIPTS_MIN_CONFIRMATIONS
+        value: "3"                            # mainnet: reorg protection
+      # Seller-hosted binding: this instance issues receipts ONLY for payments
+      # to this wallet, and (bind_payer) only to the wallet that paid the fee.
+      # PAY_TO is a public receiving address -- never a private key.
+      - key: RECEIPTS_PAY_TO
+        value: "0x3ec5e0ec1e1cb8e2afa36f3b40eed9057d9004e1"
+      - key: RECEIPTS_SELLER_ID
+        value: traceipt.xyz
+      - key: RECEIPTS_BIND_PAYER
+        value: "1"
+      - key: RECEIPTS_PRICE_BASE_UNITS
+        value: "10000"                        # $0.01 per /attest or /receipts
+        # Repriced from $0.002: the x402 market median is ~$0.014 (p90 $0.15),
+        # so $0.01 sits below market and signals "compliance-grade", not cheapest.
+        # See B2B_TARGETING.md.
+      # Hands-free Merkle sealing: auto-seal any pending batch every N seconds
+      # so callers never need an admin POST /anchor. 0 = manual only. On the
+      # free plan the loop pauses while the instance is idle and resumes on the
+      # next request, so a pending item seals within N seconds of activity.
+      - key: RECEIPTS_ANCHOR_INTERVAL
+        value: "300"                          # 5 min (batches receipts)
+      # Seal each /attest on submit and return the full inclusion proof in the
+      # 201 -- the payer holds a self-contained, verifiable receipt that survives
+      # a restart. Fixes the paid-but-lost defect (mainnet-safe without a disk).
+      - key: RECEIPTS_ATTEST_SEAL
+        value: immediate
+      # Publish each sealed Merkle root on-chain (0-value self-send from the
+      # gas wallet carrying the root in calldata), so existence-by-time is
+      # provable against Base Sepolia, not just our DB. Requires the funded
+      # RECEIPTS_GAS_KEY secret (declared below); the boot check enforces it.
+      - key: RECEIPTS_PUBLISHER
+        value: onchain
+      # Public URL embedded in verify links + invoice QR. Set to the custom
+      # domain you will attach (below). If you test via the *.onrender.com URL
+      # before the domain is live, change this to that URL instead.
+      - key: RECEIPTS_BASE_URL
+        value: https://api.traceipt.xyz
+      # SECRETS -- set in the Render dashboard (Environment tab), not here.
+      # sync:false means the Blueprint will NOT manage/overwrite them.
+      #   RECEIPTS_KEY_PEM   the durable Ed25519 signing key (root of trust for
+      #                      every receipt; generate once, back it up). Prefer
+      #                      the SINGLE-LINE base64 form below -- it has no
+      #                      newlines to be mangled when pasted into a web form,
+      #                      and the loader accepts it (also plain PEM / bare
+      #                      base64 body). Back up whatever you paste:
+      #     python3 -c "import base64;from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey as K;from cryptography.hazmat.primitives import serialization as s;print(base64.b64encode(K.generate().private_bytes(s.Encoding.DER,s.PrivateFormat.PKCS8,s.NoEncryption())).decode())"
+      #   RECEIPTS_ADMIN_TOKEN  gates POST /anchor + /credits (random):
+      #     python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+      - key: RECEIPTS_KEY_PEM
+        sync: false
+      - key: RECEIPTS_ADMIN_TOKEN
+        sync: false
+      #   RECEIPTS_GAS_KEY  private key of a DEDICATED gas wallet (never the
+      #     receiving wallet) that signs on-chain Merkle-root txs. Fund it with
+      #     a little real Base ETH (mainnet). Only used when
+      #     RECEIPTS_PUBLISHER=onchain; the boot check enforces it.
+      - key: RECEIPTS_GAS_KEY
+        sync: false
+      #   CDP_API_KEY_ID / CDP_API_KEY_SECRET  Coinbase CDP credentials for the
+      #     mainnet x402 facilitator. Ed25519 Secret API Key; the secret is the
+      #     base64 32- or 64-byte key material. Auth activates only when the
+      #     facilitator URL is CDP (see service.py).
+      - key: CDP_API_KEY_ID
+        sync: false
+      - key: CDP_API_KEY_SECRET
+        sync: false
+      #   RECEIPTS_EXPLORER_API_KEY  OPTIONAL and usually unnecessary. Startup
+      #     anchor-recovery re-derives every published Merkle root from the gas
+      #     wallet's own on-chain txs (recover.py) so /anchors and POST /verify's
+      #     `anchored_onchain` self-heal after a disk-less reset -- and it does
+      #     this via Blockscout's public Base API, which is KEYLESS and free
+      #     (Basescan's V1 API is deprecated and Etherscan V2's free tier gates
+      #     Base behind a paid plan, so we do not use them). Leave this unset.
+      #     It exists only as a pass-through for a custom explorer that needs a
+      #     key; Blockscout ignores it.
+      - key: RECEIPTS_EXPLORER_API_KEY
+        sync: false
+      #   RECEIPTS_PQ_KEY  OPTIONAL. A packed ML-DSA-65 keypair (from
+      #     `python -m traceipt.service --gen-pq-key`) that adds a hybrid
+      #     post-quantum signature to every receipt, alongside Ed25519. The image
+      #     ships dilithium-py (Dockerfile PQC=1); unset = Ed25519-only, exactly
+      #     as before. Generate it in the Render Shell so the key never leaves
+      #     the server, then paste the printed value here.
+      - key: RECEIPTS_PQ_KEY
+        sync: false
+
+# NOTE ON STORAGE: the free plan has NO persistent disk, so /data is
+# ephemeral -- the ledger DB and the Ed25519 signing key reset whenever the
+# instance restarts (Render also spins free services down after ~15 min idle,
+# with a cold start on the next request). That means receipts issued in an
+# earlier session stop verifying. This is fine for a demo. For a stable
+# endpoint, switch to a paid instance and add a disk:
+#
+#     plan: starter          # ~$7/mo
+#     disk:
+#       name: traceipt-data
+#       mountPath: /data
+#       sizeGB: 1

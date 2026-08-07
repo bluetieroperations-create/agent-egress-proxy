@@ -1,0 +1,12 @@
+{
+  "name": "traceipt-verify",
+  "version": "0.1.0",
+  "description": "Independently verify a Traceipt receipt against the chain and the issuer's key — Node or browser, zero dependencies.",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": { ".": "./index.mjs" },
+  "files": ["index.mjs", "README.md"],
+  "scripts": { "test": "node test.mjs" },
+  "keywords": ["x402", "traceipt", "receipt", "verify", "merkle", "base", "compliance"],
+  "license": "Apache-2.0"
+}

@@ -1,0 +1,9 @@
+# runtime artifacts — never commit keys or ledgers
+*.pem
+*.db
+__pycache__/
+
+# node / wrangler (site tooling)
+node_modules/
+.wrangler/
+package-lock.json

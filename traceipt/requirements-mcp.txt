@@ -1,0 +1,3 @@
+# OPTIONAL: only needed to run the MCP server (traceipt.mcp_server). The core
+# service and the verification logic (traceipt.mcp_tools) do not import this.
+mcp>=2.0.0

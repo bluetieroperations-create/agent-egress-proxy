@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Traceipt — Signed, auditable receipts for x402 AI-agent payments</title>
+<meta name="description" content="Every payment your AI agent makes over x402 becomes a signed receipt you can hand to an auditor. Ed25519-signed, Merkle-anchored, verifies offline against published keys. USDC on Base. Self-hostable.">
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="apple-touch-icon" href="/logo.png">
+<link rel="canonical" href="https://traceipt.xyz/">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://traceipt.xyz/">
+<meta property="og:site_name" content="Traceipt">
+<meta property="og:title" content="Traceipt — receipts for machines that spend money">
+<meta property="og:description" content="Your agents pay for things. Traceipt proves it. Every x402 payment becomes a signed, Merkle-anchored receipt an auditor will accept — checkable for years, no trust in us required.">
+<meta property="og:image" content="https://traceipt.xyz/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Traceipt — your agents pay for things, Traceipt proves it. A signed x402 payment receipt: Ed25519 signed, Merkle anchored, verifies offline.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Traceipt — receipts for machines that spend money">
+<meta name="twitter:description" content="Every x402 payment your agent makes becomes a signed receipt you can hand to an auditor. Verifies offline. Checkable for years.">
+<meta name="twitter:image" content="https://traceipt.xyz/og.png">
+<meta name="theme-color" content="#0F1417">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": "https://blackwalltier.com/#bluetier-operations",
+      "name": "BlueTier Operations",
+      "url": "https://blackwalltier.com",
+      "sameAs": [
+        "https://github.com/bluetieroperations-create",
+        "https://blackwalltier.com",
+        "https://traceipt.xyz"
+      ]
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://traceipt.xyz/#software",
+      "name": "Traceipt",
+      "applicationCategory": "DeveloperApplication",
+      "operatingSystem": "Any (HTTP API; self-hostable)",
+      "url": "https://traceipt.xyz",
+      "description": "Audit-ready receipts for x402 payments made by AI agents. Each payment is confirmed on chain, signed with Ed25519, chained tamper-evident, and anchored in a published Merkle root — so the receipt verifies offline, years later, without trusting Traceipt.",
+      "provider": { "@id": "https://blackwalltier.com/#bluetier-operations" },
+      "keywords": "x402, x402 receipts, AI agent payments, audit trail, payment reconciliation, USDC, Base, Ed25519, Merkle anchor, agentic commerce"
+    },
+    {
+      "@type": "FAQPage",
+      "@id": "https://traceipt.xyz/#faq",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "What is Traceipt?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Traceipt turns every x402 payment an AI agent makes into a signed receipt. When a payment settles in USDC on Base, Traceipt confirms the transfer on chain, then signs a receipt that ties the payment to what was bought, who paid, and who was paid. Receipts are chained tamper-evident and anchored in a Merkle root published on chain." }
+        },
+        {
+          "@type": "Question",
+          "name": "How do I reconcile thousands of AI-agent micropayments?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Each receipt carries the context your books are missing: the purchase, the payer, the payee, and the on-chain transaction. Every receipt also renders to a VAT-aware PDF with a scan-to-verify code, so the machine checks the math and the accountant files the paper." }
+        },
+        {
+          "@type": "Question",
+          "name": "Can I verify a receipt without Traceipt?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Yes. Signature, chain, and anchor all verify offline against published keys, in any language, with no SDK and no calling home. The receipt stays checkable long after we are out of the room. Try it now — verify a receipt in your browser at traceipt.xyz/verify." }
+        },
+        {
+          "@type": "Question",
+          "name": "Can a receipt be faked or edited later?",
+          "acceptedAnswer": { "@type": "Answer", "text": "No. A receipt only exists if the money actually moved — the transfer is confirmed on chain before signing. Payer and payee are cryptographically bound, each receipt joins a tamper-evident chain, and the chain is folded into a Merkle root published on chain, so edits and forgeries fail verification." }
+        },
+        {
+          "@type": "Question",
+          "name": "What does Traceipt run on, and can I self-host?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Traceipt runs on x402, Base, and USDC, with one dependency. You can host it yourself if you would rather." }
+        },
+        {
+          "@type": "Question",
+          "name": "Does Traceipt help with the EU AI Act and MiCA?",
+          "acceptedAnswer": { "@type": "Answer", "text": "The EU AI Act (Article 12) wants high-risk systems to log their actions automatically, and MiCA wants transaction records tied to settlement and kept for years. A signed Traceipt per payment is that record. This is engineering, not legal advice — whether a deployment is in scope is a call for counsel." }
+        }
+      ]
+    }
+  ]
+}
+</script>
+<style>
+  :root{
+    --bg:#0F1417; --bg2:#121A1E; --panel:#161F24; --panel2:#1A242A;
+    --ink:#E8EBED; --dim:#9AA4A9; --muted:#6B757B; --line:#222C32;
+    --teal:#41B49B; --teal-ink:#8FE7D3; --teal-soft:rgba(65,180,155,.10);
+    --brass:#C09A57; --red:#E5635B; --red-soft:rgba(229,99,91,.12);
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --cn:"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans SC","Source Han Sans SC",var(--sans);
+    --maxw:1060px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0; background:var(--bg); color:var(--ink); font-family:var(--sans);
+    font-size:17px; line-height:1.64; -webkit-font-smoothing:antialiased; overflow-x:hidden}
+  body::after{content:""; position:fixed; inset:0; z-index:0; pointer-events:none;
+    background:radial-gradient(120% 70% at 50% -20%, rgba(65,180,155,.05), transparent 55%)}
+  .wrap{width:100%; max-width:var(--maxw); margin:0 auto; padding:0 28px; position:relative; z-index:2}
+  a{color:inherit; text-decoration:none}
+  ::selection{background:rgba(65,180,155,.22)}
+  h1,h2,h3{margin:0; font-weight:700; letter-spacing:-.015em; text-wrap:balance}
+  .kick{font-family:var(--mono); font-size:11.5px; letter-spacing:.16em; text-transform:uppercase; color:var(--teal); font-weight:600}
+  .mono{font-family:var(--mono)} .tnum{font-variant-numeric:tabular-nums}
+
+  /* quiet step-fret divider, no glow */
+  .greca{height:12px; width:100%; opacity:.28;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='48' height='12' viewBox='0 0 48 12'><path d='M0 9 H6 V3 H18 V9 H24 V3 H36 V9 H48' fill='none' stroke='%2341B49B' stroke-width='1'/></svg>");
+    background-repeat:repeat-x; background-position:center}
+
+  header{position:sticky; top:0; z-index:30; background:rgba(15,20,23,.82); backdrop-filter:blur(10px); border-bottom:1px solid var(--line)}
+  .bar{display:flex; align-items:center; gap:18px; height:64px}
+  .brand{display:flex; align-items:center; gap:11px}
+  .brand svg{width:26px; height:26px}
+  .brand .wm{display:flex; flex-direction:column; line-height:1}
+  .brand .wm b{font-weight:700; font-size:18px; letter-spacing:.01em}
+  .brand .wm span{font-family:var(--cn); font-size:8.5px; letter-spacing:.34em; color:var(--muted); margin-top:3px}
+  .bar nav{margin-left:auto; display:flex; align-items:center; gap:26px}
+  .bar nav a{font-size:14px; color:var(--dim)}
+  .bar nav a:hover{color:var(--ink)}
+  .btn{display:inline-flex; align-items:center; gap:7px; font-size:14px; font-weight:560; padding:9px 17px;
+    border-radius:3px; border:1px solid transparent; cursor:pointer; transition:.15s}
+  .btn.solid{background:var(--teal); color:#08110E}
+  .btn.solid:hover{background:var(--teal-ink)}
+  .btn.line{border-color:var(--line); color:var(--ink)}
+  .btn.line:hover{border-color:var(--teal); color:var(--teal)}
+  @media(max-width:700px){.bar nav a.opt{display:none}}
+
+  .hero{position:relative; padding:78px 0 34px}
+  .hero .stage{display:grid; grid-template-columns:1.1fr .9fr; gap:56px; align-items:center}
+  @media(max-width:880px){.hero .stage{grid-template-columns:1fr; gap:44px}}
+  .hero .kick{display:block; margin-bottom:20px}
+  .hero h1{font-size:clamp(38px,5.4vw,58px); line-height:1.05; max-width:16ch}
+  .hero h1 em{font-style:normal; color:var(--teal)}
+  .hero .sub{font-size:20px; color:var(--dim); margin:22px 0 30px; max-width:42ch; line-height:1.5}
+  .cta{display:flex; flex-wrap:wrap; gap:12px; align-items:center}
+  .spec{margin-top:36px; padding-top:20px; border-top:1px solid var(--line); display:flex; flex-wrap:wrap; gap:10px 24px;
+    font-family:var(--mono); font-size:12px; letter-spacing:.03em; color:var(--muted)}
+  .spec b{color:var(--dim); font-weight:600}
+
+  .slabwrap{display:flex; justify-content:center; position:relative}
+  .slab{position:relative; width:336px; background:var(--panel); border:1px solid var(--line); padding:24px 24px 20px;
+    box-shadow:0 24px 60px rgba(0,0,0,.45); border-radius:4px}
+  .slab .corner{position:absolute; width:14px; height:14px; border:1.5px solid var(--teal); opacity:.5}
+  .slab .corner.tl{top:9px; left:9px; border-right:0; border-bottom:0}
+  .slab .corner.br{bottom:9px; right:9px; border-left:0; border-top:0}
+  .sh{display:flex; justify-content:space-between; align-items:baseline; padding-bottom:12px; border-bottom:1px solid var(--line)}
+  .sh .t{font-family:var(--mono); font-size:11.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--dim)}
+  .sh .n{font-family:var(--mono); font-size:11px; color:var(--muted)}
+  .sr{display:flex; flex-direction:column; gap:9px; padding:15px 0}
+  .rw{display:grid; grid-template-columns:64px 1fr; gap:10px; align-items:baseline}
+  .rw .k{font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted)}
+  .rw .v{font-family:var(--mono); font-size:12.5px; color:var(--ink); word-break:break-all; line-height:1.4}
+  .rw .v .big{font-size:15px; font-weight:600; color:var(--teal-ink)}
+  .sc{border-top:1px solid var(--line); padding-top:13px; display:flex; flex-direction:column; gap:7px}
+  .ck{display:flex; gap:9px; align-items:center; font-family:var(--mono); font-size:11.5px; color:var(--dim); opacity:0}
+  .ck .m{color:var(--teal); font-weight:700} .ck b{color:var(--ink); font-weight:600}
+  .dial{position:absolute; right:-34px; top:-38px; width:104px; height:104px; z-index:3; opacity:0}
+  .dial .spin{transform-origin:60px 60px; animation:spin 90s linear infinite}
+
+  section{position:relative; padding:58px 0}
+  .lead{font-size:clamp(25px,3.3vw,33px); font-weight:700; line-height:1.2; max-width:22ch}
+  .lead em{font-style:normal; color:var(--teal)}
+  .prose p{font-size:18px; color:var(--dim); max-width:60ch} .prose p+p{margin-top:15px}
+  .prose b{color:var(--ink); font-weight:600}
+
+  .why{background:var(--bg2)}
+  .why .grid{display:grid; grid-template-columns:180px 1fr; gap:40px}
+  @media(max-width:760px){.why .grid{grid-template-columns:1fr; gap:14px}}
+  .why .note{font-size:21px; line-height:1.46; color:var(--ink); max-width:34ch}
+  .why .note em{font-style:normal; color:var(--teal)}
+  .sign{margin-top:22px; font-family:var(--mono); font-size:12.5px; color:var(--muted)}
+
+  .steps{margin:32px 0 0; padding:0; list-style:none; display:grid; gap:0}
+  .step{display:grid; grid-template-columns:56px 1fr; gap:22px; align-items:start; padding:22px 0; border-top:1px solid var(--line)}
+  .step:last-child{border-bottom:1px solid var(--line)}
+  .step .gl{font-family:var(--mono); font-size:13px; font-weight:700; color:var(--teal); padding-top:4px; letter-spacing:.08em}
+  .step h3{font-size:19px; font-weight:640; letter-spacing:-.01em}
+  .step p{margin:6px 0 0; color:var(--dim); font-size:16px; max-width:56ch}
+  .step code{font-family:var(--mono); font-size:.84em; color:var(--teal-ink); background:var(--teal-soft); padding:1px 5px; border-radius:2px}
+
+  .gets{margin-top:32px; border-top:1px solid var(--line)}
+  .get{display:grid; grid-template-columns:.95fr 1.45fr; gap:34px; padding:24px 0; border-bottom:1px solid var(--line)}
+  @media(max-width:720px){.get{grid-template-columns:1fr; gap:8px}}
+  .get h3{font-size:20px; font-weight:640; letter-spacing:-.01em; line-height:1.2}
+  .get h3 .idx{font-family:var(--mono); font-size:12px; color:var(--teal); margin-right:10px}
+  .get p{margin:0; color:var(--dim); font-size:16px; line-height:1.55}
+
+  .comp{background:var(--bg2)}
+  .comp .lead{max-width:24ch}
+  .comp .prose{margin-top:18px}
+  .comp .foot{margin-top:20px; font-family:var(--mono); font-size:12.5px; color:var(--muted)}
+  .comp a{color:var(--teal); border-bottom:1px solid rgba(65,180,155,.4)}
+
+  .final{padding:74px 0 44px}
+  .final h2{font-size:clamp(29px,4vw,42px); max-width:18ch; line-height:1.08}
+  .final h2 em{font-style:normal; color:var(--teal)}
+  .final p{color:var(--dim); font-size:18px; max-width:50ch; margin:16px 0 28px}
+  .final .small{font-family:var(--mono); font-size:12px; letter-spacing:.03em; color:var(--muted); margin-top:22px}
+
+  footer{border-top:1px solid var(--line); padding:34px 0; background:var(--bg)}
+  .fb{display:flex; flex-wrap:wrap; gap:12px 24px; align-items:center; font-size:14px; color:var(--muted)}
+  .fb .b{display:flex; align-items:center; gap:9px; color:var(--ink); font-weight:600}
+  .fb .b span{font-family:var(--cn); color:var(--muted); font-size:9px; letter-spacing:.28em; font-weight:400}
+  .fb nav{margin-left:auto; display:flex; gap:20px}
+  .fb nav a{color:var(--dim)} .fb nav a:hover{color:var(--ink)}
+
+  /* live seal demo */
+  .amt{cursor:text; border-bottom:1px dashed rgba(65,180,155,.55); padding:0 1px 1px; outline:none; transition:.15s}
+  .amt:hover{border-bottom-color:var(--teal)}
+  .amt:focus{border-bottom-color:var(--teal); background:var(--teal-soft); color:var(--teal-ink)}
+  .seal{display:flex; gap:9px; align-items:center; font-family:var(--mono); font-size:12px; padding:2px 0; transition:color .15s}
+  .seal .m{font-weight:700} .seal b{font-weight:600}
+  .seal.ok{color:var(--dim)} .seal.ok .m{color:var(--teal)} .seal.ok b{color:var(--ink)}
+  .seal.bad{color:var(--red)} .seal.bad .m{color:var(--red)} .seal.bad b{color:var(--red)}
+  .ck2{display:flex; gap:9px; align-items:center; font-family:var(--mono); font-size:11.5px; color:var(--dim); padding:1px 0; transition:opacity .15s}
+  .ck2 .m{color:var(--teal); font-weight:700} .ck2 b{color:var(--ink); font-weight:600}
+  .slab.broken .ck2{opacity:.32}
+  .slab.broken .dial{animation:none; opacity:.16}
+  .slab.broken{border-color:rgba(229,99,91,.5); box-shadow:0 24px 60px rgba(150,40,36,.30)}
+  .hint{font-family:var(--mono); font-size:10.5px; color:var(--muted); margin-top:8px; letter-spacing:.02em}
+  .seal.bad ~ .hint{color:var(--red)}
+
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes fadein{to{opacity:1; transform:none}}
+  .dial{animation:fadein .5s ease .35s forwards}
+  .ck{transform:translateX(-3px); animation:fadein .35s ease forwards}
+  .ck.a{animation-delay:.7s}.ck.b{animation-delay:.82s}.ck.c{animation-delay:.94s}.ck.d{animation-delay:1.06s}
+  @media(prefers-reduced-motion:reduce){.dial,.ck{animation:none; opacity:1; transform:none} .dial .spin{animation:none}}
+  :focus-visible{outline:2px solid var(--teal); outline-offset:3px}
+  /* FAQ */
+  .faq details{border-bottom:1px solid var(--line); padding:16px 0}
+  .faq details:first-of-type{border-top:1px solid var(--line); margin-top:22px}
+  .faq summary{cursor:pointer; font-weight:700; font-size:18.5px; list-style:none; display:flex; justify-content:space-between; align-items:baseline; gap:16px}
+  .faq summary::-webkit-details-marker{display:none}
+  .faq summary::after{content:"+"; font-family:var(--mono); color:var(--teal); font-size:20px; flex-shrink:0}
+  .faq details[open] summary::after{content:"–"}
+  .faq details p{color:var(--dim); margin:12px 0 0; max-width:760px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap bar">
+    <a class="brand" href="#top" aria-label="Traceipt home">
+      <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+        <rect x="4" y="4" width="24" height="24" rx="1" stroke="var(--teal)" stroke-width="1.2" opacity=".55"/>
+        <path d="M9 20 h4 v-8 h6 v8 h4 M14 20 v-4" stroke="var(--teal)" stroke-width="1.3" fill="none"/>
+        <circle cx="16" cy="16" r="2.6" fill="var(--teal)"/>
+      </svg>
+      <span class="wm"><b>Traceipt</b><span>凭证</span></span>
+    </a>
+    <nav>
+      <a class="opt" href="#why">Why</a>
+      <a class="opt" href="#how">How it works</a>
+      <a class="opt" href="#compliance">Compliance</a>
+      <a class="btn solid" href="#get">Request access</a>
+    </nav>
+  </div>
+</header>
+
+<a id="top"></a>
+<main>
+  <section class="hero">
+    <div class="wrap stage">
+      <div>
+        <span class="kick">Receipts for machines that spend money</span>
+        <h1>An invoice is a claim. A Traceipt is <em>proof.</em></h1>
+        <p class="sub">Every payment your agent makes becomes a signed receipt anyone can verify, that no one can forge, alter, or backdate. Without trusting us.</p>
+        <div class="cta">
+          <a class="btn solid" href="#get">Request access</a>
+          <a class="btn line" href="#how">See how it works</a>
+        </div>
+        <div class="spec">
+          <span><b>Ed25519</b> signed</span>
+          <span><b>Merkle</b> anchored</span>
+          <span><b>Verifies offline</b></span>
+          <span><b>Self hosted</b></span>
+        </div>
+      </div>
+
+      <div class="slabwrap">
+        <div class="slab" id="slab" role="group" aria-label="A real signed receipt. Edit the amount to break the seal.">
+          <span class="corner tl"></span><span class="corner br"></span>
+          <svg class="dial" viewBox="0 0 120 120" fill="none" aria-hidden="true">
+            <circle cx="60" cy="60" r="54" stroke="var(--line)" stroke-width="1"/>
+            <circle class="spin" cx="60" cy="60" r="48" stroke="var(--teal)" stroke-width="1.4" stroke-dasharray="1.5 8" opacity=".8"/>
+            <circle cx="60" cy="60" r="38" stroke="var(--brass)" stroke-width="1" stroke-dasharray="1 10" opacity=".6"/>
+            <g stroke="var(--brass)" stroke-width="1.2" opacity=".7">
+              <path d="M60 12 l3 6 h-6 z" fill="var(--brass)"/><path d="M60 108 l3 -6 h-6 z" fill="var(--brass)"/>
+              <path d="M12 60 l6 3 v-6 z" fill="var(--brass)"/><path d="M108 60 l-6 3 v-6 z" fill="var(--brass)"/>
+            </g>
+            <circle cx="60" cy="60" r="27" fill="var(--bg)" stroke="var(--teal)" stroke-width="1.3"/>
+            <path d="M50 60 l7 7 13 -14" stroke="var(--teal)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <div class="sh"><span class="t">Payment Receipt</span><span class="n tnum">no. 148,213</span></div>
+          <div class="sr">
+            <div class="rw"><span class="k">Paid</span><span class="v"><span class="big amt" id="amt" contenteditable="true" spellcheck="false" role="textbox" aria-label="receipt amount in USDC, editable">0.005000</span> USDC on Base</span></div>
+            <div class="rw"><span class="k">For</span><span class="v">domain reputation query</span></div>
+            <div class="rw"><span class="k">Tx</span><span class="v">0xab34f9…c1e7</span></div>
+            <div class="rw"><span class="k">Anchor</span><span class="v">root a7f0…9bed, seq 42</span></div>
+          </div>
+          <div class="sc">
+            <div class="seal ok" id="seal" role="status" aria-live="polite">
+              <span class="m" id="sealMark">&#10003;</span><span id="sealText"><b>Seal valid</b>, signature checks out</span>
+            </div>
+            <div class="ck2"><span class="m">&#10003;</span><span><b>Settlement</b> confirmed on chain</span></div>
+            <div class="ck2"><span class="m">&#10003;</span><span><b>Anchor</b> proof holds</span></div>
+            <div class="hint" id="sealHint">Try it: edit the amount above</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="wrap"><div class="greca"></div></div>
+
+  <section>
+    <div class="wrap">
+      <p class="lead">The problem is boring, which is exactly why <em>it bites.</em></p>
+      <div class="prose" style="margin-top:22px">
+        <p>An agent makes ten thousand tiny payments a month. Your books see ten thousand transactions with no context. No invoice. No vendor. No reason. Finance cannot reconcile it, and an auditor will not sign off on a number with no evidence behind it.</p>
+        <p>The payment rail is solved. The record was not. That gap is the whole reason Traceipt exists.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="why" class="why">
+    <div class="wrap grid">
+      <span class="kick">Why we built it</span>
+      <div>
+        <p class="note">We kept watching teams wire up agent payments, then quietly panic about the paper trail. So we built the paper trail. A receipt that gets <em>signed the moment a payment clears</em>, chained so it cannot be edited later, and anchored so anyone can prove it existed.</p>
+        <p class="note" style="font-size:18px; color:var(--dim); margin-top:18px">It does one thing, and it refuses to lie about it.</p>
+        <p class="sign">Built by a small team that got tired of the spreadsheet.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="how">
+    <div class="wrap">
+      <span class="kick" style="display:block; margin-bottom:16px">How it works</span>
+      <p class="lead">From a 402 to a receipt that <em>outlives the database.</em></p>
+      <ol class="steps">
+        <li class="step"><span class="gl">01</span><div><h3>The agent hits a paywall</h3><p>A paid endpoint answers with <code>402 Payment Required</code> and a price.</p></div></li>
+        <li class="step"><span class="gl">02</span><div><h3>It pays, the money clears</h3><p>The agent settles in USDC on Base. A real transfer, on a real chain.</p></div></li>
+        <li class="step"><span class="gl">03</span><div><h3>Traceipt checks, then signs</h3><p>We confirm the transfer actually happened on chain, then sign a receipt that ties the payment to what was bought, who paid, and who was paid.</p></div></li>
+        <li class="step"><span class="gl">04</span><div><h3>It gets chained and anchored</h3><p>Each receipt joins a tamper evident chain and is folded into a Merkle root we publish on chain.</p></div></li>
+        <li class="step"><span class="gl">05</span><div><h3>Anyone can check it, later</h3><p>Signature, chain, and anchor all verify offline against keys we publish. The receipt is good long after we are out of the room.</p></div></li>
+      </ol>
+    </div>
+  </section>
+
+  <div class="wrap"><div class="greca"></div></div>
+
+  <section>
+    <div class="wrap">
+      <p class="lead">What you actually <em>get.</em></p>
+      <div class="gets">
+        <div class="get"><h3><span class="idx">01</span>Signed, checkable by a stranger</h3><p>Every receipt is Ed25519 signed and verifies in any language against the keys we publish. No SDK, no calling home.</p></div>
+        <div class="get"><h3><span class="idx">02</span>It only exists if the money moved</h3><p>We confirm the transfer on chain before we sign. There are no receipts for payments that never happened.</p></div>
+        <div class="get"><h3><span class="idx">03</span>Nobody can forge one</h3><p>Payer and payee are cryptographically bound, so you cannot write a receipt for a payment you did not make or receive.</p></div>
+        <div class="get"><h3><span class="idx">04</span>An invoice a human can file</h3><p>Every receipt renders to a VAT aware PDF with a scan to verify code. The machine checks the math, the accountant files the paper.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="compliance" class="comp">
+    <div class="wrap">
+      <span class="kick" style="display:block; margin-bottom:16px">Compliance</span>
+      <p class="lead">Built for the audit, <em>ahead of the mandate.</em></p>
+      <div class="prose">
+        <p>Rules for keeping provable records are arriving, unevenly. The EU AI Act asks high risk systems to log what they do, and the EU and South Korea now have AI laws in force. Crypto record keeping rules like FATF and MiCA are global, but they target regulated intermediaries above dollar thresholds, not cent sized agent payments.</p>
+        <p>So we will say it plainly: no rule today names a receipt like this. We are ahead of the mandate, not compelled by it. What Traceipt gives you is an audit ready, independently verifiable trail for machine payments, for the day you have to prove one.</p>
+      </div>
+      <p class="foot">This is engineering, not legal advice, and not a compliance guarantee. Whether a deployment is in scope is a call for counsel.</p>
+    </div>
+  </section>
+
+<section id="faq" class="faq">
+    <div class="wrap">
+      <span class="kick" style="display:block; margin-bottom:16px">FAQ</span>
+      <p class="lead">The questions your auditor <em>will ask.</em></p>
+      <details>
+        <summary>What is Traceipt?</summary>
+        <p>Traceipt turns every x402 payment an AI agent makes into a signed receipt. When a payment settles in USDC on Base, Traceipt confirms the transfer on chain, then signs a receipt that ties the payment to what was bought, who paid, and who was paid. Receipts are chained tamper-evident and anchored in a Merkle root published on chain.</p>
+      </details>
+      <details>
+        <summary>How do I reconcile thousands of AI-agent micropayments?</summary>
+        <p>Each receipt carries the context your books are missing: the purchase, the payer, the payee, and the on-chain transaction. Every receipt also renders to a VAT-aware PDF with a scan-to-verify code, so the machine checks the math and the accountant files the paper.</p>
+      </details>
+      <details>
+        <summary>Can I verify a receipt without Traceipt?</summary>
+        <p>Yes. Signature, chain, and anchor all verify offline against published keys, in any language, with no SDK and no calling home. The receipt stays checkable long after we are out of the room. <a href="/verify" style="color:var(--teal-ink)">Try it now — verify a receipt in your browser.</a></p>
+      </details>
+      <details>
+        <summary>Can a receipt be faked or edited later?</summary>
+        <p>No. A receipt only exists if the money actually moved — the transfer is confirmed on chain before signing. Payer and payee are cryptographically bound, each receipt joins a tamper-evident chain, and the chain is folded into a Merkle root published on chain, so edits and forgeries fail verification.</p>
+      </details>
+      <details>
+        <summary>What does Traceipt run on, and can I self-host?</summary>
+        <p>Traceipt runs on x402, Base, and USDC, with one dependency. You can host it yourself if you would rather.</p>
+      </details>
+      <details>
+        <summary>Does Traceipt help with the EU AI Act and MiCA?</summary>
+        <p>The EU AI Act (Article 12) wants high-risk systems to log their actions automatically, and MiCA wants transaction records tied to settlement and kept for years. A signed Traceipt per payment is that record. This is engineering, not legal advice — whether a deployment is in scope is a call for counsel.</p>
+      </details>
+      <p class="foot" style="margin-top:18px">New to this? Start with <a href="/x402-receipts" style="color:var(--teal-ink); text-decoration:underline">What is an x402 receipt?</a> Comparing options? Read <a href="/vs-x402b" style="color:var(--teal-ink); text-decoration:underline">Traceipt vs x402b</a>.</p>
+    </div>
+  </section>
+
+  <section id="get" class="final">
+    <div class="wrap">
+      <span class="kick">Get access</span>
+      <h2 style="margin-top:14px">Start keeping receipts your <em>auditor will accept.</em></h2>
+      <p>We are onboarding the first teams on testnet now. Tell us what your agents are buying, and we will get you issuing real receipts this week.</p>
+      <div class="cta">
+        <a class="btn solid" href="mailto:hello@traceipt.xyz?subject=Traceipt%20access">Request access</a>
+        <a class="btn line" href="#top">Back to top</a>
+      </div>
+      <p class="small">Runs on x402, Base, and USDC. One dependency. Host it yourself if you would rather.</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap fb">
+    <span class="b">Traceipt <span>凭证</span></span>
+    <span>Receipts for machines that spend money.</span>
+    <nav>
+      <a href="#why">Why</a>
+      <a href="#how">How it works</a>
+      <a href="#faq">FAQ</a>
+      <a href="#get">Access</a>
+      <a href="/verify">Verify a receipt</a>
+      <a href="/badge">Badge</a>
+      <a href="/vs-x402b">Vs x402b</a>
+    </nav>
+  </div>
+</footer>
+
+<script>
+/* Live seal demo: a REAL Ed25519 signature verified in your browser.
+   The signature was made offline over the receipt's exact contents; edit the
+   amount and the browser re-verifies and the seal breaks. No network, no fake. */
+(function(){
+  var PUB = "h9Zabr+C2twFvSBIbQ8z2ec7xbzvrnD69QLkwGZSB8Y=";
+  var SIG = "Ql8FSxLMuCeYjrO6q9vVnOrkyFprUE9uHAJmnWDKaCsODvkOYfDRnhjChv4pwDnubQfQAKkOj1I8M8UTmPtLCA==";
+  var FIXED = {
+    "for":  "domain reputation query",
+    payee:  "0x3ec5...04e1",
+    payer:  "0x8f2c...a19b",
+    tx:     "0xab34f9...c1e7"
+  };
+  var slab = document.getElementById("slab"),
+      amt  = document.getElementById("amt"),
+      seal = document.getElementById("seal"),
+      mark = document.getElementById("sealMark"),
+      text = document.getElementById("sealText"),
+      hint = document.getElementById("sealHint");
+  if(!amt || !seal) return;
+
+  function bytes(b64){ var s=atob(b64), u=new Uint8Array(s.length); for(var i=0;i<s.length;i++) u[i]=s.charCodeAt(i); return u; }
+  // Canonical bytes signed offline. Must match the signer exactly.
+  function canon(a){
+    return ["amount="+a+" USDC","for="+FIXED["for"],"payee="+FIXED.payee,
+            "payer="+FIXED.payer,"tx="+FIXED.tx].join("\n");
+  }
+
+  var key = null, ready = false;
+
+  function paint(ok){
+    seal.classList.toggle("ok", ok);
+    seal.classList.toggle("bad", !ok);
+    slab.classList.toggle("broken", !ok);
+    mark.innerHTML = ok ? "&#10003;" : "&#10007;";
+    text.innerHTML = ok ? "<b>Seal valid</b>, signature checks out"
+                        : "<b>Seal broken</b>, this receipt was altered";
+    if(hint) hint.textContent = ok ? "Try it: edit the amount above"
+                                   : "Put it back to 0.005000 and the seal re-verifies";
+  }
+
+  async function check(){
+    if(!ready || !key) return;
+    var a = (amt.textContent || "").trim();
+    var ok = false;
+    try{
+      ok = await crypto.subtle.verify({name:"Ed25519"}, key, bytes(SIG),
+             new TextEncoder().encode(canon(a)));
+    }catch(e){ ok = false; }
+    paint(ok);
+  }
+
+  (async function init(){
+    try{
+      key = await crypto.subtle.importKey("raw", bytes(PUB), {name:"Ed25519"}, false, ["verify"]);
+      ready = true;
+      amt.addEventListener("input", check);
+      amt.addEventListener("blur", check);
+      check();
+    }catch(e){
+      /* Browser without Ed25519 in WebCrypto: keep the static valid state,
+         drop the editing affordance rather than fake a result. */
+      amt.setAttribute("contenteditable","false");
+      amt.style.borderBottom = "none";
+      if(hint) hint.textContent = "";
+    }
+  })();
+})();
+</script>
+
+</body>
+</html>

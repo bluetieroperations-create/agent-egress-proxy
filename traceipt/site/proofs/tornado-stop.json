@@ -1,0 +1,47 @@
+{
+  "base_url": "https://api.traceipt.xyz",
+  "subject": "0x8589427373D6D84E98730D7795D8f6f8731FDA16",
+  "verdict": {
+    "policy": "ofac-sanctions-v1",
+    "subject": {
+      "address": "0x8589427373d6d84e98730d7795d8f6f8731fda16"
+    },
+    "decided_at": "2026-08-05T17:32:22+00:00",
+    "decision": "STOP",
+    "screens": [
+      {
+        "provider": "offline-fixture",
+        "listed": true,
+        "checked": true,
+        "source": "offline-fixture",
+        "matches": [
+          "OFAC-SDN"
+        ]
+      }
+    ]
+  },
+  "verdict_digest": "sha256:7f42baea4ea12c9853735355a5cce5ca180ce07aa41754a0979a0b34e3b56c7a",
+  "response": {
+    "attestation": {
+      "attestation_id": "att_1c4b627ea116e9fec0c4",
+      "hash": "sha256:7f42baea4ea12c9853735355a5cce5ca180ce07aa41754a0979a0b34e3b56c7a",
+      "type": "sanctions-verdict",
+      "ref": "ofac-tornado-cash",
+      "submitted_at": "2026-08-05T17:32:50Z",
+      "status": "anchored"
+    },
+    "proof": {
+      "attestation_id": "att_1c4b627ea116e9fec0c4",
+      "anchor_id": 2,
+      "leaf_index": 0,
+      "tree_size": 1,
+      "leaf_data": "sha256:7f42baea4ea12c9853735355a5cce5ca180ce07aa41754a0979a0b34e3b56c7a",
+      "audit_path": [],
+      "root": "83817d3c9cd48cf4676923c5ee78d51981f29752f95971925814b7f1e5ab6b61",
+      "onchain_network": "base",
+      "onchain_tx": "0xe41c540c7e6f21a3042c52f50e5799fc32af2560d117752be36fe720d3327cd3",
+      "anchored_at": "2026-08-05T17:32:50Z"
+    },
+    "durable": true
+  }
+}

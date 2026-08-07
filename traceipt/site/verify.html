@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verify a Traceipt receipt</title>
+<meta name="description" content="Paste a Traceipt receipt, proof, or /attest response and verify it in your browser: Ed25519 signature against the issuer's published keys, RFC 6962 Merkle inclusion, and the on-chain calldata check on Base. Never calls Traceipt's server.">
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="apple-touch-icon" href="/logo.png">
+<link rel="canonical" href="https://traceipt.xyz/verify">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://traceipt.xyz/verify">
+<meta property="og:site_name" content="Traceipt">
+<meta property="og:title" content="Verify a Traceipt receipt — in your browser, against Base">
+<meta property="og:description" content="Ed25519 signature, RFC 6962 Merkle inclusion, and on-chain calldata check — computed client-side. A receipt stays verifiable even if Traceipt's server is gone.">
+<meta property="og:image" content="https://traceipt.xyz/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#0F1417">
+<meta name="twitter:image" content="https://traceipt.xyz/og.png">
+<style>
+  :root{
+    --bg:#0F1417; --bg2:#121A1E; --panel:#161F24; --panel2:#1A242A;
+    --ink:#E8EBED; --dim:#9AA4A9; --muted:#6B757B; --line:#222C32;
+    --teal:#41B49B; --teal-ink:#8FE7D3; --teal-soft:rgba(65,180,155,.10);
+    --red:#E06C5C; --red-ink:#F0A296; --brass:#C09A57;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --pass:var(--teal); --fail:var(--red); --skip:var(--brass);
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:var(--bg); color:var(--ink); font:16px/1.6 var(--sans); -webkit-font-smoothing:antialiased; overflow-x:hidden}
+  body::before{content:""; position:fixed; inset:0; z-index:0; pointer-events:none;
+    background:radial-gradient(110% 60% at 50% -15%, rgba(65,180,155,.09), transparent 60%)}
+  .wrap{position:relative; z-index:1; max-width:1060px; margin:0 auto; padding:0 24px 56px}
+  header.top{border-bottom:1px solid var(--line); padding:16px 0; position:relative; z-index:1}
+  header.top .inner{max-width:1060px; margin:0 auto; padding:0 24px; display:flex; justify-content:space-between; align-items:center}
+  header.top .b{font-weight:800; font-size:34px; letter-spacing:-.015em; display:flex; align-items:center; gap:14px;
+    animation:brandpulse 1.9s ease-in-out infinite}
+  header.top .b img{width:46px; height:46px; border-radius:10px; box-shadow:0 0 22px rgba(65,180,155,.6);
+    animation:logopulse 1.9s ease-in-out infinite}
+  header.top .b span{color:var(--teal-ink)}
+  @keyframes brandpulse{
+    0%,100%{text-shadow:0 0 10px rgba(65,180,155,.5), 0 0 26px rgba(65,180,155,.25)}
+    50%{text-shadow:0 0 22px rgba(65,180,155,1), 0 0 52px rgba(65,180,155,.65), 0 0 90px rgba(65,180,155,.35)}
+  }
+  @keyframes logopulse{
+    0%,100%{box-shadow:0 0 14px rgba(65,180,155,.4)}
+    50%{box-shadow:0 0 30px rgba(65,180,155,.95), 0 0 60px rgba(65,180,155,.45)}
+  }
+  @media (prefers-reduced-motion: reduce){
+    header.top .b, header.top .b img{animation:none}
+    header.top .b{text-shadow:0 0 18px rgba(65,180,155,.8)}
+  }
+  header.top a{text-decoration:none; color:var(--dim); font-size:14.5px}
+  /* hero */
+  .hero{padding:46px 0 30px; text-align:left}
+  .kick{font-family:var(--mono); font-size:11.5px; letter-spacing:.18em; text-transform:uppercase; color:var(--teal); font-weight:600}
+  h1{font-size:clamp(30px,5.4vw,46px); line-height:1.12; letter-spacing:-.02em; margin:12px 0 12px; max-width:820px}
+  h1 em{font-style:italic; color:var(--teal-ink)}
+  .sub{color:var(--dim); max-width:720px; margin:0 0 18px; font-size:17px}
+  .sub b{color:var(--ink)}
+  .chips{display:flex; gap:10px; flex-wrap:wrap; margin:6px 0 30px}
+  .chip{font-family:var(--mono); font-size:12.5px; color:var(--teal-ink); background:var(--teal-soft);
+    border:1px solid rgba(65,180,155,.3); border-radius:999px; padding:6px 13px}
+  /* two-panel stage */
+  .stage{display:grid; grid-template-columns:1.05fr 1fr; gap:20px; align-items:start}
+  @media (max-width:880px){.stage{grid-template-columns:1fr}}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:20px}
+  .card h3{margin:0 0 12px; font-size:13px; font-family:var(--mono); letter-spacing:.14em; text-transform:uppercase; color:var(--muted); font-weight:600}
+  textarea{width:100%; min-height:280px; padding:14px; border:1px solid var(--line); border-radius:10px;
+    background:var(--bg); color:var(--ink); font:12.5px/1.55 var(--mono); resize:vertical}
+  textarea:focus{outline:1px solid var(--teal)}
+  .row{display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin:14px 0 0}
+  button{border:0; border-radius:9px; padding:11px 20px; font-size:15px; font-weight:700; cursor:pointer; font-family:var(--sans)}
+  #go{background:var(--teal); color:#08110F; box-shadow:0 0 22px rgba(65,180,155,.28)}
+  #go:hover{background:#4cc4a9}
+  button.ghost{background:transparent; color:var(--ink); border:1px solid var(--line); font-weight:600; font-size:14px}
+  button.ghost:hover{border-color:var(--teal); color:var(--teal-ink)}
+  #sampleStop{border-color:rgba(224,108,92,.45); color:var(--red-ink)}
+  #sampleStop:hover{border-color:var(--red); color:var(--red-ink); background:rgba(224,108,92,.08)}
+  label.opt{color:var(--muted); font-size:13px; display:flex; gap:7px; align-items:center; font-family:var(--mono)}
+  input[type=text]{flex:1; min-width:200px; padding:9px 11px; border:1px solid var(--line);
+    border-radius:8px; background:var(--bg); color:var(--dim); font:12.5px var(--mono)}
+  input[type=text]:focus{outline:1px solid var(--teal); color:var(--ink)}
+  /* results */
+  .empty{border:1px dashed var(--line); border-radius:10px; padding:34px 22px; text-align:center; color:var(--muted); font-size:14.5px}
+  .empty .glyph{font-size:26px; display:block; margin-bottom:8px; color:var(--teal); opacity:.75}
+  #result{margin-top:0}
+  .banner{padding:14px 18px; border-radius:10px; font-weight:800; font-size:16.5px; margin-bottom:14px; display:none; letter-spacing:.01em}
+  .banner.ok{display:block; background:var(--teal-soft); color:var(--teal-ink);
+    border:1px solid rgba(65,180,155,.45); box-shadow:0 0 34px rgba(65,180,155,.16); animation:pop .35s ease}
+  .banner.bad{display:block; background:rgba(224,108,92,.1); color:var(--red-ink);
+    border:1px solid rgba(224,108,92,.45); box-shadow:0 0 34px rgba(224,108,92,.14); animation:pop .35s ease}
+  @keyframes pop{0%{transform:scale(.97); opacity:0}100%{transform:scale(1); opacity:1}}
+  .check{display:flex; gap:12px; padding:12px 2px; border-top:1px solid var(--line); animation:rise .4s ease backwards}
+  .check:nth-child(2){animation-delay:.05s}.check:nth-child(3){animation-delay:.12s}
+  .check:nth-child(4){animation-delay:.19s}.check:nth-child(5){animation-delay:.26s}
+  @keyframes rise{from{opacity:0; transform:translateY(6px)}to{opacity:1; transform:none}}
+  .tag{flex:none; width:56px; font-weight:700; font-size:11.5px; letter-spacing:.06em; font-family:var(--mono);
+    text-align:center; padding:4px 0; border-radius:6px; height:fit-content}
+  .tag.pass{color:var(--teal); background:var(--teal-soft); border:1px solid rgba(65,180,155,.4)}
+  .tag.fail{color:var(--red-ink); background:rgba(224,108,92,.1); border:1px solid rgba(224,108,92,.4)}
+  .tag.skip{color:var(--brass); background:rgba(192,154,87,.1); border:1px solid rgba(192,154,87,.4)}
+  .ctext b{display:block; font-size:15px}
+  .ctext span{color:var(--muted); font:12px/1.55 var(--mono); word-break:break-all}
+  .foot{margin-top:34px; color:var(--muted); font-size:13.5px; border-top:1px solid var(--line); padding-top:16px}
+  a{color:var(--teal-ink)}
+  code{font:12.5px var(--mono); color:var(--teal-ink); background:var(--panel); border:1px solid var(--line); border-radius:5px; padding:1px 6px}
+  footer.site{border-top:1px solid var(--line); padding:20px 0; font-size:14px; color:var(--muted); position:relative; z-index:1}
+  footer.site .inner{max-width:1060px; margin:0 auto; padding:0 24px; display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="inner">
+    <span class="b"><img src="/favicon.png" alt="" width="46" height="46">Traceipt <span>凭证</span></span>
+    <a href="/">← traceipt.xyz</a>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="hero">
+    <div class="kick">Receipt verifier · runs entirely in your browser</div>
+    <h1>Don't trust us. <em>Check the chain.</em></h1>
+    <p class="sub">Paste a receipt, proof, or <code>/attest</code> response. This page checks it
+    <b>against Base and the issuer's published key — client-side</b>. It never calls Traceipt's
+    server; a receipt stays verifiable even if that server is gone. Try to break it.</p>
+    <div class="chips">
+      <span class="chip">Ed25519 · WebCrypto</span>
+      <span class="chip">RFC 6962 Merkle proof</span>
+      <span class="chip">Anchor check on Base mainnet</span>
+      <span class="chip">Zero calls to our server</span>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="card">
+      <h3>Receipt / proof JSON</h3>
+      <textarea id="input" placeholder='Paste JSON here — e.g. the mainnet_run.json the payer client writes, or a /attest 201 body.'></textarea>
+      <div class="row">
+        <button id="go">Verify</button>
+        <button class="ghost" id="sample">Load the live mainnet example</button>
+        <button class="ghost" id="sampleStop">Load the OFAC Tornado Cash STOP</button>
+      </div>
+      <div class="row">
+        <label class="opt">RPC
+          <input type="text" id="rpc" value="https://mainnet.base.org">
+        </label>
+        <label class="opt"><input type="checkbox" id="offline"> offline (skip on-chain)</label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>The checks</h3>
+      <div id="result"><div class="empty"><span class="glyph">✓</span>Checks run here, in your browser.<br>
+      Load a sample — or paste a receipt and try to make a forged one pass.</div></div>
+    </div>
+  </div>
+
+  <p class="foot">RFC 6962 Merkle inclusion + on-chain calldata check (SHA-256),
+  Ed25519 signature via WebCrypto. The same checks ship as CLIs:
+  <code>npx traceipt-verify receipt.json</code>
+  (<a href="https://www.npmjs.com/package/traceipt-verify" rel="noopener">npm</a>,
+  zero dependencies) or <code>tools/verify.py</code> in the Traceipt codebase.
+  If the on-chain step is blocked by CORS, try a different RPC endpoint or use a CLI.</p>
+</div>
+
+<footer class="site">
+  <div class="inner">
+    <span><b>Traceipt</b> — receipts for machines that spend money.</span>
+    <span><a href="/">Home</a> · <a href="/x402-receipts">What is an x402 receipt?</a> · <a href="/badge">Badge</a> · <a href="/#faq">FAQ</a></span>
+  </div>
+</footer>
+
+<script>
+const MARKER = "54524143454950542d414e43484f5201"; // "TRACEIPT-ANCHOR\x01"
+const enc = new TextEncoder();
+
+async function sha256(bytes){ return new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)); }
+function hex(u8){ return [...u8].map(b=>b.toString(16).padStart(2,"0")).join(""); }
+function fromHex(h){ const a=new Uint8Array(h.length/2); for(let i=0;i<a.length;i++) a[i]=parseInt(h.substr(i*2,2),16); return a; }
+function cat(...arrs){ let n=arrs.reduce((s,a)=>s+a.length,0),o=new Uint8Array(n),k=0; for(const a of arrs){o.set(a,k);k+=a.length;} return o; }
+
+// RFC 6962: leaf = SHA256(0x00 || data); node = SHA256(0x01 || left || right)
+async function leafHash(data){ return sha256(cat(new Uint8Array([0]), data)); }
+async function nodeHash(l,r){ return sha256(cat(new Uint8Array([1]), l, r)); }
+
+async function rootFromInclusion(m, n, leafData, proof){
+  let fn=m, sn=n-1, r=await leafHash(leafData);
+  for(const sibHex of proof){
+    const sib=fromHex(sibHex);
+    if(fn===sn || (fn&1)){
+      r=await nodeHash(sib,r);
+      if(!(fn&1)){ while(fn!==0 && !(fn&1)){ fn>>=1; sn>>=1; } }
+    } else { r=await nodeHash(r,sib); }
+    fn>>=1; sn>>=1;
+  }
+  return r;
+}
+
+// canonical JSON matching Python json.dumps(sort_keys=True, separators=(",",":"), ensure_ascii=False)
+function canon(o){
+  if(o===null||typeof o!=="object") return JSON.stringify(o);
+  if(Array.isArray(o)) return "["+o.map(canon).join(",")+"]";
+  return "{"+Object.keys(o).sort().map(k=>JSON.stringify(k)+":"+canon(o[k])).join(",")+"}";
+}
+// The verdict digest (screening.verdict_digest) is json.dumps with DEFAULT
+// ensure_ascii=True, which escapes non-ASCII as \uXXXX per UTF-16 code unit.
+// JSON.stringify does NOT, so we escape here to match — otherwise verdict_binding
+// falsely fails for a verdict with non-ASCII (e.g. a sanctioned entity name).
+// NOTE: the envelope-signature canon must stay raw (ensure_ascii=False, matching
+// signing.py) — only the verdict digest gets this.
+function asciiEscape(s){ return s.replace(/[^\x00-\x7f]/g, c=>"\\u"+c.charCodeAt(0).toString(16).padStart(4,"0")); }
+async function verdictDigest(v){ return "sha256:"+hex(await sha256(enc.encode(asciiEscape(canon(v))))); }
+
+function findProof(d){
+  if(!d||typeof d!=="object") return null;
+  if("root" in d && "leaf_data" in d) return d;
+  if(d.proof && typeof d.proof==="object") return d.proof;
+  if(d.response && d.response.proof) return d.response.proof;
+  return null;
+}
+function findVerdict(d){ return (d && typeof d.verdict==="object") ? d.verdict : null; }
+
+async function rpc(url, method, params){
+  const res=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({jsonrpc:"2.0",id:1,method,params})});
+  const j=await res.json(); if(j.error) throw new Error(JSON.stringify(j.error)); return j.result;
+}
+
+function b64urlToBytes(s){ s=s.replace(/-/g,"+").replace(/_/g,"/"); while(s.length%4)s+="="; const bin=atob(s); const a=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)a[i]=bin.charCodeAt(i); return a; }
+
+const checks=[];
+function add(state,name,detail){ checks.push({state,name,detail}); }
+
+async function checkAttestation(doc, rpcUrl, offline){
+  const proof=findProof(doc); if(!proof) return false;
+  const leaf=proof.leaf_data, root=(proof.root||"").toLowerCase();
+  if(!leaf||!root){ add("fail","proof structure","missing leaf_data or root"); return true; }
+
+  const verdict=findVerdict(doc);
+  if(verdict){
+    const want=await verdictDigest(verdict);
+    add(want===leaf?"pass":"fail","verdict binding",
+        want===leaf?"digest matches the anchored leaf":`verdict hashes to ${want}`);
+  }
+  try{
+    const recomputed=hex(await rootFromInclusion(proof.leaf_index|0, proof.tree_size||1, enc.encode(leaf), proof.audit_path||[]));
+    add(recomputed===root?"pass":"fail","inclusion proof",
+        recomputed===root?`root ${root.slice(0,16)}… recomputed from ${(proof.audit_path||[]).length}-node path`
+                          :"audit path does NOT recompute the root");
+  }catch(e){ add("fail","inclusion proof","error: "+e.message); }
+
+  const tx=proof.onchain_tx, net=proof.onchain_network||"base";
+  if(offline){ add("skip","on-chain anchor","skipped (offline)"); }
+  else if(!tx){ add("skip","on-chain anchor","no onchain_tx (not published)"); }
+  else {
+    try{
+      const txo=await rpc(rpcUrl,"eth_getTransactionByHash",[tx]);
+      if(!txo){ add("fail","on-chain anchor",`tx not found on ${net}`); }
+      else{
+        const inp=(txo.input||"").slice(2);
+        const carries=inp.startsWith(MARKER) && inp.slice(MARKER.length)===root;
+        const blk=txo.blockNumber?parseInt(txo.blockNumber,16):null;
+        add(carries?"pass":"fail","on-chain anchor",
+            carries?`${net} block ${blk} — calldata carries the exact root`
+                   :"tx calldata does NOT carry this root");
+      }
+    }catch(e){ add("fail","on-chain anchor","RPC error (CORS? try another endpoint): "+e.message); }
+  }
+  return true;
+}
+
+async function checkSignature(env){
+  try{
+    const jwks=await (await fetch("/jwks.json",{headers:{Accept:"application/json"}})).json();
+    const kid=env.protected&&env.protected.kid;
+    const jwk=(jwks.keys||[]).find(k=>k.kid===kid&&k.crv==="Ed25519");
+    if(!jwk){ add("skip","signature",`no key kid=${kid} at /jwks.json`); return; }
+    const pub=b64urlToBytes(jwk.x);
+    const key=await crypto.subtle.importKey("raw",pub,{name:"Ed25519"},false,["verify"]);
+    const input=enc.encode(canon({payload:env.payload,protected:env.protected}));
+    const ok=await crypto.subtle.verify({name:"Ed25519"},key,b64urlToBytes(env.signature),input);
+    add(ok?"pass":"fail","signature",ok?`Ed25519 verified against issuer key kid=${kid}`:"signature verification FAILED");
+  }catch(e){ add("skip","signature","WebCrypto Ed25519 unavailable here — use the CLI: "+e.message); }
+}
+
+function render(){
+  const box=document.getElementById("result");
+  const failed=checks.some(c=>c.state==="fail");
+  let html=`<div class="banner ${failed?"bad":"ok"}">${failed?"✗ VERIFICATION FAILED":"✓ VERIFIED — independently, against the chain"}</div>`;
+  for(const c of checks){
+    html+=`<div class="check"><div class="tag ${c.state}">${c.state.toUpperCase()}</div>
+      <div class="ctext"><b>${c.name}</b><span>${c.detail||""}</span></div></div>`;
+  }
+  box.innerHTML=html;
+}
+
+document.getElementById("go").onclick=async()=>{
+  checks.length=0;
+  let doc; try{ doc=JSON.parse(document.getElementById("input").value); }
+  catch(e){ document.getElementById("result").innerHTML=`<div class="banner bad">Not valid JSON: ${e.message}</div>`; return; }
+  const rpcUrl=document.getElementById("rpc").value.trim();
+  const offline=document.getElementById("offline").checked;
+  const handled=await checkAttestation(doc,rpcUrl,offline);
+  if(doc&&doc.protected&&doc.payload&&doc.signature){ await checkSignature(doc); }
+  else if(!handled){ document.getElementById("result").innerHTML=`<div class="banner bad">Unrecognized document — paste a /attest 201 body, a proof, or a signed receipt.</div>`; return; }
+  render();
+};
+
+document.getElementById("sample").onclick=()=>{
+  document.getElementById("input").value=JSON.stringify({
+    verdict_digest:"sha256:728c4733c730091d606cfc22368e7787249392fec898ad730f8d59a5396dcace",
+    response:{attestation:{attestation_id:"att_b91e311aad05a268d8bf",status:"anchored"},
+      proof:{leaf_index:0,tree_size:1,
+        leaf_data:"sha256:728c4733c730091d606cfc22368e7787249392fec898ad730f8d59a5396dcace",
+        audit_path:[],root:"6d2b25d4f9701dba7d9b6bbe5cfc6a706d7b436a3db09e8c3b8c9cebfbce2985",
+        onchain_network:"base",onchain_tx:"0xab1c79b60a3ca3386eabc654bf163711140ac17a969e1fa526be8314da38821f"}}
+  },null,2);
+};
+
+// A real STOP: an OFAC-sanctioned Tornado Cash address, screened -> STOP,
+// bound to a paid x402 tx and anchored on Base mainnet. Includes the verdict,
+// so the verdict_binding check confirms the STOP hashes to the anchored leaf.
+document.getElementById("sampleStop").onclick=async()=>{
+  try{
+    const r=await fetch("/proofs/tornado-stop.json",{headers:{Accept:"application/json"}});
+    document.getElementById("input").value=JSON.stringify(await r.json(),null,2);
+  }catch(e){
+    document.getElementById("input").value="could not load /proofs/tornado-stop.json: "+e.message;
+  }
+};
+</script>
+</body>
+</html>

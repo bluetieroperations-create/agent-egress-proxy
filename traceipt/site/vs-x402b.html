@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Traceipt vs x402b (Pieverse): x402 payment receipts compared</title>
+<meta name="description" content="Two ways to give AI-agent x402 payments an audit trail: Traceipt's offline-verifiable signed receipts (USDC on Base, self-hostable) vs x402b's platform receipts on BNB Greenfield. An honest comparison.">
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="apple-touch-icon" href="/logo.png">
+<link rel="canonical" href="https://traceipt.xyz/vs-x402b">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://traceipt.xyz/vs-x402b">
+<meta property="og:site_name" content="Traceipt">
+<meta property="og:title" content="Traceipt vs x402b: two ways to give x402 payments an audit trail">
+<meta property="og:description" content="Offline-verifiable signed receipts on the open x402 standard, or platform receipts on BNB Greenfield? An honest comparison for teams whose agents spend money.">
+<meta property="og:image" content="https://traceipt.xyz/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Traceipt vs x402b: x402 payment receipts compared">
+<meta name="twitter:description" content="Offline-verifiable signed receipts vs platform receipts on BNB Greenfield — an honest comparison for teams whose agents spend money.">
+<meta name="twitter:image" content="https://traceipt.xyz/og.png">
+<meta name="theme-color" content="#0F1417">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "TechArticle",
+      "@id": "https://traceipt.xyz/vs-x402b#article",
+      "headline": "Traceipt vs x402b: two ways to give x402 payments an audit trail",
+      "description": "A comparison of Traceipt's offline-verifiable signed receipts and Pieverse's x402b platform receipts on BNB Greenfield, for teams whose AI agents pay over x402.",
+      "url": "https://traceipt.xyz/vs-x402b",
+      "datePublished": "2026-08-05",
+      "dateModified": "2026-08-05",
+      "author": { "@type": "Organization", "name": "BlueTier Operations", "url": "https://blackwalltier.com" },
+      "publisher": { "@type": "Organization", "name": "BlueTier Operations", "url": "https://blackwalltier.com" }
+    },
+    {
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "Traceipt", "item": "https://traceipt.xyz/" },
+        { "@type": "ListItem", "position": 2, "name": "Traceipt vs x402b", "item": "https://traceipt.xyz/vs-x402b" }
+      ]
+    }
+  ]
+}
+</script>
+<style>
+  :root{
+    --bg:#0F1417; --panel:#161F24; --ink:#E8EBED; --dim:#9AA4A9; --muted:#6B757B; --line:#222C32;
+    --teal:#41B49B; --teal-ink:#8FE7D3; --teal-soft:rgba(65,180,155,.10); --brass:#C09A57;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --maxw:860px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:var(--bg); color:var(--ink); font-family:var(--sans); font-size:17px; line-height:1.64; -webkit-font-smoothing:antialiased}
+  .wrap{max-width:var(--maxw); margin:0 auto; padding:0 28px}
+  a{color:var(--teal-ink)}
+  h1,h2{letter-spacing:-.015em; line-height:1.2}
+  h1{font-size:clamp(28px,5vw,40px); margin:14px 0 10px}
+  h1 em,h2 em{font-style:italic; color:var(--teal-ink)}
+  h2{font-size:23px; margin:44px 0 12px}
+  .kick{font-family:var(--mono); font-size:11.5px; letter-spacing:.16em; text-transform:uppercase; color:var(--teal); font-weight:600}
+  .date{font-family:var(--mono); font-size:13px; color:var(--muted)}
+  header.top{border-bottom:1px solid var(--line); padding:18px 0}
+  header.top .wrap{display:flex; justify-content:space-between; align-items:center}
+  header.top .b{font-weight:700}
+  header.top .b span{color:var(--teal)}
+  header.top a{text-decoration:none; color:var(--dim); font-size:15px}
+  main{padding:52px 0 24px}
+  p{color:var(--dim)}
+  p strong{color:var(--ink)}
+  .tldr{background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--teal); border-radius:10px; padding:18px 22px; margin:26px 0}
+  .tldr p{margin:8px 0}
+  .tablewrap{overflow-x:auto; margin:20px 0}
+  table{border-collapse:collapse; width:100%; min-width:640px; font-size:15.5px}
+  th,td{border:1px solid var(--line); padding:12px 14px; text-align:left; vertical-align:top}
+  th{background:var(--panel); font-family:var(--mono); font-size:12.5px; letter-spacing:.08em; text-transform:uppercase; color:var(--teal-ink)}
+  td:first-child{color:var(--muted); font-family:var(--mono); font-size:13px; white-space:nowrap}
+  td{color:var(--dim)}
+  td b{color:var(--ink)}
+  ul{color:var(--dim); padding-left:22px}
+  li{margin:8px 0}
+  .foot-note{font-size:14px; color:var(--muted); border-top:1px solid var(--line); margin-top:40px; padding-top:16px}
+  .cta{margin:40px 0; display:flex; gap:14px; flex-wrap:wrap}
+  .btn{display:inline-block; padding:12px 22px; border-radius:8px; text-decoration:none; font-weight:600}
+  .btn.solid{background:var(--teal); color:#08110F}
+  .btn.line{border:1px solid var(--line); color:var(--ink)}
+  footer{border-top:1px solid var(--line); padding:22px 0; margin-top:30px; font-size:14px; color:var(--muted)}
+  footer .wrap{display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <span class="b">Traceipt <span>凭证</span></span>
+    <a href="/">← traceipt.xyz</a>
+  </div>
+</header>
+
+<main>
+  <div class="wrap">
+    <span class="kick">Comparison</span>
+    <h1>Traceipt vs x402b: two ways to give x402 payments <em>an audit trail</em></h1>
+    <p class="date">August 2026 · by the Traceipt team — yes, we make one of these. We've kept the comparison factual and linked our sources.</p>
+
+    <p>AI agents paying over <a href="https://x402.org" rel="noopener">x402</a> create a record-keeping problem: thousands of tiny payments with no invoice, no vendor, no reason attached. Two products tackle it from different directions — <strong>Traceipt</strong> (that's us) and <strong>x402b</strong>, an x402 extension launched on BNB Chain by <a href="https://www.pieverse.io/" rel="noopener">Pieverse</a>.</p>
+
+    <div class="tldr">
+      <p><strong>TL;DR.</strong> <strong>x402b</strong> extends the x402 protocol on BNB Chain: gasless payments in Pieverse's pieUSD, with jurisdiction-aware receipts stored on BNB Greenfield, per their announcement. It comes with a funded platform around it.</p>
+      <p><strong>Traceipt</strong> stays on the open x402 standard — USDC on Base — and does one thing: a receipt signed the moment the payment clears, chained tamper-evident, anchored in a published Merkle root, and <strong>verifiable offline against published keys</strong>, with no dependence on us. Self-hostable.</p>
+    </div>
+
+    <h2>Side by side</h2>
+    <div class="tablewrap">
+      <table>
+        <tr><th></th><th>Traceipt</th><th>x402b (Pieverse)</th></tr>
+        <tr><td>Protocol</td><td><b>Open x402 standard</b> (HTTP 402)</td><td>x402b, Pieverse's extension of x402</td></tr>
+        <tr><td>Settlement</td><td><b>USDC on Base</b> — a real transfer on a widely used chain</td><td>pieUSD on BNB Chain, gasless per their announcement</td></tr>
+        <tr><td>Receipt</td><td>Ed25519-signed the moment the payment clears; bound to payer, payee, and what was bought; renders to a VAT-aware PDF</td><td>"Verifiable, jurisdiction-aware receipt for every payment," per their announcement</td></tr>
+        <tr><td>Storage</td><td>Tamper-evident chain, folded into a <b>Merkle root published on chain</b></td><td>Stored on BNB Greenfield</td></tr>
+        <tr><td>Verification</td><td><b>Offline</b>, in any language, against published keys — no SDK, no calling home, no Traceipt required</td><td>Via the BNB Chain / Greenfield ecosystem</td></tr>
+        <tr><td>Self-host</td><td><b>Yes</b> — one dependency, host it yourself if you'd rather</td><td>Not advertised</td></tr>
+        <tr><td>Company</td><td>BlueTier Operations — a small team; onboarding first teams on testnet now</td><td>Pieverse — raised $7M, backed by Animoca Brands and UOB Ventures</td></tr>
+      </table>
+    </div>
+
+    <h2>The real difference: who holds <em>the proof</em></h2>
+    <p>Both products want every agent payment to leave an audit-grade record. The architectural split is about what that record depends on. x402b's receipts live inside the BNB ecosystem — Greenfield storage, pieUSD settlement, Pieverse's platform. That buys convenience (gasless UX, one vendor, a funded roadmap) at the price of coupling: the proof is only as reachable as the platform it lives on.</p>
+    <p>Traceipt is built on the opposite bet: <strong>an audit record is only worth what it proves when the vendor is out of the room.</strong> Signature, chain, and anchor all verify offline against keys we publish. Your auditor doesn't need our API, our SDK, or our continued existence to check a receipt from three years ago.</p>
+
+    <h2>When x402b might fit better</h2>
+    <ul>
+      <li>You're already building in the BNB Chain ecosystem and want receipts stored natively there.</li>
+      <li>You want gasless payments and are comfortable settling in pieUSD rather than USDC.</li>
+      <li>You'd rather buy a full platform from a funded vendor than run a focused tool.</li>
+    </ul>
+
+    <h2>When Traceipt fits</h2>
+    <ul>
+      <li>Your agents pay over standard x402 in USDC on Base — no protocol variant, no proprietary stablecoin.</li>
+      <li>Your auditor (or regulator) needs to verify records <strong>independently</strong>, offline, years later.</li>
+      <li>You want the option to self-host the whole thing.</li>
+      <li>You want an invoice a human can file: every receipt renders to a VAT-aware PDF with a scan-to-verify code.</li>
+    </ul>
+
+    <div class="cta">
+      <a class="btn solid" href="mailto:hello@traceipt.xyz?subject=Traceipt%20access">Request Traceipt access</a>
+      <a class="btn line" href="/">How Traceipt works</a>
+    </div>
+
+    <p class="foot-note">Sources for x402b claims: Pieverse's launch announcement, <a href="https://news.marketersmedia.com/x402b-building-the-audit-ready-payment-infrastructure-for-ai-agents-on-bnb-chain/89173880" rel="noopener nofollow">"x402b: Building the Audit-Ready Payment Infrastructure for AI Agents on BNB Chain"</a> (Oct 2025), and coverage on <a href="https://www.chaincatcher.com/en/article/2215459" rel="noopener nofollow">ChainCatcher</a>. Product details may have changed since; if you're from Pieverse and something here is out of date, email us and we'll fix it: hello@traceipt.xyz. This page compares engineering approaches and is not legal advice.</p>
+  </div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span><b>Traceipt</b> — receipts for machines that spend money.</span>
+    <span><a href="/">Home</a> · <a href="/x402-receipts">What is an x402 receipt?</a> · <a href="/#faq">FAQ</a> · <a href="/llms.txt">llms.txt</a></span>
+  </div>
+</footer>
+
+</body>
+</html>

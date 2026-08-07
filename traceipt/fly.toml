@@ -1,0 +1,35 @@
+# Fly.io deployment for the Traceipt testnet demo.
+# `fly launch --no-deploy` then `fly deploy`. Fly terminates HTTPS at its edge
+# and forwards to the container's internal port, so the app binds 0.0.0.0.
+app = "traceipt"           # dashless; globally unique on Fly (fallback: traceiptapi)
+primary_region = "iad"         # pick one near you: iad, lhr, fra, sjc, ...
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  RECEIPTS_HOST = "0.0.0.0"
+  RECEIPTS_PORT = "8402"
+  # Testnet demo defaults. Flip to production values as secrets/env (DEPLOY.md).
+  RECEIPTS_CHAIN = "base-sepolia"
+  X402_GATE = "dev"
+  RECEIPTS_SETTLEMENT = "mock"
+  # IMPORTANT: set this to your public URL so verify links + QR resolve.
+  RECEIPTS_BASE_URL = "https://api.traceipt.xyz"
+
+[http_service]
+  internal_port = 8402
+  force_https = true
+  auto_stop_machines = "stop"    # scale to zero when idle → stays in free usage
+  auto_start_machines = true
+  min_machines_running = 0
+
+# Persist the ledger DB + issuer key across restarts/deploys.
+# Create once:  fly volumes create traceipt_data --size 1 --region iad
+[mounts]
+  source = "traceipt_data"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
