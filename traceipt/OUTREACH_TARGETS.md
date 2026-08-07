@@ -83,6 +83,13 @@ Subject: `proof your agent didn't pay a sanctioned party — now live on mainnet
 — body in `OUTREACH.md` §"Cold message". Add the per-target first sentence from
 the table.
 
+### The badge close (append to any variant when there's interest)
+
+> One more thing — issuing services get the "Receipts by Traceipt" badge
+> (traceipt.xyz/badge). It's not a logo: it has to link to a live verification
+> your customers can run themselves, so it's a checkable claim, free with the
+> testnet cohort.
+
 ### Partnership variant (Tiers 1 gateway/marketplace + Tier 3)
 
 > Different angle than a sale: you have distribution to x402 sellers; we have a

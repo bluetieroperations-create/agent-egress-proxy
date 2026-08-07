@@ -20,6 +20,7 @@ Traceipt solves the record, not the payment. The payment rail (x402) is solved; 
 ## Access
 - [Homepage](https://traceipt.xyz): product overview, how it works, and FAQ (reconciliation, offline verification, EU AI Act / MiCA).
 - Request access: hello@traceipt.xyz
+- [Badge program](https://traceipt.xyz/badge): the "Receipts by Traceipt" badge for x402 services that issue verifiable receipts — it must link to a live verification (not just a homepage), so the badge itself is a checkable claim.
 
 ## Learn
 - [Ten thousand payments, zero invoices: the agent reconciliation problem](https://traceipt.xyz/agent-reconciliation-problem): the essay — why AI-agent payments outrun record-keeping, what a real receipt must prove (7 properties), and how the Certificate Transparency construction (RFC 6962) solves the hard part.
