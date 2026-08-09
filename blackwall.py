@@ -1170,6 +1170,12 @@ def verify_signed_payment(payload, now=None):
     GO MUST NOT submit the payment when `ok` is False. Pure w.r.t. the verdict engine
     (no reputation lookup); NEVER raises. Idempotent -- safe to call once per payment.
 
+    `ok` means "not PROVEN forged" -- it is True for signer_status 'confirmed' AND for
+    'unverified' (e.g. an unknown asset with no trusted EIP-712 domain, where recovery
+    isn't possible; this matches the inline behavior, which warns rather than STOPs). A
+    caller wanting STRICT proof-of-signer should require signer_status == 'confirmed',
+    not merely ok == True.
+
     Usage:
         v, err = forecast(body, src, verify_signer=False)      # fast, ~90us
         if not err and v["verdict"] != "STOP":
@@ -1490,7 +1496,10 @@ class _Handler(BaseHTTPRequestHandler):
         # (Phase-1 field hard-stops inline, ~sub-ms) and skip the ~30ms Phase-2 signer
         # recovery, then complete it via POST /v1/verify-signer. Default keeps Phase 2
         # inline, so deployed behavior is unchanged unless a caller opts in.
-        _verify_signer = not (isinstance(payload, dict) and payload.get("defer_signer"))
+        # STRICT `is True`: a malformed flag (e.g. the STRING "false", which is truthy)
+        # must NOT silently reduce verification -- fail toward MORE checking, not less.
+        _verify_signer = not (isinstance(payload, dict)
+                              and payload.get("defer_signer") is True)
         response, err = forecast(payload, self.reputation_source, self.ledger,
                                  readiness_source=self.readiness_source,
                                  hold_above=self.hold_above,

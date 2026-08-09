@@ -147,6 +147,21 @@ class TestTwoStageHTTP(unittest.TestCase):
         self.assertFalse(r["ok"])
         self.assertEqual(r["signer_status"], "mismatch")
 
+    def test_malformed_defer_flag_does_not_reduce_verification(self):
+        # AUDIT regression: a truthy-but-not-True flag (the STRING "false") must NOT
+        # trigger fast mode -- that would silently drop inline signer verification. Strict
+        # `is True` fails toward MORE verification: the forged signer STOPs inline.
+        import eip712 as E
+        import secp256k1 as S
+        victim = E.pubkey_to_address(S.privkey_to_pub(0xBEEF))
+        xp, _ = _signed(0xA11CE, frm=victim)
+        for bad in ("false", 1, "true", "yes"):
+            body = _body(xp)
+            body["defer_signer"] = bad
+            st, v = self._post("/v1/forecast-payment", body)
+            self.assertEqual(v["verdict"], "STOP", "defer_signer=%r wrongly deferred" % bad)
+            self.assertEqual(v["signals"]["payload_signer_status"], "mismatch")
+
 
 if __name__ == "__main__":
     unittest.main()
