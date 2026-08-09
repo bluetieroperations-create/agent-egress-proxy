@@ -1,0 +1,53 @@
+{
+  "environment": {
+    "python": "3.11.15",
+    "machine": "x86_64",
+    "system": "Linux",
+    "processor": "Intel(R) Xeon(R) Processor @ 2.80GHz"
+  },
+  "results": {
+    "pure_verdict": {
+      "n": 20000,
+      "unit": "us",
+      "p50": 16.9,
+      "p95": 29.8,
+      "p99": 59.7,
+      "min": 15.9,
+      "label": "decide_payment (pure decision)"
+    },
+    "forecast_basic": {
+      "n": 8000,
+      "unit": "us",
+      "p50": 85.1,
+      "p95": 147.1,
+      "p99": 190.2,
+      "min": 80.7,
+      "label": "forecast (validate->decide->HMAC receipt)"
+    },
+    "keccak256": {
+      "n": 2000,
+      "unit": "us",
+      "p50": 525.6,
+      "p95": 638.0,
+      "p99": 883.6,
+      "min": 497.3,
+      "label": "keccak256 (pure-Python, one call)"
+    },
+    "ecdsa_recover": {
+      "n": 1000,
+      "unit": "us",
+      "p50": 144.4,
+      "p95": 196.0,
+      "p99": 245.2,
+      "min": 141.6,
+      "label": "secp256k1 ecdsa_recover (one call)"
+    },
+    "signed_verify_est": {
+      "label": "signed-payment verify (~3 keccak + recover, DERIVED)",
+      "unit": "us",
+      "p50": 1721.2,
+      "n": null,
+      "note": "cryptographic recovery of the EIP-3009 signer (payload-sim Phase 2)"
+    }
+  }
+}
