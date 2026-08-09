@@ -40,7 +40,7 @@ class _Src:
 def measure(fn, n, *, warmup=200):
     """Return a percentile summary (microseconds) for `fn`, run `n` times after warmup.
     GC is disabled during timing so a collection can't be misattributed to one call."""
-    for _ in range(warmup):
+    for _ in range(max(1, warmup)):
         fn()
     gc.collect()
     gc.disable()
@@ -73,27 +73,54 @@ def _keccak():
     return keccak.keccak256(b"\x19\x01" + b"\x11" * 64)
 
 
-# Precompute the digest OUTSIDE the timed function so _ecdsa_recover measures ONLY the
-# EC recovery, not an extra keccak (a classic microbenchmark artifact -- timing more than
-# you think). The derived signed-verify estimate then adds the keccak calls explicitly.
-import keccak as _keccak_mod
-_Z = int.from_bytes(_keccak_mod.keccak256(b"digest"), "big")
+# A VALID signature, precomputed once. This is CRITICAL for honesty: ecdsa_recover with
+# invalid (r,s) short-circuits BEFORE the expensive EC scalar-multiplication, so it
+# under-measures the real recovery by ~100x. Only a signature that actually recovers a
+# point exercises the real cost. (This trap made an earlier draft publish ~1.7ms for a
+# path that is really ~30ms.) `ecdsa_sign` returns (r, s, rec_id).
+_DOMAIN = {"name": "USD Coin", "version": "2", "chainId": 8453,
+           "verifyingContract": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"}
+_MSG = {"from": "0x" + "1" * 40, "to": "0x" + "2" * 40, "value": 90000,
+        "validAfter": 0, "validBefore": 9999999999, "nonce": b"\x00" * 32}
+
+
+def _valid_sig():
+    import eip712
+    import secp256k1
+    z = eip712.transfer_authorization_digest(_DOMAIN, _MSG)
+    d = 0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+    r, s, rid = secp256k1.ecdsa_sign(z, d)
+    return z, r, s, rid
+
+
+_Z, _R, _S, _RID = _valid_sig()
 
 
 def _ecdsa_recover():
     import secp256k1
-    try:
-        secp256k1.ecdsa_recover(_Z, (0x6f83 << 200) | 1, (0x1b2c << 200) | 1, 0)
-    except Exception:
-        pass
+    secp256k1.ecdsa_recover(_Z, _R, _S, _RID)   # VALID sig -> full scalar-mult
 
 
-# (key, label, fn, iterations). Iterations scaled down for the slow crypto paths.
+# The REAL signed-payment verification (payload-sim Phase 2): EIP-712 digest + a
+# SUCCESSFUL signer recovery (full EC scalar-mult, the dominant cost) + address
+# derivation. Measured with a valid signature, not estimated.
+def _signed_verify():
+    import eip712
+    import secp256k1
+    z = eip712.transfer_authorization_digest(_DOMAIN, _MSG)
+    pt = secp256k1.ecdsa_recover(z, _R, _S, _RID)
+    eip712.pubkey_to_address(pt)
+
+
+# (key, label, fn, iterations, warmup). Warmup is per-case: the pure-Python EC paths are
+# ~30ms each, so a fixed 200-iter warmup would take seconds -- they need only a few.
 CASES = [
-    ("pure_verdict", "decide_payment (pure decision)", _pure_verdict, 20000),
-    ("forecast_basic", "forecast (validate->decide->HMAC receipt)", _forecast_basic, 8000),
-    ("keccak256", "keccak256 (pure-Python, one call)", _keccak, 2000),
-    ("ecdsa_recover", "secp256k1 ecdsa_recover (one call)", _ecdsa_recover, 1000),
+    ("pure_verdict", "decide_payment (pure decision)", _pure_verdict, 20000, 200),
+    ("forecast_basic", "forecast (validate->decide->HMAC receipt)", _forecast_basic, 8000, 200),
+    ("keccak256", "keccak256 (pure-Python, one call)", _keccak, 2000, 100),
+    ("ecdsa_recover", "secp256k1 ecdsa_recover (valid sig, full)", _ecdsa_recover, 60, 4),
+    ("signed_verify", "signed-payment verify (EIP-712 digest+recover+addr)",
+     _signed_verify, 50, 4),
 ]
 
 
@@ -118,15 +145,9 @@ def environment():
 def run(scale=1.0):
     """Run every case; return {environment, results:{key: summary}, derived}."""
     results = {}
-    for key, label, fn, n in CASES:
-        results[key] = dict(measure(fn, max(50, int(n * scale))), label=label)
-    # A full EIP-712 signed-payment verification ~= 3 keccak (domain, struct, digest)
-    # + 1 recover. Derived, so we don't require a valid signature fixture to state it.
-    k, r = results["keccak256"]["p50"], results["ecdsa_recover"]["p50"]
-    results["signed_verify_est"] = {
-        "label": "signed-payment verify (~3 keccak + recover, DERIVED)",
-        "unit": "us", "p50": round(3 * k + r, 1), "n": None,
-        "note": "cryptographic recovery of the EIP-3009 signer (payload-sim Phase 2)"}
+    for key, label, fn, n, warm in CASES:
+        results[key] = dict(measure(fn, max(8, int(n * scale)),
+                                    warmup=max(2, int(warm * scale))), label=label)
     return {"environment": environment(), "results": results}
 
 
@@ -144,16 +165,16 @@ def main(argv=None):
     print("-" * 74)
     print("%-46s %8s %8s %8s" % ("path", "p50", "p95", "p99"))
     print("-" * 74)
-    for key in ("pure_verdict", "forecast_basic", "keccak256", "ecdsa_recover"):
+    for key in ("pure_verdict", "forecast_basic", "keccak256", "ecdsa_recover",
+                "signed_verify"):
         r = rep["results"][key]
         print("%-46s %7.1fus %7.1f %7.1f" % (r["label"][:46], r["p50"], r["p95"], r["p99"]))
-    sv = rep["results"]["signed_verify_est"]
-    print("%-46s %7.1fus %8s %8s" % (sv["label"][:46], sv["p50"], "-", "-"))
     print("-" * 74)
-    print("NOTE: compute only -- a real HTTPS round-trip (10-100ms) dominates and is NOT")
-    print("included. Signed-payment verify is ~100x the plain verdict (pure-Python keccak")
-    print("is the cost of stdlib-only crypto) -- it VERIFIES the real signed payment, a")
-    print("capability, not overhead. Numbers are specific to the env above.")
+    print("NOTE: compute only -- network EXCLUDED. The plain verdict is tens of us. The")
+    print("signed-payment verify is ~30ms, dominated by pure-Python secp256k1 EC recovery")
+    print("(the cost of stdlib-only crypto) -- it VERIFIES the real signed payment, which a")
+    print("metadata scanner does not do at all. That path is opt-in (only on a signed")
+    print("payload). Numbers are specific to the env above.")
     if args.json:
         json.dump(rep, open(args.json, "w"), indent=2)
     return 0

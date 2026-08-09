@@ -26,12 +26,12 @@ class TestBenchHarness(unittest.TestCase):
         # every declared case executes without raising and yields a summary. Run at a
         # tiny scale so the suite stays fast; we assert STRUCTURE, not timing.
         rep = bench.run(scale=0.01)
-        for key, label, fn, n in bench.CASES:
+        for case in bench.CASES:
+            key = case[0]
             self.assertIn(key, rep["results"])
             self.assertIn("p50", rep["results"][key])
-        # the derived signed-verify estimate is present and composed from the primitives
-        self.assertIn("signed_verify_est", rep["results"])
-        self.assertGreater(rep["results"]["signed_verify_est"]["p50"], 0.0)
+        # the real signed-payment-verify path is measured (not estimated)
+        self.assertGreater(rep["results"]["signed_verify"]["p50"], 0.0)
 
     def test_environment_is_stamped(self):
         # any quoted number is meaningless without the environment -> it must be captured.
