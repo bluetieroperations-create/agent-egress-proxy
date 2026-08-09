@@ -1,7 +1,12 @@
 egress.log
 *.log
+blackwall_ledger.jsonl
+*.jsonl
 __pycache__/
 *.pyc
 .env
 .env.*
 verify-*.log
+.blackwall-creds
+*.blackwall-creds
+*.env

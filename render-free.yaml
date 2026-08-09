@@ -1,0 +1,81 @@
+# Render blueprint -- FREE variant (for testing, $0).
+#
+# Same as render.yaml but: plan `free` and NO persistent disk. State (the SQLite
+# store + JSONL ledger) is EPHEMERAL -- it lives in the container's /data dir and
+# resets on restart/redeploy, and the free instance spins down after ~15 min idle
+# (first request after that is a slow cold start). The reputation store re-populates
+# itself (BLACKWALL_INGEST=1), so a fresh instance is a cold start, not broken.
+#
+# Use this to prove the endpoint works for free; switch to render.yaml (paid disk)
+# when you want persistence + always-warm for real traffic.
+#
+# Deploy: New > Blueprint, set Branch = claude/blackwall-x402-integration-j3rdab and
+# Blueprint Path = render-free.yaml
+services:
+  - type: web
+    name: blackwall-free
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free               # $0 -- no persistent disk allowed on free
+    region: oregon
+    autoDeploy: false
+    healthCheckPath: /healthz
+
+    envVars:
+      - key: BLACKWALL_HOST
+        value: "0.0.0.0"
+      - key: BLACKWALL_PORT
+        value: "8402"
+      # Point at the WARM store baked into the image at build time (Dockerfile), so
+      # the free instance boots with real reputation -- known payees get real
+      # verdicts, not cold-start HOLDs -- and re-warms from the image on every cold
+      # start (no persistent disk needed).
+      - key: BLACKWALL_STORE
+        value: /app/data/reputation.db
+      # Per-category on-chain price baselines, baked into the image alongside the
+      # reputation store (Dockerfile). Lets a cold-start payee gouging vs its category
+      # get caught out of the box. Fail-open: absent/thin index -> signal just off.
+      - key: BLACKWALL_CATEGORY_INDEX
+        value: /app/data/category_index.json
+      # Advertised-vs-settled price-divergence watch-list (bait-and-switch), baked into
+      # the image alongside the store. Fail-open: absent/thin -> signal just off.
+      - key: BLACKWALL_DIVERGENCE_INDEX
+        value: /app/data/divergence_index.json
+      - key: BLACKWALL_LEDGER
+        value: /data/ledger.jsonl
+      # 0: unknown counterparty -> instant cold-start HOLD (no blocking chain call).
+      # Lazy ingest (1) does a SYNCHRONOUS on-chain fetch on the hot path, which 502s
+      # on a cold store. To serve real history, pre-warm the store from the manifest
+      # first (chain_backfill --payees-file data/seed_payees.txt) -- not lazy ingest.
+      - key: BLACKWALL_INGEST
+        value: "0"
+      # Per-client rate limit for the public endpoint (POST paths only; GET health/
+      # discovery stay unthrottled). 120 req/min per client IP, burst 30 -- generous
+      # for a legit agent, caps hammering/scraping/DoS. Real client IP via the rightmost
+      # X-Forwarded-For (Render's proxy). GET /stats exposes aggregate counters.
+      - key: BLACKWALL_RATE_LIMIT
+        value: "120"
+      - key: BLACKWALL_RATE_WINDOW
+        value: "60"
+      - key: BLACKWALL_RATE_BURST
+        value: "30"
+      - key: BLACKWALL_VALUE_PRICING
+        value: "1"
+      - key: BLACKWALL_FREE_BELOW
+        value: "10.00"
+      # Secrets -- leave blank for a free public smoke test (billing OFF). Set them
+      # later (Environment tab) to turn billing on for a real paid round-trip.
+      - key: BLACKWALL_PAY_TO
+        sync: false
+      - key: BLACKWALL_FACILITATOR
+        sync: false
+      - key: BLACKWALL_RECEIPT_KEY
+        sync: false
+      - key: CDP_API_KEY_ID
+        sync: false
+      - key: CDP_API_KEY_SECRET
+        sync: false
+      - key: BLACKWALL_SANCTIONS
+        value: /app/sanctions.txt
+      - key: BLACKWALL_SANCTIONS_REFRESH
+        value: "1"

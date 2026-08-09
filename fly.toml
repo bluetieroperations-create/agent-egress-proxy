@@ -1,0 +1,70 @@
+# fly.io deploy for the Blackwall verdict service.
+#
+#   fly launch --no-deploy            # creates the app from this file + Dockerfile
+#   fly volume create blackwall_data --size 1 --region iad
+#   fly secrets set \
+#       BLACKWALL_PAY_TO=0xYourFundedWallet \
+#       BLACKWALL_FACILITATOR=https://facilitator.xpay.sh \
+#       BLACKWALL_RECEIPT_KEY=$(openssl rand -hex 32)
+#   fly deploy
+#
+# This file defaults to Base MAINNET. For a TESTNET deploy also set:
+#       fly secrets set BLACKWALL_NETWORK=base-sepolia
+# (the asset then auto-selects Base-Sepolia USDC).
+#
+# Non-secret config lives in [env] below; secrets go through `fly secrets`
+# (encrypted, never in this file or the image). State persists on the volume
+# mounted at /data.
+
+app = "blackwall"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Non-secret defaults. These mirror the Dockerfile ENV; setting them here keeps
+# the deploy config self-describing. Secrets (PAY_TO / FACILITATOR / RECEIPT_KEY
+# / SANCTIONS) are intentionally NOT here -- use `fly secrets set`.
+[env]
+  BLACKWALL_HOST = "0.0.0.0"
+  BLACKWALL_PORT = "8402"
+  BLACKWALL_STORE = "/data/reputation.db"
+  BLACKWALL_LEDGER = "/data/ledger.jsonl"
+  # 0: an unknown counterparty returns a cold-start HOLD INSTANTLY. Lazy ingest
+  # (1) does a SYNCHRONOUS on-chain fetch on the hot path, which blocks the request
+  # past the platform's timeout on a cold store -> 502. Pre-warm from the manifest
+  # instead (chain_backfill --payees-file data/seed_payees.txt).
+  BLACKWALL_INGEST = "0"
+  # Pricing posture (see PRICING.md): value-aligned / freemium-on-stakes.
+  # Low-stakes verdicts are free (incl. sanctions safety); high-stakes pay.
+  # Start generous to win adoption while the category has no data moat.
+  BLACKWALL_VALUE_PRICING = "1"
+  BLACKWALL_FREE_BELOW = "10.00"
+
+# SQLite store + JSONL ledger survive restarts/redeploys on this volume.
+# Create it once with: fly volume create blackwall_data --size 1
+[mounts]
+  source = "blackwall_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8402
+  force_https = true
+  # Scale-to-zero to keep idle cost ~$0. Cold start adds a little latency to the
+  # first verdict after idle; set min_machines_running = 1 if you want it always
+  # warm (an agent-facing paid endpoint usually does -- flip this before launch).
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  # Liveness: the service answers GET /healthz with 200 when up.
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

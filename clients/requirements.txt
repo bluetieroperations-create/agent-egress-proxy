@@ -1,0 +1,3 @@
+# Test-only client deps. The Blackwall SERVICE is stdlib-only and needs none of
+# this -- it is for clients/x402_pay.py (the funded-signer dry-run client).
+eth-account>=0.13,<0.14

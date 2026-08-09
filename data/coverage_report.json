@@ -1,0 +1,55 @@
+{
+  "curve": [
+    {
+      "fraction": 0.2,
+      "ingested_known_good": 31,
+      "false_flagged": 4,
+      "false_flag_rate": 0.129
+    },
+    {
+      "fraction": 0.4,
+      "ingested_known_good": 62,
+      "false_flagged": 5,
+      "false_flag_rate": 0.0806
+    },
+    {
+      "fraction": 0.6,
+      "ingested_known_good": 94,
+      "false_flagged": 3,
+      "false_flag_rate": 0.0319
+    },
+    {
+      "fraction": 0.8,
+      "ingested_known_good": 121,
+      "false_flagged": 1,
+      "false_flag_rate": 0.0083
+    },
+    {
+      "fraction": 0.9,
+      "ingested_known_good": 141,
+      "false_flagged": 1,
+      "false_flag_rate": 0.0071
+    },
+    {
+      "fraction": 0.95,
+      "ingested_known_good": 149,
+      "false_flagged": 0,
+      "false_flag_rate": 0.0
+    },
+    {
+      "fraction": 1.0,
+      "ingested_known_good": 154,
+      "false_flagged": 0,
+      "false_flag_rate": 0.0
+    }
+  ],
+  "verdict": {
+    "gating_reachable": true,
+    "evidence_fraction": 0.95,
+    "subfull_false_flag_rate": 0.0,
+    "tail_delta": 0.0071,
+    "tail_rate_max": 0.02,
+    "tail_delta_max": 0.02,
+    "reason": "stabilized before full coverage: rate at f=0.95 is 0.00% (<= 2%) and the prior step moved it only 0.71% -- the last slice of coverage no longer clears rings"
+  }
+}

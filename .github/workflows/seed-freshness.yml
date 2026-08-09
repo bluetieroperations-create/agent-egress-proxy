@@ -1,0 +1,68 @@
+# Nag-only reminder to refresh the prebuilt free-tier seed store BEFORE it goes stale.
+#
+# The committed store (data/reputation_seed.db.gz) has frozen timestamps; the verdict's
+# `stale` gate (STALE_DAYS=90) makes the whole corpus HOLD ~90-120 days after it was
+# built (see check_seed_age.py / DEPLOY.md). This workflow just READS the committed
+# store and, once it's inside the refresh window, opens/updates a GitHub Issue asking a
+# human to run `make refresh-seed`. It never changes files, never backfills, never
+# deploys -- it only nags.
+#
+# NOTE: `schedule:` triggers only fire from the repository's DEFAULT branch. Until this
+# branch is merged to the default branch, the cron is dormant -- but `workflow_dispatch`
+# (the "Run workflow" button) works from any branch, so you can trigger the check now.
+
+name: seed-freshness
+
+on:
+  schedule:
+    - cron: "17 9 * * 1"   # weekly, Mondays 09:17 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check seed-store freshness
+        id: check
+        run: |
+          set +e
+          OUT="$(python3 check_seed_age.py)"
+          CODE=$?
+          set -e
+          echo "$OUT"
+          {
+            echo "message<<__EOF__"
+            echo "$OUT"
+            echo "__EOF__"
+            echo "code=$CODE"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open or update the refresh reminder issue
+        if: steps.check.outputs.code != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MESSAGE: ${{ steps.check.outputs.message }}
+        run: |
+          TITLE="Refresh the prebuilt seed store"
+          BODY="$(printf '%s\n\n%s\n' \
+            "$MESSAGE" \
+            "The committed free-tier corpus is entering the stale window. Run \`make refresh-seed\`, commit \`data/reputation_seed.db.gz\` + \`data/category_index.json\`, and redeploy. (Automated nag from .github/workflows/seed-freshness.yml.)")"
+          EXISTING="$(gh issue list --state open --json number,title \
+            --jq ".[] | select(.title==\"$TITLE\") | .number" | head -n1)"
+          if [ -n "$EXISTING" ]; then
+            echo "Updating existing issue #$EXISTING"
+            gh issue comment "$EXISTING" --body "$BODY"
+          else
+            echo "Opening a new reminder issue"
+            gh issue create --title "$TITLE" --body "$BODY"
+          fi

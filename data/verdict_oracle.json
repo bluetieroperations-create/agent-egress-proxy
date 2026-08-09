@@ -1,0 +1,4802 @@
+[
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|empty_hist|burst_advisory",
+    "num_reasons": 4,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|empty_hist|captive_sybil",
+    "num_reasons": 5,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|empty_hist|category_gouge",
+    "num_reasons": 4,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|empty_hist|category_premium",
+    "num_reasons": 4,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|empty_hist|divergence",
+    "num_reasons": 5,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|empty_hist|enrichment_clean",
+    "num_reasons": 4,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|empty_hist|enrichment_review",
+    "num_reasons": 5,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|empty_hist|none",
+    "num_reasons": 4,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "cold|empty_hist|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "cold|empty_hist|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "cold|empty_hist|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|empty_hist|secret_medium",
+    "num_reasons": 5,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|empty_hist|stale",
+    "num_reasons": 5,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|empty_hist|sybil_ring_advisory",
+    "num_reasons": 5,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|empty_hist|verified_floor",
+    "num_reasons": 4,
+    "score": 0.6,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|fair|burst_advisory",
+    "num_reasons": 4,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|fair|captive_sybil",
+    "num_reasons": 5,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|fair|category_gouge",
+    "num_reasons": 4,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|fair|category_premium",
+    "num_reasons": 4,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|fair|divergence",
+    "num_reasons": 5,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|fair|enrichment_clean",
+    "num_reasons": 4,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|fair|enrichment_review",
+    "num_reasons": 5,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|fair|none",
+    "num_reasons": 4,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "cold|fair|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "cold|fair|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "cold|fair|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|fair|secret_medium",
+    "num_reasons": 5,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|fair|stale",
+    "num_reasons": 5,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|fair|sybil_ring_advisory",
+    "num_reasons": 5,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|fair|verified_floor",
+    "num_reasons": 4,
+    "score": 0.6,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|gouge|burst_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|gouge|captive_sybil",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|gouge|category_gouge",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|gouge|category_premium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|gouge|divergence",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|gouge|enrichment_clean",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|gouge|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|gouge|none",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "cold|gouge|payload_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "cold|gouge|recipient_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "cold|gouge|secret_high",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|gouge|secret_medium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|gouge|stale",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|gouge|sybil_ring_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|gouge|verified_floor",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|moderate_anomaly|burst_advisory",
+    "num_reasons": 5,
+    "score": 0.333,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|moderate_anomaly|captive_sybil",
+    "num_reasons": 6,
+    "score": 0.333,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|moderate_anomaly|category_gouge",
+    "num_reasons": 6,
+    "score": 0.333,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|moderate_anomaly|category_premium",
+    "num_reasons": 5,
+    "score": 0.333,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|moderate_anomaly|divergence",
+    "num_reasons": 6,
+    "score": 0.333,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|moderate_anomaly|enrichment_clean",
+    "num_reasons": 5,
+    "score": 0.333,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|moderate_anomaly|enrichment_review",
+    "num_reasons": 6,
+    "score": 0.333,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|moderate_anomaly|none",
+    "num_reasons": 5,
+    "score": 0.333,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "cold|moderate_anomaly|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "cold|moderate_anomaly|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "cold|moderate_anomaly|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|moderate_anomaly|secret_medium",
+    "num_reasons": 6,
+    "score": 0.333,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|moderate_anomaly|stale",
+    "num_reasons": 6,
+    "score": 0.333,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|moderate_anomaly|sybil_ring_advisory",
+    "num_reasons": 6,
+    "score": 0.333,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "cold|moderate_anomaly|verified_floor",
+    "num_reasons": 5,
+    "score": 0.4,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "cold|over_budget|burst_advisory",
+    "num_reasons": 5,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "cold|over_budget|captive_sybil",
+    "num_reasons": 6,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "cold|over_budget|category_gouge",
+    "num_reasons": 6,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "cold|over_budget|category_premium",
+    "num_reasons": 6,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "cold|over_budget|divergence",
+    "num_reasons": 6,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "cold|over_budget|enrichment_clean",
+    "num_reasons": 5,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "cold|over_budget|enrichment_review",
+    "num_reasons": 6,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "cold|over_budget|none",
+    "num_reasons": 5,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "cold|over_budget|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "cold|over_budget|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "cold|over_budget|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "cold|over_budget|secret_medium",
+    "num_reasons": 6,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "cold|over_budget|stale",
+    "num_reasons": 6,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "cold|over_budget|sybil_ring_advisory",
+    "num_reasons": 6,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "cold|over_budget|verified_floor",
+    "num_reasons": 5,
+    "score": 0.6,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|empty_hist|burst_advisory",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|empty_hist|captive_sybil",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|empty_hist|category_gouge",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|empty_hist|category_premium",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|empty_hist|divergence",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|empty_hist|enrichment_clean",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|empty_hist|enrichment_review",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|empty_hist|none",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "few_payers|empty_hist|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "few_payers|empty_hist|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "few_payers|empty_hist|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|empty_hist|secret_medium",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|empty_hist|stale",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|empty_hist|sybil_ring_advisory",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|empty_hist|verified_floor",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|fair|burst_advisory",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|fair|captive_sybil",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|fair|category_gouge",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|fair|category_premium",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|fair|divergence",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|fair|enrichment_clean",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|fair|enrichment_review",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|fair|none",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "few_payers|fair|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "few_payers|fair|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "few_payers|fair|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|fair|secret_medium",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|fair|stale",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|fair|sybil_ring_advisory",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|fair|verified_floor",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|gouge|burst_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|gouge|captive_sybil",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|gouge|category_gouge",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|gouge|category_premium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|gouge|divergence",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|gouge|enrichment_clean",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|gouge|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|gouge|none",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "few_payers|gouge|payload_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "few_payers|gouge|recipient_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "few_payers|gouge|secret_high",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|gouge|secret_medium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|gouge|stale",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|gouge|sybil_ring_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|gouge|verified_floor",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|moderate_anomaly|burst_advisory",
+    "num_reasons": 4,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|moderate_anomaly|captive_sybil",
+    "num_reasons": 5,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|moderate_anomaly|category_gouge",
+    "num_reasons": 5,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|moderate_anomaly|category_premium",
+    "num_reasons": 4,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|moderate_anomaly|divergence",
+    "num_reasons": 5,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|moderate_anomaly|enrichment_clean",
+    "num_reasons": 4,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|moderate_anomaly|enrichment_review",
+    "num_reasons": 5,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|moderate_anomaly|none",
+    "num_reasons": 4,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "few_payers|moderate_anomaly|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "few_payers|moderate_anomaly|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "few_payers|moderate_anomaly|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|moderate_anomaly|secret_medium",
+    "num_reasons": 5,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|moderate_anomaly|stale",
+    "num_reasons": 5,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|moderate_anomaly|sybil_ring_advisory",
+    "num_reasons": 5,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "few_payers|moderate_anomaly|verified_floor",
+    "num_reasons": 5,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "few_payers|over_budget|burst_advisory",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "few_payers|over_budget|captive_sybil",
+    "num_reasons": 5,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "few_payers|over_budget|category_gouge",
+    "num_reasons": 5,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "few_payers|over_budget|category_premium",
+    "num_reasons": 5,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "few_payers|over_budget|divergence",
+    "num_reasons": 5,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "few_payers|over_budget|enrichment_clean",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "few_payers|over_budget|enrichment_review",
+    "num_reasons": 5,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "few_payers|over_budget|none",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "few_payers|over_budget|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "few_payers|over_budget|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "few_payers|over_budget|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "few_payers|over_budget|secret_medium",
+    "num_reasons": 5,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "few_payers|over_budget|stale",
+    "num_reasons": 5,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "few_payers|over_budget|sybil_ring_advisory",
+    "num_reasons": 5,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "few_payers|over_budget|verified_floor",
+    "num_reasons": 5,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|empty_hist|burst_advisory",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|empty_hist|captive_sybil",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|empty_hist|category_gouge",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|empty_hist|category_premium",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|empty_hist|divergence",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|empty_hist|enrichment_clean",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|empty_hist|enrichment_review",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|empty_hist|none",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "going_bad|empty_hist|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "going_bad|empty_hist|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "going_bad|empty_hist|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|empty_hist|secret_medium",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|empty_hist|stale",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|empty_hist|sybil_ring_advisory",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|empty_hist|verified_floor",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|fair|burst_advisory",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|fair|captive_sybil",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|fair|category_gouge",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|fair|category_premium",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|fair|divergence",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|fair|enrichment_clean",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|fair|enrichment_review",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|fair|none",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "going_bad|fair|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "going_bad|fair|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "going_bad|fair|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|fair|secret_medium",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|fair|stale",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|fair|sybil_ring_advisory",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|fair|verified_floor",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|gouge|burst_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|gouge|captive_sybil",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|gouge|category_gouge",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|gouge|category_premium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|gouge|divergence",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|gouge|enrichment_clean",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|gouge|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|gouge|none",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "going_bad|gouge|payload_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "going_bad|gouge|recipient_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "going_bad|gouge|secret_high",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|gouge|secret_medium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|gouge|stale",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|gouge|sybil_ring_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|gouge|verified_floor",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|moderate_anomaly|burst_advisory",
+    "num_reasons": 4,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|moderate_anomaly|captive_sybil",
+    "num_reasons": 5,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|moderate_anomaly|category_gouge",
+    "num_reasons": 5,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|moderate_anomaly|category_premium",
+    "num_reasons": 4,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|moderate_anomaly|divergence",
+    "num_reasons": 5,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|moderate_anomaly|enrichment_clean",
+    "num_reasons": 4,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|moderate_anomaly|enrichment_review",
+    "num_reasons": 5,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|moderate_anomaly|none",
+    "num_reasons": 4,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "going_bad|moderate_anomaly|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "going_bad|moderate_anomaly|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "going_bad|moderate_anomaly|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|moderate_anomaly|secret_medium",
+    "num_reasons": 5,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|moderate_anomaly|stale",
+    "num_reasons": 5,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|moderate_anomaly|sybil_ring_advisory",
+    "num_reasons": 5,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "going_bad|moderate_anomaly|verified_floor",
+    "num_reasons": 5,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "going_bad|over_budget|burst_advisory",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "going_bad|over_budget|captive_sybil",
+    "num_reasons": 5,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "going_bad|over_budget|category_gouge",
+    "num_reasons": 5,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "going_bad|over_budget|category_premium",
+    "num_reasons": 5,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "going_bad|over_budget|divergence",
+    "num_reasons": 5,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "going_bad|over_budget|enrichment_clean",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "going_bad|over_budget|enrichment_review",
+    "num_reasons": 5,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "going_bad|over_budget|none",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "going_bad|over_budget|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "going_bad|over_budget|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "going_bad|over_budget|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "going_bad|over_budget|secret_medium",
+    "num_reasons": 5,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "going_bad|over_budget|stale",
+    "num_reasons": 5,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "going_bad|over_budget|sybil_ring_advisory",
+    "num_reasons": 5,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "going_bad|over_budget|verified_floor",
+    "num_reasons": 5,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|empty_hist|burst_advisory",
+    "num_reasons": 2,
+    "score": 0.998,
+    "verdict": "GO"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|empty_hist|captive_sybil",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|empty_hist|category_gouge",
+    "num_reasons": 2,
+    "score": 0.998,
+    "verdict": "GO"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|empty_hist|category_premium",
+    "num_reasons": 2,
+    "score": 0.998,
+    "verdict": "GO"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|empty_hist|divergence",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|empty_hist|enrichment_clean",
+    "num_reasons": 2,
+    "score": 0.998,
+    "verdict": "GO"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|empty_hist|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|empty_hist|none",
+    "num_reasons": 2,
+    "score": 0.998,
+    "verdict": "GO"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "good|empty_hist|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "good|empty_hist|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "good|empty_hist|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|empty_hist|secret_medium",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|empty_hist|stale",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|empty_hist|sybil_ring_advisory",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|empty_hist|verified_floor",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "GO"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|fair|burst_advisory",
+    "num_reasons": 2,
+    "score": 0.998,
+    "verdict": "GO"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|fair|captive_sybil",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|fair|category_gouge",
+    "num_reasons": 2,
+    "score": 0.998,
+    "verdict": "GO"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|fair|category_premium",
+    "num_reasons": 2,
+    "score": 0.998,
+    "verdict": "GO"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|fair|divergence",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|fair|enrichment_clean",
+    "num_reasons": 2,
+    "score": 0.998,
+    "verdict": "GO"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|fair|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|fair|none",
+    "num_reasons": 2,
+    "score": 0.998,
+    "verdict": "GO"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "good|fair|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "good|fair|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "good|fair|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|fair|secret_medium",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|fair|stale",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|fair|sybil_ring_advisory",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|fair|verified_floor",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "GO"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|gouge|burst_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|gouge|captive_sybil",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|gouge|category_gouge",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|gouge|category_premium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|gouge|divergence",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|gouge|enrichment_clean",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|gouge|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|gouge|none",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "good|gouge|payload_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "good|gouge|recipient_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "good|gouge|secret_high",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|gouge|secret_medium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|gouge|stale",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|gouge|sybil_ring_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|gouge|verified_floor",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|moderate_anomaly|burst_advisory",
+    "num_reasons": 3,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|moderate_anomaly|captive_sybil",
+    "num_reasons": 4,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|moderate_anomaly|category_gouge",
+    "num_reasons": 4,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|moderate_anomaly|category_premium",
+    "num_reasons": 3,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|moderate_anomaly|divergence",
+    "num_reasons": 4,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|moderate_anomaly|enrichment_clean",
+    "num_reasons": 3,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|moderate_anomaly|enrichment_review",
+    "num_reasons": 4,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|moderate_anomaly|none",
+    "num_reasons": 3,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "good|moderate_anomaly|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "good|moderate_anomaly|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "good|moderate_anomaly|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|moderate_anomaly|secret_medium",
+    "num_reasons": 4,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|moderate_anomaly|stale",
+    "num_reasons": 4,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|moderate_anomaly|sybil_ring_advisory",
+    "num_reasons": 4,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "good|moderate_anomaly|verified_floor",
+    "num_reasons": 4,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "good|over_budget|burst_advisory",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "good|over_budget|captive_sybil",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "good|over_budget|category_gouge",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "good|over_budget|category_premium",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "good|over_budget|divergence",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "good|over_budget|enrichment_clean",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "good|over_budget|enrichment_review",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "good|over_budget|none",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "good|over_budget|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "good|over_budget|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "good|over_budget|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "good|over_budget|secret_medium",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "good|over_budget|stale",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "good|over_budget|sybil_ring_advisory",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "good|over_budget|verified_floor",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|empty_hist|burst_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|empty_hist|captive_sybil",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|empty_hist|category_gouge",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|empty_hist|category_premium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|empty_hist|divergence",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|empty_hist|enrichment_clean",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|empty_hist|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|empty_hist|none",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|empty_hist|payload_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|empty_hist|recipient_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|empty_hist|secret_high",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|empty_hist|secret_medium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|empty_hist|stale",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|empty_hist|sybil_ring_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|empty_hist|verified_floor",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|fair|burst_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|fair|captive_sybil",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|fair|category_gouge",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|fair|category_premium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|fair|divergence",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|fair|enrichment_clean",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|fair|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|fair|none",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|fair|payload_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|fair|recipient_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|fair|secret_high",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|fair|secret_medium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|fair|stale",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|fair|sybil_ring_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|fair|verified_floor",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|gouge|burst_advisory",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|gouge|captive_sybil",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|gouge|category_gouge",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|gouge|category_premium",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|gouge|divergence",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|gouge|enrichment_clean",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|gouge|enrichment_review",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|gouge|none",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|gouge|payload_mismatch",
+    "num_reasons": 5,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|gouge|recipient_mismatch",
+    "num_reasons": 5,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|gouge|secret_high",
+    "num_reasons": 5,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|gouge|secret_medium",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|gouge|stale",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|gouge|sybil_ring_advisory",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|gouge|verified_floor",
+    "num_reasons": 5,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|moderate_anomaly|burst_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|moderate_anomaly|captive_sybil",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|moderate_anomaly|category_gouge",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|moderate_anomaly|category_premium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|moderate_anomaly|divergence",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|moderate_anomaly|enrichment_clean",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|moderate_anomaly|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|moderate_anomaly|none",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|moderate_anomaly|payload_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|moderate_anomaly|recipient_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|moderate_anomaly|secret_high",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|moderate_anomaly|secret_medium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|moderate_anomaly|stale",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|moderate_anomaly|sybil_ring_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "known_bad|moderate_anomaly|verified_floor",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "known_bad|over_budget|burst_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "known_bad|over_budget|captive_sybil",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "known_bad|over_budget|category_gouge",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "known_bad|over_budget|category_premium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "known_bad|over_budget|divergence",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "known_bad|over_budget|enrichment_clean",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "known_bad|over_budget|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "known_bad|over_budget|none",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "known_bad|over_budget|payload_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "known_bad|over_budget|recipient_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "known_bad|over_budget|secret_high",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "known_bad|over_budget|secret_medium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "known_bad|over_budget|stale",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "known_bad|over_budget|sybil_ring_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "known_bad|over_budget|verified_floor",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|empty_hist|burst_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|empty_hist|captive_sybil",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|empty_hist|category_gouge",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|empty_hist|category_premium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|empty_hist|divergence",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|empty_hist|enrichment_clean",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|empty_hist|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|empty_hist|none",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|empty_hist|payload_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|empty_hist|recipient_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|empty_hist|secret_high",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|empty_hist|secret_medium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|empty_hist|stale",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|empty_hist|sybil_ring_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|empty_hist|verified_floor",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|fair|burst_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|fair|captive_sybil",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|fair|category_gouge",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|fair|category_premium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|fair|divergence",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|fair|enrichment_clean",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|fair|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|fair|none",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|fair|payload_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|fair|recipient_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|fair|secret_high",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|fair|secret_medium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|fair|stale",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|fair|sybil_ring_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|fair|verified_floor",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|gouge|burst_advisory",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|gouge|captive_sybil",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|gouge|category_gouge",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|gouge|category_premium",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|gouge|divergence",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|gouge|enrichment_clean",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|gouge|enrichment_review",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|gouge|none",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|gouge|payload_mismatch",
+    "num_reasons": 5,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|gouge|recipient_mismatch",
+    "num_reasons": 5,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|gouge|secret_high",
+    "num_reasons": 5,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|gouge|secret_medium",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|gouge|stale",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|gouge|sybil_ring_advisory",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|gouge|verified_floor",
+    "num_reasons": 5,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|moderate_anomaly|burst_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|moderate_anomaly|captive_sybil",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|moderate_anomaly|category_gouge",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|moderate_anomaly|category_premium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|moderate_anomaly|divergence",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|moderate_anomaly|enrichment_clean",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|moderate_anomaly|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|moderate_anomaly|none",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|moderate_anomaly|payload_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|moderate_anomaly|recipient_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|moderate_anomaly|secret_high",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|moderate_anomaly|secret_medium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|moderate_anomaly|stale",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|moderate_anomaly|sybil_ring_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "sanctioned|moderate_anomaly|verified_floor",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "sanctioned|over_budget|burst_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "sanctioned|over_budget|captive_sybil",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "sanctioned|over_budget|category_gouge",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "sanctioned|over_budget|category_premium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "sanctioned|over_budget|divergence",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "sanctioned|over_budget|enrichment_clean",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "sanctioned|over_budget|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "sanctioned|over_budget|none",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "sanctioned|over_budget|payload_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "sanctioned|over_budget|recipient_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "sanctioned|over_budget|secret_high",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "sanctioned|over_budget|secret_medium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "sanctioned|over_budget|stale",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "sanctioned|over_budget|sybil_ring_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "sanctioned|over_budget|verified_floor",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|empty_hist|burst_advisory",
+    "num_reasons": 3,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|empty_hist|captive_sybil",
+    "num_reasons": 4,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|empty_hist|category_gouge",
+    "num_reasons": 3,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|empty_hist|category_premium",
+    "num_reasons": 3,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|empty_hist|divergence",
+    "num_reasons": 4,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|empty_hist|enrichment_clean",
+    "num_reasons": 3,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|empty_hist|enrichment_review",
+    "num_reasons": 4,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|empty_hist|none",
+    "num_reasons": 3,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "thin|empty_hist|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "thin|empty_hist|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "thin|empty_hist|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|empty_hist|secret_medium",
+    "num_reasons": 4,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|empty_hist|stale",
+    "num_reasons": 4,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|empty_hist|sybil_ring_advisory",
+    "num_reasons": 4,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|empty_hist|verified_floor",
+    "num_reasons": 3,
+    "score": 0.857,
+    "verdict": "GO"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|fair|burst_advisory",
+    "num_reasons": 3,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|fair|captive_sybil",
+    "num_reasons": 4,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|fair|category_gouge",
+    "num_reasons": 3,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|fair|category_premium",
+    "num_reasons": 3,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|fair|divergence",
+    "num_reasons": 4,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|fair|enrichment_clean",
+    "num_reasons": 3,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|fair|enrichment_review",
+    "num_reasons": 4,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|fair|none",
+    "num_reasons": 3,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "thin|fair|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "thin|fair|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "thin|fair|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|fair|secret_medium",
+    "num_reasons": 4,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|fair|stale",
+    "num_reasons": 4,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|fair|sybil_ring_advisory",
+    "num_reasons": 4,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|fair|verified_floor",
+    "num_reasons": 3,
+    "score": 0.857,
+    "verdict": "GO"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|gouge|burst_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|gouge|captive_sybil",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|gouge|category_gouge",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|gouge|category_premium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|gouge|divergence",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|gouge|enrichment_clean",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|gouge|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|gouge|none",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "thin|gouge|payload_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "thin|gouge|recipient_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "thin|gouge|secret_high",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|gouge|secret_medium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|gouge|stale",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|gouge|sybil_ring_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|gouge|verified_floor",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|moderate_anomaly|burst_advisory",
+    "num_reasons": 4,
+    "score": 0.571,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|moderate_anomaly|captive_sybil",
+    "num_reasons": 5,
+    "score": 0.571,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|moderate_anomaly|category_gouge",
+    "num_reasons": 5,
+    "score": 0.571,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|moderate_anomaly|category_premium",
+    "num_reasons": 4,
+    "score": 0.571,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|moderate_anomaly|divergence",
+    "num_reasons": 5,
+    "score": 0.571,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|moderate_anomaly|enrichment_clean",
+    "num_reasons": 4,
+    "score": 0.571,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|moderate_anomaly|enrichment_review",
+    "num_reasons": 5,
+    "score": 0.571,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|moderate_anomaly|none",
+    "num_reasons": 4,
+    "score": 0.571,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "thin|moderate_anomaly|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "thin|moderate_anomaly|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "thin|moderate_anomaly|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|moderate_anomaly|secret_medium",
+    "num_reasons": 5,
+    "score": 0.571,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|moderate_anomaly|stale",
+    "num_reasons": 5,
+    "score": 0.571,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|moderate_anomaly|sybil_ring_advisory",
+    "num_reasons": 5,
+    "score": 0.571,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "thin|moderate_anomaly|verified_floor",
+    "num_reasons": 4,
+    "score": 0.571,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "thin|over_budget|burst_advisory",
+    "num_reasons": 4,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "thin|over_budget|captive_sybil",
+    "num_reasons": 5,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "thin|over_budget|category_gouge",
+    "num_reasons": 5,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "thin|over_budget|category_premium",
+    "num_reasons": 5,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "thin|over_budget|divergence",
+    "num_reasons": 5,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "thin|over_budget|enrichment_clean",
+    "num_reasons": 4,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "thin|over_budget|enrichment_review",
+    "num_reasons": 5,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "thin|over_budget|none",
+    "num_reasons": 4,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "thin|over_budget|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "thin|over_budget|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "thin|over_budget|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "thin|over_budget|secret_medium",
+    "num_reasons": 5,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "thin|over_budget|stale",
+    "num_reasons": 5,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "thin|over_budget|sybil_ring_advisory",
+    "num_reasons": 5,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "thin|over_budget|verified_floor",
+    "num_reasons": 4,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|empty_hist|burst_advisory",
+    "num_reasons": 4,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|empty_hist|captive_sybil",
+    "num_reasons": 5,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|empty_hist|category_gouge",
+    "num_reasons": 4,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|empty_hist|category_premium",
+    "num_reasons": 4,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|empty_hist|divergence",
+    "num_reasons": 5,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|empty_hist|enrichment_clean",
+    "num_reasons": 4,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|empty_hist|enrichment_review",
+    "num_reasons": 5,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|empty_hist|none",
+    "num_reasons": 4,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "wash|empty_hist|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "wash|empty_hist|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "wash|empty_hist|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|empty_hist|secret_medium",
+    "num_reasons": 5,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|empty_hist|stale",
+    "num_reasons": 5,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|empty_hist|sybil_ring_advisory",
+    "num_reasons": 5,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|empty_hist|verified_floor",
+    "num_reasons": 4,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|fair|burst_advisory",
+    "num_reasons": 4,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|fair|captive_sybil",
+    "num_reasons": 5,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|fair|category_gouge",
+    "num_reasons": 4,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|fair|category_premium",
+    "num_reasons": 4,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|fair|divergence",
+    "num_reasons": 5,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|fair|enrichment_clean",
+    "num_reasons": 4,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|fair|enrichment_review",
+    "num_reasons": 5,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|fair|none",
+    "num_reasons": 4,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "wash|fair|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "wash|fair|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "wash|fair|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|fair|secret_medium",
+    "num_reasons": 5,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|fair|stale",
+    "num_reasons": 5,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|fair|sybil_ring_advisory",
+    "num_reasons": 5,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|fair|verified_floor",
+    "num_reasons": 4,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|gouge|burst_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|gouge|captive_sybil",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|gouge|category_gouge",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|gouge|category_premium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|gouge|divergence",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|gouge|enrichment_clean",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|gouge|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|gouge|none",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "wash|gouge|payload_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "wash|gouge|recipient_mismatch",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "wash|gouge|secret_high",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|gouge|secret_medium",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|gouge|stale",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|gouge|sybil_ring_advisory",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|gouge|verified_floor",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|moderate_anomaly|burst_advisory",
+    "num_reasons": 5,
+    "score": 0.666,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|moderate_anomaly|captive_sybil",
+    "num_reasons": 6,
+    "score": 0.666,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|moderate_anomaly|category_gouge",
+    "num_reasons": 6,
+    "score": 0.666,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|moderate_anomaly|category_premium",
+    "num_reasons": 5,
+    "score": 0.666,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|moderate_anomaly|divergence",
+    "num_reasons": 6,
+    "score": 0.666,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|moderate_anomaly|enrichment_clean",
+    "num_reasons": 5,
+    "score": 0.666,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|moderate_anomaly|enrichment_review",
+    "num_reasons": 6,
+    "score": 0.666,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|moderate_anomaly|none",
+    "num_reasons": 5,
+    "score": 0.666,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "wash|moderate_anomaly|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "wash|moderate_anomaly|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": true,
+    "id": "wash|moderate_anomaly|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|moderate_anomaly|secret_medium",
+    "num_reasons": 6,
+    "score": 0.666,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|moderate_anomaly|stale",
+    "num_reasons": 6,
+    "score": 0.666,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|moderate_anomaly|sybil_ring_advisory",
+    "num_reasons": 6,
+    "score": 0.666,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "bounded",
+    "hard_stop": false,
+    "id": "wash|moderate_anomaly|verified_floor",
+    "num_reasons": 5,
+    "score": 0.666,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "wash|over_budget|burst_advisory",
+    "num_reasons": 5,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "wash|over_budget|captive_sybil",
+    "num_reasons": 6,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "wash|over_budget|category_gouge",
+    "num_reasons": 6,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "wash|over_budget|category_premium",
+    "num_reasons": 6,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "wash|over_budget|divergence",
+    "num_reasons": 6,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "wash|over_budget|enrichment_clean",
+    "num_reasons": 5,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "wash|over_budget|enrichment_review",
+    "num_reasons": 6,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "wash|over_budget|none",
+    "num_reasons": 5,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "wash|over_budget|payload_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "wash|over_budget|recipient_mismatch",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": true,
+    "id": "wash|over_budget|secret_high",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "wash|over_budget|secret_medium",
+    "num_reasons": 6,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "wash|over_budget|stale",
+    "num_reasons": 6,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "wash|over_budget|sybil_ring_advisory",
+    "num_reasons": 6,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unbounded",
+    "hard_stop": false,
+    "id": "wash|over_budget|verified_floor",
+    "num_reasons": 5,
+    "score": 0.999,
+    "verdict": "HOLD"
+  }
+]

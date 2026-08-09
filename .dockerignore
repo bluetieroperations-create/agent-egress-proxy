@@ -1,0 +1,13 @@
+test_*.py
+*.md
+docs/
+.git/
+__pycache__/
+*.pyc
+*.log
+*.jsonl
+*.db
+allowlist.txt*
+egress_proxy.py
+# NOTE: sanctions.txt is intentionally NOT ignored -- it's the baked-in OFAC
+# snapshot the image COPYs in to enable screening by default (see Dockerfile).

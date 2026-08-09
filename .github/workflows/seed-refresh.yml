@@ -1,0 +1,103 @@
+# Automated, GUARDED refresh of the prebuilt free-tier seed store (Stage 2 of
+# docs/DATA_COMPLETENESS.md -- "lock in durability": kill the ~90-day stale cliff
+# without a human running `make refresh-seed` by hand).
+#
+# What it does: rebuild the corpus from live on-chain history into a TEMP candidate,
+# run refresh_guard.py against the committed store, and ONLY if the guard ACCEPTs the
+# candidate, open (or update) a PULL REQUEST with the refreshed artifacts. It never
+# pushes to the working branch directly and never overwrites the committed store in
+# place -- so a partial crawl or a no-op can never ship, and every refresh still passes
+# the full test suite (incl. test_coverage_eval's seed-regression gate) on the PR
+# before a human merges. On REJECT it opens/updates a nag issue and changes nothing.
+#
+# NOTE: `schedule:` fires only from the repo's DEFAULT branch, so this cron is dormant
+# until merged there. `workflow_dispatch` works from any branch -- use the "Run
+# workflow" button to exercise it now. The companion seed-freshness.yml stays as the
+# pure nag; this one acts.
+
+name: seed-refresh
+
+on:
+  schedule:
+    - cron: "23 8 * * 1"    # weekly, Mondays 08:23 UTC (ahead of the nag at 09:17)
+  workflow_dispatch:
+    inputs:
+      max_pages:
+        description: "chain_backfill --max-pages per payee"
+        default: "2"
+
+permissions:
+  contents: write        # to push the refresh branch
+  pull-requests: write   # to open the PR
+  issues: write          # to open the reject nag
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Guarded refresh (temp candidate -> promote only on ACCEPT)
+        id: refresh
+        env:
+          BACKFILL_PAGES: ${{ github.event.inputs.max_pages || '2' }}
+        run: |
+          set +e
+          sh scripts/refresh_seed.sh
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+          set -e
+
+      - name: Sanity-check the refreshed corpus
+        if: steps.refresh.outputs.code == '0'
+        run: |
+          # the artifacts were promoted in-tree by the script; prove the suite still
+          # passes on the NEW corpus before proposing it (seed-regression gate included).
+          python3 -m unittest test_coverage_eval.py test_refresh_guard.py \
+            test_verdict_oracle.py test_calibration_lock.py
+
+      - name: Open / update the refresh PR
+        if: steps.refresh.outputs.code == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet -- data/; then
+            echo "No data changes after guard -- nothing to propose."; exit 0
+          fi
+          BRANCH="auto/seed-refresh"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add data/reputation_seed.db.gz data/category_index.json data/divergence_index.json
+          FRESH="$(python3 check_seed_age.py || true)"
+          git commit -m "data: automated guarded seed refresh" \
+                     -m "$FRESH" \
+                     -m "Refreshed by .github/workflows/seed-refresh.yml; refresh_guard.py ACCEPTed the candidate."
+          git push -f origin "$BRANCH"
+          BASE="${GITHUB_REF_NAME}"
+          if ! gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' | grep -q '[0-9]'; then
+            gh pr create --base "$BASE" --head "$BRANCH" \
+              --title "Automated seed refresh" \
+              --body "$FRESH
+
+          Guarded refresh from \`scripts/refresh_seed.sh\` (refresh_guard.py ACCEPTed the candidate: size retained + genuinely fresher). Merging redeploys a fresh free-tier corpus. Automated by \`.github/workflows/seed-refresh.yml\`."
+          else
+            echo "PR already open for $BRANCH; force-pushed the update."
+          fi
+
+      - name: Open / update the reject nag issue
+        if: steps.refresh.outputs.code != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TITLE="Automated seed refresh was rejected"
+          BODY="The guarded refresh (\`scripts/refresh_seed.sh\`) ran but \`refresh_guard.py\` REJECTED the candidate (partial crawl / no progress / stale result -- see the job log). The committed store was left untouched. Re-run the workflow, or refresh manually once the on-chain data source is healthy. (Automated from .github/workflows/seed-refresh.yml.)"
+          EXISTING="$(gh issue list --state open --json number,title --jq ".[] | select(.title==\"$TITLE\") | .number" | head -n1)"
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "$BODY"
+          else
+            gh issue create --title "$TITLE" --body "$BODY"
+          fi

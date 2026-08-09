@@ -207,3 +207,13 @@ the allowlist entry `example.com`.
 - TLS is **tunneled, not terminated** — the proxy sees the destination
   `host:port` (which is all it needs to log/gate) but never the plaintext. It
   is an egress *gate*, not a MITM inspector.
+
+## Blackwall MCP server
+
+This repo also ships **Blackwall** — a pre-signature x402 payment-risk verdict —
+as an MCP tool. Run: `python mcp_server.py` (stdio, stdlib-only). Tool
+**`forecast_payment`** returns GO / HOLD / STOP for paying a counterparty —
+behavioral reputation + price-anomaly (per-class + peer-group) + OFAC screening +
+a signed receipt. Optional **`report_outcome`** (with `BLACKWALL_LEDGER`) feeds
+reputation. See `docs/MCP.md`. Live HTTP endpoint + discovery:
+https://agent-egress-proxy.onrender.com/.well-known/x402

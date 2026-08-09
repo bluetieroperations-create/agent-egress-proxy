@@ -1,0 +1,55 @@
+{
+  "environment": {
+    "python": "3.11.15",
+    "machine": "x86_64",
+    "system": "Linux",
+    "processor": "Intel(R) Xeon(R) Processor @ 2.80GHz"
+  },
+  "results": {
+    "pure_verdict": {
+      "n": 20000,
+      "unit": "us",
+      "p50": 16.6,
+      "p95": 27.9,
+      "p99": 60.9,
+      "min": 15.6,
+      "label": "decide_payment (pure decision)"
+    },
+    "forecast_basic": {
+      "n": 8000,
+      "unit": "us",
+      "p50": 96.1,
+      "p95": 180.6,
+      "p99": 253.1,
+      "min": 81.0,
+      "label": "forecast (validate->decide->HMAC receipt)"
+    },
+    "keccak256": {
+      "n": 2000,
+      "unit": "us",
+      "p50": 550.5,
+      "p95": 680.6,
+      "p99": 883.4,
+      "min": 506.1,
+      "label": "keccak256 (pure-Python, one call)"
+    },
+    "ecdsa_recover": {
+      "n": 60,
+      "unit": "us",
+      "p50": 30265.0,
+      "p95": 40747.2,
+      "p99": 45269.3,
+      "min": 28805.4,
+      "label": "secp256k1 ecdsa_recover (valid sig, full)"
+    },
+    "signed_verify": {
+      "n": 50,
+      "unit": "us",
+      "p50": 33305.0,
+      "p95": 45078.1,
+      "p99": 46803.4,
+      "min": 32326.8,
+      "label": "signed-payment verify (EIP-712 digest+recover+addr)"
+    }
+  }
+}
