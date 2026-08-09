@@ -967,7 +967,7 @@ def default_billing_asset(network, explicit, base_usdc, sepolia_usdc):
 def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              hold_above=None, peer_index=None, seller_registry=None, now=None,
              graph_source=None, velocity_source=None, category_index=None,
-             divergence_index=None, enrichment_source=None):
+             divergence_index=None, enrichment_source=None, verify_signer=True):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
@@ -1005,12 +1005,20 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
                  "asset": clean["asset"], "chain": clean["chain"]}
     from payload_sim import check_payment_authorization
     from calldata import screen_transaction
+    # Phase 1 (recipient/amount/asset/chain field match) is cheap (~us) and stays inline
+    # -- its mismatches are the highest-value hard STOP. Phase 2 (signer recovery) is
+    # ~30ms of pure-Python EC math (see BENCHMARKS.md); `verify_signer=False` DEFERS it to
+    # a second stage (verify_signed_payment) so the fast verdict isn't blocked. When
+    # deferred, signer_status="deferred" is surfaced so a GO is never mistaken for
+    # signer-verified.
+    _now = int(time.time()) if now is None else int(now)
     pay_check = check_payment_authorization(
         sim_claim, clean.get("payment_authorization"), decimals=6,
-        now=int(time.time()))
+        now=_now, verify_signer=verify_signer)
     tx_check = screen_transaction(sim_claim, clean.get("transaction"))
     sim_mismatches = pay_check["mismatches"] + tx_check["mismatches"]
     sim_warnings = pay_check["warnings"] + tx_check["warnings"]
+    signer_status = pay_check.get("signer_status", "not_applicable")
 
     # Seller-audit tier: if the counterparty holds a VALID Blackwall "verified
     # merchant" badge, apply its bounded, audit-earned trust floor (never a STOP
@@ -1096,6 +1104,17 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     if sim_warnings:
         verdict["reasons"].extend(sim_warnings)
 
+    # Make the Phase-2 signer state EXPLICIT in every response. When it was DEFERRED, a
+    # non-STOP verdict is only PROVISIONAL w.r.t. signer authenticity -- say so, so a
+    # caller runs verify_signed_payment() before relying on a GO. (Phase-1 field-match
+    # hard-stops already applied inline regardless.)
+    verdict["signals"]["payload_signer_status"] = signer_status
+    if signer_status == "deferred" and verdict["verdict"] != "STOP":
+        verdict["reasons"].append(
+            "signer verification DEFERRED (fast path) -- this verdict does NOT confirm "
+            "the payment's cryptographic signer; run the second-stage check "
+            "(verify_signed_payment) before treating a GO as signer-verified")
+
     # Endpoint-readiness enrichment (address-based verdict + URL-based readiness).
     # FAIL OPEN here, at the consumer: a misbehaving/raising readiness source --
     # custom, or a malformed injected transport -- must never break the core
@@ -1140,6 +1159,33 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
             payer=clean.get("payer"),
         )
     return verdict, None
+
+
+def verify_signed_payment(payload, now=None):
+    """SECOND-STAGE signer verification (the ~30ms path deferred by
+    `forecast(..., verify_signer=False)`). Recovers the EIP-3009 signer from the request
+    body's `payment_authorization` and confirms it matches the claim. Returns
+        {ok, signer_status, mismatches[], warnings[]}
+    where `ok` is False iff the signer is forged / mismatched -- a caller that got a fast
+    GO MUST NOT submit the payment when `ok` is False. Pure w.r.t. the verdict engine
+    (no reputation lookup); NEVER raises. Idempotent -- safe to call once per payment.
+
+    Usage:
+        v, err = forecast(body, src, verify_signer=False)      # fast, ~90us
+        if not err and v["verdict"] != "STOP":
+            r = verify_signed_payment(body)                    # ~30ms, only if worth it
+            if not r["ok"]:                                    # forged signer -> do NOT submit
+                ...treat as STOP...
+    """
+    from payload_sim import check_payment_authorization
+    body = payload if isinstance(payload, dict) else {}
+    claim = {"counterparty": body.get("counterparty"), "amount": body.get("amount"),
+             "asset": body.get("asset"), "chain": body.get("chain")}
+    _now = int(time.time()) if now is None else int(now)
+    res = check_payment_authorization(claim, body.get("payment_authorization"),
+                                      decimals=6, now=_now, verify_signer=True)
+    return {"ok": not res["mismatches"], "signer_status": res.get("signer_status"),
+            "mismatches": res["mismatches"], "warnings": res["warnings"]}
 
 
 def sanctions_enabled(sanctions_list):
@@ -1359,6 +1405,8 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             if self.path == "/v1/forecast-payment":
                 self._do_forecast()
+            elif self.path == "/v1/verify-signer":
+                self._do_verify_signer()
             elif self.path == "/v1/report-outcome":
                 self._do_report_outcome()
             elif self.path == "/v1/session":
@@ -1379,6 +1427,17 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(503, {"error": "verdict engine temporarily unavailable"})
             except Exception:
                 pass   # response may already be partly written; don't cascade
+
+    def _do_verify_signer(self):
+        """Stage-2 signer verification for a request that got a fast (deferred) verdict.
+        Runs the ~30ms EIP-3009 signer recovery and returns {ok, signer_status,
+        mismatches, warnings}. `ok:false` means the signer is forged/mismatched -- do NOT
+        submit the payment. Rate-limited via do_POST like every other route."""
+        payload, err = self._read_json_body()
+        if err is not None:
+            self._send_json(400, {"error": err})
+            return
+        self._send_json(200, verify_signed_payment(payload))
 
     def _do_forecast(self):
         payload, err = self._read_json_body()
@@ -1427,6 +1486,11 @@ class _Handler(BaseHTTPRequestHandler):
             # per-call settlement, so no header is emitted for them.
             settlement_tx = result.settlement
 
+        # Two-stage opt-in: a request may set `defer_signer: true` to get the FAST verdict
+        # (Phase-1 field hard-stops inline, ~sub-ms) and skip the ~30ms Phase-2 signer
+        # recovery, then complete it via POST /v1/verify-signer. Default keeps Phase 2
+        # inline, so deployed behavior is unchanged unless a caller opts in.
+        _verify_signer = not (isinstance(payload, dict) and payload.get("defer_signer"))
         response, err = forecast(payload, self.reputation_source, self.ledger,
                                  readiness_source=self.readiness_source,
                                  hold_above=self.hold_above,
@@ -1435,7 +1499,8 @@ class _Handler(BaseHTTPRequestHandler):
                                  velocity_source=self.velocity_source,
                                  category_index=self.category_index,
                                  divergence_index=self.divergence_index,
-                                 enrichment_source=self.enrichment_source)
+                                 enrichment_source=self.enrichment_source,
+                                 verify_signer=_verify_signer)
         if err is not None:
             self._send_json(400, {"error": err})
             return

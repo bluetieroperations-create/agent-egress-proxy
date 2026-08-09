@@ -49,9 +49,12 @@ Two things keep it honest and bounded:
 ## If this path is on your hot path
 
 The bottleneck is `secp256k1.ecdsa_recover` (~30 ms), **not** keccak. Options:
-1. **Don't run it inline.** For high-throughput callers, treat signed-payment verification
-   as an async/second-stage check, not a blocking pre-sign gate — the fast verdict
-   (~90 µs) still gates in-line.
+1. **Don't run it inline — IMPLEMENTED.** `forecast(..., verify_signer=False)` (HTTP:
+   `{"defer_signer": true}`) returns the fast verdict with Phase-1 field hard-stops still
+   inline, marks `payload_signer_status: "deferred"`, and defers the ~30 ms recovery to a
+   second stage: `verify_signed_payment(body)` / `POST /v1/verify-signer`. A deferred GO
+   is explicitly *not* signer-verified, so a caller runs stage 2 before submitting. See
+   `test_two_stage_signer.py`.
 2. **Cache** per-(nonce, signature) within a request/session so a repeat doesn't re-recover.
 3. **Only if stdlib-only is explicitly relaxed:** a native lib (`coincurve`/`pycryptodome`)
    does the recovery in microseconds (~1000× faster). This is a deliberate architectural

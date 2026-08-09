@@ -163,13 +163,15 @@ def check_payment_authorization(claim, x_payment, *, decimals=6, now=None,
     hard-stop reason. NEVER raises -- a crafted payment can't crash the gate.
     """
     if x_payment is None or x_payment == "":
-        return {"checked": False, "matches": True, "mismatches": [], "warnings": []}
+        return {"checked": False, "matches": True, "mismatches": [], "warnings": [],
+                "signer_status": "not_applicable"}
 
     payment = _decode(x_payment, decode)
     if not isinstance(payment, dict):
         return {"checked": True, "matches": False, "warnings": [],
                 "mismatches": ["could not decode the signed payment to verify it "
-                               "matches the payment being scored"]}
+                               "matches the payment being scored"],
+                "signer_status": "undecodable"}
 
     claim = claim if isinstance(claim, dict) else {}
     auth = _authorization(payment)
@@ -221,7 +223,15 @@ def check_payment_authorization(claim, x_payment, *, decimals=6, now=None,
     #     signature to the claimed chain + asset (EIP-712 domain = chainId +
     #     token). Hard STOP on a bad/foreign signature for a KNOWN asset; unknown
     #     asset/chain or a missing signature degrades to a warning. ---
+    # signer_status makes the Phase-2 outcome EXPLICIT so a caller can never mistake a
+    # deferred (fast-path) verdict for a cryptographically-verified one:
+    #   deferred    -- Phase 2 skipped (verify_signer=False); run the second stage.
+    #   confirmed   -- signer recovered and equals the stated payer.
+    #   mismatch    -- signer != payer / forged (a hard-stop reason was added).
+    #   unverified  -- Phase 2 ran but couldn't (no domain / no sig / no `from`).
+    signer_status = "deferred"
     if verify_signer:
+        _m0, _w0 = len(mismatches), len(warnings)
         _from = auth.get("from")
         domain = _claim_domain(claim)
         payload = payment.get("payload") if isinstance(payment, dict) else None
@@ -243,6 +253,8 @@ def check_payment_authorization(claim, x_payment, *, decimals=6, now=None,
                 mismatches.append(
                     "signature signer %s != the stated payer %s (from)"
                     % (_show(recovered), _show(_from)))
+        signer_status = ("mismatch" if len(mismatches) > _m0
+                         else "unverified" if len(warnings) > _w0 else "confirmed")
 
     # --- time validity: advisory only (a facilitator rejects these itself) ---
     if now is not None:
@@ -256,4 +268,5 @@ def check_payment_authorization(claim, x_payment, *, decimals=6, now=None,
                             "(validAfter is in the future)")
 
     return {"checked": True, "matches": not mismatches,
-            "mismatches": mismatches, "warnings": warnings}
+            "mismatches": mismatches, "warnings": warnings,
+            "signer_status": signer_status}

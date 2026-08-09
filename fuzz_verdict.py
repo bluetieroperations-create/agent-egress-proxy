@@ -337,7 +337,8 @@ def run_forecast(iterations=5000, seed=1337):
         try:
             resp, err = bw.forecast(payload, _SingleSource(record), None,
                                     graph_source=graph, velocity_source=vel,
-                                    category_index=cat, divergence_index=div)
+                                    category_index=cat, divergence_index=div,
+                                    verify_signer=(rng.random() < 0.5))  # both stages
         except Exception as e:
             violations.append({"case": payload, "result": None,
                                "problems": ["P7 forecast raised %s: %s"
