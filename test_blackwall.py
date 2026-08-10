@@ -8,6 +8,7 @@ reputation_score, decide_payment) ARE the boundary; tests are TDD-first. Each
 class notes the mutation it kills.
 """
 import json
+import threading
 import unittest
 from decimal import Decimal
 
@@ -196,10 +197,32 @@ class TestDecidePayment(unittest.TestCase):
         self.assertNotEqual(v["verdict"], "STOP")
 
     def test_stop_price_wildly_off(self):
-        # 8x the median -> STOP, not merely HOLD.
+        # 8x the counterparty's OWN median -> STOP. STABLE_HISTORY is DENSE (4
+        # obs) and TIGHT (all ~0.09), so even the flat median is trustworthy
+        # enough (flat_stop_trustworthy) to hard-STOP. Mutation: drop the
+        # `>= STOP_ANOMALY_RATIO` -> HOLD (not STOP).
         v = bw.decide_payment("0.72", self.GOOD, self.STABLE_HISTORY,
                               counterparty="0xA")
         self.assertEqual(v["verdict"], "STOP")
+
+    def test_flat_anomaly_untrustworthy_holds_not_stops(self):
+        # REGRESSION (live false-STOP): an 8x+ anomaly off an UNTRUSTWORTHY flat
+        # median must NOT hard-STOP -- it downgrades to HOLD (fails the GO gate,
+        # routed to a human). This is the "62x its own median" false STOP on
+        # active wallets (exchange addresses, vitalik.eth) whose sparse/dispersed
+        # on-chain receipts make the flat median a meaningless reference. Two ways
+        # a flat median is untrustworthy; BOTH must HOLD, not STOP.
+        # (a) TOO SPARSE (< FLAT_STOP_MIN_OBS observations):
+        thin = bw.decide_payment("0.72", self.GOOD, ["0.09", "0.09"],
+                                 counterparty="0xA")
+        self.assertEqual(thin["signals"]["price_basis"], "flat")
+        self.assertEqual(thin["verdict"], "HOLD")
+        # (b) TOO DISPERSED (max/min > FLAT_STOP_SPREAD -- a wallet's varied receipts):
+        noisy = bw.decide_payment("8.20", self.GOOD, ["0.01", "0.09", "1.0"],
+                                  counterparty="0xA")
+        self.assertEqual(noisy["signals"]["price_basis"], "flat")
+        self.assertEqual(noisy["verdict"], "HOLD")
+        # Mutation: drop the flat_stop_trustworthy guard -> both become STOP.
 
     def test_hold_thin_history(self):
         thin = {"settlement_count": 3, "dispute_rate": 0.0}
@@ -1140,6 +1163,57 @@ class TestRobustPriceMedian(unittest.TestCase):
         self.assertEqual(v2["signals"]["price_basis"], "flat")
 
 
+class TestFlatMedianFiltering(unittest.TestCase):
+    """The FLAT median (price_median_and_basis) must drop the SAME junk that
+    robust_price_median and flat_stop_trustworthy drop: non-positive, non-finite,
+    and non-numeric entries. Otherwise the median that produces the anomaly RATIO
+    judges a different distribution than the trustworthiness gate, and $0/garbage
+    entries silently blind or distort the price-anomaly check.
+
+    Mutation notes:
+      - keep non-positive entries in the flat median -> test_zero_entries_do_not_
+        suppress_anomaly FAILS (a gouge auto-GOes) and test_zero_deflation_no_
+        false_stop FAILS (a legit payment false-STOPs).
+      - keep non-numeric entries -> test_garbage_entry_does_not_crash FAILS (500).
+    """
+    GOOD = {"settlement_count": 1240, "dispute_rate": 0.002}
+
+    def test_flat_median_drops_nonpositive(self):
+        # $0 free-tier quotes mixed with the real $0.09 price. The flat median
+        # must be the positive subset's median (0.09), NOT 0 (which nukes the
+        # ratio to None and suppresses the anomaly entirely).
+        m, basis = bw.price_median_and_basis(["0", "0", "0.09"], None)
+        self.assertEqual(basis, "flat")
+        self.assertEqual(m, Decimal("0.09"))
+
+    def test_zero_entries_do_not_suppress_anomaly(self):
+        # REGRESSION (gouge bypass): a counterparty whose history mixes $0
+        # (free-tier) and $0.09 quotes must NOT get a clean GO on a $10 charge --
+        # that is 111x its real median. Zeros pulling the flat median to 0 (ratio
+        # None, anomaly 0.0) previously auto-approved the overcharge.
+        v = bw.decide_payment("10.00", self.GOOD, ["0", "0", "0.09"],
+                              counterparty="0xA")
+        self.assertNotEqual(v["verdict"], "GO")
+        self.assertGreater(v["signals"]["price_anomaly"], 0.0)
+
+    def test_zero_deflation_no_false_stop(self):
+        # REGRESSION (false STOP): zeros deflating a NON-zero flat median inflate
+        # the ratio while flat_stop_trustworthy (which filters the zeros) sees a
+        # tight positive subset and blesses the STOP. True median is 0.09, $0.36
+        # is only 4x -> must HOLD, never STOP.
+        v = bw.decide_payment("0.36", self.GOOD,
+                              ["0", "0", "0", "0", "0.09", "0.09", "0.09", "0.09"],
+                              counterparty="0xA")
+        self.assertNotEqual(v["verdict"], "STOP")
+
+    def test_garbage_entry_does_not_crash(self):
+        # A non-numeric entry in agent-supplied quoted_price_history must be
+        # dropped, not raise InvalidOperation up into a 500.
+        v = bw.decide_payment("0.50", self.GOOD, ["abc", "0.09", "0.09"],
+                              counterparty="0xA")
+        self.assertIn(v["verdict"], ("GO", "HOLD", "STOP"))
+
+
 class TestDefaultBillingAsset(unittest.TestCase):
     """
     The 402 challenge must advertise the RIGHT USDC contract for the network,
@@ -1718,6 +1792,590 @@ class TestPaidResponseCarriesSettlementHeader(unittest.TestCase):
         settle = _json.loads(_b64.b64decode(pr))
         self.assertTrue(settle.get("success"))
         self.assertEqual(settle.get("transaction"), "0xmocktx")
+
+
+class TestStatsEndpoint(unittest.TestCase):
+    """GET /v1/stats: operator-only, token-gated funnel metrics."""
+
+    def _serve(self, stats_token, ledger=None, watch_stats=None):
+        import threading
+        from http.server import ThreadingHTTPServer
+        handler = type("_H", (bw._Handler,),
+                       {"reputation_source": bw.MockReputationSource(),
+                        "ledger": ledger, "stats_token": stats_token,
+                        "watch_stats": watch_stats})
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        port = httpd.server_address[1]
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        return port
+
+    def _get(self, port, auth=None):
+        from urllib.request import Request, urlopen
+        from urllib.error import HTTPError
+        req = Request("http://127.0.0.1:%d/v1/stats" % port)
+        if auth:
+            req.add_header("Authorization", auth)
+        try:
+            r = urlopen(req, timeout=3)
+            return r.status, json.loads(r.read())
+        except HTTPError as e:
+            return e.code, None
+
+    def test_disabled_without_token_is_404(self):
+        # mutation: exposing the endpoint when no operator token is configured
+        self.assertEqual(self._get(self._serve(stats_token=None), "Bearer x")[0], 404)
+
+    def test_wrong_or_missing_token_is_401(self):
+        # mutation: accepting a missing or mismatched bearer token
+        port = self._serve(stats_token="s3cret")
+        self.assertEqual(self._get(port, None)[0], 401)
+        self.assertEqual(self._get(port, "Bearer nope")[0], 401)
+
+    def _raw_get(self, port, auth_bytes=None):
+        """Send a request with an arbitrary (possibly non-ASCII) Authorization
+        header via a raw socket, since urllib rejects non-token header values.
+        Returns (status_int_or_None, body_str)."""
+        import socket
+        s = socket.create_connection(("127.0.0.1", port), timeout=3)
+        hdr = (b"Authorization: Bearer " + auth_bytes + b"\r\n") if auth_bytes is not None else b""
+        s.sendall(b"GET /v1/stats HTTP/1.1\r\nHost: x\r\n" + hdr + b"Connection: close\r\n\r\n")
+        s.settimeout(3)
+        data = b""
+        try:
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+        except socket.timeout:
+            pass
+        s.close()
+        if not data:
+            return None, ""  # broken connection -> handler thread crashed
+        line = data.split(b"\r\n", 1)[0].decode(errors="replace")
+        try:
+            status = int(line.split()[1])
+        except (IndexError, ValueError):
+            status = None
+        body = data.split(b"\r\n\r\n", 1)[1].decode(errors="replace") if b"\r\n\r\n" in data else ""
+        return status, body
+
+    def test_non_ascii_bearer_is_clean_401_not_crash(self):
+        # mutation: hmac.compare_digest on str raises TypeError for non-ASCII;
+        # an attacker-supplied non-ASCII bearer must be a plain mismatch (401),
+        # never an unhandled crash (empty/broken response + traceback to logs).
+        port = self._serve(stats_token="asciitoken123")
+        status, body = self._raw_get(port, "éattacker".encode("utf-8"))
+        self.assertEqual(status, 401, "non-ASCII bearer must reject with 401, got %r" % status)
+        self.assertNotIn("Traceback", body)
+
+    def test_non_ascii_configured_token_still_authenticates(self):
+        # a non-ASCII operator token must not brick the endpoint: the matching
+        # token authenticates (200), a mismatch is 401 -- no TypeError either way.
+        # (http.server decodes header bytes as latin-1, so the client must put
+        # the token on the wire the same way for the bytes to round-trip; this
+        # is inherent to HTTP header charset, not to the auth check.)
+        port = self._serve(stats_token="sécret", ledger=None)
+        status_ok, body = self._raw_get(port, "sécret".encode("iso-8859-1"))
+        self.assertEqual(status_ok, 200, "matching non-ASCII token must auth, got %r" % status_ok)
+        self.assertNotIn("Traceback", body)
+        status_bad, _ = self._raw_get(port, b"wrong")
+        self.assertEqual(status_bad, 401)
+
+    def test_authed_returns_stats(self):
+        import os
+        import tempfile
+        import ledger as L
+        led = L.EventLedger(os.path.join(tempfile.mkdtemp(), "l.jsonl"))
+        led.record_verdict("r1", "0xA", "0.09", "GO", payer="0xP1")
+        led.record_verdict("r2", "0xB", "0.09", "STOP", payer="0xP2")
+        code, body = self._get(self._serve(stats_token="s3cret", ledger=led), "Bearer s3cret")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["verdicts_total"], 2)
+        self.assertEqual(body["by_verdict"], {"GO": 1, "STOP": 1})
+        self.assertEqual(body["distinct_payers"], 2)
+
+    def test_stats_reports_watch_liveness_when_running(self):
+        # The daemon watcher is otherwise invisible (web serves 200 either way).
+        # /v1/stats must surface its liveness so an operator can confirm it's alive.
+        ws = bw.WatchStats()
+        ws.record_pass(2, "2026-07-08T12:00:00Z")   # one pass, 2 confirmed
+        code, body = self._get(
+            self._serve(stats_token="s3cret", watch_stats=ws), "Bearer s3cret")
+        self.assertEqual(code, 200)
+        self.assertTrue(body["settlement_watch_enabled"])
+        self.assertEqual(body["settlement_watch_passes"], 1)
+        self.assertEqual(body["settlement_watch_confirmations_total"], 2)
+        self.assertEqual(body["settlement_watch_last_pass_ts"], "2026-07-08T12:00:00Z")
+
+    def test_stats_reports_watch_disabled_when_off(self):
+        # Mutation: claiming the flywheel is on when no watcher is wired.
+        code, body = self._get(self._serve(stats_token="s3cret"), "Bearer s3cret")
+        self.assertEqual(code, 200)
+        self.assertFalse(body["settlement_watch_enabled"])
+
+
+class TestCORS(unittest.TestCase):
+    """The verdict endpoint is a public API; a browser client (e.g. the Farcaster
+    mini-app) needs CORS or its cross-origin fetch is blocked at the preflight.
+    Kills: no do_OPTIONS handler (501 preflight) / missing Access-Control-Allow-Origin."""
+
+    def _serve(self):
+        import threading
+        from http.server import ThreadingHTTPServer
+        handler = type("_H", (bw._Handler,),
+                       {"reputation_source": bw.MockReputationSource()})
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        port = httpd.server_address[1]
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        return port
+
+    def test_options_preflight_allows_cross_origin_post(self):
+        from urllib.request import Request, urlopen
+        port = self._serve()
+        req = Request("http://127.0.0.1:%d/v1/forecast-payment" % port,
+                      method="OPTIONS")
+        r = urlopen(req, timeout=3)
+        self.assertIn(r.status, (200, 204))   # NOT 501 (the stdlib default)
+        self.assertEqual(r.headers.get("Access-Control-Allow-Origin"), "*")
+        self.assertIn("POST", r.headers.get("Access-Control-Allow-Methods", ""))
+        self.assertIn("X-PAYMENT", r.headers.get("Access-Control-Allow-Headers", ""))
+
+    def test_json_response_carries_cors_header(self):
+        from urllib.request import urlopen
+        port = self._serve()
+        r = urlopen("http://127.0.0.1:%d/healthz" % port, timeout=3)
+        self.assertEqual(r.headers.get("Access-Control-Allow-Origin"), "*")
+
+    def test_preflight_allows_the_request_headers_the_service_actually_reads(self):
+        """A browser wallet's cross-origin paid call sends the x402 REQUEST headers
+        the server consumes: X-PAYMENT (single-shot), X-PAYMENT-SESSION (session
+        reuse), and PAYMENT-SIGNATURE (v2 canonical). All three MUST be in
+        Access-Control-Allow-Headers or the browser blocks the request at the
+        preflight -- defeating the whole point of adding CORS.
+        Kills: Allow-Headers advertising a phantom `X-SESSION` while omitting the
+        real X-PAYMENT-SESSION / PAYMENT-SIGNATURE names."""
+        from urllib.request import Request, urlopen
+        port = self._serve()
+        r = urlopen(Request("http://127.0.0.1:%d/v1/forecast-payment" % port,
+                            method="OPTIONS"), timeout=3)
+        allow = r.headers.get("Access-Control-Allow-Headers", "").lower()
+        for h in ("x-payment", "x-payment-session", "payment-signature"):
+            self.assertIn(h, allow,
+                          "Allow-Headers must include %r (the service reads it)" % h)
+
+    def test_preflight_exposes_the_response_headers_browser_js_must_read(self):
+        """The paid-call RESPONSE carries x402 headers browser JS needs to read
+        back (the settlement tx in PAYMENT-RESPONSE, the session balance in
+        X-PAYMENT-SESSION-REMAINING). Without Access-Control-Expose-Headers the
+        browser hides them from JS.
+        Kills: no Access-Control-Expose-Headers on the CORS set."""
+        from urllib.request import urlopen
+        port = self._serve()
+        r = urlopen("http://127.0.0.1:%d/healthz" % port, timeout=3)
+        expose = r.headers.get("Access-Control-Expose-Headers", "").lower()
+        for h in ("payment-response", "x-payment-session-remaining"):
+            self.assertIn(h, expose,
+                          "Expose-Headers must include %r (browser JS reads it)" % h)
+
+
+class TestSignedReceiptForecast(unittest.TestCase):
+    """forecast() attaches a third-party-verifiable Ed25519 signed_receipt."""
+
+    def setUp(self):
+        self.src = bw.MockReputationSource()
+        self.payload = {"counterparty": "0xKNOWNGOOD000000000000000000000000000001",
+                        "amount": "0.09", "asset": "USDC", "chain": "base"}
+
+    def test_signed_receipt_present_and_verifies(self):
+        import receipt_sig
+        resp, err = bw.forecast(self.payload, self.src)
+        self.assertIsNone(err)
+        sr = resp.get("signed_receipt")
+        self.assertIsNotNone(sr)
+        # mutation: emitting a receipt that does not actually verify.
+        self.assertTrue(receipt_sig.verify_signed_receipt(sr, receipt_sig.public_key_hex()))
+        # mutation: signing an identity/decision that differs from what was returned.
+        self.assertEqual(sr["verdict"], resp["verdict"])
+        self.assertEqual(sr["counterparty"], self.payload["counterparty"])
+        self.assertEqual(sr["receipt_id"], resp["receipt_id"])
+
+    def test_signed_receipt_binds_verdict(self):
+        # mutation: signing a subset that omits the verdict -- flipping it must break verify.
+        import receipt_sig
+        resp, _ = bw.forecast(self.payload, self.src)
+        sr = dict(resp["signed_receipt"])
+        sr["verdict"] = "STOP" if sr["verdict"] != "STOP" else "GO"
+        self.assertFalse(receipt_sig.verify_signed_receipt(sr, receipt_sig.public_key_hex()))
+
+    def test_fail_open_when_signing_unavailable(self):
+        # mutation: letting a signing error break the verdict. Signing is a
+        # best-effort add-on; the decision must still be returned.
+        import receipt_sig
+        from unittest import mock
+        with mock.patch.object(receipt_sig, "build_signed_receipt",
+                               side_effect=RuntimeError("boom")):
+            resp, err = bw.forecast(self.payload, self.src)
+        self.assertIsNone(err)
+        self.assertEqual(resp["verdict"], "GO")
+        self.assertNotIn("signed_receipt", resp)  # omitted, not crashed
+
+
+class TestReceiptKeyEndpoint(unittest.TestCase):
+    """GET /.well-known/blackwall-receipt-key.json publishes the verify key."""
+
+    def _serve(self):
+        import threading
+        from http.server import ThreadingHTTPServer
+        handler = type("_H", (bw._Handler,),
+                       {"reputation_source": bw.MockReputationSource()})
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        port = httpd.server_address[1]
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        return port
+
+    def _get(self, port, path):
+        from urllib.request import urlopen
+        r = urlopen("http://127.0.0.1:%d%s" % (port, path), timeout=3)
+        return r.status, json.loads(r.read())
+
+    def test_publishes_key_that_verifies_a_real_receipt(self):
+        # The full third-party flow: fetch the published key over HTTP, then use
+        # it to verify a receipt the server actually produced.
+        # mutation: publishing a key that cannot verify our own receipts.
+        import receipt_sig
+        port = self._serve()
+        status, body = self._get(port, "/.well-known/blackwall-receipt-key.json")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["algo"], "ed25519")
+        self.assertEqual(body["public_key"], receipt_sig.public_key_hex())
+        # mutation: not surfacing whether the forgeable dev key is in use.
+        self.assertEqual(body["dev_key"], receipt_sig.is_dev_key())
+        resp, _ = bw.forecast(
+            {"counterparty": "0xKNOWNGOOD000000000000000000000000000001",
+             "amount": "0.09", "asset": "USDC", "chain": "base"},
+            bw.MockReputationSource())
+        self.assertTrue(receipt_sig.verify_signed_receipt(
+            resp["signed_receipt"], body["public_key"]))
+
+
+class TestVelocityAggregate(unittest.TestCase):
+    """decide_payment velocity signal: cumulative flow to ONE payee escalates GO->HOLD
+    -- the drain-by-many-small-payments a per-call verdict and a per-invoice cap miss."""
+
+    def _good_record(self):
+        return {"settlement_count": 100, "dispute_rate": 0.0,
+                "confirmed_settlement_count": 100, "distinct_payers": 10}
+
+    def test_baseline_goes_without_velocity(self):
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [], counterparty="0xGOOD")
+        self.assertEqual(v["verdict"], "GO")
+
+    def test_velocity_escalates_go_to_hold(self):
+        # Kills: not gating GO on cumulative flow -- the whole feature.
+        flow = {"total_amount": Decimal("98"), "count": 5}   # +this = 103 across 6 payments
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                              counterparty="0xGOOD", velocity_flow=flow)
+        self.assertEqual(v["verdict"], "HOLD")
+        self.assertTrue(any("cumulative flow" in r for r in v["reasons"]))
+        self.assertEqual(v["signals"]["counterparty_flow"]["count"], 6)
+
+    def test_velocity_needs_the_pattern_not_just_total(self):
+        # Kills: tripping on total alone -- a single big payment is the over_budget
+        # case, not a velocity drain. High total + few payments must NOT trip velocity.
+        flow = {"total_amount": Decimal("500"), "count": 1}   # +this = 505 but only 2 payments
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                              counterparty="0xGOOD", velocity_flow=flow)
+        self.assertEqual(v["verdict"], "GO")
+
+    def test_under_threshold_goes(self):
+        flow = {"total_amount": Decimal("10"), "count": 5}    # +this = 15 < threshold
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                              counterparty="0xGOOD", velocity_flow=flow)
+        self.assertEqual(v["verdict"], "GO")
+
+    def test_no_velocity_flow_is_fail_open(self):
+        # Kills: crashing / mis-signalling when no ledger supplies a flow.
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                              counterparty="0xGOOD", velocity_flow=None)
+        self.assertEqual(v["verdict"], "GO")
+        self.assertIsNone(v["signals"]["counterparty_flow"])
+
+
+class TestPayerOutflow(unittest.TestCase):
+    """decide_payment payer-side fan-out (SYBIL complement): high TOTAL outflow AND
+    high DISTINCT-payee count escalates GO->HOLD -- the distributed drain that
+    splitting across fresh addresses (which defeats the per-counterparty velocity)
+    actually makes MORE visible."""
+
+    def _good_record(self):
+        return {"settlement_count": 100, "dispute_rate": 0.0,
+                "confirmed_settlement_count": 100, "distinct_payers": 10}
+
+    def test_fanout_escalates_go_to_hold(self):
+        # Kills: not gating GO on payer fan-out -- the whole sybil complement.
+        # +this = 104 across a 5th distinct payee -> trips.
+        flow = {"total_amount": Decimal("99"), "count": 4, "distinct_counterparties": 5}
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                              counterparty="0xNEW", payer_flow=flow)
+        self.assertEqual(v["verdict"], "HOLD")
+        self.assertTrue(any("distinct counterparties" in r for r in v["reasons"]))
+        self.assertEqual(v["signals"]["payer_outflow"]["distinct_counterparties"], 5)
+        self.assertEqual(v["signals"]["payer_outflow"]["window_total"], "104")
+
+    def test_high_spend_low_fanout_does_not_trip(self):
+        # Kills: turning this into a raw spend cap. A legit agent paying a FEW known
+        # vendors a lot has high outflow but LOW fan-out -- must NOT trip here (that's
+        # the per-counterparty / over_budget case).
+        flow = {"total_amount": Decimal("500"), "count": 50, "distinct_counterparties": 2}
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                              counterparty="0xNEW", payer_flow=flow)
+        self.assertEqual(v["verdict"], "GO")
+
+    def test_high_fanout_low_total_does_not_trip(self):
+        # Kills: tripping on fan-out alone. Many tiny payments to many payees under
+        # the total threshold is normal micro-payment behavior, not a drain.
+        flow = {"total_amount": Decimal("20"), "count": 10, "distinct_counterparties": 10}
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                              counterparty="0xNEW", payer_flow=flow)
+        self.assertEqual(v["verdict"], "GO")
+
+    def test_no_payer_flow_is_fail_open(self):
+        # Kills: crashing / mis-signalling when no ledger supplies a payer flow.
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                              counterparty="0xNEW", payer_flow=None)
+        self.assertEqual(v["verdict"], "GO")
+        self.assertIsNone(v["signals"]["payer_outflow"])
+
+    def test_trips_exactly_at_total_threshold(self):
+        # Kills: off-by-one on the outflow threshold (>= -> >). At EXACTLY $100
+        # window-total (99 history + 1 this payment) with 5 distinct payees the
+        # gate must trip; a `>` mutation would let the boundary payment through.
+        flow = {"total_amount": Decimal("99"), "count": 4, "distinct_counterparties": 5}
+        v = bw.decide_payment(Decimal("1"), self._good_record(), [],
+                              counterparty="0xNEW", payer_flow=flow)
+        self.assertEqual(v["signals"]["payer_outflow"]["window_total"], "100")
+        self.assertEqual(v["verdict"], "HOLD")
+
+    def test_just_under_total_threshold_stays_go(self):
+        # Kills: off-by-one the other way. Under $100 window-total with 5 payees
+        # must NOT trip -- pins the boundary from below so HOLD is exactly at $100.
+        flow = {"total_amount": Decimal("94.99"), "count": 4, "distinct_counterparties": 5}
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                              counterparty="0xNEW", payer_flow=flow)
+        self.assertEqual(v["signals"]["payer_outflow"]["window_total"], "99.99")
+        self.assertEqual(v["verdict"], "GO")
+
+    def test_trips_exactly_at_distinct_threshold(self):
+        # Kills: off-by-one on the distinct-payee count. Exactly MIN distinct (5)
+        # with over-threshold total must trip; 4 distinct must not.
+        over = {"total_amount": Decimal("200"), "count": 10, "distinct_counterparties": 5}
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                              counterparty="0xNEW", payer_flow=over)
+        self.assertEqual(v["verdict"], "HOLD")
+        under = {"total_amount": Decimal("200"), "count": 10, "distinct_counterparties": 4}
+        v2 = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                               counterparty="0xNEW", payer_flow=under)
+        self.assertEqual(v2["verdict"], "GO")
+
+    def test_velocity_and_payer_are_independent_gates(self):
+        # Neither trips alone here (velocity: few payments; payer: low fan-out), so GO.
+        # Confirms the two escalators don't accidentally alias each other.
+        vel = {"total_amount": Decimal("500"), "count": 1}
+        pay = {"total_amount": Decimal("500"), "count": 50, "distinct_counterparties": 2}
+        v = bw.decide_payment(Decimal("5"), self._good_record(), [],
+                              counterparty="0xNEW", velocity_flow=vel, payer_flow=pay)
+        self.assertEqual(v["verdict"], "GO")
+
+
+class _FakeWatcher:
+    """confirm_pending stub that stops the loop after `stop_after` calls and can
+    be told to raise on specific call numbers (to prove fail-safe)."""
+    def __init__(self, stop_after, stop_event, raise_on=None, ret=0):
+        self.calls = 0
+        self.limits = []
+        self.stop_after = stop_after
+        self.stop_event = stop_event
+        self.raise_on = set(raise_on or ())
+        self.ret = ret
+
+    def confirm_pending(self, limit=None):
+        self.calls += 1
+        self.limits.append(limit)
+        if self.calls >= self.stop_after:
+            self.stop_event.set()   # let the loop exit after this pass
+        if self.calls in self.raise_on:
+            raise RuntimeError("chain indexer down")
+        return self.ret
+
+
+class TestRunWatchLoop(unittest.TestCase):
+    """run_watch_loop: the settlement-watch background loop -- must keep running
+    across bad passes and stop promptly when signalled."""
+
+    def test_runs_until_stop_and_passes_batch(self):
+        # Kills: not looping / not honoring the stop_event / not passing the batch
+        # limit through to confirm_pending.
+        ev = threading.Event()
+        w = _FakeWatcher(stop_after=2, stop_event=ev)
+        passes = bw.run_watch_loop(w, 1, 25, ev)
+        self.assertEqual(w.calls, 2)
+        self.assertEqual(passes, 2)
+        self.assertTrue(all(l == 25 for l in w.limits))  # batch forwarded
+
+    def test_exception_in_pass_is_swallowed_not_fatal(self):
+        # Kills: letting a chain/indexer outage crash the loop (and the process it
+        # runs beside). Pass 1 raises; the loop must continue to pass 2.
+        ev = threading.Event()
+        w = _FakeWatcher(stop_after=2, stop_event=ev, raise_on={1})
+        passes = bw.run_watch_loop(w, 1, 25, ev)  # must NOT raise
+        self.assertEqual(w.calls, 2)
+        self.assertEqual(passes, 2)
+
+    def test_already_stopped_runs_zero_passes(self):
+        # Kills: running a pass even when told to stop before starting.
+        ev = threading.Event()
+        ev.set()
+        w = _FakeWatcher(stop_after=99, stop_event=ev)
+        passes = bw.run_watch_loop(w, 1, 25, ev)
+        self.assertEqual(passes, 0)
+        self.assertEqual(w.calls, 0)
+
+    def test_failing_log_on_error_path_does_not_kill_loop(self):
+        # Kills: leaving the except-branch log() UNGUARDED. The live deploy logs
+        # to sys.stdout; a broken/closed stdout (broken pipe, stream closed during
+        # shutdown or log-rotation) makes log() raise. If that raise escapes, the
+        # daemon thread dies SILENTLY and settlement confirmation stops with no
+        # crash the operator sees -- worse than a loud failure for a trustless
+        # read-back. The loop must survive a logging failure on the ERROR path.
+        ev = threading.Event()
+        w = _FakeWatcher(stop_after=2, stop_event=ev, raise_on={1})
+
+        def bad_log(_m):
+            raise BrokenPipeError("stdout gone")
+
+        passes = bw.run_watch_loop(w, 1, 25, ev, log=bad_log)  # must NOT raise
+        self.assertEqual(w.calls, 2)
+        self.assertEqual(passes, 2)
+
+    def test_failing_log_on_success_path_does_not_kill_loop(self):
+        # Kills: leaving the success-branch log() unguarded. A confirmation pass
+        # succeeds (n>0) and logs; if that log() raises it is caught by the
+        # except, which logs AGAIN and re-raises -> thread dies. The loop must
+        # survive a logging failure on the SUCCESS path too.
+        ev = threading.Event()
+        w = _FakeWatcher(stop_after=2, stop_event=ev, ret=3)  # n>0 -> logs
+
+        def bad_log(_m):
+            raise BrokenPipeError("stdout gone")
+
+        passes = bw.run_watch_loop(w, 1, 25, ev, log=bad_log)  # must NOT raise
+        self.assertEqual(w.calls, 2)
+        self.assertEqual(passes, 2)
+
+
+class TestWatchStats(unittest.TestCase):
+    """WatchStats: the settlement-watch liveness surfaced on /v1/stats."""
+
+    def test_records_passes_and_confirmations(self):
+        ws = bw.WatchStats()
+        ws.record_pass(2, "t1")
+        ws.record_pass(0, "t2")
+        ws.record_pass(3, "t3")
+        snap = ws.snapshot()
+        self.assertEqual(snap["settlement_watch_passes"], 3)
+        self.assertEqual(snap["settlement_watch_confirmations_total"], 5)  # 2+0+3
+        self.assertEqual(snap["settlement_watch_last_pass_ts"], "t3")
+        self.assertEqual(snap["settlement_watch_last_confirmed"], 3)
+        self.assertTrue(snap["settlement_watch_enabled"])
+
+    def test_error_pass_does_not_inflate_confirmations(self):
+        # Kills: counting a failed pass as confirmations, or not surfacing the error.
+        # NOTE: passes a NON-ZERO `confirmed` alongside the error so the test also
+        # kills the mutation "add confirmed even when error is set" -- a
+        # confirmed=0 error pass can't distinguish that mutation.
+        ws = bw.WatchStats()
+        ws.record_pass(2, "t1")
+        ws.record_pass(5, "t2", error=RuntimeError("chain down"))  # nonzero + error
+        snap = ws.snapshot()
+        self.assertEqual(snap["settlement_watch_passes"], 2)
+        self.assertEqual(snap["settlement_watch_confirmations_total"], 2)  # NOT 7
+        self.assertEqual(snap["settlement_watch_last_confirmed"], 2)  # not clobbered
+        self.assertIn("chain down", snap["settlement_watch_last_error"])
+
+    def test_loop_updates_stats_each_pass(self):
+        # Kills: the loop not feeding the liveness stat (flywheel invisible).
+        ev = threading.Event()
+        w = _FakeWatcher(stop_after=2, stop_event=ev, ret=1)
+        ws = bw.WatchStats()
+        ticks = iter(["ts1", "ts2", "ts3", "ts4"])
+        bw.run_watch_loop(w, 1, 25, ev, stats=ws, now_fn=lambda: next(ticks))
+        snap = ws.snapshot()
+        self.assertEqual(snap["settlement_watch_passes"], 2)
+        self.assertEqual(snap["settlement_watch_confirmations_total"], 2)  # 1+1
+        self.assertEqual(snap["settlement_watch_last_pass_ts"], "ts2")
+
+    def test_loop_records_error_pass_to_stats(self):
+        ev = threading.Event()
+        w = _FakeWatcher(stop_after=1, stop_event=ev, raise_on={1})
+        ws = bw.WatchStats()
+        bw.run_watch_loop(w, 1, 25, ev, stats=ws, now_fn=lambda: "t")
+        snap = ws.snapshot()
+        self.assertEqual(snap["settlement_watch_passes"], 1)
+        self.assertEqual(snap["settlement_watch_confirmations_total"], 0)
+        self.assertIsNotNone(snap["settlement_watch_last_error"])
+
+    def test_failing_stats_does_not_kill_loop(self):
+        # Kills: letting a stats-update error escape the fail-safe boundary.
+        ev = threading.Event()
+        w = _FakeWatcher(stop_after=2, stop_event=ev, ret=1)
+
+        class BadStats:
+            def record_pass(self, *a, **k):
+                raise RuntimeError("stats broken")
+
+        passes = bw.run_watch_loop(w, 1, 25, ev, stats=BadStats(),
+                                   now_fn=lambda: "t")  # must NOT raise
+        self.assertEqual(passes, 2)
+
+
+class TestEnvInt(unittest.TestCase):
+    """_env_int: tolerant int env parse -- a typo must not crash boot (esp. for a
+    dormant feature's tuning vars)."""
+
+    def setUp(self):
+        import os
+        self._os = os
+        self._saved = os.environ.get("BW_TEST_INT")
+
+    def tearDown(self):
+        if self._saved is None:
+            self._os.environ.pop("BW_TEST_INT", None)
+        else:
+            self._os.environ["BW_TEST_INT"] = self._saved
+
+    def test_missing_uses_default(self):
+        self._os.environ.pop("BW_TEST_INT", None)
+        self.assertEqual(bw._env_int("BW_TEST_INT", 300), 300)
+
+    def test_valid_parsed(self):
+        self._os.environ["BW_TEST_INT"] = "42"
+        self.assertEqual(bw._env_int("BW_TEST_INT", 300), 42)
+
+    def test_garbage_falls_back_not_raises(self):
+        # Kills: an eager int() that crashes boot on a non-numeric tuning var.
+        self._os.environ["BW_TEST_INT"] = "not-a-number"
+        self.assertEqual(bw._env_int("BW_TEST_INT", 25), 25)
+
+    def test_empty_uses_default(self):
+        self._os.environ["BW_TEST_INT"] = ""
+        self.assertEqual(bw._env_int("BW_TEST_INT", 25), 25)
 
 
 if __name__ == "__main__":

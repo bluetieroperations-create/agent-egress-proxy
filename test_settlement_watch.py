@@ -10,6 +10,7 @@ with NO self-reports involved.
 """
 import os
 import tempfile
+import threading
 import unittest
 
 import blackwall as bw
@@ -241,6 +242,144 @@ class TestTrustlessFlywheel(unittest.TestCase):
         rec = src.lookup(cp)
         self.assertEqual(rec["distinct_payers"], 1)
         self.assertEqual(bw.forecast(payload, src, ledger=led)[0]["verdict"], "HOLD")
+
+
+class TestWatchLoopClosesFlywheel(unittest.TestCase):
+    """The wiring: run_watch_loop driving a real watcher confirms a pending GO
+    from the chain and writes a chain-confirmed outcome -- the loop, not a direct
+    confirm_by_tx call, closes the moat's read-back."""
+
+    def test_loop_confirms_pending_go(self):
+        led = L.EventLedger(os.path.join(tempfile.mkdtemp(), "loop.jsonl"))
+        payer = "0x" + "a" * 40
+        led.record_verdict("bw_1", "0xCP", "0.09", "GO", payer=payer,
+                           ts="2026-06-27T04:00:00Z")
+        chain = FakeChain(inbound_map={"0xCP": [
+            xfer("0xCP", "90000", frm=payer, ts="2026-06-27T05:00:00Z")]})
+        watcher = sw.SettlementWatcher(chain, led)
+
+        # Drive it through the real loop; the watcher stops the loop after its
+        # first pass so this is deterministic and fast.
+        ev = threading.Event()
+
+        class OneShot:
+            def confirm_pending(self, limit=None):
+                n = watcher.confirm_pending(limit=limit)
+                ev.set()
+                return n
+
+        passes = bw.run_watch_loop(OneShot(), 1, 25, ev)
+        self.assertEqual(passes, 1)
+        recs = led.aggregate()
+        self.assertEqual(recs["0xCP"]["settlement_count"], 1)
+        self.assertTrue(recs["0xCP"]["_meta"]["known"])
+        self.assertEqual(recs["0xCP"]["_meta"]["chain_confirmed_settlements"], 1)
+
+
+class TestStarvationRetirement(unittest.TestCase):
+    """confirm_pending age-bound: stale never-settling GOs must be retired from the
+    scan BEFORE the batch slice, so they can't clog the batch and starve real ones."""
+
+    def setUp(self):
+        self.path = os.path.join(tempfile.mkdtemp(), "l.jsonl")
+        self.led = L.EventLedger(self.path)
+        self.now = "2026-07-08T05:00:00Z"
+
+    def test_starvation_regression_stale_go_does_not_block_fresh(self):
+        # THE BUG: with limit=1, an OLD never-settling GO sits at the front of the
+        # chronological pending list and permanently eats the single batch slot,
+        # so a FRESH settleable GO behind it is never scanned. Age-retirement fixes
+        # it: the old one drops out and the fresh one gets confirmed.
+        payer = "0x" + "a" * 40
+        self.led.record_verdict("bw_old", "0xDEAD", "0.09", "GO", payer=payer,
+                                ts="2020-01-01T00:00:00Z")   # ancient, never settles
+        self.led.record_verdict("bw_new", "0xCP", "0.09", "GO", payer=payer,
+                                ts="2026-07-08T04:30:00Z")   # fresh, settleable
+        chain = FakeChain(inbound_map={"0xCP": [
+            xfer("0xCP", "90000", frm=payer, ts="2026-07-08T04:45:00Z")]})
+        w = sw.SettlementWatcher(chain, self.led, max_age_seconds=86400)
+        n = w.confirm_pending(limit=1, now_ts=self.now)
+        self.assertEqual(n, 1)  # fresh one confirmed despite the stale one ahead of it
+        self.assertEqual(self.led.aggregate()["0xCP"]["settlement_count"], 1)
+
+    def test_stale_go_is_retired_even_when_settleable(self):
+        # An old GO that COULD match on-chain is still retired past the window
+        # (we've stopped chasing it). Contrast with no-max-age below.
+        payer = "0x" + "a" * 40
+        self.led.record_verdict("bw_old", "0xCP", "0.09", "GO", payer=payer,
+                                ts="2020-01-01T00:00:00Z")
+        chain = FakeChain(inbound_map={"0xCP": [
+            xfer("0xCP", "90000", frm=payer, ts="2020-01-01T01:00:00Z")]})
+        w = sw.SettlementWatcher(chain, self.led, max_age_seconds=86400)
+        self.assertEqual(w.confirm_pending(now_ts=self.now), 0)  # retired -> not scanned
+
+    def test_no_max_age_keeps_old_behavior(self):
+        # Backward compat: max_age_seconds=None -> old GOs are still scanned.
+        payer = "0x" + "a" * 40
+        self.led.record_verdict("bw_old", "0xCP", "0.09", "GO", payer=payer,
+                                ts="2020-01-01T00:00:00Z")
+        chain = FakeChain(inbound_map={"0xCP": [
+            xfer("0xCP", "90000", frm=payer, ts="2020-01-01T01:00:00Z")]})
+        w = sw.SettlementWatcher(chain, self.led, max_age_seconds=None)
+        self.assertEqual(w.confirm_pending(now_ts=self.now), 1)
+
+    def test_fresh_go_within_window_is_kept(self):
+        # A GO inside the window is NOT retired.
+        payer = "0x" + "a" * 40
+        self.led.record_verdict("bw_new", "0xCP", "0.09", "GO", payer=payer,
+                                ts="2026-07-08T04:59:00Z")
+        chain = FakeChain(inbound_map={"0xCP": [
+            xfer("0xCP", "90000", frm=payer, ts="2026-07-08T04:59:30Z")]})
+        w = sw.SettlementWatcher(chain, self.led, max_age_seconds=86400)
+        self.assertEqual(w.confirm_pending(now_ts=self.now), 1)
+
+    def test_unparseable_ts_is_kept_not_retired(self):
+        # A verdict we can't age (bad/missing ts) is kept -> keep trying, never
+        # silently dropped by the age filter.
+        payer = "0x" + "a" * 40
+        self.led.record_verdict("bw_x", "0xCP", "0.09", "GO", payer=payer,
+                                ts="not-a-timestamp")
+        chain = FakeChain(inbound_map={"0xCP": [
+            xfer("0xCP", "90000", frm=payer, ts="2026-07-08T04:59:30Z")]})
+        w = sw.SettlementWatcher(chain, self.led, max_age_seconds=86400)
+        self.assertEqual(w.confirm_pending(now_ts=self.now), 1)
+
+    def test_verdict_exactly_at_cutoff_is_kept(self):
+        # BOUNDARY (kills >= -> >): a GO whose ts is EXACTLY the cutoff
+        # (now - max_age) must be KEPT, not retired. With now=05:00 and
+        # max_age=3600, cutoff is 04:00; a verdict at exactly 04:00:00 is on the
+        # keep side of an inclusive boundary. A `>` mutation drops it.
+        payer = "0x" + "a" * 40
+        self.led.record_verdict("bw_edge", "0xCP", "0.09", "GO", payer=payer,
+                                ts="2026-07-08T04:00:00Z")  # exactly now - 3600s
+        chain = FakeChain(inbound_map={"0xCP": [
+            xfer("0xCP", "90000", frm=payer, ts="2026-07-08T04:00:10Z")]})
+        w = sw.SettlementWatcher(chain, self.led, max_age_seconds=3600)
+        self.assertEqual(w.confirm_pending(now_ts=self.now), 1)  # kept, confirmed
+
+    def test_zero_max_age_disables_retirement_not_retire_everything(self):
+        # FOOT-GUN GUARD: an operator setting max_age=0 (or negative) almost
+        # certainly means "no age bound / unlimited" (the common 0=off convention),
+        # NOT "retire every pending GO". The buggy behavior floored 0 to a cutoff of
+        # `now`, retiring even a GO recorded seconds ago whose settlement already
+        # indexed -- silently killing the whole confirmation flywheel while
+        # /v1/stats still shows passes climbing. 0/negative must DISABLE retirement.
+        payer = "0x" + "a" * 40
+        self.led.record_verdict("bw_fresh", "0xCP", "0.09", "GO", payer=payer,
+                                ts="2026-07-08T04:59:30Z")  # 30s before now
+        chain = FakeChain(inbound_map={"0xCP": [
+            xfer("0xCP", "90000", frm=payer, ts="2026-07-08T04:59:40Z")]})
+        w0 = sw.SettlementWatcher(chain, self.led, max_age_seconds=0)
+        self.assertEqual(w0.confirm_pending(now_ts=self.now), 1)  # NOT retired
+
+    def test_negative_max_age_disables_retirement(self):
+        payer = "0x" + "a" * 40
+        self.led.record_verdict("bw_fresh", "0xCP", "0.09", "GO", payer=payer,
+                                ts="2026-07-08T04:59:30Z")
+        chain = FakeChain(inbound_map={"0xCP": [
+            xfer("0xCP", "90000", frm=payer, ts="2026-07-08T04:59:40Z")]})
+        wneg = sw.SettlementWatcher(chain, self.led, max_age_seconds=-5)
+        self.assertEqual(wneg.confirm_pending(now_ts=self.now), 1)  # NOT retired
 
 
 if __name__ == "__main__":

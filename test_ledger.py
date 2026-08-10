@@ -10,6 +10,7 @@ NEXT verdict.
 import os
 import tempfile
 import unittest
+from decimal import Decimal
 
 import blackwall as bw
 import ledger as L
@@ -266,6 +267,249 @@ class TestFlywheel(unittest.TestCase):
                                source="chain-watch")
         resp3, _ = bw.forecast(payload, src, ledger=led)
         self.assertEqual(resp3["verdict"], "GO")
+
+
+class TestUsageStats(unittest.TestCase):
+    """usage_stats: operator funnel metrics over the event stream."""
+
+    EVENTS = [
+        {"kind": "verdict", "ts": "2026-07-07T01:00:00Z", "counterparty": "0xA",
+         "agent_id": "did:1", "payer": "0xP1", "resource": "r1", "verdict": "GO"},
+        {"kind": "verdict", "ts": "2026-07-07T02:00:00Z", "counterparty": "0xB",
+         "agent_id": "did:1", "payer": "0xP2", "resource": "r1", "verdict": "STOP"},
+        {"kind": "verdict", "ts": "2026-07-07T03:00:00Z", "counterparty": "0xA",
+         "agent_id": "did:2", "payer": "0xP2", "resource": "r2", "verdict": "HOLD"},
+        {"kind": "outcome", "ts": "2026-07-07T04:00:00Z", "outcome": "settled"},  # not a verdict
+    ]
+
+    def test_counts_and_mix(self):
+        # mutation: counting outcome events, or miscounting the verdict mix
+        s = L.usage_stats(self.EVENTS)
+        self.assertEqual(s["verdicts_total"], 3)                    # outcome excluded
+        self.assertEqual(s["by_verdict"], {"GO": 1, "STOP": 1, "HOLD": 1})
+
+    def test_distinct_callers_deduped(self):
+        # mutation: counting rows instead of DISTINCT identifiers
+        s = L.usage_stats(self.EVENTS)
+        self.assertEqual(s["distinct_counterparties"], 2)          # 0xA twice -> 1
+        self.assertEqual(s["distinct_agents"], 2)
+        self.assertEqual(s["distinct_payers"], 2)                  # 0xP2 twice -> 1
+        self.assertEqual(s["distinct_resources"], 2)
+
+    def test_time_bounds(self):
+        s = L.usage_stats(self.EVENTS)
+        self.assertEqual(s["first_verdict"], "2026-07-07T01:00:00Z")
+        self.assertEqual(s["last_verdict"], "2026-07-07T03:00:00Z")
+
+    def test_empty_and_missing_fields(self):
+        # no events, and a verdict missing identifiers -> no crash, zeros
+        self.assertEqual(L.usage_stats([])["verdicts_total"], 0)
+        s = L.usage_stats([{"kind": "verdict", "verdict": "GO"}])
+        self.assertEqual(s["verdicts_total"], 1)
+        self.assertEqual(s["distinct_payers"], 0)
+        self.assertIsNone(s["first_verdict"])
+
+
+class TestCounterpartyFlow(unittest.TestCase):
+    """counterparty_flow: aggregate/velocity -- cumulative flow to ONE payee in a window."""
+
+    def _v(self, cp, amount, ts):
+        return {"kind": "verdict", "counterparty": cp, "amount": str(amount), "ts": ts}
+
+    def test_sums_recent_flow_to_same_counterparty(self):
+        # The velocity scenario: many individually-fine sub-cap payments summing up.
+        ev = [self._v("0xBAD", "5.00", "2026-07-08T04:00:00Z"),
+              self._v("0xBAD", "5.00", "2026-07-08T04:10:00Z"),
+              self._v("0xBAD", "5.00", "2026-07-08T04:20:00Z")]
+        r = L.counterparty_flow(ev, "0xBAD", "2026-07-08T04:25:00Z", 3600)
+        # Kills: not accumulating across payments -- the whole point of the signal.
+        self.assertEqual(r["count"], 3)
+        self.assertEqual(r["total_amount"], Decimal("15.00"))
+
+    def test_excludes_out_of_window(self):
+        # Kills: ignoring the window -> stale flow counted forever.
+        ev = [self._v("0xBAD", "5.00", "2026-07-08T01:00:00Z"),   # >1h old
+              self._v("0xBAD", "5.00", "2026-07-08T04:20:00Z")]
+        r = L.counterparty_flow(ev, "0xBAD", "2026-07-08T04:25:00Z", 3600)
+        self.assertEqual(r["count"], 1)
+        self.assertEqual(r["total_amount"], Decimal("5.00"))
+
+    def test_excludes_other_counterparties(self):
+        ev = [self._v("0xBAD", "5.00", "2026-07-08T04:20:00Z"),
+              self._v("0xG00D", "5.00", "2026-07-08T04:21:00Z")]
+        r = L.counterparty_flow(ev, "0xBAD", "2026-07-08T04:25:00Z", 3600)
+        self.assertEqual(r["count"], 1)
+
+    def test_counterparty_match_is_case_insensitive(self):
+        # Kills: exact-case match -> a checksummed vs lowercase address splits flow,
+        # letting an attacker dodge the aggregate by varying case.
+        ev = [self._v("0xAbCd", "5.00", "2026-07-08T04:20:00Z")]
+        self.assertEqual(L.counterparty_flow(ev, "0xabcd", "2026-07-08T04:25:00Z", 3600)["count"], 1)
+
+    def test_skips_non_verdict_and_garbage_amounts(self):
+        # Kills: counting outcome events / garbage / non-positive amounts as flow.
+        ev = [{"kind": "outcome", "counterparty": "0xBAD", "amount": "99", "ts": "2026-07-08T04:20:00Z"},
+              self._v("0xBAD", "notanumber", "2026-07-08T04:21:00Z"),
+              self._v("0xBAD", "0", "2026-07-08T04:22:00Z"),
+              self._v("0xBAD", "5.00", "2026-07-08T04:23:00Z")]
+        r = L.counterparty_flow(ev, "0xBAD", "2026-07-08T04:25:00Z", 3600)
+        self.assertEqual(r["count"], 1)
+        self.assertEqual(r["total_amount"], Decimal("5.00"))
+
+    def test_bad_now_empty_or_no_counterparty_is_zero(self):
+        ev = [self._v("0xBAD", "5.00", "2026-07-08T04:20:00Z")]
+        self.assertEqual(L.counterparty_flow(ev, "0xBAD", "not-a-ts", 3600)["count"], 0)
+        self.assertEqual(L.counterparty_flow([], "0xBAD", "2026-07-08T04:25:00Z", 3600)["count"], 0)
+        self.assertEqual(L.counterparty_flow(ev, "", "2026-07-08T04:25:00Z", 3600)["count"], 0)
+
+    def test_naive_timestamp_does_not_crash(self):
+        # Regression (AUDIT-FOUND): a ledger ts without a Z/offset parses naive;
+        # comparing it to the aware window boundary raised TypeError and crashed the
+        # whole flow mid-verdict. Naive is now treated as UTC.
+        ev = [self._v("0xBAD", "5.00", "2026-07-08T04:20:00")]  # no Z
+        r = L.counterparty_flow(ev, "0xBAD", "2026-07-08T04:25:00Z", 3600)
+        self.assertEqual(r["count"], 1)
+        self.assertEqual(r["total_amount"], Decimal("5.00"))
+
+    def test_cutoff_inclusive_and_future_excluded(self):
+        # Kills: an off-by-one window boundary, or counting future-dated events.
+        ev = [self._v("0xB", "5.00", "2026-07-08T04:00:00Z"),   # exactly now-window -> included
+              self._v("0xB", "5.00", "2026-07-08T05:30:00Z")]   # future -> excluded
+        r = L.counterparty_flow(ev, "0xB", "2026-07-08T05:00:00Z", 3600)
+        self.assertEqual(r["count"], 1)
+        self.assertEqual(r["total_amount"], Decimal("5.00"))
+
+    def test_non_dict_event_does_not_crash(self):
+        # Regression (AUDIT-FOUND): read_events() yields anything json.loads()
+        # returns, including a valid-JSON line that is NOT an object (e.g. a bare
+        # `42`, `"str"`, `null`, `[...]`). e.get() on such a value raised
+        # AttributeError, violating the "never raises" contract and (via forecast's
+        # try/except) SILENTLY disabling the velocity signal for the whole verdict
+        # once a single such row exists in the ledger. Non-dict events must be
+        # skipped, not crash.
+        ev = [self._v("0xBAD", "5.00", "2026-07-08T04:20:00Z"),
+              42, "junk", None, ["not", "a", "dict"],
+              self._v("0xBAD", "5.00", "2026-07-08T04:21:00Z")]
+        r = L.counterparty_flow(ev, "0xBAD", "2026-07-08T04:25:00Z", 3600)
+        self.assertEqual(r["count"], 2)
+        self.assertEqual(r["total_amount"], Decimal("10.00"))
+
+    def test_empty_counterparty_does_not_sum_fieldless_events(self):
+        # Kills: removing the empty-target guard so an empty/absent counterparty
+        # query matches events whose counterparty field is empty/missing
+        # ("" == "") and sums the WHOLE ledger. An absent counterparty must match
+        # NOTHING, never the aggregate ledger flow.
+        ev = [{"kind": "verdict", "amount": "50.00",
+               "ts": "2026-07-08T04:00:00Z"},                    # no counterparty
+              {"kind": "verdict", "counterparty": "",
+               "amount": "70.00", "ts": "2026-07-08T04:10:00Z"}]  # empty counterparty
+        r = L.counterparty_flow(ev, "", "2026-07-08T04:25:00Z", 3600)
+        self.assertEqual(r["count"], 0)
+        self.assertEqual(r["total_amount"], Decimal(0))
+        r2 = L.counterparty_flow(ev, None, "2026-07-08T04:25:00Z", 3600)
+        self.assertEqual(r2["count"], 0)
+
+
+class TestPayerFlow(unittest.TestCase):
+    """payer_flow: SYBIL complement -- ONE payer's total outflow + fan-out (distinct
+    counterparties) in a window. Splitting a drain across fresh addresses raises the
+    distinct count, which is the tell."""
+
+    def _v(self, payer, cp, amount, ts):
+        return {"kind": "verdict", "payer": payer, "counterparty": cp,
+                "amount": str(amount), "ts": ts}
+
+    def test_sums_outflow_across_different_counterparties(self):
+        # THE POINT: a distributed drain -- one payer, many DIFFERENT payees. A
+        # per-counterparty view sees count 1 each; the payer view sees the whole.
+        ev = [self._v("0xAGENT", "0xa", "5.00", "2026-07-08T04:00:00Z"),
+              self._v("0xAGENT", "0xb", "5.00", "2026-07-08T04:10:00Z"),
+              self._v("0xAGENT", "0xc", "5.00", "2026-07-08T04:20:00Z")]
+        r = L.payer_flow(ev, "0xAGENT", "2026-07-08T04:25:00Z", 3600)
+        # Kills: keying the sum on counterparty instead of payer (would split to 5 each).
+        self.assertEqual(r["total_amount"], Decimal("15.00"))
+        self.assertEqual(r["count"], 3)
+        # Kills: not counting fan-out -- the distributed-drain signature.
+        self.assertEqual(r["distinct_counterparties"], 3)
+
+    def test_distinct_counts_unique_payees_not_payments(self):
+        # Many payments to the SAME payee = high count but LOW fan-out (that's the
+        # per-counterparty/velocity case, not a sybil split).
+        ev = [self._v("0xAGENT", "0xa", "5.00", "2026-07-08T04:00:00Z"),
+              self._v("0xAGENT", "0xa", "5.00", "2026-07-08T04:10:00Z"),
+              self._v("0xAGENT", "0xa", "5.00", "2026-07-08T04:20:00Z")]
+        r = L.payer_flow(ev, "0xAGENT", "2026-07-08T04:25:00Z", 3600)
+        self.assertEqual(r["count"], 3)
+        self.assertEqual(r["distinct_counterparties"], 1)
+
+    def test_distinct_is_case_insensitive_on_counterparty(self):
+        # Kills: exact-case distinct -> an attacker inflates fan-out (or dodges the
+        # velocity aggregate) by varying payee address case. Same address, one payee.
+        ev = [self._v("0xAGENT", "0xAbCd", "5.00", "2026-07-08T04:00:00Z"),
+              self._v("0xAGENT", "0xabcd", "5.00", "2026-07-08T04:10:00Z")]
+        r = L.payer_flow(ev, "0xAGENT", "2026-07-08T04:25:00Z", 3600)
+        self.assertEqual(r["distinct_counterparties"], 1)
+
+    def test_excludes_other_payers_and_out_of_window(self):
+        ev = [self._v("0xAGENT", "0xa", "5.00", "2026-07-08T01:00:00Z"),   # >1h old
+              self._v("0xOTHER", "0xb", "5.00", "2026-07-08T04:20:00Z"),    # other payer
+              self._v("0xAGENT", "0xc", "5.00", "2026-07-08T04:21:00Z")]
+        r = L.payer_flow(ev, "0xAGENT", "2026-07-08T04:25:00Z", 3600)
+        self.assertEqual(r["count"], 1)
+        self.assertEqual(r["total_amount"], Decimal("5.00"))
+        self.assertEqual(r["distinct_counterparties"], 1)
+
+    def test_payer_match_is_case_insensitive(self):
+        ev = [self._v("0xAgEnT", "0xa", "5.00", "2026-07-08T04:20:00Z")]
+        self.assertEqual(
+            L.payer_flow(ev, "0xagent", "2026-07-08T04:25:00Z", 3600)["count"], 1)
+
+    def test_skips_non_verdict_garbage_and_non_dict(self):
+        # Kills: counting outcomes / garbage amounts as outflow, or crashing on a
+        # non-dict ledger row (same class as the audit-found counterparty_flow bug).
+        ev = [{"kind": "outcome", "payer": "0xAGENT", "counterparty": "0xz",
+               "amount": "99", "ts": "2026-07-08T04:20:00Z"},
+              self._v("0xAGENT", "0xa", "notanumber", "2026-07-08T04:21:00Z"),
+              self._v("0xAGENT", "0xb", "0", "2026-07-08T04:22:00Z"),
+              42, "junk", None, ["x"],
+              self._v("0xAGENT", "0xc", "5.00", "2026-07-08T04:23:00Z")]
+        r = L.payer_flow(ev, "0xAGENT", "2026-07-08T04:25:00Z", 3600)
+        self.assertEqual(r["count"], 1)
+        self.assertEqual(r["total_amount"], Decimal("5.00"))
+        self.assertEqual(r["distinct_counterparties"], 1)
+
+    def test_naive_timestamp_does_not_crash(self):
+        ev = [self._v("0xAGENT", "0xa", "5.00", "2026-07-08T04:20:00")]  # no Z
+        r = L.payer_flow(ev, "0xAGENT", "2026-07-08T04:25:00Z", 3600)
+        self.assertEqual(r["count"], 1)
+
+    def test_empty_payer_matches_nothing(self):
+        # A verdict with no payer must NOT let an empty query sum the whole ledger.
+        ev = [self._v("0xAGENT", "0xa", "5.00", "2026-07-08T04:20:00Z")]
+        self.assertEqual(L.payer_flow(ev, "", "2026-07-08T04:25:00Z", 3600)["count"], 0)
+        self.assertEqual(L.payer_flow(ev, None, "2026-07-08T04:25:00Z", 3600)["count"], 0)
+
+    def test_missing_payer_field_not_matched_by_empty(self):
+        # Events with NO payer field must not be swept up when querying a real payer.
+        ev = [{"kind": "verdict", "counterparty": "0xa", "amount": "5.00",
+               "ts": "2026-07-08T04:20:00Z"}]  # no payer key
+        self.assertEqual(
+            L.payer_flow(ev, "0xAGENT", "2026-07-08T04:25:00Z", 3600)["count"], 0)
+
+    def test_empty_payer_does_not_sum_payerless_events(self):
+        # Kills: removing the empty-target guard so an empty query no longer
+        # short-circuits, then matches events whose payer field is empty/missing
+        # ("" == "") and sums the WHOLE ledger. The prior empty-payer tests use
+        # events that HAVE a payer, so they pass even with the guard gone -- this
+        # one exercises the actual danger: absent payer must sum to zero, not all.
+        ev = [{"kind": "verdict", "counterparty": "0xa", "amount": "50.00",
+               "ts": "2026-07-08T04:00:00Z"},                       # no payer key
+              {"kind": "verdict", "payer": "", "counterparty": "0xb",
+               "amount": "70.00", "ts": "2026-07-08T04:10:00Z"}]    # empty payer
+        r = L.payer_flow(ev, "", "2026-07-08T04:25:00Z", 3600)
+        self.assertEqual(r["count"], 0)
+        self.assertEqual(r["total_amount"], Decimal(0))
+        self.assertEqual(r["distinct_counterparties"], 0)
 
 
 if __name__ == "__main__":

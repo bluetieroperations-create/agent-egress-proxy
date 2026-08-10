@@ -1,0 +1,7 @@
+# Black_Wall server dependencies.
+#
+# The server is otherwise stdlib-only. PyNaCl is the ONE deliberate exception,
+# confined to receipt_sig.py, for Ed25519 public-key receipt signatures -- the
+# trust primitive third parties audit, so we do NOT roll our own crypto. Pinned
+# for reproducible, auditable builds.
+PyNaCl==1.6.2
