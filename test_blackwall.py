@@ -2450,6 +2450,87 @@ class TestSettlementWatchEnvFlag(unittest.TestCase):
                           "watcher" % v)
 
 
+class TestReceiptSigningBootWarning(unittest.TestCase):
+    """Boot must be LOUD about the two ways public receipt signing is silently
+    wrong, because nothing else is: forecast()'s signing is fail-open (a bad seed
+    just drops `signed_receipt` with no error) while the discovery descriptor
+    keeps advertising third-party-verifiable receipts either way.
+
+      * seed UNSET  -> the built-in all-zero DEV seed signs. Its public key is
+        published, so ANYONE can forge a "Black_Wall attested GO" receipt.
+      * seed MALFORMED -> signing raises and is swallowed; no receipt is signed
+        at all.
+
+    And the warning must never echo the seed itself.
+    Mutation: delete the boot check -> a dev-key/broken-seed deploy boots clean."""
+
+    _VARS = ("BLACKWALL_SIGNING_SEED", "BLACKWALL_SETTLEMENT_WATCH",
+             "BLACKWALL_LEDGER", "BLACKWALL_STORE", "BLACKWALL_SANCTIONS",
+             "BLACKWALL_PAY_TO")
+
+    def setUp(self):
+        import os
+        self._os = os
+        self._saved = {k: os.environ.get(k) for k in self._VARS}
+        for k in self._VARS:
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            if v is None:
+                self._os.environ.pop(k, None)
+            else:
+                self._os.environ[k] = v
+
+    def _boot(self, seed=None):
+        import contextlib
+        import io
+
+        class _NoServe:
+            def __init__(self, **kwargs):
+                pass
+
+            def serve_forever(self):
+                raise KeyboardInterrupt
+
+            def shutdown(self):
+                pass
+
+        if seed is None:
+            self._os.environ.pop("BLACKWALL_SIGNING_SEED", None)
+        else:
+            self._os.environ["BLACKWALL_SIGNING_SEED"] = seed
+        real = bw.BlackwallServer
+        bw.BlackwallServer = _NoServe
+        err, out = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+                bw.main(["--host", "127.0.0.1", "--port", "0"])
+        finally:
+            bw.BlackwallServer = real
+        return err.getvalue(), out.getvalue()
+
+    def test_unset_seed_warns_receipts_are_forgeable(self):
+        err, _out = self._boot(None)
+        self.assertIn("FORGEABLE", err)
+        self.assertIn("BLACKWALL_SIGNING_SEED", err)
+
+    def test_real_seed_is_quiet_and_reports_the_key_id(self):
+        from receipt_sig import key_id, public_key_hex
+        seed = "11" * 32
+        err, out = self._boot(seed)
+        self.assertNotIn("FORGEABLE", err)
+        self.assertIn(key_id(public_key_hex(seed)), out)
+        # the SECRET must never appear in any boot output
+        self.assertNotIn(seed, err + out)
+
+    def test_malformed_seed_warns_signing_disabled_without_echoing_it(self):
+        bad = "deadbeef"          # valid hex, wrong length -> load_seed raises
+        err, out = self._boot(bad)
+        self.assertIn("signing DISABLED", err)
+        self.assertNotIn(bad, err + out)
+
+
 if __name__ == "__main__":
     unittest.main()
 

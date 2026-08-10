@@ -2386,6 +2386,33 @@ def main(argv=None):
                "" if anchor.pay else "; NO signer -> will 402/fail-open unsigned"))
         sys.stdout.flush()
 
+    # Public receipt signing (receipt_sig.py). Say out loud which key is active:
+    # forecast() signs FAIL-OPEN (a missing/broken seed silently drops
+    # `signed_receipt`) while the discovery descriptor advertises third-party-
+    # verifiable receipts unconditionally, so a misconfigured signer is otherwise
+    # invisible. Two failure modes, both loud here:
+    #   * seed UNSET     -> the built-in all-zero DEV seed signs; its public key is
+    #                       published, so anyone can FORGE a Blackwall attestation.
+    #   * seed MALFORMED -> signing raises and nothing is signed at all.
+    # Never echoes the seed (receipt_sig's errors carry no value either).
+    try:
+        from receipt_sig import is_dev_key, key_id, public_key_hex
+        if is_dev_key():
+            sys.stderr.write(
+                "blackwall: WARNING BLACKWALL_SIGNING_SEED unset -- receipts are "
+                "signed with the built-in DEV key and are FORGEABLE by anyone. "
+                "Set a 32-byte hex seed before relying on signed receipts.\n")
+            sys.stderr.flush()
+        else:
+            sys.stdout.write("blackwall: receipt signing ON (key_id %s)\n"
+                             % key_id(public_key_hex()))
+            sys.stdout.flush()
+    except Exception as e:
+        sys.stderr.write("blackwall: WARNING receipt signing DISABLED (%s: %s) -- "
+                         "responses will carry no signed_receipt\n"
+                         % (type(e).__name__, e))
+        sys.stderr.flush()
+
     # Settlement-watch background loop (the moat's trustless read-back). Only when
     # explicitly enabled AND a ledger exists to confirm against. Runs on a daemon
     # thread so it can never block boot or the healthcheck; the loop is internally
