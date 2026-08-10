@@ -306,6 +306,10 @@ class BlackwallMCP:
 
         class _MCPHTTPHandler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
+            # Socket timeout: a stalled/partial body (slowloris) must not pin a thread
+            # forever, and an idle keep-alive connection is reclaimed. This is a backstop
+            # -- a public deploy still wants a real rate-limiter/gateway in front.
+            timeout = 30
 
             def log_message(self, fmt, *a):   # keep stdout clean; quiet logs to stderr
                 sys.stderr.write("mcp-http: " + (fmt % a) + "\n")
@@ -348,6 +352,14 @@ class BlackwallMCP:
                         self._send(403, _err(None, INVALID_REQUEST, "origin not allowed"),
                                    close=True)
                         return
+                # We require Content-Length (no streaming body). A chunked body would
+                # otherwise be read as empty AND leave undrained bytes that pollute the
+                # keep-alive connection -- so reject it cleanly and close.
+                if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
+                    self._send(411, _err(None, INVALID_REQUEST,
+                                         "Content-Length required (chunked bodies "
+                                         "unsupported)"), close=True)
+                    return
                 try:
                     length = int(self.headers.get("Content-Length") or 0)
                 except ValueError:
