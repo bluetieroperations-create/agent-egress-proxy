@@ -442,11 +442,30 @@ class TestV2WireFormat(unittest.TestCase):
         self.assertLessEqual(len(info["url"]), X.MAX_RESOURCE_URL)
 
     def test_build_bazaar_extension_shape(self):
+        # x402scan schema format (unchanged).
         ext = X.build_bazaar_extension({"type": "object"}, {"verdict": "GO"})
         self.assertEqual(ext["bazaar"]["schema"]["properties"]["input"]
                          ["properties"]["body"], {"type": "object"})
         self.assertEqual(ext["bazaar"]["schema"]["properties"]["output"]
                          ["properties"]["example"], {"verdict": "GO"})
+
+    def test_build_bazaar_extension_cdp_info(self):
+        # Mutation: dropping the CDP `info` block -> CDP Bazaar never catalogs us
+        # (the whole reason a settled endpoint stayed unlisted). With a concrete
+        # input_example, emit the declareDiscoveryExtension shape CDP validates.
+        ext = X.build_bazaar_extension(
+            {"type": "object"}, {"verdict": "GO"},
+            {"counterparty": "0xabc", "amount": "2.50", "asset": "USDC", "chain": "base"})
+        info = ext["bazaar"]["info"]
+        self.assertEqual(info["input"]["method"], "POST")
+        self.assertEqual(info["input"]["bodyType"], "json")
+        # type is the SDK's query-vs-body discriminator: "body" for a POST (not our
+        # old made-up "http", which the CDP discovery parser doesn't recognize).
+        self.assertEqual(info["input"]["type"], "body")
+        self.assertEqual(info["input"]["body"]["asset"], "USDC")   # concrete example, not a schema
+        self.assertEqual(info["output"]["example"], {"verdict": "GO"})
+        # And the x402scan schema is still there (both catalogs satisfied).
+        self.assertIn("schema", ext["bazaar"])
 
     def test_facilitator_envelope_is_v2(self):
         # The facilitator POST envelope must carry x402Version: 2.

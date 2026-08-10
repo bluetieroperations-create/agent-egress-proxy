@@ -36,6 +36,35 @@ services:
       # on a cold store -> 502. Pre-warm from the manifest (data/seed_payees.txt).
       - key: BLACKWALL_INGEST
         value: "0"
+      # Settlement-watch: the moat's trustless read-back. When ON, a background
+      # thread confirms GO settlements from Base (Blockscout) and writes
+      # CHAIN-CONFIRMED outcomes, so on-chain settlements graduate into confirmed
+      # reputation (not just the seeded store). ENABLED after the live end-to-end
+      # confirmation passed on real Base (2026-07-08). Fail-safe: a chain/indexer
+      # outage is logged and skipped, never touching the verdict path.
+      - key: BLACKWALL_SETTLEMENT_WATCH
+        value: "1"
+      - key: BLACKWALL_WATCH_INTERVAL
+        value: "300"
+      - key: BLACKWALL_WATCH_BATCH
+        value: "25"
+      # Retire a never-settled GO from the confirmation scan after 24h so stale
+      # test/abandoned verdicts can't permanently consume the per-pass batch and
+      # starve newer real settlements. x402 settles atomically, so 24h is generous.
+      - key: BLACKWALL_WATCH_MAX_AGE
+        value: "86400"
+      # Per-client rate limit for the public endpoint (POST paths only; GET health/
+      # discovery stay unthrottled). 120 req/min per client IP, burst 30 -- generous
+      # for a legit agent, caps hammering/scraping/DoS -- and bounds the per-request
+      # ledger-scan cost (each free forecast reads the whole ledger; unthrottled
+      # anonymous POSTs would grow that scan without bound). Real client IP via the
+      # rightmost X-Forwarded-For (Render's proxy).
+      - key: BLACKWALL_RATE_LIMIT
+        value: "120"
+      - key: BLACKWALL_RATE_WINDOW
+        value: "60"
+      - key: BLACKWALL_RATE_BURST
+        value: "30"
       # Pricing posture (see PRICING.md): value-aligned / freemium-on-stakes.
       # Low-stakes verdicts free (incl. sanctions safety); high-stakes pay.
       - key: BLACKWALL_VALUE_PRICING
@@ -49,6 +78,15 @@ services:
       - key: BLACKWALL_FACILITATOR
         sync: false
       - key: BLACKWALL_RECEIPT_KEY
+        sync: false
+      # 32-byte hex Ed25519 seed for the PUBLIC receipt signature (the key
+      # published at /.well-known/blackwall-receipt-key.json). MUST be set: left
+      # unset, the service signs with the built-in all-zero DEV seed, whose
+      # private half is public -- so ANYONE could forge a "Blackwall attested GO"
+      # receipt, and the third-party-verifiable claim in the discovery descriptor
+      # would be false. Boot logs a loud FORGEABLE warning when it is missing.
+      #   generate:  python -c "import os;print(os.urandom(32).hex())"
+      - key: BLACKWALL_SIGNING_SEED
         sync: false
       # CDP (Coinbase Developer Platform) facilitator credentials. When BOTH are
       # set, the service settles through the authenticated CDP facilitator --

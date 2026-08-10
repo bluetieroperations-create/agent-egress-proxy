@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import re
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
 from addresses import is_evm_address
@@ -196,10 +196,17 @@ class BlockscoutChain:
 class SettlementWatcher:
     """Confirms settlements on-chain and writes CHAIN-CONFIRMED outcomes."""
 
-    def __init__(self, chain, ledger, tolerance="0"):
+    def __init__(self, chain, ledger, tolerance="0", max_age_seconds=None):
         self.chain = chain
         self.ledger = ledger
         self.tolerance = tolerance
+        # After this many seconds, a still-unconfirmed GO verdict is RETIRED from
+        # the pending scan (None = never retire). Without it, old verdicts that
+        # will never settle (abandoned payments, test traffic) accumulate at the
+        # FRONT of the chronological pending list and permanently consume the
+        # per-pass batch, starving newer real settlements. x402 settles atomically
+        # with the request, so a generous bound loses nothing real.
+        self.max_age_seconds = max_age_seconds
 
     def confirm_by_tx(self, receipt_id, counterparty, amount, tx_hash,
                       from_addr=None, since_ts=None):
@@ -232,12 +239,21 @@ class SettlementWatcher:
                                since_ts=since_ts, from_addr=from_addr,
                                tolerance=self.tolerance)
 
-    def confirm_pending(self, limit=None):
+    def confirm_pending(self, limit=None, max_age_seconds=None, now_ts=None):
         """
         Scan the ledger for GO verdicts that have no outcome yet and try to
         confirm each on-chain. Records a chain-confirmed `settled` per match.
         Returns the number newly confirmed.
+
+        `max_age_seconds` (defaults to the watcher's, set at construction) RETIRES
+        verdicts older than the window from the scan, BEFORE the `limit` slice, so
+        stale never-settling GOs at the front of the chronological list can't
+        permanently consume the batch and starve newer real settlements. A verdict
+        with a missing/unparseable ts is kept (can't be aged out -> keep trying).
+        `now_ts` is injectable for testing; defaults to wall-clock UTC.
         """
+        if max_age_seconds is None:
+            max_age_seconds = self.max_age_seconds
         events = list(self.ledger.read_events())
         have_outcome = {e.get("receipt_id") for e in events
                         if e.get("kind") == "outcome"}
@@ -251,6 +267,22 @@ class SettlementWatcher:
                    if e.get("kind") == "verdict"
                    and e.get("verdict") == "GO"
                    and e.get("receipt_id") not in have_outcome]
+        # Retire stale pending BEFORE the limit slice (this is the anti-starvation
+        # step -- it drops the old dead verdicts that sit at the front).
+        # A non-positive window means "no age bound" (the 0=off/unlimited
+        # convention an operator expects), NOT "retire everything": flooring 0 to a
+        # cutoff of `now` would silently retire every pending GO -- even one
+        # recorded seconds ago whose settlement already indexed -- killing the whole
+        # confirmation flywheel while /v1/stats still shows passes climbing.
+        if max_age_seconds is not None and int(max_age_seconds) > 0:
+            now = parse_ts(now_ts) if now_ts else datetime.now(timezone.utc)
+            if now is not None:
+                cutoff = now - timedelta(seconds=int(max_age_seconds))
+
+                def _fresh(e):
+                    t = parse_ts(e.get("ts"))
+                    return t is None or t >= cutoff  # un-ageable -> keep trying
+                pending = [e for e in pending if _fresh(e)]
         if limit is not None:
             pending = pending[:limit]
 

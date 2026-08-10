@@ -1,11 +1,16 @@
-# Blackwall verdict service -- stdlib-only, no pip dependencies.
+# Blackwall verdict service -- stdlib-only except PyNaCl (Ed25519 receipt
+# signatures, confined to receipt_sig.py; see requirements.txt).
 FROM python:3.12-slim
 
 # Non-root.
 RUN useradd -m -u 10001 blackwall
 WORKDIR /app
 
-# Source (stdlib only -- nothing to pip install). Copy ALL modules: forecast() lazily
+# The one pip dependency (PyNaCl), installed as root before dropping privileges.
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Source (stdlib only except receipt_sig.py's PyNaCl above). Copy ALL modules: forecast() lazily
 # imports payload_sim / calldata (-> keccak / secp256k1 / eip712) and others at request
 # time, so a hand-maintained subset silently 502s the verdict path when one is missing.
 # Copy everything and never play that whack-a-mole again. (test_*.py ride along unused.)
@@ -69,7 +74,12 @@ ENV BLACKWALL_HOST=0.0.0.0 \
 # Set at deploy time (NOT baked into the image):
 #   BLACKWALL_PAY_TO       -- your funded EVM wallet (turns billing ON)
 #   BLACKWALL_FACILITATOR  -- real x402 facilitator base URL
-#   BLACKWALL_RECEIPT_KEY  -- secret for signing receipts / report tokens
+#   BLACKWALL_RECEIPT_KEY  -- secret for the HMAC receipt_id / report tokens
+#   BLACKWALL_SIGNING_SEED -- 32-byte hex Ed25519 seed for PUBLIC receipt
+#                             signatures (published key at
+#                             /.well-known/blackwall-receipt-key.json). If unset,
+#                             a well-known DEV key signs -- fine for testing, but
+#                             set a real secret seed in production.
 # BLACKWALL_SANCTIONS defaults to the baked-in /app/sanctions.txt above (screening
 # ON). Override to a volume path if you maintain your own list.
 

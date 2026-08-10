@@ -97,6 +97,24 @@ STOP_ANOMALY_RATIO = 8.0          # charged >= 8x its own median => STOP (wildly
 # stateless engine and a volume-averaged rate both miss.
 GOING_BAD_MIN_OUTCOMES = 4        # need >= this many RECENT outcomes to judge a trend
 GOING_BAD_DISPUTE_RATE = 0.30     # recent dispute rate at/above this => escalate (HOLD)
+FLAT_STOP_MIN_OBS = 3             # a FLAT (unattributed) median needs >= N samples...
+FLAT_STOP_SPREAD = 3.0            # ...that cluster within Nx (max <= N*min) to hard-STOP
+# Aggregate/velocity: cumulative recent flow to ONE counterparty that a per-payment
+# view (and a per-invoice cap) can't see -- a drain built from many individually-fine
+# sub-cap payments to the same payee. Escalates GO->HOLD only on the PATTERN.
+VELOCITY_WINDOW_SECONDS = 3600            # look-back window for cumulative flow (1h)
+VELOCITY_AMOUNT_THRESHOLD = Decimal("100.00")  # cumulative flow in the window that escalates
+MIN_VELOCITY_COUNT = 5            # only trips on MANY payments (a single big one is the over_budget case)
+# Payer-side outflow -- the SYBIL complement to the per-counterparty velocity above.
+# A drainer defeats a per-payee aggregate by SPLITTING the drain across many fresh
+# addresses; but splitting drives up the number of DISTINCT payees THIS payer hit in
+# the window, which is the tell. Trip GO->HOLD on high TOTAL outflow AND high FAN-OUT
+# (distinct counterparties) -- the distributed-drain signature. Deliberately keys on
+# fan-out, not raw spend, so a legit agent paying a FEW known vendors a lot does NOT
+# trip here (that's the per-counterparty / over_budget case).
+PAYER_OUTFLOW_WINDOW_SECONDS = 3600            # look-back window for payer outflow (1h)
+PAYER_OUTFLOW_THRESHOLD = Decimal("100.00")    # cumulative outflow from ONE payer in the window
+MIN_PAYER_DISTINCT_COUNTERPARTIES = 5          # spread across >= N distinct payees (the fan-out tell)
 MAX_BODY_BYTES = 64 * 1024        # request-body cap (oversize guard)
 
 # Receipts are signed so the agent can keep a tamper-evident audit trail. This
@@ -231,7 +249,26 @@ def price_median_and_basis(price_history, observations, resource=None):
             if m is not None:
                 return m, "payer-weighted"
     if price_history:
-        return _median_of(Decimal(str(p)) for p in price_history), "flat"
+        # Filter to positive, finite, numeric entries -- the SAME junk that
+        # robust_price_median and flat_stop_trustworthy drop. Otherwise $0
+        # (free-tier) or garbage entries would deflate/None the median that
+        # produces the anomaly ratio, so the ratio would judge a DIFFERENT
+        # distribution than flat_stop_trustworthy validates: a $0-laced history
+        # both suppresses a real gouge (median->0->ratio None->GO) and
+        # false-STOPs a legit payment (median deflated->ratio inflated) while the
+        # trust gate, which filters the zeros, blesses it. A non-numeric entry
+        # would also raise straight up into a 500. Coerce/filter here so both
+        # judge the SAME distribution.
+        flat_vals = []
+        for p in price_history:
+            try:
+                d = Decimal(str(p))
+            except (InvalidOperation, ValueError, TypeError):
+                continue
+            if d.is_finite() and d > 0:
+                flat_vals.append(d)
+        if flat_vals:
+            return _median_of(flat_vals), "flat"
     return None, "flat"
 
 
@@ -254,6 +291,30 @@ def price_anomaly_ratio(amount, price_history, observations=None, resource=None)
     if median is None or median <= 0:
         return None
     return float(Decimal(str(amount)) / median)
+
+
+def flat_stop_trustworthy(price_history):
+    """Is a FLAT median (raw amounts, no payer attribution) reliable enough to
+    drive a hard price-STOP?
+
+    Only when the history is both DENSE and TIGHT: >= FLAT_STOP_MIN_OBS positive
+    observations that cluster within FLAT_STOP_SPREAD (max <= N x min). A sparse
+    history (too few points) or a dispersed one (a normal wallet's varied
+    receipts) yields a median that is not a trustworthy price reference, so an 8x
+    ratio off it must NOT hard-STOP -- it downgrades to HOLD. Robust (per-class /
+    payer-weighted) medians never route through here. Pure; returns bool."""
+    vals = []
+    for p in price_history or []:
+        try:
+            d = Decimal(str(p))
+        except (InvalidOperation, ValueError, TypeError):
+            continue
+        if d.is_finite() and d > 0:
+            vals.append(d)
+    if len(vals) < FLAT_STOP_MIN_OBS:
+        return False
+    lo, hi = min(vals), max(vals)
+    return lo > 0 and (hi / lo) <= Decimal(str(FLAT_STOP_SPREAD))
 
 
 def peer_group_median(counterparty_medians, min_counterparties=MIN_PEER_COUNTERPARTIES):
@@ -363,7 +424,9 @@ def decide_payment(amount, record, price_history,
                    verified_floor=None, verified_grade=None,
                    payer_graph_signal=None, temporal_signal=None,
                    category=None, category_median=None, divergence_ratio=None,
-                   enrichment=None, secret_findings=None):
+                   enrichment=None, secret_findings=None,
+                   velocity_flow=None, payer_flow=None,
+                   price_history_from_record=True):
     """
     The core verdict. Returns a dict:
         {verdict, score, reasons[], signals{...}}
@@ -506,7 +569,23 @@ def decide_payment(amount, record, price_history,
     if record.get("known_bad"):
         stop = hard_stop = True
         reasons.append("counterparty is a known-bad address")
-    if ratio is not None and ratio >= STOP_ANOMALY_RATIO:
+    # Hard-STOP on a price gouge only when the median is TRUSTWORTHY. A robust /
+    # wash-resistant basis (per-class or payer-weighted) always qualifies. A
+    # "flat" median (raw amounts, no payer attribution) qualifies ONLY when it is
+    # both DENSE and TIGHT (flat_stop_trustworthy): a sparse or dispersed history
+    # -- a normal wallet's varied receipts -- yields an unreliable median, and an
+    # 8x ratio off it is NOT the unambiguous gouge STOP is reserved for; it would
+    # false-STOP a legitimate payment (the live "62x its own median" STOP on
+    # active addresses). Untrusted-flat anomalies still fail the GO gate (high
+    # anomaly_score) and land in HOLD for a human -- the correct verdict.
+    # The trustworthiness relaxation applies ONLY to record-derived history
+    # (chain-backfilled records caused the live false-STOP). Caller-supplied
+    # quoted_price_history stays strict: one crafted outlier must not be able
+    # to downgrade a hard gouge STOP to HOLD (the history is attacker-shaped).
+    if (ratio is not None and ratio >= STOP_ANOMALY_RATIO
+            and (price_basis != "flat"
+                 or not price_history_from_record
+                 or flat_stop_trustworthy(price_history))):
         stop = True
         reasons.append(
             "quoted amount is %.1fx the counterparty's own median -- price wildly off"
@@ -583,6 +662,42 @@ def decide_payment(amount, record, price_history,
                              if s.get("severity") == "medium"})
     secret_hold = bool(_secret_medium)
 
+    # Aggregate/velocity: would THIS payment push cumulative recent flow to this
+    # counterparty over the threshold across many payments? `velocity_flow` is the
+    # counterparty's HISTORICAL flow in the window (ledger.counterparty_flow);
+    # this payment adds one more. Trips HOLD only on the PATTERN (>= MIN_VELOCITY_COUNT
+    # payments), so a single large payment stays the over_budget case, not this one.
+    # A drain-by-many-small-payments each individually fine is exactly what a
+    # per-call verdict and a per-invoice cap both miss.
+    velocity_hold = False
+    velocity_window_total = None
+    velocity_count = None
+    if velocity_flow is not None:
+        hist_total = velocity_flow.get("total_amount") or Decimal(0)
+        hist_count = velocity_flow.get("count") or 0
+        velocity_window_total = hist_total + amount_dec
+        velocity_count = hist_count + 1
+        velocity_hold = (velocity_window_total >= VELOCITY_AMOUNT_THRESHOLD
+                         and velocity_count >= MIN_VELOCITY_COUNT)
+
+    # Payer-side outflow / fan-out (SYBIL complement): would THIS payment push the
+    # payer's cumulative recent outflow over the threshold AND across enough DISTINCT
+    # payees to look like a distributed drain (splitting to dodge the per-counterparty
+    # aggregate)? `payer_flow` is the payer's HISTORICAL outflow in the window; this
+    # payment adds its amount. `distinct_counterparties` is the count from history --
+    # a conservative LOWER bound (we don't pre-add this payment's payee, so a brand
+    # new payee is counted on the NEXT call, never over-blocking on the strength of
+    # the current one).
+    payer_hold = False
+    payer_window_total = None
+    payer_distinct = None
+    if payer_flow is not None:
+        p_hist_total = payer_flow.get("total_amount") or Decimal(0)
+        payer_window_total = p_hist_total + amount_dec
+        payer_distinct = payer_flow.get("distinct_counterparties") or 0
+        payer_hold = (payer_window_total >= PAYER_OUTFLOW_THRESHOLD
+                      and payer_distinct >= MIN_PAYER_DISTINCT_COUNTERPARTIES)
+
     # ---- HOLD gates: single source of truth --------------------------------------
     # Each entry is (fired, reason-thunk). `go` is simply "no gate fired"; a fired gate's
     # reason is appended in order. The reason is a THUNK because several format signal
@@ -629,6 +744,15 @@ def decide_payment(amount, record, price_history,
         (secret_hold, lambda: "payment payload contains possible sensitive data (%s) -- "
             "review before signing (would be published on-chain)"
             % ", ".join(_secret_medium)),
+        (velocity_hold, lambda: "cumulative flow to this counterparty is %s across %d "
+            "recent payments (>= %s over %d) -- possible drain by many small payments; "
+            "escalating" % (velocity_window_total, velocity_count,
+                            VELOCITY_AMOUNT_THRESHOLD, MIN_VELOCITY_COUNT)),
+        (payer_hold, lambda: "payer sent %s across %d distinct counterparties in the "
+            "window (>= %s over %d payees) -- distributed-drain / address-split "
+            "pattern; escalating" % (payer_window_total, payer_distinct,
+                                     PAYER_OUTFLOW_THRESHOLD,
+                                     MIN_PAYER_DISTINCT_COUNTERPARTIES)),
     ]
 
     # ---- verdict ----
@@ -722,6 +846,19 @@ def decide_payment(amount, record, price_history,
             "peak_day_share": _tmp.get("peak_day_share"),
             "burst_sybil_advisory": bool(_tmp.get("burst_sybil")),
         } if temporal_signal else None),
+        # Aggregate/velocity: cumulative recent flow to this counterparty INCLUDING
+        # this payment (None when no ledger/window supplied). The drain a per-call
+        # view can't see.
+        "counterparty_flow": ({"window_total": str(velocity_window_total),
+                               "count": velocity_count}
+                              if velocity_flow is not None else None),
+        # Payer-side fan-out: this payer's cumulative outflow INCLUDING this payment
+        # and the number of DISTINCT payees it hit in the window (None when no
+        # ledger/window supplied). The distributed drain the per-counterparty view
+        # can't see. distinct_counterparties is a conservative history-only count.
+        "payer_outflow": ({"window_total": str(payer_window_total),
+                           "distinct_counterparties": payer_distinct}
+                          if payer_flow is not None else None),
     }
 
     return {
@@ -1080,10 +1217,36 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     except Exception:
         secret_findings = None
 
+    # Aggregate signals from the ledger: the per-counterparty cumulative flow
+    # (velocity -- concentrated drain) AND the per-payer outflow/fan-out (SYBIL
+    # complement -- distributed drain across split addresses). Both fold into
+    # decide_payment as GO-gate escalators. FAIL-OPEN: a ledger read error must
+    # never break the verdict. Materialize the event stream ONCE and derive both
+    # from it (read_events() is a one-shot generator; a single O(n) scan feeds both).
+    velocity_flow = None
+    payer_flow_sig = None
+    if ledger is not None:
+        try:
+            from ledger import counterparty_flow, payer_flow
+            now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            all_events = list(ledger.read_events())
+            velocity_flow = counterparty_flow(
+                all_events, clean["counterparty"],
+                now_iso, VELOCITY_WINDOW_SECONDS)
+            # Only meaningful when we know who is paying.
+            if clean.get("payer"):
+                payer_flow_sig = payer_flow(
+                    all_events, clean["payer"],
+                    now_iso, PAYER_OUTFLOW_WINDOW_SECONDS)
+        except Exception:
+            velocity_flow = None
+            payer_flow_sig = None
+
     verdict = decide_payment(
         amount=clean["amount"],
         record=record,
         price_history=price_history,
+        price_history_from_record=bool(record.get("price_history")),
         counterparty=clean["counterparty"],
         expected_recipient=clean["expected_recipient"],
         hold_above=hold_above,
@@ -1098,6 +1261,8 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         divergence_ratio=divergence_ratio,
         enrichment=enrichment,
         secret_findings=secret_findings,
+        velocity_flow=velocity_flow,
+        payer_flow=payer_flow_sig,
     )
     # Surface advisory (non-blocking) simulation warnings, e.g. an expired auth or
     # a bounded approval.
@@ -1141,6 +1306,27 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         "nonce": os.urandom(12).hex(),
     })
     verdict["receipt_id"] = sign_receipt(receipt_payload)
+
+    # Public, third-party-verifiable Ed25519 signature over the attested
+    # decision. The receipt_id above is a keyed HMAC (private audit trail); this
+    # `signed_receipt` is what ANYONE can verify with only our published public
+    # key, Blackwall out of the loop. FAIL-OPEN: a signing error must never break
+    # the verdict -- the caller still gets the decision, just without the
+    # portable proof.
+    try:
+        from receipt_sig import build_signed_receipt
+        verdict["signed_receipt"] = build_signed_receipt(
+            receipt_id=verdict["receipt_id"],
+            counterparty=clean["counterparty"],
+            amount=str(clean["amount"]),
+            asset=clean["asset"],
+            chain=clean["chain"],
+            verdict=verdict["verdict"],
+            score=verdict["score"],
+            ts=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        )
+    except Exception:
+        pass
 
     if ledger is not None:
         # The caller gets a capability token to later report this payment's
@@ -1268,6 +1454,8 @@ class _Handler(BaseHTTPRequestHandler):
     verdict_anchor = None  # verdict_anchor.VerdictAnchor, or None (opt-in audit trail)
     rate_limiter = None  # ratelimit.RateLimiter for POSTs, or None (limiting off)
     stats = None  # _Stats counter (always set by the server)
+    stats_token = None  # operator token for GET /v1/stats; None => endpoint disabled (404)
+    watch_stats = None  # WatchStats for the settlement-watch loop, or None if off
 
     def _client_key(self):
         from ratelimit import client_ip_from
@@ -1287,16 +1475,55 @@ class _Handler(BaseHTTPRequestHandler):
                             extra_headers={"Retry-After": str(int(retry) + 1)})
         return allowed
 
+    # CORS: the verdict endpoint is a PUBLIC API, so allow browser clients (e.g. a
+    # Farcaster mini-app) to call it cross-origin. Responses carry only a verdict +
+    # a public-key-verifiable receipt -- no secrets -- so `*` WITHOUT credentials
+    # exposes nothing the endpoint doesn't already serve to any caller. X-PAYMENT is
+    # allowed so a browser wallet can make the paid call; Authorization is allowed so
+    # the (separately token-gated) /v1/stats stays callable from a browser tool.
+    _CORS = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        # Allow the x402 REQUEST headers the service actually reads: X-PAYMENT
+        # (single-shot / v1-CDP), PAYMENT-SIGNATURE (v2 canonical), and
+        # X-PAYMENT-SESSION (session reuse). Authorization for the token-gated
+        # /v1/stats. A browser strips any request header not listed here at the
+        # preflight, so an omission silently blocks that paid flow.
+        "Access-Control-Allow-Headers": (
+            "Content-Type, X-PAYMENT, PAYMENT-SIGNATURE, X-PAYMENT-SESSION, "
+            "Authorization"),
+        # Expose the x402 RESPONSE headers browser JS must read back: the
+        # settlement tx (PAYMENT-RESPONSE), the 402 challenge (PAYMENT-REQUIRED),
+        # and the session balance (X-PAYMENT-SESSION-REMAINING). Without this the
+        # browser hides them from script even though the body is readable.
+        "Access-Control-Expose-Headers": (
+            "PAYMENT-RESPONSE, PAYMENT-REQUIRED, X-PAYMENT-SESSION-REMAINING"),
+        "Access-Control-Max-Age": "600",
+    }
+
     def _send_json(self, code, obj, extra_headers=None):
         body = json.dumps(obj, separators=(",", ":")).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Connection", "close")
+        for k, v in self._CORS.items():
+            self.send_header(k, v)
         for k, v in (extra_headers or {}).items():
             self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
+
+    def do_OPTIONS(self):
+        # CORS preflight: a browser sends OPTIONS before a cross-origin POST that
+        # carries a JSON body (or an X-PAYMENT header). Answer 204 with the CORS
+        # headers so the real request is allowed to proceed.
+        self.send_response(204)
+        for k, v in self._CORS.items():
+            self.send_header(k, v)
+        self.send_header("Content-Length", "0")
+        self.send_header("Connection", "close")
+        self.end_headers()
 
     def do_GET(self):
         if self.path == "/healthz":
@@ -1310,8 +1537,80 @@ class _Handler(BaseHTTPRequestHandler):
             # Lightweight observability: request + verdict counters. No PII (IPs are
             # only kept in-memory for rate-limiting, never logged here).
             self._send_json(200, self.stats.snapshot() if self.stats else {})
+        elif self.path == "/v1/stats":
+            self._handle_stats()
+        elif self.path == "/.well-known/blackwall-receipt-key.json":
+            self._handle_receipt_key()
         else:
             self._send_json(404, {"error": "not found"})
+
+    def _handle_receipt_key(self):
+        """Publish the Ed25519 PUBLIC key that signs receipts, so any third party
+        can verify a `signed_receipt` without contacting us. Public by design --
+        it is a public key. Fail-closed to 503 only if signing is unavailable."""
+        try:
+            from receipt_sig import public_key_hex, key_id, is_dev_key
+            pub = public_key_hex()
+            self._send_json(200, {
+                "algo": "ed25519",
+                "key_id": key_id(pub),
+                "public_key": pub,
+                # True => this server signs with the PUBLIC dev seed; its receipts
+                # are forgeable. A verifier should refuse to trust dev-key receipts.
+                "dev_key": is_dev_key(),
+                "signed_fields": ["v", "receipt_id", "counterparty", "amount",
+                                  "asset", "chain", "verdict", "score", "ts",
+                                  "key_id"],
+                "canonicalization": "JSON, keys sorted lexicographically by "
+                                    "UTF-16 code unit (Python sort_keys), item "
+                                    "separator ',', key/value separator ':', no "
+                                    "insignificant whitespace, non-ASCII emitted "
+                                    "as raw UTF-8 bytes (NOT \\uXXXX-escaped), "
+                                    "then UTF-8 encoded. Sign/verify over the "
+                                    "signed-receipt object MINUS its 'sig' field. "
+                                    "'amount' is a decimal string; 'score' is a "
+                                    "JSON number in shortest round-trip form.",
+            })
+        except Exception:
+            self._send_json(503, {"error": "receipt signing unavailable"})
+
+    def _handle_stats(self):
+        """Operator-only usage metrics over the ledger (measure the funnel).
+
+        PRIVATE by design: disabled with a 404 unless BLACKWALL_STATS_TOKEN is set
+        (so it never exists in the open, and a pre-traffic count is never leaked),
+        then gated on a constant-time Bearer check. Read-only; emits counts only,
+        never amounts or per-caller rows."""
+        token = self.stats_token
+        if not token:
+            self._send_json(404, {"error": "not found"})
+            return
+        auth = self.headers.get("Authorization", "") or ""
+        presented = auth[7:] if auth.startswith("Bearer ") else ""
+        # Compare as bytes: hmac.compare_digest raises TypeError on non-ASCII
+        # str inputs, and `presented` is attacker-controlled (Authorization
+        # header). Bytes comparison is always safe + constant-time, so any
+        # mismatch -- including a non-ASCII presented token -- is a plain 401,
+        # never an unhandled crash.
+        if not hmac.compare_digest(presented.encode("utf-8"), token.encode("utf-8")):
+            self._send_json(401, {"error": "unauthorized"})
+            return
+        # Settlement-watch liveness: present when the loop is running (else a flag
+        # noting it's off), so an operator can confirm the flywheel is turning.
+        watch = (self.watch_stats.snapshot() if self.watch_stats is not None
+                 else {"settlement_watch_enabled": False})
+        if self.ledger is None:
+            self._send_json(200, {"verdicts_total": 0, "by_verdict": {},
+                                  "distinct_counterparties": 0, "distinct_agents": 0,
+                                  "distinct_payers": 0, "distinct_resources": 0,
+                                  "first_verdict": None, "last_verdict": None,
+                                  **watch})
+            return
+        from ledger import usage_stats
+        try:
+            self._send_json(200, {**usage_stats(self.ledger.read_events()), **watch})
+        except Exception:
+            self._send_json(500, {"error": "stats unavailable"})
 
     def do_HEAD(self):
         # Health checkers/crawlers (UptimeRobot, etc.) often probe with HEAD;
@@ -1323,6 +1622,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", "0")
         self.send_header("Connection", "close")
+        for k, v in self._CORS.items():
+            self.send_header(k, v)
         self.end_headers()
 
     def _descriptor(self):
@@ -1594,7 +1895,7 @@ class BlackwallServer:
                  hold_above=None, peer_index=None, openapi_server_url=None,
                  graph_source=None, velocity_source=None, verdict_anchor=None,
                  category_index=None, divergence_index=None, rate_limiter=None,
-                 enrichment_source=None):
+                 enrichment_source=None, stats_token=None, watch_stats=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -1614,6 +1915,8 @@ class BlackwallServer:
         self.rate_limiter = rate_limiter
         self.enrichment_source = enrichment_source
         self.stats = _Stats()
+        self.stats_token = stats_token
+        self.watch_stats = watch_stats
         self._httpd = None
 
     def serve_forever(self):
@@ -1632,7 +1935,9 @@ class BlackwallServer:
                         "rate_limiter": self.rate_limiter,
                         "enrichment_source": self.enrichment_source,
                         "stats": self.stats,
-                        "openapi_server_url": self.openapi_server_url})
+                        "openapi_server_url": self.openapi_server_url,
+                        "stats_token": self.stats_token,
+                        "watch_stats": self.watch_stats})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
         self.port = self._httpd.server_address[1]
         sys.stdout.write(
@@ -1665,6 +1970,115 @@ class BlackwallServer:
 
 
 # ===========================================================================
+# Settlement-watch background loop (the moat's trustless read-back)
+# ===========================================================================
+def _env_int(name, default):
+    """Parse an int env var, falling back to `default` on missing/garbage (with a
+    warning). Tolerant on purpose: a typo in a tuning var must NOT crash boot --
+    especially since these configure a feature that is dormant by default, so a
+    stray value would otherwise take down a service that isn't even using it."""
+    v = os.environ.get(name)
+    if v is None or v == "":
+        return default
+    try:
+        return int(v)
+    except ValueError:
+        sys.stderr.write("blackwall: WARNING %s=%r is not an integer; using %d\n"
+                         % (name, v, default))
+        sys.stderr.flush()
+        return default
+
+
+class WatchStats:
+    """Thread-safe liveness/telemetry for the settlement-watch loop, surfaced on
+    GET /v1/stats. Lets an operator answer "is the flywheel actually turning?"
+    without reading logs -- the watcher is a daemon thread, so a silent death
+    would otherwise be invisible (the web server keeps serving 200 either way)."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.passes = 0
+        self.confirmations_total = 0
+        self.last_pass_ts = None
+        self.last_confirmed = 0
+        self.last_error = None
+
+    def record_pass(self, confirmed, ts, error=None):
+        with self._lock:
+            self.passes += 1
+            self.last_pass_ts = ts
+            if error is None:
+                self.confirmations_total += int(confirmed or 0)
+                self.last_confirmed = int(confirmed or 0)
+                self.last_error = None
+            else:
+                self.last_error = str(error)
+
+    def snapshot(self):
+        with self._lock:
+            return {
+                "settlement_watch_enabled": True,
+                "settlement_watch_passes": self.passes,
+                "settlement_watch_confirmations_total": self.confirmations_total,
+                "settlement_watch_last_pass_ts": self.last_pass_ts,
+                "settlement_watch_last_confirmed": self.last_confirmed,
+                "settlement_watch_last_error": self.last_error,
+            }
+
+
+def run_watch_loop(watcher, interval_s, batch, stop_event, log=None, stats=None,
+                   now_fn=None):
+    """Background settlement-confirmation loop. Repeatedly asks `watcher` to
+    chain-confirm pending GO settlements from Base, sleeping `interval_s` between
+    passes, until `stop_event` is set.
+
+    FAIL-SAFE by contract: every pass is wrapped so a chain/indexer outage
+    (timeout, HTTP error, malformed JSON, ANY exception) is logged and skipped --
+    the loop, and the verdict service it runs beside, NEVER crash on a bad pass.
+    Runs in a daemon thread; `stop_event.wait(interval)` (not time.sleep) makes
+    shutdown immediate instead of sleeping out the whole interval. A non-positive
+    interval is floored to a small positive value so a misconfig can't busy-spin.
+    Returns the number of passes run (so a test can bound it with a stop_event)."""
+    _log = log or (lambda m: None)
+
+    def log(m):
+        # Logging itself must NEVER kill the loop: the live deploy writes to
+        # sys.stdout, and a broken/closed stream (broken pipe, stream closed
+        # during shutdown or log-rotation) makes the write raise. An unguarded
+        # log() -- on the success path OR inside the except handler -- would
+        # escape and silently kill the daemon thread, stopping settlement
+        # confirmation with no crash the operator sees. Swallow log failures.
+        try:
+            _log(m)
+        except Exception:
+            pass
+
+    now_fn = now_fn or (lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    interval_s = max(1, int(interval_s or 0))
+    passes = 0
+    while not stop_event.is_set():
+        passes += 1
+        try:
+            n = watcher.confirm_pending(limit=batch)
+            if stats is not None:
+                stats.record_pass(n, now_fn())
+            if n:
+                log("settlement-watch: chain-confirmed %d settlement(s)" % n)
+        except Exception as e:  # never let a bad pass kill the loop or the process
+            # Record the failure too (so a persistently-failing watcher is visible
+            # on /v1/stats), but a stats/logging error must not escape either.
+            if stats is not None:
+                try:
+                    stats.record_pass(0, now_fn(), error=e)
+                except Exception:
+                    pass
+            log("settlement-watch: pass failed (%s: %s) -- skipping"
+                % (type(e).__name__, e))
+        stop_event.wait(interval_s)
+    return passes
+
+
+# ===========================================================================
 # CLI
 # ===========================================================================
 def _env_flag(name):
@@ -1692,6 +2106,27 @@ def main(argv=None):
                    default=os.environ.get("BLACKWALL_LEDGER"),
                    help="path to the verdict->outcome ledger (JSONL); enables "
                         "POST /v1/report-outcome and self-learned reputation")
+    p.add_argument("--settlement-watch", action="store_true",
+                   default=_env_flag("BLACKWALL_SETTLEMENT_WATCH"),
+                   help="run the on-chain settlement-confirmation loop in a "
+                        "background thread (needs --ledger): confirms GO "
+                        "settlements from Base and writes CHAIN-CONFIRMED outcomes "
+                        "-- the moat's trustless read-back. Fail-safe: a chain/"
+                        "indexer outage never touches the verdict path.")
+    p.add_argument("--watch-interval", type=int,
+                   default=_env_int("BLACKWALL_WATCH_INTERVAL", 300),
+                   help="seconds between settlement-watch passes (default 300)")
+    p.add_argument("--watch-batch", type=int,
+                   default=_env_int("BLACKWALL_WATCH_BATCH", 25),
+                   help="max pending settlements to confirm per watch pass "
+                        "(default 25; bounds the free-indexer call volume per pass)")
+    p.add_argument("--watch-max-age", type=int,
+                   default=_env_int("BLACKWALL_WATCH_MAX_AGE", 86400),
+                   help="seconds after a GO verdict to keep trying to confirm it "
+                        "on-chain (default 86400 = 24h). Past this, a never-settled "
+                        "GO is retired from the scan so stale test/abandoned verdicts "
+                        "can't permanently consume the per-pass batch and starve real "
+                        "settlements. x402 settles atomically, so this is generous.")
     p.add_argument("--pay-to", default=os.environ.get("BLACKWALL_PAY_TO"),
                    help="Blackwall's EVM wallet; enabling it turns ON x402 "
                         "billing (402 challenge + POST /v1/session)")
@@ -1959,6 +2394,66 @@ def main(argv=None):
                "" if anchor.pay else "; NO signer -> will 402/fail-open unsigned"))
         sys.stdout.flush()
 
+    # Public receipt signing (receipt_sig.py). Say out loud which key is active:
+    # forecast() signs FAIL-OPEN (a missing/broken seed silently drops
+    # `signed_receipt`) while the discovery descriptor advertises third-party-
+    # verifiable receipts unconditionally, so a misconfigured signer is otherwise
+    # invisible. Two failure modes, both loud here:
+    #   * seed UNSET     -> the built-in all-zero DEV seed signs; its public key is
+    #                       published, so anyone can FORGE a Blackwall attestation.
+    #   * seed MALFORMED -> signing raises and nothing is signed at all.
+    # Never echoes the seed (receipt_sig's errors carry no value either).
+    try:
+        from receipt_sig import is_dev_key, key_id, public_key_hex
+        if is_dev_key():
+            sys.stderr.write(
+                "blackwall: WARNING BLACKWALL_SIGNING_SEED unset -- receipts are "
+                "signed with the built-in DEV key and are FORGEABLE by anyone. "
+                "Set a 32-byte hex seed before relying on signed receipts.\n")
+            sys.stderr.flush()
+        else:
+            sys.stdout.write("blackwall: receipt signing ON (key_id %s)\n"
+                             % key_id(public_key_hex()))
+            sys.stdout.flush()
+    except Exception as e:
+        sys.stderr.write("blackwall: WARNING receipt signing DISABLED (%s: %s) -- "
+                         "responses will carry no signed_receipt\n"
+                         % (type(e).__name__, e))
+        sys.stderr.flush()
+
+    # Settlement-watch background loop (the moat's trustless read-back). Only when
+    # explicitly enabled AND a ledger exists to confirm against. Runs on a daemon
+    # thread so it can never block boot or the healthcheck; the loop is internally
+    # fail-safe (a chain outage is logged and skipped, never touches the verdict).
+    watch_stop = threading.Event()
+    watch_stats = None
+    if args.settlement_watch:
+        if led is None:
+            sys.stderr.write("blackwall: WARNING --settlement-watch set but no "
+                             "--ledger; settlement confirmation DISABLED "
+                             "(nothing to confirm against)\n")
+            sys.stderr.flush()
+        else:
+            from settlement_watch import BlockscoutChain, SettlementWatcher
+
+            def _watch_log(m):
+                sys.stdout.write(m + "\n")
+                sys.stdout.flush()
+
+            watch_stats = WatchStats()
+            watcher = SettlementWatcher(BlockscoutChain(), led,
+                                        max_age_seconds=args.watch_max_age)
+            threading.Thread(
+                target=run_watch_loop,
+                args=(watcher, args.watch_interval, args.watch_batch,
+                      watch_stop, _watch_log, watch_stats),
+                daemon=True, name="settlement-watch").start()
+            sys.stdout.write("blackwall: settlement-watch ON (interval %ds, "
+                             "batch %d, max-age %ds)\n"
+                             % (args.watch_interval, args.watch_batch,
+                                args.watch_max_age))
+            sys.stdout.flush()
+
     server = BlackwallServer(host=args.host, port=args.port, ledger=led,
                              billing=billing, reputation_source=reputation_source,
                              readiness_source=readiness_source,
@@ -1970,11 +2465,14 @@ def main(argv=None):
                              divergence_index=divergence_index,
                              rate_limiter=rate_limiter,
                              enrichment_source=enrichment_source,
-                             openapi_server_url=origin)
+                             openapi_server_url=origin,
+                             stats_token=os.environ.get("BLACKWALL_STATS_TOKEN") or None,
+                             watch_stats=watch_stats)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         sys.stdout.write("\nblackwall: shutting down (Ctrl-C)\n")
+        watch_stop.set()   # signal the watch loop to stop sleeping and exit
         server.shutdown()
         return 0
     return 0

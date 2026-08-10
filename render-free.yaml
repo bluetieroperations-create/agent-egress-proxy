@@ -59,6 +59,14 @@ services:
         value: "60"
       - key: BLACKWALL_RATE_BURST
         value: "30"
+      # 32-byte hex Ed25519 seed for the PUBLIC receipt signature (the key
+      # published at /.well-known/blackwall-receipt-key.json). MUST be set: left
+      # unset, the service signs with the built-in all-zero DEV seed, whose
+      # private half is public -- so ANYONE could forge a "Blackwall attested GO"
+      # receipt. Boot logs a loud FORGEABLE warning when it is missing.
+      #   generate:  python -c "import os;print(os.urandom(32).hex())"
+      - key: BLACKWALL_SIGNING_SEED
+        sync: false
       - key: BLACKWALL_VALUE_PRICING
         value: "1"
       - key: BLACKWALL_FREE_BELOW
