@@ -121,6 +121,62 @@ class TestTransportContract(_Base):
         self.assertEqual(st, 413)
 
 
+class TestHardening(_Base):
+    def test_chunked_body_rejected_411(self):
+        # AUDIT regression: a chunked body was read as empty AND its bytes polluted the
+        # keep-alive connection. Now it's a clean 411 (Content-Length required) + close.
+        import socket
+        s = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        body = b'{"jsonrpc":"2.0","id":1,"method":"ping"}'
+        chunk = ("%x\r\n" % len(body)).encode() + body + b"\r\n0\r\n\r\n"
+        s.sendall(b"POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                  b"Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n" + chunk)
+        resp = b""
+        s.settimeout(5)
+        while True:
+            b = s.recv(4096)
+            if not b:
+                break
+            resp += b
+        s.close()
+        self.assertIn(b"411", resp.split(b"\r\n", 1)[0])
+        self.assertIn(b"Connection: close", resp)
+
+    def test_handler_has_read_timeout(self):
+        # AUDIT regression: no socket timeout meant a slowloris (partial body, stalled)
+        # pinned a thread forever. The handler must set a finite timeout. Mutation:
+        # remove `timeout` -> this FAILS. (We assert the config, not a 30s wall-clock.)
+        h = self.mcp.http_handler_class()
+        self.assertIsNotNone(getattr(h, "timeout", None))
+        self.assertLessEqual(h.timeout, 120)
+
+    def test_source_crash_never_returns_go(self):
+        # fail-safe: if the reputation source raises, the tool call must surface an error,
+        # never a GO. (Same posture as the main server's fail-closed 503.)
+        class _Boom:
+            def lookup(self, cp):
+                raise RuntimeError("store locked")
+        boom = M.BlackwallMCP(reputation_source=_Boom())
+        httpd, port = _serve(boom)
+        try:
+            import http.client
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            c.request("POST", "/mcp", body=json.dumps(
+                {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+                    "name": "forecast_payment", "arguments": {
+                        "counterparty": "0x" + "1" * 40, "amount": "0.09",
+                        "asset": "USDC", "chain": "base"}}}),
+                headers={"Content-Type": "application/json"})
+            r = c.getresponse(); body = json.loads(r.read()); c.close()
+        finally:
+            httpd.shutdown(); httpd.server_close()
+        blob = json.dumps(body)
+        # either a JSON-RPC error, or a tool result flagged isError -- never a GO verdict
+        self.assertNotIn('"verdict": "GO"', blob)
+        self.assertNotIn('"verdict":"GO"', blob)
+        self.assertTrue("error" in body or body.get("result", {}).get("isError"))
+
+
 class TestOriginGuard(_Base):
     handler_kw = {"allowed_origins": {"https://sapiom.ai"}}
 
