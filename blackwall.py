@@ -425,7 +425,8 @@ def decide_payment(amount, record, price_history,
                    payer_graph_signal=None, temporal_signal=None,
                    category=None, category_median=None, divergence_ratio=None,
                    enrichment=None, secret_findings=None,
-                   velocity_flow=None, payer_flow=None):
+                   velocity_flow=None, payer_flow=None,
+                   price_history_from_record=True):
     """
     The core verdict. Returns a dict:
         {verdict, score, reasons[], signals{...}}
@@ -577,8 +578,14 @@ def decide_payment(amount, record, price_history,
     # false-STOP a legitimate payment (the live "62x its own median" STOP on
     # active addresses). Untrusted-flat anomalies still fail the GO gate (high
     # anomaly_score) and land in HOLD for a human -- the correct verdict.
+    # The trustworthiness relaxation applies ONLY to record-derived history
+    # (chain-backfilled records caused the live false-STOP). Caller-supplied
+    # quoted_price_history stays strict: one crafted outlier must not be able
+    # to downgrade a hard gouge STOP to HOLD (the history is attacker-shaped).
     if (ratio is not None and ratio >= STOP_ANOMALY_RATIO
-            and (price_basis != "flat" or flat_stop_trustworthy(price_history))):
+            and (price_basis != "flat"
+                 or not price_history_from_record
+                 or flat_stop_trustworthy(price_history))):
         stop = True
         reasons.append(
             "quoted amount is %.1fx the counterparty's own median -- price wildly off"
@@ -1239,6 +1246,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         amount=clean["amount"],
         record=record,
         price_history=price_history,
+        price_history_from_record=bool(record.get("price_history")),
         counterparty=clean["counterparty"],
         expected_recipient=clean["expected_recipient"],
         hold_above=hold_above,

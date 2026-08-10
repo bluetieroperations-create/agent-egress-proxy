@@ -224,6 +224,26 @@ class TestDecidePayment(unittest.TestCase):
         self.assertEqual(noisy["verdict"], "HOLD")
         # Mutation: drop the flat_stop_trustworthy guard -> both become STOP.
 
+    def test_caller_supplied_history_cannot_downgrade_gouge_stop(self):
+        # AUDIT M-1: the trustworthiness relaxation is for RECORD-derived
+        # history only (the chain-backfill false-STOP). When the history came
+        # from the request body (context.quoted_price_history), the caller
+        # shapes it -- one crafted cheap outlier makes a tight history look
+        # "dispersed" and would downgrade a 100x gouge STOP to HOLD. Caller-
+        # supplied history must stay strict. Mutation: drop the
+        # `not price_history_from_record` arm of the STOP gate -> this HOLDs.
+        poisoned = ["1.00", "1.00", "1.00", "0.01"]   # outlier defeats "tight"
+        v = bw.decide_payment("100.00", self.GOOD, poisoned,
+                              counterparty="0xA",
+                              price_history_from_record=False)
+        self.assertEqual(v["signals"]["price_basis"], "flat")
+        self.assertEqual(v["verdict"], "STOP")
+        # The same poisoned history from the RECORD keeps the live fix (HOLD):
+        r = bw.decide_payment("100.00", self.GOOD, poisoned,
+                              counterparty="0xA",
+                              price_history_from_record=True)
+        self.assertEqual(r["verdict"], "HOLD")
+
     def test_hold_thin_history(self):
         thin = {"settlement_count": 3, "dispute_rate": 0.0}
         v = bw.decide_payment("0.09", thin, ["0.09", "0.09"], counterparty="0xA")
