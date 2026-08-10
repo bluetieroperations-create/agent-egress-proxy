@@ -2099,7 +2099,7 @@ def main(argv=None):
                    help="path to the verdict->outcome ledger (JSONL); enables "
                         "POST /v1/report-outcome and self-learned reputation")
     p.add_argument("--settlement-watch", action="store_true",
-                   default=bool(os.environ.get("BLACKWALL_SETTLEMENT_WATCH")),
+                   default=_env_flag("BLACKWALL_SETTLEMENT_WATCH"),
                    help="run the on-chain settlement-confirmation loop in a "
                         "background thread (needs --ledger): confirms GO "
                         "settlements from Base and writes CHAIN-CONFIRMED outcomes "

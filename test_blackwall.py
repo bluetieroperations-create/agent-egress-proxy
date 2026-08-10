@@ -2378,6 +2378,78 @@ class TestEnvInt(unittest.TestCase):
         self.assertEqual(bw._env_int("BW_TEST_INT", 25), 25)
 
 
+class TestSettlementWatchEnvFlag(unittest.TestCase):
+    """BLACKWALL_SETTLEMENT_WATCH must follow the repo-wide _env_flag convention:
+    "0"/"false"/"no"/"off"/unset => OFF. `bool(os.environ.get(...))` is the trap
+    _env_flag exists to prevent (bool("0") is True), and it already 502'd this
+    deploy once via BLACKWALL_INGEST -- so the OFF switch for a background thread
+    that makes outbound chain calls and WRITES chain-confirmed outcomes into the
+    verdict-feeding ledger must not repeat it.
+
+    Observed through main()'s boot: with no --ledger, an ENABLED watch prints the
+    "--settlement-watch set but no --ledger" warning and a DISABLED one is silent.
+    Mutation: revert the default to bool(os.environ.get(...)) -> "0" boots the
+    watcher and this fails."""
+
+    _VARS = ("BLACKWALL_SETTLEMENT_WATCH", "BLACKWALL_LEDGER", "BLACKWALL_STORE",
+             "BLACKWALL_SANCTIONS", "BLACKWALL_PAY_TO")
+
+    def setUp(self):
+        import os
+        self._os = os
+        self._saved = {k: os.environ.get(k) for k in self._VARS}
+        for k in self._VARS:
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            if v is None:
+                self._os.environ.pop(k, None)
+            else:
+                self._os.environ[k] = v
+
+    def _boot_stderr(self, value):
+        """Run main() to the point of serving with BLACKWALL_SETTLEMENT_WATCH=value
+        and return what it wrote to stderr. The server is stubbed out so nothing
+        binds a socket and no watch thread can reach the network."""
+        import contextlib
+        import io
+
+        class _NoServe:
+            def __init__(self, **kwargs):
+                pass
+
+            def serve_forever(self):
+                raise KeyboardInterrupt
+
+            def shutdown(self):
+                pass
+
+        self._os.environ["BLACKWALL_SETTLEMENT_WATCH"] = value
+        real = bw.BlackwallServer
+        bw.BlackwallServer = _NoServe
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                bw.main(["--host", "127.0.0.1", "--port", "0"])
+        finally:
+            bw.BlackwallServer = real
+        return err.getvalue()
+
+    def test_falsey_values_do_not_enable_the_watcher(self):
+        for v in ("0", "false", "no", "off", ""):
+            self.assertNotIn("settlement-watch", self._boot_stderr(v),
+                             "BLACKWALL_SETTLEMENT_WATCH=%r must leave the "
+                             "watcher OFF" % v)
+
+    def test_truthy_values_enable_the_watcher(self):
+        for v in ("1", "true", "TRUE", "yes", "on"):
+            self.assertIn("settlement-watch", self._boot_stderr(v),
+                          "BLACKWALL_SETTLEMENT_WATCH=%r must enable the "
+                          "watcher" % v)
+
+
 if __name__ == "__main__":
     unittest.main()
 
