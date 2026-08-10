@@ -53,6 +53,12 @@ services:
       # discovery stay unthrottled). 120 req/min per client IP, burst 30 -- generous
       # for a legit agent, caps hammering/scraping/DoS. Real client IP via the rightmost
       # X-Forwarded-For (Render's proxy). GET /stats exposes aggregate counters.
+      - key: BLACKWALL_RATE_LIMIT
+        value: "120"
+      - key: BLACKWALL_RATE_WINDOW
+        value: "60"
+      - key: BLACKWALL_RATE_BURST
+        value: "30"
       # 32-byte hex Ed25519 seed for the PUBLIC receipt signature (the key
       # published at /.well-known/blackwall-receipt-key.json). MUST be set: left
       # unset, the service signs with the built-in all-zero DEV seed, whose
@@ -61,12 +67,6 @@ services:
       #   generate:  python -c "import os;print(os.urandom(32).hex())"
       - key: BLACKWALL_SIGNING_SEED
         sync: false
-      - key: BLACKWALL_RATE_LIMIT
-        value: "120"
-      - key: BLACKWALL_RATE_WINDOW
-        value: "60"
-      - key: BLACKWALL_RATE_BURST
-        value: "30"
       - key: BLACKWALL_VALUE_PRICING
         value: "1"
       - key: BLACKWALL_FREE_BELOW
