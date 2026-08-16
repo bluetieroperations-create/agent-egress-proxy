@@ -252,6 +252,12 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   (None = unreadable, never a false False). Injected transports; fail-open. HEURISTIC: a
   positive balance doesn't PROVE this buy settled (pre-existing holdings) -- a before/after
   snapshot or the tx hash is the real attribution),
+  `rwa_report.py` (turn the accumulation corpus into operator INTELLIGENCE -- the payoff
+  that makes the moat legible: totals + verdict mix + restriction-posture map, an ISSUER
+  DIRECTORY ranked by earned `issuer_trust` grade (+ settlement/underwater rates), and
+  LEADERBOARDS of the most OVERPRICED (peg divergence) and most UNDERWATER assets. Pure
+  derivation over ledger events; DESCRIPTIVE, never gates; CLI `python rwa_report.py
+  rwa.jsonl [--top N]`),
   `ROADMAP.md`, `docs/DATA_SOURCE_SPIKE.md`. Tests:
   `test_blackwall.py`, `test_ledger.py`, `test_reputation_onchain.py`,
   `test_settlement_watch.py`, `test_addresses.py`, `test_x402.py`,
@@ -267,7 +273,7 @@ Run all tests:
 ```sh
 python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py test_aa_cosigner.py test_chain_backfill.py test_discovery_crawl.py test_ecosystem_scan.py test_http_util.py test_payer_graph.py test_payer_reputation.py test_settlement_velocity.py test_confidence.py test_redteam.py test_demo_flywheel.py test_verdict_anchor.py test_categories.py test_category_pricing.py test_check_seed_age.py test_price_integrity.py test_ratelimit.py test_fuzz_verdict.py test_blockscout.py test_verdict_oracle.py test_calibration_lock.py test_coverage_eval.py test_refresh_guard.py test_secret_scan.py test_bench.py test_two_stage_signer.py test_rwa_readiness.py test_tokenized_stock_registry.py \
 test_solana_rwa.py test_pyth_price.py test_rwa_ledger.py test_rwa_outcomes.py \
-test_rwa_balance.py
+test_rwa_balance.py test_rwa_report.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop
