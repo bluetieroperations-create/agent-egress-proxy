@@ -58,8 +58,10 @@ class TestChecker(unittest.TestCase):
             return self.px
 
     def test_check_uses_pyth_and_balance_reader(self):
-        chk = OutcomeChecker(self._Pyth(90.0),
-                             balance_reader=lambda t, c, p: True)
+        class Bal:
+            def balance_of(self, t, c, p):
+                return 5             # positive -> holds True
+        chk = OutcomeChecker(self._Pyth(90.0), balance_reader=Bal())
         o = chk.check(_buy(paid=110.0))
         self.assertTrue(o["underwater"])
         self.assertTrue(o["holds_balance"])
@@ -70,6 +72,35 @@ class TestChecker(unittest.TestCase):
                 raise RuntimeError("down")
         o = OutcomeChecker(Boom()).check(_buy())
         self.assertIsNone(o["mark_ratio"])
+
+    class _Bal:
+        def __init__(self, post):
+            self.post = post
+
+        def balance_of(self, token, chain, payer):
+            return self.post
+
+    def test_definitive_settled_from_delta(self):
+        # buy captured pre_balance=100; post=250 -> arrived -> settled True + holds True.
+        buy = dict(_buy(), pre_balance=100)
+        o = OutcomeChecker(self._Pyth(90.0), balance_reader=self._Bal(250)).check(buy)
+        self.assertTrue(o["settled"])
+        self.assertTrue(o["holds_balance"])
+
+    def test_settled_false_when_no_arrival(self):
+        # MUTATION: settled = post>0 (holds) instead of post>pre would MISS a
+        # pre-existing balance that never grew -> false "settled".
+        buy = dict(_buy(), pre_balance=100)
+        o = OutcomeChecker(self._Pyth(90.0), balance_reader=self._Bal(100)).check(buy)
+        self.assertFalse(o["settled"])       # 100 not > 100
+        self.assertTrue(o["holds_balance"])  # but still holds a positive balance
+
+    def test_settled_none_without_pre_snapshot(self):
+        # No pre_balance on the buy -> can't compute the delta -> settled None (heuristic
+        # holds still available).
+        o = OutcomeChecker(self._Pyth(90.0), balance_reader=self._Bal(250)).check(_buy())
+        self.assertIsNone(o["settled"])
+        self.assertTrue(o["holds_balance"])
 
 
 class TestCaptureLoop(unittest.TestCase):
@@ -142,6 +173,17 @@ class TestOutcomeAwareProfiles(unittest.TestCase):
                         now=2000))
         prof = self.led.issuer_profile("backed")
         self.assertEqual(issuer_trust(prof)["grade"], "insufficient")
+
+    def test_definitive_settled_preferred_over_heuristic(self):
+        # MUTATION: averaging holds_balance instead of preferring `settled` would report
+        # 100% settled when the definitive delta says it did NOT arrive.
+        self.led.record(_buy(receipt_id="r1"))
+        self.led.record(build_outcome_event(_buy(receipt_id="r1"),
+                        {"mark_ratio": 1.0, "underwater": False,
+                         "holds_balance": True, "settled": False}, now=2000))
+        p = self.led.asset_profile(EVM, "base")
+        self.assertEqual(p["settlement_success_rate"], 0.0)   # definitive wins
+        self.assertEqual(p["definitive_settlements"], 1)
 
     def test_issuer_trust_unlabeled_outcomes_insufficient(self):
         # AUDIT REGRESSION: outcome EVENTS with no usable label (oracle down at capture)

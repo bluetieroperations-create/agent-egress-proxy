@@ -42,17 +42,24 @@ class BalanceReader:
         self._sol_rpc = sol_rpc
 
     def __call__(self, token, chain, payer):
+        """Heuristic settlement-held: does the payer hold a positive balance?
+        True / False / None (unreadable). Wraps `balance_of`."""
+        bal = self.balance_of(token, chain, payer)
+        return (bal > 0) if bal is not None else None
+
+    def balance_of(self, token, chain, payer):
+        """Raw token balance (atomic units) as int, or None if unreadable. Used for the
+        DEFINITIVE before/after settlement delta (a snapshot at buy vs at T+N)."""
         if is_evm_address(token) and is_evm_address(payer):
-            return self._evm_holds(token, payer)
+            return self._evm_balance(token, payer)
         if is_solana_address(token) and is_solana_address(payer):
-            return self._sol_holds(token, payer)
+            return self._sol_balance(token, payer)
         return None
 
-    # -- EVM: balanceOf(payer) > 0 --
-    def _evm_holds(self, token, payer):
+    # -- EVM: balanceOf(payer) --
+    def _evm_balance(self, token, payer):
         res = self._do_eth_call(token, eth_call_data("balanceOf(address)", (payer,)))
-        bal = decode_uint(res)                      # "0x"/absent -> None; a real 0 -> 0
-        return (bal > 0) if bal is not None else None
+        return decode_uint(res)                     # "0x"/absent -> None; a real 0 -> 0
 
     def _do_eth_call(self, to, data):
         try:
@@ -77,8 +84,8 @@ class BalanceReader:
             d = json.loads(r.read(1 << 16))
         return d.get("result") if isinstance(d, dict) else None
 
-    # -- Solana: sum token-account balances for (owner, mint) > 0 --
-    def _sol_holds(self, mint, owner):
+    # -- Solana: sum token-account balances for (owner, mint) --
+    def _sol_balance(self, mint, owner):
         try:
             res = self._do_sol_rpc("getTokenAccountsByOwner",
                                     [owner, {"mint": mint}, {"encoding": "jsonParsed"}])
@@ -94,7 +101,7 @@ class BalanceReader:
                 total += int(amt)
             except (KeyError, TypeError, ValueError):
                 continue
-        return total > 0                            # empty list -> False (holds none)
+        return total                                # empty list -> 0 (holds none)
 
     def _do_sol_rpc(self, method, params):
         if self._sol_rpc is not None:

@@ -119,6 +119,22 @@ class TestForecastAccumulation(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["token"], EVM)
 
+    def test_forecast_snapshots_pre_balance_when_reader_wired(self):
+        import blackwall
+        d = tempfile.mkdtemp()
+        led = RwaLedger(os.path.join(d, "rwa.jsonl"))
+
+        class Bal:
+            def balance_of(self, token, chain, payer):
+                return 777
+        payload = {"counterparty": "0xKNOWNGOOD000000000000000000000000000001",
+                   "amount": "100.00", "asset": "USDC", "chain": "base",
+                   "payer": "0x" + "11" * 20,
+                   "acquires": {"token": EVM, "chain": "base"}}
+        blackwall.forecast(payload, blackwall.MockReputationSource(),
+                           rwa_ledger=led, balance_reader=Bal())
+        self.assertEqual(led.load()[0]["pre_balance"], 777)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -69,6 +69,27 @@ class TestSolana(unittest.TestCase):
         self.assertIsNone(BalanceReader(sol_rpc=boom)(SOL_TOKEN, "solana", SOL_PAYER))
 
 
+class TestRawBalance(unittest.TestCase):
+    def test_evm_balance_of_returns_int(self):
+        r = BalanceReader(eth_call=lambda to, data: WORD(4200))
+        self.assertEqual(r.balance_of(EVM_TOKEN, "base", EVM_PAYER), 4200)
+
+    def test_evm_zero_is_zero_not_none(self):
+        # MUTATION: a real 0 balance must be int 0 (for the delta), not None.
+        r = BalanceReader(eth_call=lambda to, data: WORD(0))
+        self.assertEqual(r.balance_of(EVM_TOKEN, "base", EVM_PAYER), 0)
+
+    def test_solana_balance_sums(self):
+        accts = {"value": [{"account": {"data": {"parsed": {"info": {
+            "tokenAmount": {"amount": str(a)}}}}}} for a in (100, 50)]}
+        r = BalanceReader(sol_rpc=lambda m, p: accts)
+        self.assertEqual(r.balance_of(SOL_TOKEN, "solana", SOL_PAYER), 150)
+
+    def test_unreadable_none(self):
+        r = BalanceReader(eth_call=lambda to, data: "0x")
+        self.assertIsNone(r.balance_of(EVM_TOKEN, "base", EVM_PAYER))
+
+
 class TestDispatch(unittest.TestCase):
     def test_evm_token_uses_evm_path(self):
         calls = {"evm": 0, "sol": 0}

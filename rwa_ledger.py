@@ -23,7 +23,7 @@ from collections import Counter
 
 
 def build_rwa_event(clean, verdict, asset_record=None, rwa_signal=None, peg=None,
-                    now=None, receipt_id=None):
+                    now=None, receipt_id=None, pre_balance=None):
     """PURE: assemble one BUY accumulation event from a forecast's decision context.
     `now` (unix seconds) is passed in -- the builder does no I/O and no clock read.
     `receipt_id` is the join key an OUTCOME event links back to."""
@@ -51,6 +51,9 @@ def build_rwa_event(clean, verdict, asset_record=None, rwa_signal=None, peg=None
         "peg_ratio": pg.get("divergence_ratio"),
         "underlying_price": pg.get("underlying_price"),
         "paid_unit_price": pg.get("paid_unit_price"),
+        # pre-buy token balance snapshot (int atomic units) for the DEFINITIVE settlement
+        # delta at T+N; None when no balance reader was wired at decision time.
+        "pre_balance": pre_balance if isinstance(pre_balance, int) else None,
     }
 
 
@@ -75,6 +78,9 @@ def build_outcome_event(buy_event, outcome, now=None):
         "mark_ratio": oc.get("mark_ratio"),
         "underwater": oc.get("underwater"),
         "holds_balance": oc.get("holds_balance"),
+        # DEFINITIVE settlement: post-buy balance > pre-buy snapshot (the security
+        # actually arrived). None when no pre_balance snapshot / unreadable at T+N.
+        "settled": oc.get("settled"),
     }
 
 
@@ -205,15 +211,26 @@ def _match_token(a, b):
     return a == b
 
 
+def _settlement_label(e):
+    """Best available settlement signal for one outcome: prefer the DEFINITIVE
+    `settled` (before/after balance delta) over the `holds_balance` heuristic."""
+    if isinstance(e.get("settled"), bool):
+        return e["settled"]
+    if isinstance(e.get("holds_balance"), bool):
+        return e["holds_balance"]
+    return None
+
+
 def _outcome_metrics(outcomes):
     """Derive the LABELED metrics from a set of captured outcome events. None values
     when a dimension has no samples (never fabricate a rate from zero evidence)."""
-    settled = [e["holds_balance"] for e in outcomes if isinstance(e.get("holds_balance"), bool)]
+    settle = [s for s in (_settlement_label(e) for e in outcomes) if s is not None]
     under = [e["underwater"] for e in outcomes if isinstance(e.get("underwater"), bool)]
     marks = [e["mark_ratio"] for e in outcomes if isinstance(e.get("mark_ratio"), (int, float))]
     return {
         "outcomes": len(outcomes),
-        "settlement_success_rate": (sum(settled) / len(settled)) if settled else None,
+        "settlement_success_rate": (sum(settle) / len(settle)) if settle else None,
+        "definitive_settlements": sum(1 for e in outcomes if isinstance(e.get("settled"), bool)),
         "underwater_rate": (sum(under) / len(under)) if under else None,
         "avg_mark_ratio": (sum(marks) / len(marks)) if marks else None,
     }

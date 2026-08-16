@@ -982,7 +982,8 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              hold_above=None, peer_index=None, seller_registry=None, now=None,
              graph_source=None, velocity_source=None, category_index=None,
              divergence_index=None, enrichment_source=None, verify_signer=True,
-             rwa_source=None, stock_registry=None, pyth_source=None, rwa_ledger=None):
+             rwa_source=None, stock_registry=None, pyth_source=None, rwa_ledger=None,
+             balance_reader=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
@@ -1150,7 +1151,18 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     # never raises. FAIL OPEN at the consumer and CONSERVATIVE-ONLY: it can escalate
     # GO->HOLD on a blocked transfer but never upgrades, and never reaches STOP.
     # RWA-buy signals shared across the readiness / discovery / peg / ledger folds.
-    rwa_signal = asset_record = peg = None
+    rwa_signal = asset_record = peg = pre_balance = None
+    # DEFINITIVE settlement: snapshot the payer's PRE-buy token balance now (opt-in,
+    # only when accumulating), so the T+N outcome loop can prove the security arrived
+    # (post > pre). One balanceOf on the RWA hot path when wired; fail-open.
+    if (balance_reader is not None and rwa_ledger is not None
+            and clean.get("acquires") and clean.get("payer")):
+        _acq = clean["acquires"]
+        try:
+            pre_balance = balance_reader.balance_of(_acq.get("token"), _acq.get("chain"),
+                                                    clean.get("payer"))
+        except Exception:
+            pre_balance = None
     if rwa_source is not None and clean.get("acquires"):
         from rwa_readiness import apply_rwa_readiness
         try:
@@ -1211,7 +1223,8 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
             from rwa_ledger import build_rwa_event
             rwa_ledger.record(build_rwa_event(clean, verdict, asset_record,
                                               rwa_signal, peg, now=_now,
-                                              receipt_id=verdict["receipt_id"]))
+                                              receipt_id=verdict["receipt_id"],
+                                              pre_balance=pre_balance))
         except Exception:
             pass
 
@@ -1339,6 +1352,7 @@ class _Handler(BaseHTTPRequestHandler):
     stock_registry = None  # tokenized_stock_registry.TokenizedStockRegistry (discovery), or None
     pyth_source = None  # pyth_price.PythPriceSource (peg/NAV divergence), or None
     rwa_ledger = None  # rwa_ledger.RwaLedger (accumulation corpus), or None
+    balance_reader = None  # rwa_balance.BalanceReader (pre-buy snapshot), or None
     graph_source = None  # payer_reputation.PayerReputationSource (Sybil corroboration)
     velocity_source = None  # settlement_velocity.VelocitySource (stale gate)
     openapi_server_url = None  # public origin for the openapi.json servers[] (or None)
@@ -1590,6 +1604,7 @@ class _Handler(BaseHTTPRequestHandler):
                                  stock_registry=self.stock_registry,
                                  pyth_source=self.pyth_source,
                                  rwa_ledger=self.rwa_ledger,
+                                 balance_reader=self.balance_reader,
                                  verify_signer=_verify_signer)
         if err is not None:
             self._send_json(400, {"error": err})
@@ -1676,7 +1691,7 @@ class BlackwallServer:
                  graph_source=None, velocity_source=None, verdict_anchor=None,
                  category_index=None, divergence_index=None, rate_limiter=None,
                  enrichment_source=None, rwa_source=None, stock_registry=None,
-                 pyth_source=None, rwa_ledger=None):
+                 pyth_source=None, rwa_ledger=None, balance_reader=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -1699,6 +1714,7 @@ class BlackwallServer:
         self.stock_registry = stock_registry
         self.pyth_source = pyth_source
         self.rwa_ledger = rwa_ledger
+        self.balance_reader = balance_reader
         self.stats = _Stats()
         self._httpd = None
 
@@ -1721,6 +1737,7 @@ class BlackwallServer:
                         "stock_registry": self.stock_registry,
                         "pyth_source": self.pyth_source,
                         "rwa_ledger": self.rwa_ledger,
+                        "balance_reader": self.balance_reader,
                         "stats": self.stats,
                         "openapi_server_url": self.openapi_server_url})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
@@ -2090,6 +2107,20 @@ def main(argv=None):
                          "per-issuer history)\n" % _rwa_led_path)
         sys.stdout.flush()
 
+    # DEFINITIVE settlement snapshot: when the corpus is on AND an RPC is configured,
+    # snapshot the payer's pre-buy token balance so the outcome loop can prove arrival
+    # (post > pre). One balanceOf on the RWA hot path; opt-in via the same RPC vars.
+    balance_reader = None
+    if rwa_ledger is not None:
+        _bal_evm = os.environ.get("BLACKWALL_RWA_RPC_URL", "")
+        _bal_sol = os.environ.get("BLACKWALL_RWA_SOLANA_RPC_URL", "")
+        if _bal_evm or _bal_sol:
+            from rwa_balance import BalanceReader
+            balance_reader = BalanceReader(evm_rpc_url=_bal_evm, solana_rpc_url=_bal_sol)
+            sys.stdout.write("blackwall: definitive settlement snapshot ON (pre-buy "
+                             "balance recorded for the T+N delta)\n")
+            sys.stdout.flush()
+
     # OPT-IN (BLACKWALL_ANCHOR=1): anchor every verdict's digest to Traceipt for a
     # tamper-evident audit trail. Non-blocking + fail-open; costs ~0.002 USDC/verdict
     # and needs a funded SIGNER_PRIVATE_KEY (else it 402s and fails open). OFF by
@@ -2119,6 +2150,7 @@ def main(argv=None):
                              stock_registry=stock_registry,
                              pyth_source=pyth_source,
                              rwa_ledger=rwa_ledger,
+                             balance_reader=balance_reader,
                              openapi_server_url=origin)
     try:
         server.serve_forever()

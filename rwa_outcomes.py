@@ -34,12 +34,15 @@ def _fnum(x):
         return None
 
 
-def assess_outcome(buy_event, underlying_now, holds_balance=None):
-    """PURE: label a buy from the underlying's price NOW (+ optional balance-held).
+def assess_outcome(buy_event, underlying_now, holds_balance=None, settled=None):
+    """PURE: label a buy from the underlying's price NOW (+ optional settlement labels).
 
-    Returns {underlying_now, underlying_move, mark_ratio, underwater, holds_balance}.
+    Returns {underlying_now, underlying_move, mark_ratio, underwater, holds_balance,
+    settled}.
       * underlying_move = underlying_now / underlying_at_decision (did the stock move?)
       * mark_ratio      = underlying_now / price_paid (position mark; <1 = underwater)
+      * holds_balance   = payer holds a positive balance now (HEURISTIC)
+      * settled         = post-buy balance > pre-buy snapshot (DEFINITIVE arrival)
     Any dimension with missing inputs is None (never fabricated). NEVER raises."""
     be = buy_event if isinstance(buy_event, dict) else {}
     u1 = _fnum(underlying_now)
@@ -53,6 +56,7 @@ def assess_outcome(buy_event, underlying_now, holds_balance=None):
         "mark_ratio": mark,
         "underwater": (mark < 1.0) if mark is not None else None,
         "holds_balance": holds_balance if isinstance(holds_balance, bool) else None,
+        "settled": settled if isinstance(settled, bool) else None,
     }
 
 
@@ -74,14 +78,23 @@ class OutcomeChecker:
                 underlying_now = self.pyth_source.price(sym)
             except Exception:
                 underlying_now = None
-        holds = None
+        # One balance read at T+N yields BOTH labels: holds_balance (heuristic, post>0)
+        # and -- when the buy captured a pre_balance snapshot -- the DEFINITIVE settled
+        # (post > pre = the security actually arrived after the buy).
+        holds = settled = None
         if self.balance_reader is not None and be.get("payer"):
+            post = None
             try:
-                holds = self.balance_reader(be.get("token"), be.get("chain"),
-                                            be.get("payer"))
+                post = self.balance_reader.balance_of(be.get("token"), be.get("chain"),
+                                                      be.get("payer"))
             except Exception:
-                holds = None
-        return assess_outcome(be, underlying_now, holds_balance=holds)
+                post = None
+            if isinstance(post, int):
+                holds = post > 0
+                pre = be.get("pre_balance")
+                if isinstance(pre, int):
+                    settled = post > pre
+        return assess_outcome(be, underlying_now, holds_balance=holds, settled=settled)
 
 
 def capture_outcomes(ledger, checker, horizon_seconds, now, max_events=None):

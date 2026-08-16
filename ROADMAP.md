@@ -93,11 +93,25 @@ rollup). **Deferred halves:**
 - **Graduate `issuer_trust` to a GATE** — it's descriptive today; once labeled outcomes
   accrue and the grade is calibration-locked (like the sybil_ring graduation), fold it as
   a conservative verdict input (earned floor, like `seller_audit`; HOLD-only, never STOP).
-- ~~**On-chain settlement-held reader**~~ — **BUILT** (`rwa_balance.py`: keyless
-  `balanceOf`(EVM) / `getTokenAccountsByOwner`(Solana), wired into the outcome CLI via
-  `--evm-rpc`/`--solana-rpc`). Attribution caveat stands: a pre-existing balance isn't
-  proof THIS buy settled -- a before/after snapshot or the settlement tx is the real fix
-  (the deferred next step for a definitive `settled` label).
+  - **TRIGGER (self-signaling, checkable):** `rwa_report.py`'s `issuer_directory` IS the
+    readiness signal. Run it on the live corpus; when several issuers have graduated OUT
+    of `trust: "insufficient"` (i.e. `>= ISSUER_TRUST_MIN_OUTCOMES` LABELED outcomes each,
+    from `capture_outcomes` cron runs), there's enough data to calibrate. Until then the
+    directory shows "insufficient" across the board — that's the honest "not yet" light.
+  - **Calibration when triggered:** mirror `calibration_lock.py` / the sybil_ring
+    graduation — pin the grade→floor mapping against the accrued corpus, add a
+    reversibility lock (`ISSUER_TRUST_GATES=False` default), fold HOLD-only via
+    `decide_payment` (like `verified_floor`), and prove the false-flag rate on known-good
+    issuers (Backed/Ondo) is ~0 before flipping the lock on.
+- ~~**On-chain settlement-held reader**~~ — **BUILT** (`rwa_balance.py`).
+- ~~**Definitive `settled` label**~~ — **BUILT**: `forecast` snapshots the payer's pre-buy
+  balance (opt-in, via `balance_reader.balance_of`, one `balanceOf` on the RWA hot path);
+  the outcome loop reads the post-buy balance and records `settled = post > pre` (the
+  security actually ARRIVED), preferred over the `holds_balance` heuristic in every rollup.
+  - **Residual caveat (true `settled` still imperfect):** the delta can false-NEGATIVE if
+    the agent received then moved the token before T+N, and is ambiguous if other buys of
+    the same token landed in the window. The tx-hash of the settlement (or a tighter
+    before/after around the exact tx) is the only fully-sound attribution -- deferred.
 - **Token-price (not just underlying) history** — mark-to-market uses the underlying's
   move; also sampling the TOKEN's on-chain price would measure true peg tracking (did the
   wrapper hold its peg to the stock), not just the stock's move.

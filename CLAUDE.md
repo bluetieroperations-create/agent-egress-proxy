@@ -246,12 +246,13 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   yet labeled, get an outcome event joined by receipt_id. Idempotent, fail-open; CLI
   `python rwa_outcomes.py rwa.jsonl --horizon-hours 24 [--evm-rpc URL] [--solana-rpc URL]`
   for a cron),
-  `rwa_balance.py` (keyless "did the security arrive?" reader for the outcome loop's
-  SETTLEMENT-HELD label -- `BalanceReader(...)` is callable(token, chain, payer) dispatching
-  EVM `balanceOf` / Solana `getTokenAccountsByOwner` by token format -> True/False/None
-  (None = unreadable, never a false False). Injected transports; fail-open. HEURISTIC: a
-  positive balance doesn't PROVE this buy settled (pre-existing holdings) -- a before/after
-  snapshot or the tx hash is the real attribution),
+  `rwa_balance.py` (keyless "did the security arrive?" reader for the outcome loop --
+  `BalanceReader` dispatches EVM `balanceOf` / Solana `getTokenAccountsByOwner` by token
+  format. `__call__` -> bool holds-heuristic; `balance_of` -> raw int for the DEFINITIVE
+  before/after delta: `forecast` snapshots `pre_balance` at the buy (opt-in), the outcome
+  loop records `settled = post > pre` (actual arrival), preferred over the heuristic.
+  Injected transports; fail-open. Residual attribution caveat: received-then-moved
+  false-negatives + same-token cross-buy ambiguity -- the settlement tx hash is the real fix),
   `rwa_report.py` (turn the accumulation corpus into operator INTELLIGENCE -- the payoff
   that makes the moat legible: totals + verdict mix + restriction-posture map, an ISSUER
   DIRECTORY ranked by earned `issuer_trust` grade (+ settlement/underwater rates), and
