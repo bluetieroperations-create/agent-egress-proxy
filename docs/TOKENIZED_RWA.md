@@ -116,8 +116,32 @@ BLACKWALL_RWA_READINESS=1 BLACKWALL_RWA_RPC_URL=https://mainnet.base.org \
 Only fires when a request carries `acquires`; adds a few `eth_call` view reads per
 such verdict. With no RPC url it degrades to `unknown` (fail-open).
 
+## Audit findings (fixed)
+
+An adversarial pass on the first cut found two real issues, both fixed with regression
+tests:
+
+- **Non-canonical bool → false block (medium).** `decode_bool` originally treated any
+  nonzero word as `True`, so a token whose `paused()`/`isFrozen()` returned a non-bool
+  word (e.g. a uint timestamp) could manufacture a false `blocked` (GO→HOLD). Now
+  **strict**: only the canonical ABI words `0`/`1` decode to a bool; anything else →
+  `None` (unknown, fail-open). It can never fabricate a rejection.
+- **RPC amplification (low-med).** The probe issued 4 sequential `eth_call`s *even for a
+  plain ERC-20*. It now **short-circuits**: it detects a permissioned standard by its
+  receiver gate first (≤2 calls) and only probes `isFrozen`/`paused` once the token is
+  confirmed permissioned. A plain token is a **2-call no-op**; "unknown = not a
+  recognized permissioned token" is now exact.
+
 ## Limitations (audited & accepted)
 
+- **Live-path amplification / latency.** A confirmed permissioned-token verdict issues
+  up to **4 sequential `eth_call`s** (plain tokens: 2), each bounded by `timeout`. On a
+  public deploy this is upstream-RPC amplification per request carrying `acquires` —
+  mitigated by the opt-in default and the server rate-limiter (`BLACKWALL_RATE_LIMIT`),
+  same posture as the Blockscout enrichment. Put a rate-limiter/gateway in front.
+- **Malformed `acquires.token` is a silent no-op.** `validate_request` requires only a
+  non-empty string; a symbol (`"AAPLx"`) or a typo'd address is not a contract address,
+  so the source returns `unknown` (no signal) rather than erroring — fail-open by design.
 - **Receiver-only probe.** We read gates that need just the receiving wallet
   (`isVerified`/`isWhitelisted`/`isFrozen`/`paused`). Full ERC-1400 `canTransfer`
   (needs from/value/data) is out of the live spike; the *pure* assessor consumes a

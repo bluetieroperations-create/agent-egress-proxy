@@ -198,17 +198,24 @@ def eth_call_data(signature, args=()):
 
 def decode_bool(result):
     """Decode a 32-byte ABI bool return -> True/False, or None when the result is
-    empty/undecodable. CRUCIAL: an empty '0x' (method absent / reverted) decodes to
-    None (unknown), NEVER False -- absence of a restriction is not a rejection."""
+    empty/undecodable/non-canonical.
+
+    CRUCIAL (fail-open): an empty '0x' (method absent / reverted) decodes to None
+    (unknown), NEVER False -- absence of a restriction is not a rejection. STRICT:
+    only the canonical ABI bool words (0 -> False, 1 -> True) decode to a bool; any
+    OTHER value (a token whose `paused()`/`isFrozen()` returns a non-bool word, e.g.
+    a uint timestamp) decodes to None, NOT True -- so a quirky return can never
+    manufacture a false 'blocked'."""
     if not isinstance(result, str):
         return None
     s = result[2:] if result.lower().startswith("0x") else result
     if len(s) < 64:                      # need a full word; "0x" / "" -> unknown
         return None
     try:
-        return int(s[:64], 16) != 0
+        val = int(s[:64], 16)
     except ValueError:
         return None
+    return False if val == 0 else True if val == 1 else None
 
 
 def decode_address(result):
@@ -281,16 +288,14 @@ class RwaReadinessSource:
     def _probe(self, token, payer):
         probe = {"standard": None, "receiver_verified": None, "receiver_frozen": None,
                  "paused": None, "can_receive": None, "reason_code": None}
-        reached = False
 
-        paused = self._call_bool(token, "paused()")
-        if paused is not None:
-            reached = True
-            probe["paused"] = paused
-
+        # 1) Detect a recognized PERMISSIONED standard by its RECEIVER gate FIRST. If
+        #    neither is present the token is a plain (unrestricted) ERC-20 -> return
+        #    None ("unknown") after at most 2 view calls, WITHOUT probing paused/frozen.
+        #    This makes "unknown = not a recognized permissioned token" exact, and
+        #    caps a plain-token verdict's RPC amplification (was 4 eth_calls, now 2).
         registry = self._call_address(token, "identityRegistry()")
         if registry is not None:
-            reached = True
             probe["standard"] = "erc3643"
             v = self._call_bool(registry, "isVerified(address)", payer)
             if v is not None:
@@ -299,16 +304,22 @@ class RwaReadinessSource:
             # Allowlist-style ERC-20 fallback (isWhitelisted on the token itself).
             w = self._call_bool(token, "isWhitelisted(address)", payer)
             if w is not None:
-                reached = True
                 probe["standard"] = "allowlist"
                 probe["receiver_verified"] = w
 
+        if probe["standard"] is None:
+            return None                       # plain ERC-20 -> unknown no-op
+
+        # 2) Only for a confirmed permissioned token: check the freeze + pause gates
+        #    (they only reject an otherwise-eligible transfer; irrelevant on a plain token).
         frozen = self._call_bool(token, "isFrozen(address)", payer)
         if frozen is not None:
-            reached = True
             probe["receiver_frozen"] = frozen
+        paused = self._call_bool(token, "paused()")
+        if paused is not None:
+            probe["paused"] = paused
 
-        return probe if reached else None
+        return probe
 
     # -- call primitives (fail-open) --
     def _call_bool(self, to, signature, addr_arg=None):

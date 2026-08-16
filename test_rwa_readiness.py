@@ -177,6 +177,16 @@ class TestAbiHelpers(unittest.TestCase):
         self.assertIsNone(decode_bool(""))
         self.assertIsNone(decode_bool(None))
 
+    def test_decode_bool_strict_rejects_noncanonical(self):
+        # AUDIT REGRESSION (finding A): a non-canonical bool word (e.g. a token whose
+        # paused()/isFrozen() returns a uint timestamp, not 0/1) must decode to None
+        # (unknown), NEVER True -- else a quirky return manufactures a false 'blocked'.
+        # MUTATION: `int(word) != 0` (old, loose) would return True here.
+        self.assertIsNone(decode_bool("0x" + format(1723000000, "064x")))
+        self.assertIsNone(decode_bool("0x" + "ff" * 32))
+        self.assertIs(decode_bool("0x" + "00" * 31 + "01"), True)   # canonical still ok
+        self.assertIs(decode_bool("0x" + "00" * 32), False)
+
     def test_decode_address_and_zero(self):
         self.assertEqual(decode_address(_word_addr(REGISTRY)), REGISTRY)
         # zero address -> None (unset registry pointer), not "0x000...0".
@@ -268,6 +278,29 @@ class TestLiveSource(unittest.TestCase):
         # None (no-op), NOT a false "blocked". FakeChain returns '0x' for all.
         src = RwaReadinessSource(transport=FakeChain({}))
         self.assertIsNone(src.check({"token": TOKEN}, VERIFIED))
+
+    def test_plain_token_short_circuits_without_probing_pause_freeze(self):
+        # AUDIT REGRESSION (finding B): a plain token (no permissioned interface) must
+        # NOT keep calling paused()/isFrozen() -- it short-circuits after detecting no
+        # standard, capping RPC amplification. MUTATION: probing paused/frozen before
+        # the standard check would (a) cost extra calls and (b) let a paused-ONLY token
+        # false-block. Assert both: <=2 calls AND never queries paused/isFrozen.
+        calls = []
+
+        def spy(to, data):
+            calls.append(data[:10])
+            return "0x"
+        self.assertIsNone(RwaReadinessSource(transport=spy).check({"token": TOKEN}, VERIFIED))
+        self.assertLessEqual(len(calls), 2)
+        self.assertNotIn(selector("paused()"), calls)
+        self.assertNotIn(selector("isFrozen(address)"), calls)
+
+    def test_paused_only_token_is_not_false_blocked(self):
+        # AUDIT REGRESSION (findings A+B combined): a token that is PAUSED but exposes
+        # no permissioned receiver gate is not a recognized permissioned security --
+        # it must be unknown (no-op), never a false 'blocked'.
+        chain = FakeChain({(TOKEN, "paused()"): WORD_TRUE})
+        self.assertIsNone(RwaReadinessSource(transport=chain).check({"token": TOKEN}, VERIFIED))
 
     def test_bad_token_address_is_none(self):
         src = RwaReadinessSource(transport=FakeChain({}))
