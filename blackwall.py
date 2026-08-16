@@ -1152,7 +1152,8 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     if rwa_source is not None and clean.get("acquires"):
         from rwa_readiness import apply_rwa_readiness
         try:
-            rwa_signal = rwa_source.check(clean["acquires"], clean.get("payer"))
+            rwa_signal = rwa_source.check(clean["acquires"], clean.get("payer"),
+                                          counterparty=clean.get("counterparty"))
         except Exception:
             rwa_signal = None
         verdict = apply_rwa_readiness(verdict, rwa_signal)

@@ -32,8 +32,14 @@ This module answers it pre-trade, mirroring readiness.py's design exactly:
     no-op. Same monotonic-toward-caution contract as apply_readiness.
   * `RwaReadinessSource` -- the live half. Given the acquired token + the receiving
     wallet (the request `payer`), eth_call the token's restriction interface and
-    return the grade. FAIL-OPEN (any error -> unknown), OPT-IN (network on the hot
-    path), transport injected for tests.
+    return the grade. Normalizes across the deployed permissioned-token standards:
+      - ERC-3643 / T-REX -- `identityRegistry().isVerified(to)` (+ `isFrozen`/`paused`)
+      - Securitize DS Protocol -- `preTransferCheck(from,to,value)` -> (code, reason)
+      - ERC-1404 -- `detectTransferRestriction(from,to,value)` -> uint8 code
+      - allowlist ERC-20 -- `isWhitelisted(to)` (+ `isFrozen`/`paused`)
+    Multi-standard normalization (not the raw read, which is public) is the moat.
+    FAIL-OPEN (any error -> unknown), OPT-IN (network on the hot path), transport
+    injected for tests.
 
 Two design rules, inherited from readiness.py + blockscout.py:
 
@@ -232,6 +238,69 @@ def decode_address(result):
     return addr
 
 
+def decode_uint(result):
+    """Decode a 32-byte ABI uint return -> int, or None when empty/undecodable.
+    Used for the ERC-1404 `detectTransferRestriction` RESTRICTION CODE (0 = no
+    restriction; any other value = a coded reason the transfer would be rejected)."""
+    if not isinstance(result, str):
+        return None
+    s = result[2:] if result.lower().startswith("0x") else result
+    if len(s) < 64:
+        return None
+    try:
+        return int(s[:64], 16)
+    except ValueError:
+        return None
+
+
+def decode_code_and_reason(result):
+    """Decode a `(uint256 code, string reason)` ABI return -> (code:int|None,
+    reason:str|None). This is Securitize DS Protocol's `preTransferCheck` shape:
+    code 0 = transfer allowed; nonzero = rejected, with a human reason string
+    (e.g. "Wallet not in registry"). The reason is BEST-EFFORT -- a failure to
+    decode the dynamic string leaves it None but keeps the (authoritative) code.
+    NEVER raises."""
+    if not isinstance(result, str):
+        return (None, None)
+    s = result[2:] if result.lower().startswith("0x") else result
+    if len(s) < 64:
+        return (None, None)
+    try:
+        code = int(s[:64], 16)
+    except ValueError:
+        return (None, None)
+    reason = None
+    try:
+        # word[1] = byte offset (from the start of the return data) to the string.
+        off = int(s[64:128], 16) * 2                 # bytes -> hex-nibble index
+        slen = int(s[off:off + 64], 16) * 2          # string length in nibbles
+        raw = s[off + 64:off + 64 + slen]
+        if len(raw) == slen:
+            reason = bytes.fromhex(raw).decode("utf-8", "replace") or None
+    except (ValueError, IndexError):
+        reason = None
+    return (code, reason)
+
+
+def decode_string(result):
+    """Decode a plain `string` ABI return -> str, or None. This is ERC-1404's
+    `messageForTransferRestriction(uint8)` shape (offset, length, bytes). NEVER raises."""
+    if not isinstance(result, str):
+        return None
+    s = result[2:] if result.lower().startswith("0x") else result
+    if len(s) < 64:
+        return None
+    try:
+        off = int(s[:64], 16) * 2                     # bytes -> hex-nibble index
+        slen = int(s[off:off + 64], 16) * 2
+        raw = s[off + 64:off + 64 + slen]
+        if len(raw) == slen:
+            return bytes.fromhex(raw).decode("utf-8", "replace") or None
+    except (ValueError, IndexError):
+        return None
+    return None
+
+
 # ===========================================================================
 # Live source -- probe the token's restriction interface (OPT-IN, FAIL-OPEN)
 # ===========================================================================
@@ -257,11 +326,13 @@ class RwaReadinessSource:
         self._transport = transport
         self.standard_hint = (standard_hint or "").strip().lower() or None
 
-    def check(self, acquires, payer):
+    def check(self, acquires, payer, counterparty=None):
         """Return an RWA readiness signal for acquiring `acquires`, or None (no-op).
 
-        `acquires` = {token, chain?, standard?, amount?}; `payer` = the wallet that
-        will RECEIVE the security (the request's `payer`)."""
+        `acquires` = {token, chain?, standard?, amount?, seller?}; `payer` = the wallet
+        that will RECEIVE the security (the request's `payer`). `counterparty` = the
+        USDC recipient, used as a BEST-EFFORT token sender for the from-requiring
+        standards (ERC-1404 / Securitize) when `acquires.seller` is absent."""
         if not isinstance(acquires, dict):
             return None
         token = acquires.get("token")
@@ -280,46 +351,84 @@ class RwaReadinessSource:
                                     % hint]}
             return None
 
-        probe = self._probe(token, payer)
+        # Best-effort token sender for from-requiring standards: an explicit
+        # `acquires.seller` wins; else the USDC counterparty (in a direct issuer sale
+        # the payee IS the token sender). None -> those standards are skipped.
+        seller = acquires.get("seller")
+        sender = seller if is_evm_address(seller) else (
+            counterparty if is_evm_address(counterparty) else None)
+
+        probe = self._probe(token, payer, sender)
         if probe is None:
             return None                       # nothing resolved -> unknown no-op
         return assess_transfer_readiness(probe)
 
-    def _probe(self, token, payer):
+    def _probe(self, token, payer, sender=None):
         probe = {"standard": None, "receiver_verified": None, "receiver_frozen": None,
                  "paused": None, "can_receive": None, "reason_code": None}
 
-        # 1) Detect a recognized PERMISSIONED standard by its RECEIVER gate FIRST. If
-        #    neither is present the token is a plain (unrestricted) ERC-20 -> return
-        #    None ("unknown") after at most 2 view calls, WITHOUT probing paused/frozen.
-        #    This makes "unknown = not a recognized permissioned token" exact, and
-        #    caps a plain-token verdict's RPC amplification (was 4 eth_calls, now 2).
+        # 1) Detect a recognized PERMISSIONED standard, SHORT-CIRCUITING on the first
+        #    hit. If none matches the token is a plain (unrestricted) ERC-20 -> return
+        #    None ("unknown"). Receiver-only standards (ERC-3643 / allowlist) always
+        #    run; the from-requiring ones (Securitize / ERC-1404) run only when we have
+        #    a `sender`. Order is cheapest-authoritative-first.
+        #
+        #  a) ERC-3643 / T-REX -- identity registry (receiver-only).
         registry = self._call_address(token, "identityRegistry()")
         if registry is not None:
             probe["standard"] = "erc3643"
             v = self._call_bool(registry, "isVerified(address)", payer)
             if v is not None:
                 probe["receiver_verified"] = v
-        else:
-            # Allowlist-style ERC-20 fallback (isWhitelisted on the token itself).
-            w = self._call_bool(token, "isWhitelisted(address)", payer)
-            if w is not None:
-                probe["standard"] = "allowlist"
-                probe["receiver_verified"] = w
+            self._add_freeze_pause(probe, token, payer)
+            return probe
 
-        if probe["standard"] is None:
-            return None                       # plain ERC-20 -> unknown no-op
+        #  b) Securitize DS Protocol -- preTransferCheck(from,to,value) -> (code,reason).
+        #     Gas-free and publicly callable; a single comprehensive verdict.
+        if sender is not None:
+            res = self._eth_call(token, eth_call_data(
+                "preTransferCheck(address,address,uint256)", (sender, payer, 0)))
+            code, reason = decode_code_and_reason(res)
+            if code is not None:
+                probe["standard"] = "securitize"
+                probe["can_receive"] = (code == 0)
+                if code != 0:
+                    probe["reason_code"] = reason or str(code)
+                return probe
 
-        # 2) Only for a confirmed permissioned token: check the freeze + pause gates
-        #    (they only reject an otherwise-eligible transfer; irrelevant on a plain token).
+        #  c) ERC-1404 -- detectTransferRestriction(from,to,value) -> uint8 code.
+        if sender is not None:
+            code = decode_uint(self._eth_call(token, eth_call_data(
+                "detectTransferRestriction(address,address,uint256)", (sender, payer, 0))))
+            if code is not None:
+                probe["standard"] = "erc1404"
+                probe["can_receive"] = (code == 0)
+                if code != 0:
+                    msg = decode_string(self._eth_call(token, eth_call_data(
+                        "messageForTransferRestriction(uint8)", (code,))))
+                    probe["reason_code"] = msg or ("code %d" % code)
+                return probe
+
+        #  d) Allowlist-style ERC-20 (isWhitelisted on the token itself; receiver-only).
+        w = self._call_bool(token, "isWhitelisted(address)", payer)
+        if w is not None:
+            probe["standard"] = "allowlist"
+            probe["receiver_verified"] = w
+            self._add_freeze_pause(probe, token, payer)
+            return probe
+
+        return None                           # plain ERC-20 -> unknown no-op
+
+    def _add_freeze_pause(self, probe, token, payer):
+        """Freeze + pause gates -- meaningful only for the field-based standards
+        (ERC-3643 / allowlist); the code-based standards already fold these into
+        their single restriction verdict."""
         frozen = self._call_bool(token, "isFrozen(address)", payer)
         if frozen is not None:
             probe["receiver_frozen"] = frozen
         paused = self._call_bool(token, "paused()")
         if paused is not None:
             probe["paused"] = paused
-
-        return probe
 
     # -- call primitives (fail-open) --
     def _call_bool(self, to, signature, addr_arg=None):

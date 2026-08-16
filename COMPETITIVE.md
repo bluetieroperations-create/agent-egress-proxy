@@ -214,6 +214,85 @@ Tags: `x402` `payments` `counterparty-risk` `price-anomaly` `sanctions`
 > (the `coinbase/awesome-x402` URL in older notes may be stale — verify before
 > submitting).
 
+## Tokenized-RWA transfer-restriction readiness (the `rwa_readiness.py` wedge)
+
+**Snapshot: 2026-08-16, web-researched + source-cited.** A distinct capability from the
+x402 payment-verdict map above: a **pre-trade, buyer/agent-side check that predicts
+whether the SECURITY leg of an RWA purchase will REVERT** (receiver not KYC'd/whitelisted,
+frozen, or token paused) before the agent signs the stablecoin payment. "Will I pay USDC
+and receive nothing?" See `docs/TOKENIZED_RWA.md`.
+
+**Verdict: the exact cell is empty.** No one productizes a buyer-side, agent-facing,
+RWA-restriction-*aware* pre-payment settlement-readiness verdict. The adjacent categories
+are NOT this:
+
+| Category | Players | What they do | Why it's not us |
+|---|---|---|---|
+| **(a) Issuer-side enforcement** | Tokeny/ERC-3643, **Securitize (DS Protocol)**, Chainlink ACE+CCID, Dinari, Predicate, Swarm | Own the on-token compliance module that *reverts* a non-compliant transfer | Issuer-authored, on-chain-enforced. Never hand the **buyer** a pre-payment "you'll receive nothing" warning |
+| **(b) Generic tx simulation** | Tenderly, Blockaid, Blowfish, Alchemy `simulateAssetChanges`, Pocket Universe | Predict *any* tx revert | **RWA-restriction-blind** — a compliance revert is an undifferentiated "tx will fail"; no "receiver not KYC'd/frozen/paused" label; **no notion of the paired USDC-out leg** |
+| **(c) OUR CELL** | — | Buyer/agent-side, pre-*payment*, restriction-*aware* verdict tied to the stablecoin leg, folded into the pre-signature guard | **Nobody occupies it** |
+
+**The pre-trade READ primitives exist and are public across every standard** — that's why
+the moat is thin, not why it's occupied: ERC-3643 `isVerified`/`canTransfer`, Securitize
+`preTransferCheck` (gas-free, **buyer-callable by design**, returns a reason string), ERC-1404
+`detectTransferRestriction`/`messageForTransferRestriction` (restriction code + message),
+ERC-1400 `canTransfer`. Any issuer (esp. Securitize) or simulator (Blockaid/Tenderly) could
+add an "RWA-restriction-aware" label with modest effort.
+
+**So the differentiation is NOT the read.** It is: **(i)** normalizing across heterogeneous
+standards (ERC-3643 / ERC-1404 / Securitize-DS / allowlist+frozen+paused — `rwa_readiness.py`
+covers all four), **(ii)** the **buyer/agent framing tied to the paired USDC-out leg** (the
+pay-and-receive-nothing harm no simulator models), and **(iii)** **folding it into the
+pre-signature payment verdict** in the x402/agent-guard path — the integration nobody else
+has wired. This is a **land-grab-and-integrate** play (be in the agent's decision path first),
+not a defensible-primitive play.
+
+**Demand is live and unguarded** (the reason the cell matters): Ondo × Virtuals × Treasures
+opened **430+ tokenized stocks to ~40,000 AI agents** (Jun 2026); Yield.xyz's AgentKit put
+3,300+ onchain yields (incl. tokenized treasuries) behind x402 — both with **no eligibility
+preflight in the loop**. Agents are already pointed at hard-gated securities with nothing
+checking settlement.
+
+**Value concentrates on HARD-gated assets** — Dinari-style embedded KYC, ERC-3643/T-REX
+permissioned securities, frozen/paused states. The "freely transferable, KYC-at-mint-only"
+models (Ondo, Backed xStocks) have little per-transfer restriction to predict.
+
+### Adjacent standard: ERC-8226 "RAMS" (Regulated Agent Mandate Standard, Brickken)
+
+**Complement, not competitor — and a future consumable, not a threat.** RAMS (Draft ERC,
+filed 2026-04-12; reference impl merged 2026-06-29; active thread + a Sepolia deployment, no
+mainnet adoption yet) is an on-chain **agent-authorization** layer: a signed, time-bounded,
+amount-capped, revocable "mandate" keyed by `(agent, principal)` that a regulated token
+validates atomically via `canExecute(agent, principal, asset, action, amount) → (bool,
+ExecutionReason)`. Crucially, **RAMS explicitly does NOT check KYC/whitelist/transfer-
+restrictions** — it leaves receiver eligibility to the token's own ERC-7943/ERC-3643 hook and
+runs *in parallel*. So it sits strictly **ABOVE** our eligibility axis on a different revert
+cause (authorization: `OVER_TX_CAP`/`AGENT_FROZEN`/`REVOKED`/expired-mandate). It cannot
+replace or block our check; instead its `canExecute` view is a **second pre-transfer
+revert-predicate** we could read exactly like `detectTransferRestriction` to make an
+agent-side readiness check complete. Posture: **watch + be ready to consume** (a thin, opt-in,
+fail-open `RamsReadinessSource` fired only when an asset advertises an `IAgentMandate`
+registry); do NOT hard-integrate yet — real assets exposing a queryable RAMS registry are
+effectively zero today, and Brickken (which also authors the ERC-7943 substrate RAMS rides)
+is a single-vendor champion. Trigger to build: a mainnet token shipping a RAMS hook.
+
+**Strategic risk here is speed, not an incumbent:** the cell is empty in front of live demand,
+but an issuer-side player (Securitize already exposes buyer-callable `preTransferCheck`) or a
+simulator could extend into it once agent-RWA volume makes labeling worth it. The moat is
+coverage + being in the agent's decision path, not the primitive.
+
+### Sources (tokenized-RWA section, accessed 2026-08-16)
+- ERC-3643 `canTransfer`/`isVerified`: https://docs.erc3643.org/erc-3643/smart-contracts-library/compliance-management · https://eips.ethereum.org/EIPS/eip-3643
+- Securitize DS `preTransferCheck` (gas-free, publicly callable): https://medium.com/securitize/understanding-transfer-restrictions-for-digital-securities-4652ef97813f
+- ERC-1404 `detectTransferRestriction`/`messageForTransferRestriction`: https://github.com/ethereum/EIPs/issues/1404
+- ERC-1400 `canTransfer`: https://github.com/SecurityTokenStandard/EIP-Spec
+- Chainlink ACE + CCID (Jun 30 2025): https://blog.chain.link/automated-compliance-engine-technical-overview/
+- Dinari dShares embedded KYC; Ondo/Backed models: https://eco.com/support/en/articles/15254023-tokenized-equities-2026-backed-dinari-robinhood
+- ERC-8226 RAMS: https://eips.ethereum.org/EIPS/eip-8226 · https://ethereum-magicians.org/t/erc-8226-regulated-agent-mandate/28208 · https://github.com/ethereum/ERCs/pull/1844
+- Predicate (Plume): https://plume.org/blog/predicate
+- Generic sim (generic revert, not RWA-labeled): https://docs.tenderly.co/simulations · https://www.blockaid.io/transaction-security
+- Live unguarded agent-RWA demand: Ondo×Virtuals×Treasures (Jun 26 2026) https://finance.yahoo.com/markets/crypto/articles/ai-agents-expand-tokenized-stocks-095650150.html · Yield.xyz AgentKit on x402
+
 ## Method & honesty notes
 
 - **Ontario claims are byte-verified.** The raw `openapi.json` (89KB),

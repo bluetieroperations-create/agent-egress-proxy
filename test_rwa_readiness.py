@@ -21,7 +21,23 @@ import unittest
 import rwa_readiness as rwa
 from rwa_readiness import (RwaReadinessSource, apply_rwa_readiness,
                            assess_transfer_readiness, decode_address, decode_bool,
+                           decode_code_and_reason, decode_string, decode_uint,
                            eth_call_data, is_rwa_descriptor, selector)
+
+
+def _abi_string(text):
+    """Encode a plain ABI `string` return: offset(0x20) + length + padded bytes."""
+    raw = text.encode("utf-8")
+    body = raw.ljust((len(raw) + 31) // 32 * 32, b"\x00")
+    return ("0x" + format(32, "064x") + format(len(raw), "064x") + body.hex())
+
+
+def _abi_code_reason(code, text):
+    """Encode a `(uint256 code, string reason)` return (Securitize preTransferCheck)."""
+    raw = text.encode("utf-8")
+    body = raw.ljust((len(raw) + 31) // 32 * 32, b"\x00")
+    return ("0x" + format(code, "064x") + format(64, "064x")
+            + format(len(raw), "064x") + body.hex())
 
 VERIFIED = "0x1111111111111111111111111111111111111111"
 TOKEN = "0x2222222222222222222222222222222222222222"
@@ -193,6 +209,28 @@ class TestAbiHelpers(unittest.TestCase):
         self.assertIsNone(decode_address(WORD_FALSE))
         self.assertIsNone(decode_address("0x"))
 
+    def test_decode_uint(self):
+        # ERC-1404 restriction code: 0 = allowed, nonzero = coded rejection.
+        self.assertEqual(decode_uint("0x" + format(0, "064x")), 0)
+        self.assertEqual(decode_uint("0x" + format(3, "064x")), 3)
+        self.assertIsNone(decode_uint("0x"))
+        self.assertIsNone(decode_uint(None))
+
+    def test_decode_string(self):
+        # ERC-1404 messageForTransferRestriction plain-string return.
+        self.assertEqual(decode_string(_abi_string("Wallet not whitelisted")),
+                         "Wallet not whitelisted")
+        self.assertIsNone(decode_string("0x"))
+
+    def test_decode_code_and_reason(self):
+        # Securitize preTransferCheck (uint256 code, string reason).
+        self.assertEqual(decode_code_and_reason(_abi_code_reason(0, "")), (0, None))
+        code, reason = decode_code_and_reason(_abi_code_reason(10, "Not in registry"))
+        self.assertEqual(code, 10)
+        self.assertEqual(reason, "Not in registry")
+        # A malformed dynamic tail must keep the (authoritative) code, drop the reason.
+        self.assertEqual(decode_code_and_reason("0x" + format(7, "064x")), (7, None))
+
 
 class FakeChain:
     """Injected eth_call transport: routes (to, selector[, arg]) -> canned result.
@@ -273,11 +311,69 @@ class TestLiveSource(unittest.TestCase):
         self.assertEqual(src.check({"token": TOKEN}, VERIFIED)["grade"], "ready")
         self.assertEqual(src.check({"token": TOKEN}, PAYEE)["grade"], "blocked")
 
+    def test_erc1404_restriction_code_blocks(self):
+        # ERC-1404 detectTransferRestriction -> nonzero code = rejected. Needs a
+        # sender (counterparty), and identityRegistry must be absent so it falls
+        # through to the 1404 branch.
+        chain = FakeChain({
+            (TOKEN, "detectTransferRestriction(address,address,uint256)"):
+                "0x" + format(3, "064x"),
+            (TOKEN, "messageForTransferRestriction(uint8)"):
+                _abi_string("Receiver not whitelisted"),
+        })
+        src = RwaReadinessSource(transport=chain)
+        sig = src.check({"token": TOKEN}, VERIFIED, counterparty=PAYEE)
+        self.assertEqual(sig["grade"], "blocked")
+        self.assertEqual(sig["signals"]["standard"], "erc1404")
+        self.assertTrue(any("Receiver not whitelisted" in r for r in sig["reasons"]))
+
+    def test_erc1404_code_zero_is_ready(self):
+        chain = FakeChain({
+            (TOKEN, "detectTransferRestriction(address,address,uint256)"):
+                "0x" + format(0, "064x"),
+        })
+        sig = RwaReadinessSource(transport=chain).check(
+            {"token": TOKEN}, VERIFIED, counterparty=PAYEE)
+        self.assertEqual(sig["grade"], "ready")
+
+    def test_securitize_pretransfercheck_blocks_with_reason(self):
+        chain = FakeChain({
+            (TOKEN, "preTransferCheck(address,address,uint256)"):
+                _abi_code_reason(10, "Wallet not in registry"),
+        })
+        sig = RwaReadinessSource(transport=chain).check(
+            {"token": TOKEN, "seller": PAYEE}, VERIFIED)
+        self.assertEqual(sig["grade"], "blocked")
+        self.assertEqual(sig["signals"]["standard"], "securitize")
+        self.assertTrue(any("Wallet not in registry" in r for r in sig["reasons"]))
+
+    def test_from_requiring_standards_skipped_without_sender(self):
+        # MUTATION: firing detectTransferRestriction/preTransferCheck without a sender
+        # would either error or guess a bad `from`. With no seller AND no counterparty,
+        # a token that ONLY implements the from-requiring methods -> no-op None.
+        chain = FakeChain({
+            (TOKEN, "detectTransferRestriction(address,address,uint256)"):
+                "0x" + format(3, "064x"),
+        })
+        self.assertIsNone(RwaReadinessSource(transport=chain).check({"token": TOKEN}, VERIFIED))
+
+    def test_erc3643_wins_over_from_requiring(self):
+        # Detection order: an ERC-3643 token is labeled erc3643 (receiver-only),
+        # not probed as securitize/erc1404 even when a sender is present.
+        chain = FakeChain({
+            (TOKEN, "identityRegistry()"): _word_addr(REGISTRY),
+            (REGISTRY, "isVerified(address)"): WORD_TRUE,
+        })
+        sig = RwaReadinessSource(transport=chain).check(
+            {"token": TOKEN}, VERIFIED, counterparty=PAYEE)
+        self.assertEqual(sig["signals"]["standard"], "erc3643")
+        self.assertEqual(sig["grade"], "ready")
+
     def test_plain_erc20_is_noop_none(self):
         # MUTATION: a plain ERC-20 (none of the restriction methods) must return
         # None (no-op), NOT a false "blocked". FakeChain returns '0x' for all.
         src = RwaReadinessSource(transport=FakeChain({}))
-        self.assertIsNone(src.check({"token": TOKEN}, VERIFIED))
+        self.assertIsNone(src.check({"token": TOKEN}, VERIFIED, counterparty=PAYEE))
 
     def test_plain_token_short_circuits_without_probing_pause_freeze(self):
         # AUDIT REGRESSION (finding B): a plain token (no permissioned interface) must
@@ -351,7 +447,7 @@ class TestForecastIntegration(unittest.TestCase):
         self.assertEqual(base["verdict"], "GO")   # baseline is GO without the gate
 
         class BlockedSource:
-            def check(self, acquires, payer):
+            def check(self, acquires, payer, counterparty=None):
                 return assess_transfer_readiness({"receiver_verified": False})
 
         payload = self._known_good_payload(
@@ -366,7 +462,7 @@ class TestForecastIntegration(unittest.TestCase):
         import blackwall
 
         class BoomSource:
-            def check(self, acquires, payer):
+            def check(self, acquires, payer, counterparty=None):
                 raise AssertionError("must not be called without acquires")
 
         out = blackwall.forecast(self._known_good_payload(),
@@ -379,7 +475,7 @@ class TestForecastIntegration(unittest.TestCase):
         import blackwall
 
         class BoomSource:
-            def check(self, acquires, payer):
+            def check(self, acquires, payer, counterparty=None):
                 raise RuntimeError("boom")
 
         payload = self._known_good_payload(payer=PAYEE,

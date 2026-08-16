@@ -43,11 +43,24 @@ Blackwall pre-checks this. The request carries an optional `acquires` descriptor
 Blackwall reads the token's **receiver-side** restriction interface for the receiving
 wallet (`payer`):
 
-| Standard | Read (receiver only) |
-|---|---|
-| ERC-3643 / T-REX | `identityRegistry().isVerified(payer)`, `isFrozen(payer)`, `paused()` |
-| Allowlist ERC-20 | `isWhitelisted(payer)`, `isFrozen(payer)`, `paused()` |
-| ERC-1400 | `canTransfer(...)` result consumed by the pure assessor if supplied (needs from/value — out of the receiver-only live spike) |
+| Standard | Read | Sender needed? |
+|---|---|---|
+| ERC-3643 / T-REX | `identityRegistry().isVerified(payer)`, `isFrozen(payer)`, `paused()` | No (receiver-only) |
+| Allowlist ERC-20 | `isWhitelisted(payer)`, `isFrozen(payer)`, `paused()` | No (receiver-only) |
+| **Securitize DS Protocol** | `preTransferCheck(from, payer, value)` → `(code, reason)` — gas-free, publicly callable; a single comprehensive verdict + human reason string | Yes (best-effort) |
+| **ERC-1404** | `detectTransferRestriction(from, payer, value)` → uint8 code (+ `messageForTransferRestriction`) | Yes (best-effort) |
+| ERC-1400 | `canTransfer(...)` result consumed by the pure assessor if supplied (needs from/value/data — out of the receiver-only live spike) | — |
+
+**Multi-standard normalization — not the raw read — is the moat.** The individual reads
+(`isVerified` / `preTransferCheck` / `detectTransferRestriction`) are public and gas-free;
+anyone can call them. The value is normalizing across the four heterogeneous deployed
+standards into one grade, framing it for the *buyer* against the paired USDC-out leg, and
+folding it into the pre-signature verdict. `_probe` detects the standard by its gate,
+**short-circuiting on the first hit** (detection order: ERC-3643 → Securitize → ERC-1404 →
+allowlist). The from-requiring standards (Securitize / ERC-1404) fire only when a token
+**sender** is available — an explicit `acquires.seller`, else the USDC `counterparty` as a
+best-effort sender (in a direct issuer sale the payee *is* the token sender). Receiver-only
+standards always run.
 
 ### Request
 
@@ -60,10 +73,14 @@ POST /v1/forecast-payment
   "acquires": {                          // NEW, optional
     "token": "0xTokenizedStock...",      // the security's contract
     "standard": "erc3643",               // optional hint
+    "seller": "0xIssuerOrPool...",       // optional: token SENDER for ERC-1404/Securitize
     "chain": "base"
   }
 }
 ```
+
+If `seller` is omitted, the USDC `counterparty` is used as the best-effort token sender
+for the from-requiring standards.
 
 ### Verdict fold
 
@@ -132,10 +149,35 @@ tests:
   confirmed permissioned. A plain token is a **2-call no-op**; "unknown = not a
   recognized permissioned token" is now exact.
 
+## Adjacent: ERC-8226 "RAMS" — the authorization axis (watch, don't integrate yet)
+
+RAMS (Regulated Agent Mandate Standard, Brickken; Draft ERC) is a **complement, not a
+competitor**. It is an on-chain **agent-authorization** layer — a signed, time-bounded,
+amount-capped, revocable mandate keyed by `(agent, principal)`, validated by a token via
+`canExecute(agent, principal, asset, action, amount) → (bool, ExecutionReason)`. It
+**explicitly does not check KYC / whitelist / transfer restrictions** — it leaves receiver
+eligibility to the token's own ERC-7943/ERC-3643 hook and runs *in parallel*. So it sits
+strictly **above** our eligibility axis, on a *different* revert cause (authorization:
+`OVER_TX_CAP` / `AGENT_FROZEN` / `REVOKED` / expired mandate). Its `canExecute` view is a
+**second pre-transfer revert-predicate** we could read exactly like `detectTransferRestriction`
+to make an agent-side readiness check complete.
+
+**Posture:** watch + be ready to consume. A thin, opt-in, fail-open `RamsReadinessSource`
+(fired only when an asset advertises an `IAgentMandate` registry) is the natural extension —
+but not now: real assets exposing a queryable RAMS registry are ~zero today (Draft, one Sepolia
+deployment, single-vendor champion). Trigger to build: a mainnet token ships a RAMS hook.
+
 ## Limitations (audited & accepted)
 
+- **Best-effort sender for from-requiring standards.** Securitize `preTransferCheck` and
+  ERC-1404 `detectTransferRestriction` need a `from`. When `acquires.seller` is absent we
+  use the USDC `counterparty` — correct for a direct issuer sale, but for a **DEX-routed buy**
+  the real token sender is a pool, so a router/pool that isn't itself eligible could yield a
+  false `blocked`. Bounded: HOLD-only (never STOP), advisory, and avoidable by passing
+  `acquires.seller`. Receiver-only standards (ERC-3643 / allowlist) are unaffected.
 - **Live-path amplification / latency.** A confirmed permissioned-token verdict issues
-  up to **4 sequential `eth_call`s** (plain tokens: 2), each bounded by `timeout`. On a
+  up to **4 sequential `eth_call`s** (plain tokens: 2 without a sender, up to 4 with one),
+  each bounded by `timeout`. On a
   public deploy this is upstream-RPC amplification per request carrying `acquires` —
   mitigated by the opt-in default and the server rate-limiter (`BLACKWALL_RATE_LIMIT`),
   same posture as the Blockscout enrichment. Put a rate-limiter/gateway in front.
