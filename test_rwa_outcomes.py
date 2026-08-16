@@ -143,6 +143,17 @@ class TestOutcomeAwareProfiles(unittest.TestCase):
         prof = self.led.issuer_profile("backed")
         self.assertEqual(issuer_trust(prof)["grade"], "insufficient")
 
+    def test_issuer_trust_unlabeled_outcomes_insufficient(self):
+        # AUDIT REGRESSION: outcome EVENTS with no usable label (oracle down at capture)
+        # are NOT evidence -- must grade 'insufficient', never a false 'medium'.
+        for i in range(6):
+            self.led.record(_buy(receipt_id="r%d" % i))
+            self.led.record(build_outcome_event(_buy(receipt_id="r%d" % i),
+                            {"mark_ratio": None, "underwater": None, "holds_balance": None},
+                            now=2000))
+        prof = self.led.issuer_profile("backed")
+        self.assertEqual(issuer_trust(prof)["grade"], "insufficient")
+
     def test_issuer_trust_low_on_bad_outcomes(self):
         for i in range(6):
             self.led.record(_buy(receipt_id="r%d" % i, verdict="STOP"))

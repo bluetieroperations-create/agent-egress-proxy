@@ -114,9 +114,16 @@ def main(argv=None):
     ap.add_argument("--horizon-hours", type=float, default=24.0,
                     help="only label buys older than this (default 24h)")
     ap.add_argument("--max", type=int, default=None, help="cap outcomes per run")
+    ap.add_argument("--evm-rpc", default=None, help="EVM RPC for the settlement-held read")
+    ap.add_argument("--solana-rpc", default=None, help="Solana RPC for settlement-held")
     args = ap.parse_args(argv)
     led = RwaLedger(args.ledger)
-    checker = OutcomeChecker(PythPriceSource())
+    balance_reader = None
+    if args.evm_rpc or args.solana_rpc:
+        from rwa_balance import BalanceReader
+        balance_reader = BalanceReader(evm_rpc_url=args.evm_rpc,
+                                       solana_rpc_url=args.solana_rpc)
+    checker = OutcomeChecker(PythPriceSource(), balance_reader=balance_reader)
     n = capture_outcomes(led, checker, int(args.horizon_hours * 3600),
                          int(time.time()), max_events=args.max)
     print("captured %d outcome(s) from %s" % (n, args.ledger))

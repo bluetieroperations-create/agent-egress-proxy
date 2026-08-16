@@ -241,6 +241,13 @@ def issuer_trust(profile):
                             % (n_out, ISSUER_TRUST_MIN_OUTCOMES)]}
     settle = profile.get("settlement_success_rate")
     under = profile.get("underwater_rate")
+    # Outcome EVENTS can exist yet carry no usable label (e.g. the oracle was down at
+    # capture time), which is NOT evidence. Require at least one real metric -- else the
+    # grade would falsely read "medium" (assessed-neutral) on unlabeled data.
+    if settle is None and under is None:
+        return {"grade": "insufficient",
+                "reasons": ["%d outcome(s) captured but none carry a usable label yet"
+                            % n_out]}
     verdicts = profile.get("verdicts") or {}
     total_v = sum(verdicts.values()) or 1
     stop_share = verdicts.get("STOP", 0) / total_v

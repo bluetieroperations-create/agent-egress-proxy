@@ -82,6 +82,15 @@ class TestRegistry(unittest.TestCase):
     def test_lookup_any_chain(self):
         self.assertIsNotNone(self._reg().lookup(EVM))     # chain omitted -> any
 
+    def test_chainless_lookup_case_insensitive_evm(self):
+        # AUDIT: chainless lookup now uses the O(1) by_addr index; a checksummed request
+        # (EVM is stored lowercased) must still resolve, and Solana stays exact.
+        reg = self._reg()
+        self.assertIsNotNone(reg.lookup(EVM))          # checksummed (mixed-case body)
+        self.assertIsNotNone(reg.lookup(EVM.lower()))  # lowercased
+        self.assertIsNotNone(reg.lookup(SOL))
+        self.assertIsNone(reg.lookup(SOL.lower()))     # base58 is case-significant
+
     def test_by_ticker(self):
         self.assertEqual(self._reg().by_ticker("nvdax")["isin"], "XS123")
 

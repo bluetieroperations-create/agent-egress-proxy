@@ -93,11 +93,11 @@ rollup). **Deferred halves:**
 - **Graduate `issuer_trust` to a GATE** — it's descriptive today; once labeled outcomes
   accrue and the grade is calibration-locked (like the sybil_ring graduation), fold it as
   a conservative verdict input (earned floor, like `seller_audit`; HOLD-only, never STOP).
-- **On-chain settlement-held reader** — `capture_outcomes` takes an injected
-  `balance_reader` for the `holds_balance` label but ships none; add a keyless
-  `balanceOf`(EVM) / token-account-balance(Solana) reader so settlement success is
-  captured, not just mark-to-market. (Attribution caveat: a pre-existing balance isn't
-  proof THIS buy settled -- a before/after snapshot or the settlement tx is the real fix.)
+- ~~**On-chain settlement-held reader**~~ — **BUILT** (`rwa_balance.py`: keyless
+  `balanceOf`(EVM) / `getTokenAccountsByOwner`(Solana), wired into the outcome CLI via
+  `--evm-rpc`/`--solana-rpc`). Attribution caveat stands: a pre-existing balance isn't
+  proof THIS buy settled -- a before/after snapshot or the settlement tx is the real fix
+  (the deferred next step for a definitive `settled` label).
 - **Token-price (not just underlying) history** — mark-to-market uses the underlying's
   move; also sampling the TOKEN's on-chain price would measure true peg tracking (did the
   wrapper hold its peg to the stock), not just the stock's move.

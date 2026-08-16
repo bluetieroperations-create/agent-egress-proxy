@@ -165,6 +165,7 @@ class TokenizedStockRegistry:
 
     def __init__(self):
         self.by_key = {}          # (network, norm_address) -> record
+        self.by_addr = {}         # norm_address -> record (chainless O(1) lookup)
         self.by_symbol = {}       # upper(symbol) -> record (first wins; feeds are canonical)
         self.by_isin = {}         # isin -> record
 
@@ -172,6 +173,7 @@ class TokenizedStockRegistry:
         for rec in records or []:
             for dep in rec.get("deployments") or []:
                 self.by_key[(dep["network"], dep["address"])] = rec
+                self.by_addr[dep["address"]] = rec
             sym = (rec.get("symbol") or "").upper()
             if sym and sym not in self.by_symbol:
                 self.by_symbol[sym] = rec
@@ -188,11 +190,8 @@ class TokenizedStockRegistry:
         if chain is not None:
             net = _norm_network(chain)
             return self.by_key.get((net, normalize_address(address, net)))
-        na_evm = normalize_address(address)
-        for (net, addr), rec in self.by_key.items():
-            if addr == normalize_address(address, net) or addr == na_evm:
-                return rec
-        return None
+        # Chainless: O(1) via the address index (EVM lowercased, base58 exact).
+        return self.by_addr.get(normalize_address(address))
 
     def by_ticker(self, symbol):
         return self.by_symbol.get((symbol or "").upper())
