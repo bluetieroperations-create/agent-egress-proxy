@@ -224,6 +224,18 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `rwa_readiness.CombinedRwaReadinessSource` (EVM+Solana dispatch by token format). ATA
   auto-derivation deferred -- pass `acquires.receiver_token_account` for the per-wallet
   frozen read. See `docs/TOKENIZED_RWA.md`),
+  `pyth_price.py` (PEG/NAV divergence from the FREE keyless Pyth Hermes oracle -- the RWA
+  analogue of the core price-anomaly gate: is the agent paying near the REAL underlying
+  stock price or a big premium (depeg / stale quote / bad route)? Resolves the recognized
+  `underlying_symbol` to a Pyth equity feed, compares to the per-unit price paid
+  (`acquires.unit_price` or amount/quantity); OVERPAY-only, HOLD-only (oracle can be
+  stale, never STOP), fail-open. `apply_peg` folds `signals.peg`; opt-in `BLACKWALL_PYTH`),
+  `rwa_ledger.py` (the ACCUMULATION corpus -- the flip from READING public data to
+  ACCUMULATING a private one. Append-only JSONL of every RWA buy + its context
+  (asset/issuer/underlying, restriction grade, peg ratio, verdict); `asset_profile` /
+  `issuer_profile` roll it into per-asset and per-issuer history (the earned issuer-trust
+  input). DESCRIPTIVE data tap, fail-soft (logging never breaks a verdict), carries no
+  secrets; opt-in `BLACKWALL_RWA_LEDGER=<path>`. Wired into `forecast`),
   `ROADMAP.md`, `docs/DATA_SOURCE_SPIKE.md`. Tests:
   `test_blackwall.py`, `test_ledger.py`, `test_reputation_onchain.py`,
   `test_settlement_watch.py`, `test_addresses.py`, `test_x402.py`,
@@ -238,7 +250,7 @@ test states the mutation it kills). Keep new code stdlib-only and match this sty
 Run all tests:
 ```sh
 python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py test_aa_cosigner.py test_chain_backfill.py test_discovery_crawl.py test_ecosystem_scan.py test_http_util.py test_payer_graph.py test_payer_reputation.py test_settlement_velocity.py test_confidence.py test_redteam.py test_demo_flywheel.py test_verdict_anchor.py test_categories.py test_category_pricing.py test_check_seed_age.py test_price_integrity.py test_ratelimit.py test_fuzz_verdict.py test_blockscout.py test_verdict_oracle.py test_calibration_lock.py test_coverage_eval.py test_refresh_guard.py test_secret_scan.py test_bench.py test_two_stage_signer.py test_rwa_readiness.py test_tokenized_stock_registry.py \
-test_solana_rwa.py
+test_solana_rwa.py test_pyth_price.py test_rwa_ledger.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop

@@ -982,7 +982,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              hold_above=None, peer_index=None, seller_registry=None, now=None,
              graph_source=None, velocity_source=None, category_index=None,
              divergence_index=None, enrichment_source=None, verify_signer=True,
-             rwa_source=None, stock_registry=None):
+             rwa_source=None, stock_registry=None, pyth_source=None, rwa_ledger=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
@@ -1149,6 +1149,8 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     # on KYC/whitelist/freeze/pause -- the asset-side question a stablecoin-only flow
     # never raises. FAIL OPEN at the consumer and CONSERVATIVE-ONLY: it can escalate
     # GO->HOLD on a blocked transfer but never upgrades, and never reaches STOP.
+    # RWA-buy signals shared across the readiness / discovery / peg / ledger folds.
+    rwa_signal = asset_record = peg = None
     if rwa_source is not None and clean.get("acquires"):
         from rwa_readiness import apply_rwa_readiness
         try:
@@ -1170,6 +1172,32 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         except Exception:
             asset_record = None
         verdict = apply_asset_registry(verdict, asset_record)
+
+    # Peg / NAV divergence (pyth_price.py): is the agent paying near the REAL underlying
+    # stock price, or a big premium (depeg / stale quote / bad route)? Needs the
+    # recognized underlying symbol + a derivable unit price (acquires.unit_price or
+    # amount/quantity). Keyless Pyth; HOLD-only on overpay; fail-open.
+    if pyth_source is not None and asset_record and asset_record.get("underlying_symbol") \
+            and clean.get("acquires"):
+        from pyth_price import apply_peg, compute_peg
+        try:
+            peg = compute_peg(pyth_source, asset_record.get("underlying_symbol"),
+                              clean["amount"], clean["acquires"])
+        except Exception:
+            peg = None
+        verdict = apply_peg(verdict, peg)
+
+    # ACCUMULATION (rwa_ledger.py): write down every RWA buy + its context (asset,
+    # restriction grade, peg, verdict) -- the private corpus no competitor has.
+    # Fail-soft: logging must never break a verdict.
+    if rwa_ledger is not None and clean.get("acquires"):
+        try:
+            from rwa_ledger import build_rwa_event
+            rwa_ledger.record(build_rwa_event(clean, verdict, asset_record,
+                                              rwa_signal, peg, now=_now))
+        except Exception:
+            pass
+
     # The receipt is the ledger's join key, so it must be UNIQUE PER PAYMENT --
     # not just a hash of the verdict content (two counterparties with identical
     # stats produce identical verdicts and would otherwise collide). Sign over
@@ -1307,6 +1335,8 @@ class _Handler(BaseHTTPRequestHandler):
     enrichment_source = None  # blockscout.BlockscoutEnrichmentSource (REVIEW-only), or None
     rwa_source = None  # rwa_readiness.RwaReadinessSource (RWA transfer-restriction), or None
     stock_registry = None  # tokenized_stock_registry.TokenizedStockRegistry (discovery), or None
+    pyth_source = None  # pyth_price.PythPriceSource (peg/NAV divergence), or None
+    rwa_ledger = None  # rwa_ledger.RwaLedger (accumulation corpus), or None
     graph_source = None  # payer_reputation.PayerReputationSource (Sybil corroboration)
     velocity_source = None  # settlement_velocity.VelocitySource (stale gate)
     openapi_server_url = None  # public origin for the openapi.json servers[] (or None)
@@ -1556,6 +1586,8 @@ class _Handler(BaseHTTPRequestHandler):
                                  enrichment_source=self.enrichment_source,
                                  rwa_source=self.rwa_source,
                                  stock_registry=self.stock_registry,
+                                 pyth_source=self.pyth_source,
+                                 rwa_ledger=self.rwa_ledger,
                                  verify_signer=_verify_signer)
         if err is not None:
             self._send_json(400, {"error": err})
@@ -1641,7 +1673,8 @@ class BlackwallServer:
                  hold_above=None, peer_index=None, openapi_server_url=None,
                  graph_source=None, velocity_source=None, verdict_anchor=None,
                  category_index=None, divergence_index=None, rate_limiter=None,
-                 enrichment_source=None, rwa_source=None, stock_registry=None):
+                 enrichment_source=None, rwa_source=None, stock_registry=None,
+                 pyth_source=None, rwa_ledger=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -1662,6 +1695,8 @@ class BlackwallServer:
         self.enrichment_source = enrichment_source
         self.rwa_source = rwa_source
         self.stock_registry = stock_registry
+        self.pyth_source = pyth_source
+        self.rwa_ledger = rwa_ledger
         self.stats = _Stats()
         self._httpd = None
 
@@ -1682,6 +1717,8 @@ class BlackwallServer:
                         "enrichment_source": self.enrichment_source,
                         "rwa_source": self.rwa_source,
                         "stock_registry": self.stock_registry,
+                        "pyth_source": self.pyth_source,
+                        "rwa_ledger": self.rwa_ledger,
                         "stats": self.stats,
                         "openapi_server_url": self.openapi_server_url})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
@@ -2030,6 +2067,27 @@ def main(argv=None):
                          % len(stock_registry))
         sys.stdout.flush()
 
+    # OPT-IN (BLACKWALL_PYTH=1, needs the stock registry): peg/NAV divergence via the
+    # keyless Pyth oracle -- flags a tokenized stock priced far over its real underlying.
+    pyth_source = None
+    if _env_flag("BLACKWALL_PYTH") and stock_registry is not None:
+        from pyth_price import PythPriceSource
+        pyth_source = PythPriceSource()
+        sys.stdout.write("blackwall: peg/NAV divergence ON (keyless Pyth; overpay-vs-"
+                         "underlying HOLD when acquires carries unit_price/quantity)\n")
+        sys.stdout.flush()
+
+    # OPT-IN (BLACKWALL_RWA_LEDGER=<path>): the ACCUMULATION corpus -- append every RWA
+    # buy + its asset/restriction/peg context to build the private history no one else has.
+    rwa_ledger = None
+    _rwa_led_path = os.environ.get("BLACKWALL_RWA_LEDGER", "")
+    if _rwa_led_path:
+        from rwa_ledger import RwaLedger
+        rwa_ledger = RwaLedger(_rwa_led_path)
+        sys.stdout.write("blackwall: RWA accumulation corpus ON -> %s (per-asset / "
+                         "per-issuer history)\n" % _rwa_led_path)
+        sys.stdout.flush()
+
     # OPT-IN (BLACKWALL_ANCHOR=1): anchor every verdict's digest to Traceipt for a
     # tamper-evident audit trail. Non-blocking + fail-open; costs ~0.002 USDC/verdict
     # and needs a funded SIGNER_PRIVATE_KEY (else it 402s and fails open). OFF by
@@ -2057,6 +2115,8 @@ def main(argv=None):
                              enrichment_source=enrichment_source,
                              rwa_source=rwa_source,
                              stock_registry=stock_registry,
+                             pyth_source=pyth_source,
+                             rwa_ledger=rwa_ledger,
                              openapi_server_url=origin)
     try:
         server.serve_forever()

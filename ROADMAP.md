@@ -82,10 +82,18 @@ The "Blockscout-for-Base but for tokenized stocks" plumbing. **Shipped:**
 keyless ingest from the Backed/xStocks `/public/assets` feed + an operator seed for
 gated issuers) and `solana_rwa.py` (the SPL **Token-2022** restriction leg -- mint
 extensions + account frozen state -> the same readiness signal, folded via the shared
-`apply_rwa_readiness`; wired through `CombinedRwaReadinessSource`). **Deferred halves:**
-- **Registry enrichment fold** — surface the issuer/underlying/`trading_halted` in the
-  verdict (descriptive, like `categories.py`) and use `underlying_symbol` to drive a
-  **Pyth** (free, keyless) underlying-price cross-check for a mispriced-buy signal.
+`apply_rwa_readiness`; wired through `CombinedRwaReadinessSource`); the **registry
+enrichment fold** (`apply_asset_registry` -> `signals.rwa_asset` + trading-halt HOLD);
+**pagination** (full 617-ticker / 6k-deployment ingest); **peg/NAV divergence**
+(`pyth_price.py` -- keyless Pyth underlying price vs per-unit paid, overpay HOLD); and the
+**accumulation corpus** (`rwa_ledger.py` -- every RWA buy + context logged; per-asset /
+per-issuer rollups). **Deferred halves:**
+- **Outcome capture (T+1 / T+7)** — the corpus records the verdict + peg-at-decision; close
+  the loop by re-checking settlement success + peg persistence AFTER the buy, so the
+  history is LABELED (did it settle? did it hold peg?) -- the training signal for reputation.
+- **Issuer trust tier (gate)** — `issuer_profile` rolls up the corpus; graduate it from
+  descriptive to a conservative verdict input (earned, like `seller_audit`) once enough
+  labeled outcomes accrue.
 - **Gated-issuer seed** — `STATIC_SEED` is EMPTY; populate Ondo/Dinari/Robinhood from a
   scrape-once VERIFIED address table (Backed is the only keyless live feed).
 - **Solana ATA auto-derivation** — the per-wallet frozen read currently needs
