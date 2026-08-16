@@ -928,6 +928,19 @@ def validate_request(payload):
     if transaction is not None and not isinstance(transaction, dict):
         return None, "transaction must be an object {to, data, value}"
 
+    # acquires = the tokenized RWA the agent is BUYING with this stablecoin payment
+    # {token, chain?, standard?, amount?}. Optional; enables the pre-trade transfer-
+    # restriction readiness check (rwa_readiness.py) -- "will the security transfer to
+    # `payer` succeed, or revert on KYC/whitelist/freeze/pause?". `token` must name a
+    # contract address; the rest is passed through opaque to the readiness source.
+    acquires = payload.get("acquires")
+    if acquires is not None:
+        if not isinstance(acquires, dict):
+            return None, "acquires must be an object {token, chain, standard, amount}"
+        tok = acquires.get("token")
+        if not isinstance(tok, str) or not tok:
+            return None, "acquires.token must be a token contract address string"
+
     return {
         "agent_id": payload.get("agent_id"),
         "counterparty": counterparty,
@@ -941,6 +954,7 @@ def validate_request(payload):
         "payer": payer,
         "payment_authorization": payment_authorization,
         "transaction": transaction,
+        "acquires": acquires,
     }, None
 
 
@@ -967,7 +981,8 @@ def default_billing_asset(network, explicit, base_usdc, sepolia_usdc):
 def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              hold_above=None, peer_index=None, seller_registry=None, now=None,
              graph_source=None, velocity_source=None, category_index=None,
-             divergence_index=None, enrichment_source=None, verify_signer=True):
+             divergence_index=None, enrichment_source=None, verify_signer=True,
+             rwa_source=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
@@ -1127,6 +1142,20 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         except Exception:
             readiness = None
         verdict = apply_readiness(verdict, readiness)
+
+    # Tokenized-RWA transfer-restriction readiness (rwa_readiness.py). When the agent
+    # is BUYING a tokenized RWA (request carries `acquires`), pre-check whether the
+    # security can actually transfer to the receiving wallet (`payer`) or would revert
+    # on KYC/whitelist/freeze/pause -- the asset-side question a stablecoin-only flow
+    # never raises. FAIL OPEN at the consumer and CONSERVATIVE-ONLY: it can escalate
+    # GO->HOLD on a blocked transfer but never upgrades, and never reaches STOP.
+    if rwa_source is not None and clean.get("acquires"):
+        from rwa_readiness import apply_rwa_readiness
+        try:
+            rwa_signal = rwa_source.check(clean["acquires"], clean.get("payer"))
+        except Exception:
+            rwa_signal = None
+        verdict = apply_rwa_readiness(verdict, rwa_signal)
     # The receipt is the ledger's join key, so it must be UNIQUE PER PAYMENT --
     # not just a hash of the verdict content (two counterparties with identical
     # stats produce identical verdicts and would otherwise collide). Sign over
@@ -1262,6 +1291,7 @@ class _Handler(BaseHTTPRequestHandler):
     category_index = None  # {category: on-chain median} for the category-price check, or None
     divergence_index = None  # {payee: settled/advertised ratio} bait-and-switch watch-list, or None
     enrichment_source = None  # blockscout.BlockscoutEnrichmentSource (REVIEW-only), or None
+    rwa_source = None  # rwa_readiness.RwaReadinessSource (RWA transfer-restriction), or None
     graph_source = None  # payer_reputation.PayerReputationSource (Sybil corroboration)
     velocity_source = None  # settlement_velocity.VelocitySource (stale gate)
     openapi_server_url = None  # public origin for the openapi.json servers[] (or None)
@@ -1509,6 +1539,7 @@ class _Handler(BaseHTTPRequestHandler):
                                  category_index=self.category_index,
                                  divergence_index=self.divergence_index,
                                  enrichment_source=self.enrichment_source,
+                                 rwa_source=self.rwa_source,
                                  verify_signer=_verify_signer)
         if err is not None:
             self._send_json(400, {"error": err})
@@ -1594,7 +1625,7 @@ class BlackwallServer:
                  hold_above=None, peer_index=None, openapi_server_url=None,
                  graph_source=None, velocity_source=None, verdict_anchor=None,
                  category_index=None, divergence_index=None, rate_limiter=None,
-                 enrichment_source=None):
+                 enrichment_source=None, rwa_source=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -1613,6 +1644,7 @@ class BlackwallServer:
         self.divergence_index = divergence_index
         self.rate_limiter = rate_limiter
         self.enrichment_source = enrichment_source
+        self.rwa_source = rwa_source
         self.stats = _Stats()
         self._httpd = None
 
@@ -1631,6 +1663,7 @@ class BlackwallServer:
                         "divergence_index": self.divergence_index,
                         "rate_limiter": self.rate_limiter,
                         "enrichment_source": self.enrichment_source,
+                        "rwa_source": self.rwa_source,
                         "stats": self.stats,
                         "openapi_server_url": self.openapi_server_url})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
@@ -1945,6 +1978,21 @@ def main(argv=None):
                          "behavioral context; live call per verdict)\n" % _bs)
         sys.stdout.flush()
 
+    # OPT-IN (BLACKWALL_RWA_READINESS=1): pre-trade transfer-restriction readiness for
+    # agents BUYING tokenized RWAs with stablecoins. Only fires when a request carries
+    # `acquires`; adds a few eth_call view reads per such verdict against
+    # BLACKWALL_RWA_RPC_URL. Fail-open + conservative (GO->HOLD on a blocked transfer,
+    # never STOP). See docs/TOKENIZED_RWA.md.
+    rwa_source = None
+    if _env_flag("BLACKWALL_RWA_READINESS"):
+        from rwa_readiness import RwaReadinessSource
+        _rpc = os.environ.get("BLACKWALL_RWA_RPC_URL", "")
+        rwa_source = RwaReadinessSource(rpc_url=_rpc)
+        sys.stdout.write("blackwall: RWA transfer-restriction readiness ON (%s -- "
+                         "pre-trade check when a request carries `acquires`; fail-open, "
+                         "HOLD-only)\n" % (_rpc or "NO RPC url -> fail-open unknown"))
+        sys.stdout.flush()
+
     # OPT-IN (BLACKWALL_ANCHOR=1): anchor every verdict's digest to Traceipt for a
     # tamper-evident audit trail. Non-blocking + fail-open; costs ~0.002 USDC/verdict
     # and needs a funded SIGNER_PRIVATE_KEY (else it 402s and fails open). OFF by
@@ -1970,6 +2018,7 @@ def main(argv=None):
                              divergence_index=divergence_index,
                              rate_limiter=rate_limiter,
                              enrichment_source=enrichment_source,
+                             rwa_source=rwa_source,
                              openapi_server_url=origin)
     try:
         server.serve_forever()

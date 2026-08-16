@@ -197,6 +197,18 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   anchors flagged on the shipped corpus -- see `docs/DATA_COMPLETENESS.md`): stays
   advisory, not retired; do NOT re-open without a complete-history source. Folds via
   `temporal_signal`/`velocity_source`; wired into `mcp_server`),
+  `rwa_readiness.py` (PRE-TRADE gate for agents BUYING tokenized RWAs with stablecoins:
+  the payment leg is USDC so ~90% of the stack already applies to the payee; the NOVEL
+  wedge is TRANSFER-RESTRICTION readiness -- a permissioned security (ERC-3643/T-REX,
+  ERC-1400, allowlist ERC-20) REVERTS a transfer to a wallet that is not KYC-verified/
+  whitelisted, or is frozen, or while paused, so an agent can pay stablecoins and receive
+  nothing. Reads the token's RECEIVER-side restriction interface for the request `payer`
+  and folds a grade via `apply_rwa_readiness`: `blocked` -> GO->HOLD, `ready`/`unknown`
+  no-op. HARD BOUNDARY like blockscout.py -- HOLD-only, NEVER STOP/hard_stop (OFAC stays
+  the STOP authority); FAIL-OPEN (`decode_bool("0x")->None`, absent method = unknown not
+  false); OPT-IN behind `BLACKWALL_RWA_READINESS=1` (+`BLACKWALL_RWA_RPC_URL`), fires only
+  when a request carries `acquires`. Pure core + injected eth_call transport. See
+  `docs/TOKENIZED_RWA.md`),
   `ROADMAP.md`, `docs/DATA_SOURCE_SPIKE.md`. Tests:
   `test_blackwall.py`, `test_ledger.py`, `test_reputation_onchain.py`,
   `test_settlement_watch.py`, `test_addresses.py`, `test_x402.py`,
@@ -210,7 +222,7 @@ test states the mutation it kills). Keep new code stdlib-only and match this sty
 
 Run all tests:
 ```sh
-python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py test_aa_cosigner.py test_chain_backfill.py test_discovery_crawl.py test_ecosystem_scan.py test_http_util.py test_payer_graph.py test_payer_reputation.py test_settlement_velocity.py test_confidence.py test_redteam.py test_demo_flywheel.py test_verdict_anchor.py test_categories.py test_category_pricing.py test_check_seed_age.py test_price_integrity.py test_ratelimit.py test_fuzz_verdict.py test_blockscout.py test_verdict_oracle.py test_calibration_lock.py test_coverage_eval.py test_refresh_guard.py test_secret_scan.py test_bench.py test_two_stage_signer.py
+python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py test_aa_cosigner.py test_chain_backfill.py test_discovery_crawl.py test_ecosystem_scan.py test_http_util.py test_payer_graph.py test_payer_reputation.py test_settlement_velocity.py test_confidence.py test_redteam.py test_demo_flywheel.py test_verdict_anchor.py test_categories.py test_category_pricing.py test_check_seed_age.py test_price_integrity.py test_ratelimit.py test_fuzz_verdict.py test_blockscout.py test_verdict_oracle.py test_calibration_lock.py test_coverage_eval.py test_refresh_guard.py test_secret_scan.py test_bench.py test_two_stage_signer.py test_rwa_readiness.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop
