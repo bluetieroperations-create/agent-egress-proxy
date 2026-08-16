@@ -23,15 +23,18 @@ from collections import Counter
 
 
 def build_rwa_event(clean, verdict, asset_record=None, rwa_signal=None, peg=None,
-                    now=None):
-    """PURE: assemble one accumulation event from a forecast's decision context. `now`
-    (unix seconds) is passed in -- the builder does no I/O and no clock read."""
+                    now=None, receipt_id=None):
+    """PURE: assemble one BUY accumulation event from a forecast's decision context.
+    `now` (unix seconds) is passed in -- the builder does no I/O and no clock read.
+    `receipt_id` is the join key an OUTCOME event links back to."""
     acq = clean.get("acquires") if isinstance(clean, dict) else {}
     acq = acq if isinstance(acq, dict) else {}
     rec = asset_record if isinstance(asset_record, dict) else {}
     sig = rwa_signal if isinstance(rwa_signal, dict) else {}
     pg = peg if isinstance(peg, dict) else {}
     return {
+        "event": "buy",
+        "receipt_id": receipt_id,
         "ts": int(now) if now is not None else None,
         "counterparty": clean.get("counterparty"),
         "payer": clean.get("payer"),
@@ -48,6 +51,30 @@ def build_rwa_event(clean, verdict, asset_record=None, rwa_signal=None, peg=None
         "peg_ratio": pg.get("divergence_ratio"),
         "underlying_price": pg.get("underlying_price"),
         "paid_unit_price": pg.get("paid_unit_price"),
+    }
+
+
+def build_outcome_event(buy_event, outcome, now=None):
+    """PURE: assemble an OUTCOME event that LABELS a prior buy (linked by receipt_id).
+    `outcome` is whatever the checker produced (mark_ratio / underlying_move /
+    underwater / holds_balance). `now` is passed in."""
+    be = buy_event if isinstance(buy_event, dict) else {}
+    oc = outcome if isinstance(outcome, dict) else {}
+    return {
+        "event": "outcome",
+        "receipt_id": be.get("receipt_id"),
+        "ts": int(now) if now is not None else None,
+        "buy_ts": be.get("ts"),
+        "token": be.get("token"),
+        "chain": be.get("chain"),
+        "issuer": be.get("issuer"),
+        "underlying_symbol": be.get("underlying_symbol"),
+        "underlying_at_decision": be.get("underlying_price"),
+        "underlying_now": oc.get("underlying_now"),
+        "underlying_move": oc.get("underlying_move"),
+        "mark_ratio": oc.get("mark_ratio"),
+        "underwater": oc.get("underwater"),
+        "holds_balance": oc.get("holds_balance"),
     }
 
 
@@ -94,51 +121,79 @@ class RwaLedger:
             return out
         return out
 
-    # -- aggregate --
+    # -- selection for the outcome loop --
+    def pending_buys(self, horizon_seconds, now, events=None):
+        """Buys older than `horizon_seconds` that carry a receipt_id and do NOT yet have
+        a linked OUTCOME event -- the work-list for capture_outcomes (the T+N labeler)."""
+        all_events = events if events is not None else self.load()
+        done = {e.get("receipt_id") for e in all_events
+                if e.get("event") == "outcome" and e.get("receipt_id")}
+        out = []
+        for e in all_events:
+            if e.get("event", "buy") != "buy":
+                continue
+            rid, ts = e.get("receipt_id"), e.get("ts")
+            if not rid or not isinstance(ts, int):
+                continue
+            if now - ts < horizon_seconds or rid in done:
+                continue
+            out.append(e)
+        return out
+
+    # -- aggregate (outcome-aware) --
     def asset_profile(self, token, chain=None, events=None):
-        """Rollup for one asset: how often seen, verdict mix, restriction grades seen,
-        halt count, peg samples (overpay ratios), last_seen ts. None if never seen."""
+        """Rollup for one asset. BUY metrics (verdict mix, restriction grades, peg
+        samples) + OUTCOME metrics (settlement rate, underwater rate, avg mark) once
+        outcomes have been captured. None if never seen."""
         all_events = events if events is not None else self.load()
         rows = [e for e in all_events if _match_token(e.get("token"), token)
                 and (chain is None or (e.get("chain") or "") == (chain or ""))]
-        if not rows:
+        buys = [e for e in rows if e.get("event", "buy") == "buy"]
+        outs = [e for e in rows if e.get("event") == "outcome"]
+        if not buys and not outs:
             return None
-        pegs = [e["peg_ratio"] for e in rows if isinstance(e.get("peg_ratio"), (int, float))]
-        return {
+        pegs = [e["peg_ratio"] for e in buys if isinstance(e.get("peg_ratio"), (int, float))]
+        prof = {
             "token": token, "chain": chain,
-            "count": len(rows),
+            "count": len(buys),
             "issuer": next((e.get("issuer") for e in rows if e.get("issuer")), None),
-            "symbol": next((e.get("symbol") for e in rows if e.get("symbol")), None),
+            "symbol": next((e.get("symbol") for e in buys if e.get("symbol")), None),
             "underlying_symbol": next((e.get("underlying_symbol") for e in rows
                                        if e.get("underlying_symbol")), None),
-            "verdicts": dict(Counter(e.get("verdict") for e in rows)),
-            "restriction_grades": dict(Counter(e.get("restriction_grade") for e in rows
+            "verdicts": dict(Counter(e.get("verdict") for e in buys)),
+            "restriction_grades": dict(Counter(e.get("restriction_grade") for e in buys
                                                if e.get("restriction_grade"))),
-            "halt_count": sum(1 for e in rows if e.get("trading_halted")),
+            "halt_count": sum(1 for e in buys if e.get("trading_halted")),
             "peg_samples": len(pegs),
             "max_peg_ratio": max(pegs) if pegs else None,
             "avg_peg_ratio": (sum(pegs) / len(pegs)) if pegs else None,
             "last_seen": max((e["ts"] for e in rows if isinstance(e.get("ts"), int)),
                              default=None),
         }
+        prof.update(_outcome_metrics(outs))
+        return prof
 
     def issuer_profile(self, issuer, events=None):
-        """Rollup across ALL of an issuer's assets: total buys, verdict mix, distinct
-        assets, restriction grades, halt count -- the earned issuer-trust-tier input."""
+        """Rollup across ALL of an issuer's assets: buy verdict mix + OUTCOME metrics
+        (settlement reliability, underwater rate) -- the earned issuer-trust-tier input."""
         rows = [e for e in (events if events is not None else self.load())
                 if (e.get("issuer") or "") == (issuer or "")]
-        if not rows:
+        buys = [e for e in rows if e.get("event", "buy") == "buy"]
+        outs = [e for e in rows if e.get("event") == "outcome"]
+        if not buys and not outs:
             return None
-        return {
+        prof = {
             "issuer": issuer,
-            "count": len(rows),
-            "distinct_assets": len({_asset_key(e.get("token"), e.get("chain")) for e in rows}),
-            "verdicts": dict(Counter(e.get("verdict") for e in rows)),
-            "restriction_grades": dict(Counter(e.get("restriction_grade") for e in rows
+            "count": len(buys),
+            "distinct_assets": len({_asset_key(e.get("token"), e.get("chain")) for e in buys}),
+            "verdicts": dict(Counter(e.get("verdict") for e in buys)),
+            "restriction_grades": dict(Counter(e.get("restriction_grade") for e in buys
                                                if e.get("restriction_grade"))),
-            "halt_count": sum(1 for e in rows if e.get("trading_halted")),
-            "chains": sorted({e.get("chain") for e in rows if e.get("chain")}),
+            "halt_count": sum(1 for e in buys if e.get("trading_halted")),
+            "chains": sorted({e.get("chain") for e in buys if e.get("chain")}),
         }
+        prof.update(_outcome_metrics(outs))
+        return prof
 
 
 def _match_token(a, b):
@@ -148,3 +203,57 @@ def _match_token(a, b):
     if a.startswith("0x") and b.startswith("0x"):
         return a.lower() == b.lower()
     return a == b
+
+
+def _outcome_metrics(outcomes):
+    """Derive the LABELED metrics from a set of captured outcome events. None values
+    when a dimension has no samples (never fabricate a rate from zero evidence)."""
+    settled = [e["holds_balance"] for e in outcomes if isinstance(e.get("holds_balance"), bool)]
+    under = [e["underwater"] for e in outcomes if isinstance(e.get("underwater"), bool)]
+    marks = [e["mark_ratio"] for e in outcomes if isinstance(e.get("mark_ratio"), (int, float))]
+    return {
+        "outcomes": len(outcomes),
+        "settlement_success_rate": (sum(settled) / len(settled)) if settled else None,
+        "underwater_rate": (sum(under) / len(under)) if under else None,
+        "avg_mark_ratio": (sum(marks) / len(marks)) if marks else None,
+    }
+
+
+# Minimum LABELED outcomes before an issuer's trust grade is meaningful (below this,
+# the grade is "insufficient" -- no evidence is not trust, mirroring reputation_score).
+ISSUER_TRUST_MIN_OUTCOMES = 5
+
+
+def issuer_trust(profile):
+    """PURE: map an outcome-aware `issuer_profile` -> {grade, reasons}. DESCRIPTIVE for
+    now (the roadmap graduates it to a conservative verdict input once calibrated).
+
+    grade: 'insufficient' (too few labeled outcomes), 'high', 'medium', 'low'. Built
+    from settlement reliability + underwater rate + STOP share -- never from raw buy
+    volume (which is wash-tradeable)."""
+    if not isinstance(profile, dict):
+        return {"grade": "insufficient", "reasons": ["no profile"]}
+    n_out = profile.get("outcomes") or 0
+    reasons = []
+    if n_out < ISSUER_TRUST_MIN_OUTCOMES:
+        return {"grade": "insufficient",
+                "reasons": ["only %d labeled outcome(s) (< %d) -- not enough evidence"
+                            % (n_out, ISSUER_TRUST_MIN_OUTCOMES)]}
+    settle = profile.get("settlement_success_rate")
+    under = profile.get("underwater_rate")
+    verdicts = profile.get("verdicts") or {}
+    total_v = sum(verdicts.values()) or 1
+    stop_share = verdicts.get("STOP", 0) / total_v
+
+    score = 0
+    if settle is not None:
+        reasons.append("settlement success %.0f%%" % (settle * 100))
+        score += 1 if settle >= 0.95 else (0 if settle >= 0.8 else -1)
+    if under is not None:
+        reasons.append("underwater %.0f%% of outcomes" % (under * 100))
+        score += 1 if under <= 0.2 else (0 if under <= 0.5 else -1)
+    if stop_share > 0.1:
+        reasons.append("%.0f%% of buys STOPped" % (stop_share * 100))
+        score -= 1
+    grade = "high" if score >= 2 else ("low" if score <= -1 else "medium")
+    return {"grade": grade, "reasons": reasons}

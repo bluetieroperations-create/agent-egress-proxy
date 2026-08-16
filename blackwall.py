@@ -1187,17 +1187,6 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
             peg = None
         verdict = apply_peg(verdict, peg)
 
-    # ACCUMULATION (rwa_ledger.py): write down every RWA buy + its context (asset,
-    # restriction grade, peg, verdict) -- the private corpus no competitor has.
-    # Fail-soft: logging must never break a verdict.
-    if rwa_ledger is not None and clean.get("acquires"):
-        try:
-            from rwa_ledger import build_rwa_event
-            rwa_ledger.record(build_rwa_event(clean, verdict, asset_record,
-                                              rwa_signal, peg, now=_now))
-        except Exception:
-            pass
-
     # The receipt is the ledger's join key, so it must be UNIQUE PER PAYMENT --
     # not just a hash of the verdict content (two counterparties with identical
     # stats produce identical verdicts and would otherwise collide). Sign over
@@ -1212,6 +1201,19 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         "nonce": os.urandom(12).hex(),
     })
     verdict["receipt_id"] = sign_receipt(receipt_payload)
+
+    # ACCUMULATION (rwa_ledger.py): write down every RWA buy + its context (asset,
+    # restriction grade, peg, verdict), keyed by the receipt_id join key so a later
+    # OUTCOME can be linked back to it. The private corpus no competitor has.
+    # Fail-soft: logging must never break a verdict.
+    if rwa_ledger is not None and clean.get("acquires"):
+        try:
+            from rwa_ledger import build_rwa_event
+            rwa_ledger.record(build_rwa_event(clean, verdict, asset_record,
+                                              rwa_signal, peg, now=_now,
+                                              receipt_id=verdict["receipt_id"]))
+        except Exception:
+            pass
 
     if ledger is not None:
         # The caller gets a capability token to later report this payment's

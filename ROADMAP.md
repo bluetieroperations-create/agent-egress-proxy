@@ -85,15 +85,22 @@ extensions + account frozen state -> the same readiness signal, folded via the s
 `apply_rwa_readiness`; wired through `CombinedRwaReadinessSource`); the **registry
 enrichment fold** (`apply_asset_registry` -> `signals.rwa_asset` + trading-halt HOLD);
 **pagination** (full 617-ticker / 6k-deployment ingest); **peg/NAV divergence**
-(`pyth_price.py` -- keyless Pyth underlying price vs per-unit paid, overpay HOLD); and the
-**accumulation corpus** (`rwa_ledger.py` -- every RWA buy + context logged; per-asset /
-per-issuer rollups). **Deferred halves:**
-- **Outcome capture (T+1 / T+7)** — the corpus records the verdict + peg-at-decision; close
-  the loop by re-checking settlement success + peg persistence AFTER the buy, so the
-  history is LABELED (did it settle? did it hold peg?) -- the training signal for reputation.
-- **Issuer trust tier (gate)** — `issuer_profile` rolls up the corpus; graduate it from
-  descriptive to a conservative verdict input (earned, like `seller_audit`) once enough
-  labeled outcomes accrue.
+(`pyth_price.py` -- keyless Pyth underlying price vs per-unit paid, overpay HOLD); the
+**accumulation corpus** (`rwa_ledger.py` -- every RWA buy + context logged, keyed by
+receipt_id); and the **outcome-capture loop** (`rwa_outcomes.py` -- T+N mark-to-market via
+Pyth labels each buy underwater/in-profit, closing the flywheel; `issuer_trust` grades the
+rollup). **Deferred halves:**
+- **Graduate `issuer_trust` to a GATE** — it's descriptive today; once labeled outcomes
+  accrue and the grade is calibration-locked (like the sybil_ring graduation), fold it as
+  a conservative verdict input (earned floor, like `seller_audit`; HOLD-only, never STOP).
+- **On-chain settlement-held reader** — `capture_outcomes` takes an injected
+  `balance_reader` for the `holds_balance` label but ships none; add a keyless
+  `balanceOf`(EVM) / token-account-balance(Solana) reader so settlement success is
+  captured, not just mark-to-market. (Attribution caveat: a pre-existing balance isn't
+  proof THIS buy settled -- a before/after snapshot or the settlement tx is the real fix.)
+- **Token-price (not just underlying) history** — mark-to-market uses the underlying's
+  move; also sampling the TOKEN's on-chain price would measure true peg tracking (did the
+  wrapper hold its peg to the stock), not just the stock's move.
 - **Gated-issuer seed** — `STATIC_SEED` is EMPTY; populate Ondo/Dinari/Robinhood from a
   scrape-once VERIFIED address table (Backed is the only keyless live feed).
 - **Solana ATA auto-derivation** — the per-wallet frozen read currently needs
