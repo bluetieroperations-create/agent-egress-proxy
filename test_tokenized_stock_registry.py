@@ -6,8 +6,8 @@ Each test names the MUTATION it kills.
 import unittest
 
 import tokenized_stock_registry as tsr
-from tokenized_stock_registry import (TokenizedStockRegistry, build_registry,
-                                       load_backed, normalize_address,
+from tokenized_stock_registry import (TokenizedStockRegistry, apply_asset_registry,
+                                       build_registry, load_backed, normalize_address,
                                        parse_backed_assets, parse_seed)
 
 EVM = "0xF758E87CA18824b767aa4F3ed58C188d3bABE428"      # mixed-case (checksummed)
@@ -119,6 +119,42 @@ class TestLoad(unittest.TestCase):
             raise RuntimeError("network down")
         self.assertEqual(load_backed(get=boom), [])
 
+    def test_paginates_until_no_next(self):
+        # MUTATION: stopping after page 1 (no pagination) would miss pages 2..N.
+        pages = {
+            1: {"nodes": [{"symbol": "P1", "deployments": [{"network": "base", "address": EVM}]}],
+                "page": {"currentPage": 1, "hasNextPage": True}},
+            2: {"nodes": [{"symbol": "P2", "deployments": [{"network": "base", "address": "0x" + "22" * 20}]}],
+                "page": {"currentPage": 2, "hasNextPage": False}},
+        }
+
+        def get(url):
+            n = int(url.split("page=")[1])
+            return pages[n]
+        recs = load_backed(get=get)
+        self.assertEqual({r["symbol"] for r in recs}, {"P1", "P2"})
+
+    def test_pagination_failsoft_midwalk(self):
+        # MUTATION: a mid-walk fetch error must KEEP earlier pages, not drop everything.
+        def get(url):
+            n = int(url.split("page=")[1])
+            if n == 1:
+                return {"nodes": [{"symbol": "P1", "deployments": [{"network": "base", "address": EVM}]}],
+                        "page": {"currentPage": 1, "hasNextPage": True}}
+            raise RuntimeError("page 2 down")
+        recs = load_backed(get=get)
+        self.assertEqual([r["symbol"] for r in recs], ["P1"])
+
+    def test_pagination_respects_max_pages(self):
+        calls = []
+
+        def get(url):
+            calls.append(url)
+            return {"nodes": [{"symbol": "X", "deployments": [{"network": "base", "address": EVM}]}],
+                    "page": {"hasNextPage": True}}       # never-ending feed
+        load_backed(get=get, max_pages=3)
+        self.assertEqual(len(calls), 3)
+
     def test_build_registry_merges_feed_and_seed(self):
         reg = build_registry(
             get=lambda url: BACKED_SAMPLE,
@@ -126,6 +162,66 @@ class TestLoad(unittest.TestCase):
                    "deployments": [{"network": "base", "address": "0x" + "ab" * 20}]}])
         self.assertIsNotNone(reg.by_ticker("NVDAx"))
         self.assertIsNotNone(reg.by_ticker("TSLAd"))
+
+
+class TestApplyAssetRegistry(unittest.TestCase):
+    REC = {"issuer": "backed", "symbol": "NVDAx", "underlying_symbol": "NVDA",
+           "isin": "XS123", "standard": None, "trading_halted": False}
+
+    def _go(self):
+        return {"verdict": "GO", "reasons": [], "signals": {}}
+
+    def test_annotates_signals_and_reason(self):
+        out = apply_asset_registry(self._go(), self.REC)
+        self.assertEqual(out["signals"]["rwa_asset"]["symbol"], "NVDAx")
+        self.assertEqual(out["signals"]["rwa_asset"]["underlying_symbol"], "NVDA")
+        self.assertTrue(any("NVDAx" in r for r in out["reasons"]))
+
+    def test_not_halted_leaves_go(self):
+        self.assertEqual(apply_asset_registry(self._go(), self.REC)["verdict"], "GO")
+
+    def test_trading_halted_escalates_go_to_hold(self):
+        # MUTATION: not gating on trading_halted lets an agent buy a halted security.
+        rec = dict(self.REC, trading_halted=True)
+        out = apply_asset_registry(self._go(), rec)
+        self.assertEqual(out["verdict"], "HOLD")
+        self.assertTrue(any("HALTED" in r for r in out["reasons"]))
+
+    def test_halted_never_touches_stop(self):
+        rec = dict(self.REC, trading_halted=True)
+        stop = {"verdict": "STOP", "reasons": [], "signals": {}, "hard_stop": True}
+        self.assertEqual(apply_asset_registry(stop, rec)["verdict"], "STOP")
+
+    def test_none_record_noop_nonmutating(self):
+        base = self._go()
+        self.assertEqual(apply_asset_registry(base, None), base)
+        self.assertNotIn("rwa_asset", base["signals"])
+
+
+class TestForecastEnrichment(unittest.TestCase):
+    def test_known_token_annotates_forecast(self):
+        import blackwall
+        reg = TokenizedStockRegistry().add(parse_backed_assets(BACKED_SAMPLE))
+        payload = {"counterparty": "0xKNOWNGOOD000000000000000000000000000001",
+                   "amount": "0.09", "asset": "USDC", "chain": "base",
+                   "resource": "https://api.example.com/buy",
+                   "acquires": {"token": EVM, "chain": "ethereum"}}
+        out = blackwall.forecast(payload, blackwall.MockReputationSource(),
+                                 stock_registry=reg)[0]
+        self.assertEqual(out["signals"]["rwa_asset"]["symbol"], "NVDAx")
+
+    def test_halted_token_holds_forecast(self):
+        import blackwall
+        reg = TokenizedStockRegistry().add(parse_seed(
+            [{"symbol": "HALTx", "issuer": "backed", "trading_halted": True,
+              "deployments": [{"network": "base", "address": EVM}]}]))
+        payload = {"counterparty": "0xKNOWNGOOD000000000000000000000000000001",
+                   "amount": "0.09", "asset": "USDC", "chain": "base",
+                   "resource": "https://api.example.com/buy",
+                   "acquires": {"token": EVM, "chain": "base"}}
+        out = blackwall.forecast(payload, blackwall.MockReputationSource(),
+                                 stock_registry=reg)[0]
+        self.assertEqual(out["verdict"], "HOLD")
 
 
 if __name__ == "__main__":

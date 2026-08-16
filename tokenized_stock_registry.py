@@ -204,15 +204,69 @@ class TokenizedStockRegistry:
         return len(self.by_key)
 
 
-def load_backed(get=None, url=BACKED_ASSETS_URL):
+def apply_asset_registry(verdict, record):
+    """PURE fold of a tokenized-stock registry record into a verdict dict.
+
+    DESCRIPTIVE (issuer / underlying / isin / standard under signals.rwa_asset) plus
+    ONE conservative gate: `trading_halted` -> GO->HOLD (the underlying security's
+    trading is halted, so on-chain pricing/redemption may be stale or unavailable).
+    CONSERVATIVE-ONLY: never upgrades a HOLD/STOP; a None/empty record is a no-op.
+    Returns a NEW dict (does not mutate the input)."""
+    if not record or not isinstance(record, dict):
+        return verdict
+    v = dict(verdict)
+    v["signals"] = dict(v.get("signals") or {})
+    v["signals"]["rwa_asset"] = {
+        "issuer": record.get("issuer"),
+        "symbol": record.get("symbol"),
+        "underlying_symbol": record.get("underlying_symbol"),
+        "isin": record.get("isin"),
+        "standard": record.get("standard"),
+        "trading_halted": bool(record.get("trading_halted")),
+    }
+    reasons = list(v.get("reasons") or [])
+    und = record.get("underlying_symbol")
+    reasons.append("acquiring tokenized security %s (issuer %s%s)" % (
+        record.get("symbol") or "?", record.get("issuer") or "?",
+        ", tracks %s" % und if und else ""))
+    if record.get("trading_halted"):
+        reasons.append("underlying security trading is HALTED -- on-chain "
+                       "pricing/redemption may be stale or unavailable")
+        if v.get("verdict") == "GO":
+            v["verdict"] = "HOLD"
+            reasons.append("escalated GO->HOLD: acquiring a tokenized security whose "
+                           "underlying trading is halted")
+    v["reasons"] = reasons
+    return v
+
+
+def load_backed(get=None, url=BACKED_ASSETS_URL, paginate=True, max_pages=500):
     """Fetch + parse the keyless Backed/xStocks assets feed -> [records].
-    `get` is a test seam: callable(url) -> parsed JSON. Fail-soft: [] on any error."""
+
+    The feed is PAGE-based: `?page=N` (1-indexed, 100 assets/page) with a
+    `page: {currentPage, hasNextPage}` envelope. With `paginate=True` (default) we
+    walk pages until `hasNextPage` is false (or `max_pages`), so the whole asset set
+    is ingested, not just the first 100. `get` is a test seam: callable(url) ->
+    parsed JSON. FAIL-SOFT: a mid-walk error keeps the pages already fetched."""
     fetch = get or (lambda u: __import__("http_util").get_json(u))
-    try:
-        payload = fetch(url)
-    except Exception:
-        return []
-    return parse_backed_assets(payload)
+    records, page = [], 1
+    while True:
+        page_url = (url + ("&" if "?" in url else "?") + "page=%d" % page
+                    if paginate else url)
+        try:
+            payload = fetch(page_url)
+        except Exception:
+            break                                  # fail-soft: keep what we have
+        recs = parse_backed_assets(payload)
+        records.extend(recs)
+        if not paginate:
+            break
+        info = payload.get("page") if isinstance(payload, dict) else None
+        has_next = bool(info.get("hasNextPage")) if isinstance(info, dict) else False
+        if not has_next or not recs or page >= max_pages:
+            break
+        page += 1
+    return records
 
 
 def build_registry(get=None, seed=None):

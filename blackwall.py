@@ -982,7 +982,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              hold_above=None, peer_index=None, seller_registry=None, now=None,
              graph_source=None, velocity_source=None, category_index=None,
              divergence_index=None, enrichment_source=None, verify_signer=True,
-             rwa_source=None):
+             rwa_source=None, stock_registry=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
@@ -1157,6 +1157,19 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         except Exception:
             rwa_signal = None
         verdict = apply_rwa_readiness(verdict, rwa_signal)
+
+    # Tokenized-stock DISCOVERY enrichment (tokenized_stock_registry.py). When the
+    # acquired token is a KNOWN tokenized security, annotate the verdict with its
+    # issuer / underlying / ISIN (descriptive, like categories.py) and escalate
+    # GO->HOLD if the underlying's trading is halted. Fail-open, conservative-only.
+    if stock_registry is not None and clean.get("acquires"):
+        from tokenized_stock_registry import apply_asset_registry
+        acq = clean["acquires"]
+        try:
+            asset_record = stock_registry.lookup(acq.get("token"), acq.get("chain"))
+        except Exception:
+            asset_record = None
+        verdict = apply_asset_registry(verdict, asset_record)
     # The receipt is the ledger's join key, so it must be UNIQUE PER PAYMENT --
     # not just a hash of the verdict content (two counterparties with identical
     # stats produce identical verdicts and would otherwise collide). Sign over
@@ -1293,6 +1306,7 @@ class _Handler(BaseHTTPRequestHandler):
     divergence_index = None  # {payee: settled/advertised ratio} bait-and-switch watch-list, or None
     enrichment_source = None  # blockscout.BlockscoutEnrichmentSource (REVIEW-only), or None
     rwa_source = None  # rwa_readiness.RwaReadinessSource (RWA transfer-restriction), or None
+    stock_registry = None  # tokenized_stock_registry.TokenizedStockRegistry (discovery), or None
     graph_source = None  # payer_reputation.PayerReputationSource (Sybil corroboration)
     velocity_source = None  # settlement_velocity.VelocitySource (stale gate)
     openapi_server_url = None  # public origin for the openapi.json servers[] (or None)
@@ -1541,6 +1555,7 @@ class _Handler(BaseHTTPRequestHandler):
                                  divergence_index=self.divergence_index,
                                  enrichment_source=self.enrichment_source,
                                  rwa_source=self.rwa_source,
+                                 stock_registry=self.stock_registry,
                                  verify_signer=_verify_signer)
         if err is not None:
             self._send_json(400, {"error": err})
@@ -1626,7 +1641,7 @@ class BlackwallServer:
                  hold_above=None, peer_index=None, openapi_server_url=None,
                  graph_source=None, velocity_source=None, verdict_anchor=None,
                  category_index=None, divergence_index=None, rate_limiter=None,
-                 enrichment_source=None, rwa_source=None):
+                 enrichment_source=None, rwa_source=None, stock_registry=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -1646,6 +1661,7 @@ class BlackwallServer:
         self.rate_limiter = rate_limiter
         self.enrichment_source = enrichment_source
         self.rwa_source = rwa_source
+        self.stock_registry = stock_registry
         self.stats = _Stats()
         self._httpd = None
 
@@ -1665,6 +1681,7 @@ class BlackwallServer:
                         "rate_limiter": self.rate_limiter,
                         "enrichment_source": self.enrichment_source,
                         "rwa_source": self.rwa_source,
+                        "stock_registry": self.stock_registry,
                         "stats": self.stats,
                         "openapi_server_url": self.openapi_server_url})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
@@ -2000,6 +2017,19 @@ def main(argv=None):
                          "; Solana " + _sol_rpc if _sol_rpc else ""))
         sys.stdout.flush()
 
+    # OPT-IN (BLACKWALL_STOCK_REGISTRY=1): tokenized-stock discovery enrichment. Fetches
+    # the keyless Backed/xStocks feed at startup (one network call) into an in-memory
+    # registry; recognizes a known tokenized security in `acquires` and annotates the
+    # verdict (issuer/underlying/ISIN + trading_halted HOLD). Fail-soft (empty on error).
+    stock_registry = None
+    if _env_flag("BLACKWALL_STOCK_REGISTRY"):
+        from tokenized_stock_registry import build_registry
+        stock_registry = build_registry()
+        sys.stdout.write("blackwall: tokenized-stock discovery ON (%d known deployments "
+                         "from the keyless Backed feed; descriptive + trading-halt HOLD)\n"
+                         % len(stock_registry))
+        sys.stdout.flush()
+
     # OPT-IN (BLACKWALL_ANCHOR=1): anchor every verdict's digest to Traceipt for a
     # tamper-evident audit trail. Non-blocking + fail-open; costs ~0.002 USDC/verdict
     # and needs a funded SIGNER_PRIVATE_KEY (else it 402s and fails open). OFF by
@@ -2026,6 +2056,7 @@ def main(argv=None):
                              rate_limiter=rate_limiter,
                              enrichment_source=enrichment_source,
                              rwa_source=rwa_source,
+                             stock_registry=stock_registry,
                              openapi_server_url=origin)
     try:
         server.serve_forever()
