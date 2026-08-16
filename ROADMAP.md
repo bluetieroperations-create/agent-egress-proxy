@@ -76,6 +76,28 @@ advertises an `IAgentMandate` registry.
   selector; degrade fail-open (`unknown`) when they're absent. See
   `docs/TOKENIZED_RWA.md` (Adjacent: RAMS) and `COMPETITIVE.md`.
 
+### Tokenized-stock data path  — **discovery + Solana readers shipped; enrichment fold deferred**
+The "Blockscout-for-Base but for tokenized stocks" plumbing. **Shipped:**
+`tokenized_stock_registry.py` (recognize a token contract -> issuer/underlying/ISIN;
+keyless ingest from the Backed/xStocks `/public/assets` feed + an operator seed for
+gated issuers) and `solana_rwa.py` (the SPL **Token-2022** restriction leg -- mint
+extensions + account frozen state -> the same readiness signal, folded via the shared
+`apply_rwa_readiness`; wired through `CombinedRwaReadinessSource`). **Deferred halves:**
+- **Registry enrichment fold** — surface the issuer/underlying/`trading_halted` in the
+  verdict (descriptive, like `categories.py`) and use `underlying_symbol` to drive a
+  **Pyth** (free, keyless) underlying-price cross-check for a mispriced-buy signal.
+- **Gated-issuer seed** — `STATIC_SEED` is EMPTY; populate Ondo/Dinari/Robinhood from a
+  scrape-once VERIFIED address table (Backed is the only keyless live feed).
+- **Solana ATA auto-derivation** — the per-wallet frozen read currently needs
+  `acquires.receiver_token_account`; auto-deriving the associated-token-account PDA
+  (off-curve check) would make the Solana leg fully receiver-specific like the EVM one.
+  Reuse the Ed25519 primitives in `cdp_auth.py` for the on-curve test.
+- **Solana on-chain reputation** — clone the `blockscout.py` enrichment pattern onto
+  Solana (public RPC / Solscan free tier) for holder/transfer history.
+- **Caveat:** no FREE canonical cross-issuer registry exists (rwa.xyz is paid/Enterprise);
+  discovery is self-assembled from issuer feeds. NEVER hard-code an unverified address —
+  a wrong one mis-identifies a token. See `docs/TOKENIZED_RWA.md`.
+
 ---
 
 ## Trust & verifiability

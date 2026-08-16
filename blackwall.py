@@ -1986,12 +1986,18 @@ def main(argv=None):
     # never STOP). See docs/TOKENIZED_RWA.md.
     rwa_source = None
     if _env_flag("BLACKWALL_RWA_READINESS"):
-        from rwa_readiness import RwaReadinessSource
+        from rwa_readiness import CombinedRwaReadinessSource, RwaReadinessSource
         _rpc = os.environ.get("BLACKWALL_RWA_RPC_URL", "")
-        rwa_source = RwaReadinessSource(rpc_url=_rpc)
-        sys.stdout.write("blackwall: RWA transfer-restriction readiness ON (%s -- "
+        _sol_rpc = os.environ.get("BLACKWALL_RWA_SOLANA_RPC_URL", "")
+        _sources = [RwaReadinessSource(rpc_url=_rpc)]
+        if _sol_rpc:
+            from solana_rwa import SolanaRwaReadinessSource
+            _sources.append(SolanaRwaReadinessSource(rpc_url=_sol_rpc))
+        rwa_source = CombinedRwaReadinessSource(_sources)
+        sys.stdout.write("blackwall: RWA transfer-restriction readiness ON (EVM %s%s -- "
                          "pre-trade check when a request carries `acquires`; fail-open, "
-                         "HOLD-only)\n" % (_rpc or "NO RPC url -> fail-open unknown"))
+                         "HOLD-only)\n" % (_rpc or "NO RPC url -> fail-open unknown",
+                         "; Solana " + _sol_rpc if _sol_rpc else ""))
         sys.stdout.flush()
 
     # OPT-IN (BLACKWALL_ANCHOR=1): anchor every verdict's digest to Traceipt for a

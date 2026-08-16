@@ -149,6 +149,39 @@ tests:
   confirmed permissioned. A plain token is a **2-call no-op**; "unknown = not a
   recognized permissioned token" is now exact.
 
+## Solana leg (SPL Token-2022) — `solana_rwa.py`
+
+A lot of tokenized-stock volume (Backed/xStocks, Ondo) settles on **Solana** as SPL
+**Token-2022** mints, which the EVM `eth_call` probe can't see. `solana_rwa.py` is the
+Solana analogue: it reads the mint's **extensions** (TLV-encoded in the account data) +
+the receiver token account's frozen state, and maps them to the **same signal shape**, so
+they fold through the shared `apply_rwa_readiness`:
+
+| Token-2022 signal | Meaning | Grade |
+|---|---|---|
+| `NonTransferable` | soulbound; secondary transfer reverts | blocked |
+| account `state = Frozen` | this receiving account is frozen | blocked |
+| `DefaultAccountState = Frozen`, no confirmed thaw | new holders frozen until an authority thaws them | blocked |
+| `DefaultAccountState = Frozen`, receiver account present & not frozen | explicitly thawed/whitelisted | ready |
+| `TransferHook` | transfers gated by an external program — can't predict off-chain | unknown + caution |
+| `PermanentDelegate` | an authority can move/burn your tokens | unknown + caution |
+
+Dispatch is by token format via `CombinedRwaReadinessSource([evm, solana])` — each source
+self-selects (EVM `0x…` vs base58 mint) and returns `None` off-chain, so `forecast`'s single
+`rwa_source` covers both. Server opt-in: `BLACKWALL_RWA_SOLANA_RPC_URL` adds the Solana leg.
+Per-wallet frozen read needs `acquires.receiver_token_account` (ATA auto-derivation deferred).
+
+## Discovery — `tokenized_stock_registry.py`
+
+The "who/what is this token" layer: given a contract address, is it a known tokenized
+security, which issuer, what underlying? DESCRIPTIVE (like `categories.py`), never gates.
+There is **no free canonical cross-issuer registry** (rwa.xyz is paid), so it self-assembles:
+the keyless **Backed/xStocks `/public/assets`** feed (a real ticker→address→chain map) + an
+operator `STATIC_SEED` for gated issuers (Ondo/Dinari/Robinhood — **empty by default; never
+fabricate an address**). Chain-aware normalization (EVM lowercased; Solana base58
+case-preserved). Future: fold issuer/underlying into the verdict + a **Pyth** underlying-price
+cross-check for mispriced buys (see `ROADMAP.md`).
+
 ## Adjacent: ERC-8226 "RAMS" — the authorization axis (watch, don't integrate yet)
 
 RAMS (Regulated Agent Mandate Standard, Brickken; Draft ERC) is a **complement, not a

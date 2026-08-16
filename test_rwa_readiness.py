@@ -429,6 +429,45 @@ class TestLiveSource(unittest.TestCase):
         self.assertFalse(is_rwa_descriptor(None))
 
 
+class TestCombinedSource(unittest.TestCase):
+    def test_dispatches_to_first_non_none(self):
+        from rwa_readiness import CombinedRwaReadinessSource
+
+        class NoneSrc:
+            def check(self, acquires, payer=None, counterparty=None):
+                return None
+
+        class HitSrc:
+            def check(self, acquires, payer=None, counterparty=None):
+                return {"grade": "blocked", "standard": "x", "reasons": [], "signals": {}}
+
+        c = CombinedRwaReadinessSource([NoneSrc(), HitSrc()])
+        self.assertEqual(c.check({"token": TOKEN}, PAYEE)["grade"], "blocked")
+
+    def test_skips_raising_source(self):
+        from rwa_readiness import CombinedRwaReadinessSource
+
+        class BoomSrc:
+            def check(self, acquires, payer=None, counterparty=None):
+                raise RuntimeError("boom")
+
+        class HitSrc:
+            def check(self, acquires, payer=None, counterparty=None):
+                return {"grade": "ready", "standard": "x", "reasons": [], "signals": {}}
+
+        c = CombinedRwaReadinessSource([BoomSrc(), HitSrc()])
+        self.assertEqual(c.check({"token": TOKEN}, PAYEE)["grade"], "ready")
+
+    def test_all_none_returns_none(self):
+        from rwa_readiness import CombinedRwaReadinessSource
+
+        class NoneSrc:
+            def check(self, acquires, payer=None, counterparty=None):
+                return None
+
+        self.assertIsNone(CombinedRwaReadinessSource([NoneSrc()]).check({"token": TOKEN}, PAYEE))
+
+
 class TestForecastIntegration(unittest.TestCase):
     """The wedge, end-to-end through blackwall.forecast."""
 

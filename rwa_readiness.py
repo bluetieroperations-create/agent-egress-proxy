@@ -464,6 +464,28 @@ class RwaReadinessSource:
         return res if isinstance(res, str) else None
 
 
+class CombinedRwaReadinessSource:
+    """Dispatch an RWA readiness check across multiple sources (e.g. the EVM
+    `RwaReadinessSource` + the Solana `solana_rwa.SolanaRwaReadinessSource`), returning
+    the FIRST non-None signal. Each source self-selects by token format (EVM `0x...` vs
+    base58 mint) and returns None when the token isn't its chain, so ordering is safe.
+    Fail-open: a raising source is skipped. Lets `forecast`'s single `rwa_source` cover
+    every chain."""
+
+    def __init__(self, sources):
+        self.sources = [s for s in (sources or []) if s is not None]
+
+    def check(self, acquires, payer=None, counterparty=None):
+        for s in self.sources:
+            try:
+                sig = s.check(acquires, payer, counterparty=counterparty)
+            except Exception:
+                sig = None
+            if sig is not None:
+                return sig
+        return None
+
+
 def is_rwa_descriptor(acquires):
     """DESCRIPTIVE: does the request carry a usable tokenized-RWA acquisition
     descriptor (an `acquires` object naming a token contract to receive)? Never
