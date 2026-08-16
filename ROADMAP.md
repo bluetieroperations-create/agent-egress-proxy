@@ -44,6 +44,38 @@ Read on-chain agent identity + reputation from the **ERC-8004** registry standar
 as an *input* signal (the shared rail others build on).
 - **Why deferred:** standard is young; wait for adoption before wiring it in.
 
+### RamsReadinessSource — ERC-8226 authorization axis  *(consume, don't compete)*
+A thin, opt-in, fail-open readiness source that adds the **agent-AUTHORIZATION**
+revert-predicate to the tokenized-RWA gate (`rwa_readiness.py`, shipped). ERC-8226
+"RAMS" (Regulated Agent Mandate Standard, Brickken) is an on-chain **agent-mandate
+registry**: a signed, time-bounded, amount-capped, revocable mandate keyed by
+`(agent, principal)` that a regulated token validates at transfer via
+`canExecute(agent, principal, asset, action, amount) → (bool, ExecutionReason)`.
+Read that view **the same way** `rwa_readiness` already reads
+`detectTransferRestriction`/`preTransferCheck` — a **second** pre-transfer revert
+surface on agent-delegated transfers (`OVER_TX_CAP` / `AGENT_FROZEN` / `REVOKED` /
+expired / `NOT_ACTIVE`). Fold as a `blocked`/`unknown` grade through the existing
+`apply_rwa_readiness` (HOLD-only, never STOP). Fire **only** when the target asset
+advertises an `IAgentMandate` registry.
+- **Why it's a COMPLEMENT, not a competitor:** RAMS is the *authorization* axis
+  ("did the principal permit this agent, within caps?") and **explicitly does NOT
+  check KYC/whitelist/transfer restrictions** — it leaves receiver eligibility to
+  the token's own ERC-7943/ERC-3643 hook, running in parallel. It sits strictly
+  *above* our eligibility axis on a different revert cause. So it can only *add* a
+  revert-predicate we'd otherwise miss; it can't replace or block ours.
+- **Why deferred:** Draft ERC (filed 2026-04-12; reference impl merged 2026-06-29),
+  only a **Sepolia** deployment, one announced-not-shipped partner (Taiko),
+  single-vendor champion (Brickken, who also authors the ERC-7943 substrate RAMS
+  rides). Real assets exposing a queryable RAMS registry are ~zero today.
+- **Build trigger (load-bearing):** a **mainnet** tokenized asset ships a RAMS hook
+  / advertises an `IAgentMandate` registry. Until then the read has nothing to hit.
+  Track the `ethereum/ERCs` PR cadence + the diagnostic-enum finalization.
+- **Caveat:** the mandate's `canExecute` needs `(agent, principal, action, amount)`
+  — richer inputs than our receiver-only reads. Needs the request to carry the
+  agent/principal identity (ties into ERC-8004 interop above) and the action
+  selector; degrade fail-open (`unknown`) when they're absent. See
+  `docs/TOKENIZED_RWA.md` (Adjacent: RAMS) and `COMPETITIVE.md`.
+
 ---
 
 ## Trust & verifiability
