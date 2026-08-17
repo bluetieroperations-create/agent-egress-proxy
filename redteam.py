@@ -13,6 +13,16 @@ Dispositions:
   CLEAN        -- a legit payment correctly GOes.
   FALSE POSITIVE -- a legit payment was wrongly blocked (a real bug if it appears).
 
+Two scenario families:
+  SCENARIOS      -- driven through `decide_payment` (the reputation/price/Sybil core).
+  SIM_SCENARIOS  -- driven through `forecast` with INJECTED simulation sources, because
+                    the settlement / authorization / RWA-readiness gates fold there, not
+                    in decide_payment. These cover the newest and least battle-tested
+                    code, and -- just as importantly -- assert the properties that keep
+                    them from over-blocking: sender-side reverts are NOT blamed on the
+                    receiver, an underfunded payer does NOT gate, and an unreachable RPC
+                    fails OPEN.
+
 `run()` is importable (used by test_redteam to guard that the CAUGHT set stays caught
 and no FALSE POSITIVE appears); `main()` prints the table / writes JSON.
 """
@@ -132,6 +142,149 @@ SCENARIOS = [
 ]
 
 
+# ===========================================================================
+# Simulation-gate scenarios (folded in `forecast`, not `decide_payment`)
+# ===========================================================================
+
+PAYER = "0x" + "3" * 40
+NONCE = "0x" + "7f" * 32
+SIG65 = "0x" + ("11" * 32) + ("22" * 32) + "1b"
+BLACKLIST_REVERT = "Blacklistable: account is blacklisted"   # real USDC string
+KYC_REVERT = "STBT: NO_RECEIVE_PERMISSION"                   # real Matrixdock string
+
+
+class _StubRep:
+    """A reputation source good enough that the BASELINE verdict is GO -- otherwise a
+    cold-start HOLD would mask whether the simulation gate actually fired."""
+
+    def __init__(self, record=None):
+        self.record = record or dict(GOOD, price_history=STABLE)
+
+    def lookup(self, addr):
+        return dict(self.record)
+
+
+def _revert(msg):
+    """An eth_call response carrying a real Error(string) revert payload."""
+    b = msg.encode()
+    return {"error": {"message": "execution reverted",
+                      "data": "0x08c379a0" + "%064x" % 32 + "%064x" % len(b)
+                              + b.hex().ljust(64, "0")}}
+
+
+_OK = {"result": "0x1"}
+
+
+def _settlement_source(target, control=_OK):
+    """SettlementSimSource whose first call (payer->payee) returns `target` and whose
+    second (payer->control address) returns `control`."""
+    from settlement_sim import SettlementSimSource
+    from transfer_sim import TransferSimulator
+    seen = []
+
+    def transport(params):
+        seen.append(params)
+        return target if len(seen) == 1 else control
+    return SettlementSimSource(simulator=TransferSimulator(transport=transport))
+
+
+def _auth_source(used=False, execution=_OK, now=1000):
+    """AuthorizationSimSource: `used` drives the authorizationState replay read."""
+    from auth_sim import AuthorizationSimSource
+
+    class _Sim:
+        def _call(self, params):
+            if len(params.get("data", "")) < 200:          # authorizationState
+                return {"result": "0x" + "0" * 63 + ("1" if used else "0")}
+            return execution
+    return AuthorizationSimSource(simulator=_Sim(), now=now)
+
+
+def _rwa_source(target, control=_OK):
+    from transfer_sim import SimulationReadinessSource, TransferSimulator
+    seen = []
+
+    def transport(params):
+        seen.append(params)
+        return target if len(seen) == 1 else control
+    return SimulationReadinessSource(simulator=TransferSimulator(transport=transport))
+
+
+def _payload(**kw):
+    p = {"counterparty": LEGIT, "amount": "0.09", "asset": "USDC", "chain": "base",
+         "payer": PAYER, "price_history": STABLE}
+    p.update(kw)
+    return p
+
+
+def _signed(auth_over=None):
+    """A base64 X-PAYMENT carrying a signed EIP-3009 authorization."""
+    import base64
+    import json
+    auth = {"from": PAYER, "to": LEGIT, "value": "90000", "validAfter": 0,
+            "validBefore": 9999999999, "nonce": NONCE}
+    auth.update(auth_over or {})
+    return base64.b64encode(json.dumps(
+        {"x402Version": 1, "scheme": "exact", "network": "base",
+         "payload": {"authorization": auth, "signature": SIG65}}).encode()).decode()
+
+
+# (name, category, expect, known_gap, payload, forecast-source kwargs)
+SIM_SCENARIOS = [
+    # --- attacks the simulation gates MUST catch ---
+    ("blacklisted PAYEE (USDC)", "settlement-sim", "block", False, _payload(),
+     lambda: {"settlement_sim_source": _settlement_source(_revert(BLACKLIST_REVERT))}),
+    ("blacklisted PAYER (USDC)", "settlement-sim", "block", False, _payload(),
+     lambda: {"settlement_sim_source": _settlement_source(
+         _revert(BLACKLIST_REVERT), control=_revert(BLACKLIST_REVERT))}),
+    ("replayed EIP-3009 nonce", "auth-sim", "block", False,
+     _payload(payment_authorization=_signed()),
+     lambda: {"auth_sim_source": _auth_source(used=True)}),
+    ("expired authorization", "auth-sim", "block", False,
+     _payload(payment_authorization=_signed({"validBefore": 1000})),
+     lambda: {"auth_sim_source": _auth_source(now=10 ** 9)}),
+    ("authorization reverts (bad sig)", "auth-sim", "block", False,
+     _payload(payment_authorization=_signed()),
+     lambda: {"auth_sim_source": _auth_source(
+         execution=_revert("ECRecover: invalid signature"))}),
+    ("RWA receiver not permissioned", "rwa-sim", "block", False,
+     _payload(acquires={"token": "0x" + "9" * 40, "chain": "ethereum",
+                        "holder": "0x" + "8" * 40}),
+     lambda: {"rwa_source": _rwa_source(_revert(KYC_REVERT))}),
+
+    # --- controls: these must NOT be blocked (over-blocking is the real risk here) ---
+    ("clean payment, sim ready", "control", "allow", False, _payload(),
+     lambda: {"settlement_sim_source": _settlement_source(_OK)}),
+    ("underfunded payer (must not gate)", "control", "allow", False, _payload(),
+     lambda: {"settlement_sim_source": _settlement_source(
+         _revert("ERC20: transfer amount exceeds balance"))}),
+    ("SENDER-side revert (attribution)", "control", "allow", False,
+     _payload(acquires={"token": "0x" + "9" * 40, "chain": "ethereum",
+                        "holder": "0x" + "8" * 40}),
+     # target AND control both fail -> the SENDER is at fault; blaming the receiver
+     # here would be a false positive. This guards the control-attribution property.
+     lambda: {"rwa_source": _rwa_source(_revert(KYC_REVERT),
+                                        control=_revert(KYC_REVERT))}),
+    ("RPC unreachable (fail-open)", "control", "allow", False, _payload(),
+     lambda: {"settlement_sim_source": _settlement_source({}, control={})}),
+    ("valid fresh authorization", "control", "allow", False,
+     _payload(payment_authorization=_signed()),
+     lambda: {"auth_sim_source": _auth_source(used=False)}),
+]
+
+
+def run_sim():
+    """Drive the simulation-gate scenarios through `forecast`."""
+    results = []
+    for name, cat, expect, known_gap, payload, sources in SIM_SCENARIOS:
+        v, err = bw.forecast(payload, _StubRep(), verify_signer=False, **sources())
+        verdict = v["verdict"] if err is None else "ERROR"
+        results.append({"name": name, "category": cat, "expect": expect,
+                        "known_gap": known_gap, "verdict": verdict,
+                        "disposition": _disposition(expect, known_gap, verdict)})
+    return results
+
+
 def _disposition(expect, known_gap, verdict):
     blocked = verdict in ("HOLD", "STOP")
     if expect == "allow":
@@ -149,6 +302,7 @@ def run():
         results.append({"name": name, "category": cat, "expect": expect,
                         "known_gap": known_gap, "verdict": v["verdict"],
                         "disposition": _disposition(expect, known_gap, v["verdict"])})
+    results.extend(run_sim())
     return results
 
 

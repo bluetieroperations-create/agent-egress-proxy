@@ -455,11 +455,17 @@ then loses it (going_bad) when recent outcomes turn to disputes. Guarded by
 `test_demo_flywheel.py`.
 
 `redteam.py` is the adversarial coverage scorecard: it drives a battery of attacks +
-legit controls through `decide_payment` and derives each disposition (CAUGHT /
-KNOWN GAP / CLEAN / FALSE POSITIVE / MISS). `test_redteam.py` guards it -- the caught
-set may not shrink, no control may become a false positive, and any attack that gets
-GO must be an EXPLICIT `known_gap`. Current: 17 core attacks caught, 2 documented
-gaps, 0 false positives.
+legit controls through the engine and derives each disposition (CAUGHT / KNOWN GAP /
+CLEAN / FALSE POSITIVE / MISS). TWO families: `SCENARIOS` runs through `decide_payment`
+(reputation/price/Sybil core), and `SIM_SCENARIOS` runs through `forecast` with INJECTED
+simulation sources, because the settlement / authorization / RWA-readiness gates fold
+there, not in decide_payment. The sim family also pins the RESTRAINT properties that keep
+those gates from over-blocking: a SENDER-side revert is not blamed on the receiver, an
+underfunded payer does not gate, and an unreachable RPC fails OPEN. `test_redteam.py`
+guards it -- the caught set may not shrink, no control may become a false positive, and
+any attack that gets GO must be an EXPLICIT `known_gap`. MUTATION-VERIFIED: disabling the
+settlement escalation, the auth replay gate, or the control-attribution each makes the
+suite fail by name. Current: 24 attacks caught, 2 documented gaps, 0 false positives.
 
 ## Standing working practice: ALWAYS deep audit → eval → verify
 
