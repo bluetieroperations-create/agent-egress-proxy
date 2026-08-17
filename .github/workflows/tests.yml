@@ -79,3 +79,45 @@ jobs:
         # redteam.py exits non-zero on a FALSE POSITIVE or an unmarked MISS, so this is
         # a real gate, not a report. It prints the table for the build log either way.
         run: python3 redteam.py
+
+  # The INTEGRATION surfaces are how a user actually adopts Blackwall (LangChain tool +
+  # callback, wallet signing guards, the OpenClaw hook). They live in their own
+  # directories with their own dependencies, so they are excluded from the stdlib job
+  # above -- which meant ~100 tests guarding the adoption path ran only by hand. A broken
+  # integration is a bounced user, so they get their own job.
+  integrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Stdlib cores -- no dependencies, same guarantee as the main suite.
+      - name: LangChain guard core (stdlib)
+        working-directory: integrations/langchain
+        run: python3 -m unittest test_blackwall_guard.py
+
+      - name: Wallet signing guards (stdlib)
+        working-directory: integrations/wallets
+        run: python3 -m unittest test_wallet_guard.py test_turnkey_signer.py test_privy_signer.py
+
+      # The thin adapter needs langchain-core; a failure here means the published plugin
+      # is broken against the current langchain release.
+      - name: LangChain adapter
+        working-directory: integrations/langchain
+        run: |
+          python3 -m pip install --quiet langchain-core
+          python3 -m unittest test_langchain_blackwall.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: OpenClaw plugin (vitest)
+        working-directory: integrations/openclaw
+        run: |
+          npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+          npm test
