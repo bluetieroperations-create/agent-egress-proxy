@@ -22,6 +22,22 @@ own node a one-line config change, and shrinks the leak immediately either way.
 
 ## Run it
 
+**In-process (recommended for a deployed service).** One variable starts the node on a
+daemon thread inside Blackwall and routes every chain read through it — no second service
+to operate:
+
+```sh
+export BLACKWALL_RPC_NODE_UPSTREAM=https://<your-node>   # your node ⇒ zero leakage
+export BLACKWALL_SETTLEMENT_SIM=1
+```
+
+An explicit `BLACKWALL_BASE_RPC_URL` / `BLACKWALL_RWA_RPC_URL` still wins if you set one,
+so you can bypass the node deliberately. Optional: `BLACKWALL_RPC_NODE_PORT` (default:
+ephemeral), `BLACKWALL_RPC_NODE_TTL` (default 30s). Startup is **fail-open** — if the node
+cannot bind, the service still starts and the gates fall back to their configured RPC.
+
+**Standalone**, if you'd rather run it as its own process:
+
 ```sh
 python rpc_node.py --upstream https://<your-node-or-provider> --port 8599
 ```

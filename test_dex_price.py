@@ -103,9 +103,14 @@ class TestQuoterEncode(unittest.TestCase):
 
     def test_encode_never_raises_on_garbage(self):
         # AUDIT REGRESSION: ABI encoders must not crash (matches eth_call_data).
-        for bad in (None, "", {}, float("inf"), float("nan"), b"x"):
+        # CI REGRESSION (3.12 only): a dict input crashed on the production interpreter
+        # but not on 3.11, because Python 3.12 made slice objects HASHABLE (gh-101264) --
+        # so `{}[2:]` moved from TypeError (caught) to KeyError (uncaught). The encoders
+        # now catch Exception; enumerating types here is a version-portability hazard.
+        for bad in (None, "", {}, [], (), set(), 0, object(), float("inf"),
+                    float("nan"), b"x"):
             d = encode_quote_exact_input_single(bad, bad, bad, bad)
-            self.assertEqual(len(d), 10 + 64 * 5)
+            self.assertEqual(len(d), 10 + 64 * 5, repr(bad))
 
 
 class TestAssessExecution(unittest.TestCase):

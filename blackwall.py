@@ -2346,6 +2346,44 @@ def main(argv=None):
                          % len(issuer_trust_source))
         sys.stdout.flush()
 
+    # OPT-IN (BLACKWALL_RPC_NODE_UPSTREAM=<url>): run OUR OWN JSON-RPC front door in
+    # this process, on a daemon thread, and point the simulation gates at it. Without
+    # this the sim gates talk straight to a public provider, leaking "this payer is about
+    # to pay this payee" on every check (docs/RPC_SELFHOST.md). Co-locating it makes the
+    # contained posture a ONE-VARIABLE change instead of a second service to operate:
+    # the node caches (a repeat check never re-leaks), coalesces concurrent duplicates,
+    # and refuses every non-read method. Set the upstream to YOUR node for zero
+    # third-party leakage. Explicit BLACKWALL_*_RPC_URL values still win.
+    _rpc_node_url = None
+    _rpc_upstream = os.environ.get("BLACKWALL_RPC_NODE_UPSTREAM", "")
+    if _rpc_upstream:
+        try:
+            import threading as _threading
+
+            from rpc_node import LocalRpcNode
+            _node = LocalRpcNode(
+                _rpc_upstream, host="127.0.0.1",
+                port=int(os.environ.get("BLACKWALL_RPC_NODE_PORT", "0") or 0),
+                ttl=float(os.environ.get("BLACKWALL_RPC_NODE_TTL", "30") or 30),
+                quiet=True)
+            _threading.Thread(target=_node.serve_forever, daemon=True).start()
+            for _ in range(500):                      # wait for the bind (port may be 0)
+                if _node._httpd is not None:
+                    break
+                time.sleep(0.01)
+            if _node._httpd is not None:
+                _rpc_node_url = "http://127.0.0.1:%d/" % _node.port
+                sys.stdout.write(
+                    "blackwall: own RPC node ON -> %s (upstream %s, cache ttl %.0fs, "
+                    "read-only allowlist; chain reads are contained)\n"
+                    % (_rpc_node_url, _rpc_upstream, _node.cache.ttl))
+                sys.stdout.flush()
+        except Exception as _e:                        # fail-open: never block startup
+            sys.stdout.write("blackwall: own RPC node FAILED to start (%s) -- "
+                             "simulation gates will use their configured RPC\n"
+                             % type(_e).__name__)
+            sys.stdout.flush()
+
     # OPT-IN (BLACKWALL_SETTLEMENT_SIM=1 + an RPC): PRE-SIGNATURE settlement feasibility
     # for every x402 payment -- simulate the USDC transfer and catch a frozen/blacklisted
     # payee or payer BEFORE the agent signs. One eth_call on the hot path (a second only
@@ -2356,7 +2394,9 @@ def main(argv=None):
         _sim_rpcs = {}
         for _chain, _var in (("base", "BLACKWALL_BASE_RPC_URL"),
                              ("ethereum", "BLACKWALL_RWA_RPC_URL")):
-            _u = os.environ.get(_var, "")
+            # An explicit per-chain URL wins; otherwise route through our own node when
+            # it is running, so the contained path is the DEFAULT once it is enabled.
+            _u = os.environ.get(_var, "") or (_rpc_node_url or "")
             if _u:
                 _sim_rpcs[_chain] = _u
         if _sim_rpcs:

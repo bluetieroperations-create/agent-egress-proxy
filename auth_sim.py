@@ -59,10 +59,15 @@ _GATING = (REPLAYED, EXPIRED, NOT_YET_VALID, WOULD_REVERT)
 # --------------------------------------------------------------------------
 
 def encode_uint(value):
-    """uint -> a 64-hex ABI word. Out-of-range/junk -> zeros. NEVER raises."""
+    """uint -> a 64-hex ABI word. Out-of-range/junk -> zeros. NEVER raises.
+
+    Catches Exception, not a tuple: `int(float("inf"))` raises OverflowError, which an
+    enumerated (TypeError, ValueError) missed. Same bug class CI found in dex_price on
+    the 3.12 leg -- a defensive encoder has ONE correct behaviour for every bad input,
+    so enumerating exception types is a standing hazard for no benefit."""
     try:
         v = int(value)
-    except (TypeError, ValueError):
+    except Exception:
         return "0" * 64
     if v < 0 or v >= (1 << 256):
         return "0" * 64

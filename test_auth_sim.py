@@ -42,6 +42,20 @@ class TestEncoding(unittest.TestCase):
         for junk in (None, 5, [], "0xzz", ""):
             self.assertEqual(len(encode_bytes32(junk)), 64)
 
+    def test_encoders_never_raise_on_any_garbage(self):
+        # SWEEP REGRESSION: encode_uint(inf) raised OverflowError -- outside its old
+        # (TypeError, ValueError) tuple. Same class as the 3.12 dict-slice KeyError CI
+        # caught in dex_price. Includes the 3.12 dict shape explicitly.
+        class D312(dict):
+            def __getitem__(self, k):
+                raise KeyError(k)
+        for bad in (None, "", {}, D312(), [], (), set(), 0, -1, object(), b"x",
+                    float("inf"), float("nan"), "0xzz", "notahex"):
+            self.assertEqual(len(encode_uint(bad)), 64, repr(bad))
+            self.assertEqual(len(encode_bytes32(bad)), 64, repr(bad))
+            self.assertEqual(len(encode_address(bad)), 64, repr(bad))
+            split_signature(bad)                       # must not raise
+
     def test_uint_and_address_words(self):
         self.assertEqual(encode_uint(1), "0" * 63 + "1")
         self.assertEqual(encode_address(PAYER), "0" * 24 + "a1" * 20)

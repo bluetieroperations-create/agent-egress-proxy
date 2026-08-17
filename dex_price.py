@@ -89,15 +89,22 @@ def encode_quote_exact_input_single(token_in, token_out, amount_in, fee, sqrt_li
     """Calldata for QuoterV2 `quoteExactInputSingle((address,address,uint256,uint24,
     uint160))` -- a single all-static tuple arg, encoded inline as 5 words."""
     sel = selector("quoteExactInputSingle((address,address,uint256,uint24,uint160))")
-    def aw(a):                                    # defensive, like eth_call_data
+    # These encoders promise NEVER to raise, so they catch Exception rather than an
+    # enumerated tuple. VERSION-SENSITIVITY IS THE REASON, found by CI on the 3.12 matrix
+    # leg (production runs python:3.12-slim): Python 3.12 made slice objects HASHABLE
+    # (gh-101264), so `{}[2:]` switched from TypeError (caught) to KeyError (uncaught)
+    # and crashed. Enumerating exception types here is a standing version-portability
+    # hazard for zero benefit -- a defensive encoder has exactly one correct behaviour
+    # for every bad input.
+    def aw(a):
         try:
             return a[2:].lower().rjust(64, "0")
-        except (TypeError, AttributeError, IndexError):
+        except Exception:
             return "0" * 64
     def uw(v):
         try:
             return format(int(v), "x").rjust(64, "0")
-        except (TypeError, ValueError, OverflowError):
+        except Exception:
             return "0" * 64
     return sel + aw(token_in) + aw(token_out) + uw(amount_in) + uw(fee) + uw(sqrt_limit)
 
