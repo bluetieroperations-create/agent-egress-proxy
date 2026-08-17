@@ -928,6 +928,19 @@ def validate_request(payload):
     if transaction is not None and not isinstance(transaction, dict):
         return None, "transaction must be an object {to, data, value}"
 
+    # acquires = the tokenized RWA the agent is BUYING with this stablecoin payment
+    # {token, chain?, standard?, amount?}. Optional; enables the pre-trade transfer-
+    # restriction readiness check (rwa_readiness.py) -- "will the security transfer to
+    # `payer` succeed, or revert on KYC/whitelist/freeze/pause?". `token` must name a
+    # contract address; the rest is passed through opaque to the readiness source.
+    acquires = payload.get("acquires")
+    if acquires is not None:
+        if not isinstance(acquires, dict):
+            return None, "acquires must be an object {token, chain, standard, amount}"
+        tok = acquires.get("token")
+        if not isinstance(tok, str) or not tok:
+            return None, "acquires.token must be a token contract address string"
+
     return {
         "agent_id": payload.get("agent_id"),
         "counterparty": counterparty,
@@ -941,6 +954,7 @@ def validate_request(payload):
         "payer": payer,
         "payment_authorization": payment_authorization,
         "transaction": transaction,
+        "acquires": acquires,
     }, None
 
 
@@ -967,7 +981,11 @@ def default_billing_asset(network, explicit, base_usdc, sepolia_usdc):
 def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              hold_above=None, peer_index=None, seller_registry=None, now=None,
              graph_source=None, velocity_source=None, category_index=None,
-             divergence_index=None, enrichment_source=None, verify_signer=True):
+             divergence_index=None, enrichment_source=None, verify_signer=True,
+             rwa_source=None, stock_registry=None, pyth_source=None, rwa_ledger=None,
+             balance_reader=None, backing_index=None, dex_source=None,
+             holder_source=None, aave_source=None, issuer_trust_source=None,
+             settlement_sim_source=None, auth_sim_source=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
@@ -1127,6 +1145,176 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         except Exception:
             readiness = None
         verdict = apply_readiness(verdict, readiness)
+
+    # PRE-SIGNATURE SETTLEMENT FEASIBILITY (settlement_sim.py) -- the CORE x402 path, not
+    # just RWA buys. Simulate the actual stablecoin transfer on-chain before the agent
+    # signs: if the PAYEE (or the PAYER) is frozen/blacklisted on the USDC contract, the
+    # payment would REVERT -- and a blacklisted counterparty is itself a serious risk
+    # signal (Circle freezes for cause). A CONTROL simulation separates payer-side from
+    # payee-side blocks so a revert is never misattributed. HOLD-only, never STOP
+    # (sanctions.py stays the compliance authority), fail-open, opt-in.
+    if settlement_sim_source is not None:
+        from settlement_sim import apply_settlement_sim
+        try:
+            _ss = settlement_sim_source.check(clean)
+        except Exception:
+            _ss = None
+        verdict = apply_settlement_sim(verdict, _ss)
+
+    # EIP-3009 AUTHORIZATION simulation (auth_sim.py). settlement_sim simulates a plain
+    # `transfer`, but x402 settles via `transferWithAuthorization` -- so a REPLAYED nonce,
+    # an out-of-window authorization, or a call that reverts for signature reasons are
+    # invisible to it. This checks the ACTUAL signed authorization against the chain
+    # (cheap `authorizationState` read first, full execution sim only if that is clean).
+    # HOLD-only; payload_sim keeps the STOP authority for a mismatched/forged payload.
+    if auth_sim_source is not None and clean.get("payment_authorization"):
+        from auth_sim import apply_auth_sim
+        try:
+            from x402 import decode_payment_header
+            _pay = decode_payment_header(clean["payment_authorization"])
+            _as = auth_sim_source.check(clean, _pay)
+        except Exception:
+            _as = None
+        verdict = apply_auth_sim(verdict, _as)
+
+    # Tokenized-RWA transfer-restriction readiness (rwa_readiness.py). When the agent
+    # is BUYING a tokenized RWA (request carries `acquires`), pre-check whether the
+    # security can actually transfer to the receiving wallet (`payer`) or would revert
+    # on KYC/whitelist/freeze/pause -- the asset-side question a stablecoin-only flow
+    # never raises. FAIL OPEN at the consumer and CONSERVATIVE-ONLY: it can escalate
+    # GO->HOLD on a blocked transfer but never upgrades, and never reaches STOP.
+    # RWA-buy signals shared across the readiness / discovery / peg / ledger folds.
+    rwa_signal = asset_record = peg = pre_balance = None
+    # DEFINITIVE settlement: snapshot the payer's PRE-buy token balance now (opt-in,
+    # only when accumulating), so the T+N outcome loop can prove the security arrived
+    # (post > pre). One balanceOf on the RWA hot path when wired; fail-open.
+    if (balance_reader is not None and rwa_ledger is not None
+            and clean.get("acquires") and clean.get("payer")):
+        _acq = clean["acquires"]
+        try:
+            pre_balance = balance_reader.balance_of(_acq.get("token"), _acq.get("chain"),
+                                                    clean.get("payer"))
+        except Exception:
+            pre_balance = None
+    if rwa_source is not None and clean.get("acquires"):
+        from rwa_readiness import apply_rwa_readiness
+        try:
+            rwa_signal = rwa_source.check(clean["acquires"], clean.get("payer"),
+                                          counterparty=clean.get("counterparty"))
+        except Exception:
+            rwa_signal = None
+        verdict = apply_rwa_readiness(verdict, rwa_signal)
+
+    # Tokenized-stock DISCOVERY enrichment (tokenized_stock_registry.py). When the
+    # acquired token is a KNOWN tokenized security, annotate the verdict with its
+    # issuer / underlying / ISIN (descriptive, like categories.py) and escalate
+    # GO->HOLD if the underlying's trading is halted. Fail-open, conservative-only.
+    if stock_registry is not None and clean.get("acquires"):
+        from tokenized_stock_registry import apply_asset_registry
+        acq = clean["acquires"]
+        try:
+            asset_record = stock_registry.lookup(acq.get("token"), acq.get("chain"))
+        except Exception:
+            asset_record = None
+        verdict = apply_asset_registry(verdict, asset_record)
+
+    # Peg / NAV divergence (pyth_price.py): is the agent paying near the REAL underlying
+    # stock price, or a big premium (depeg / stale quote / bad route)? Needs the
+    # recognized underlying symbol + a derivable unit price (acquires.unit_price or
+    # amount/quantity). Keyless Pyth; HOLD-only on overpay; fail-open.
+    if pyth_source is not None and asset_record and asset_record.get("underlying_symbol") \
+            and clean.get("acquires"):
+        from pyth_price import apply_peg, compute_peg
+        try:
+            peg = compute_peg(pyth_source, asset_record.get("underlying_symbol"),
+                              clean["amount"], clean["acquires"])
+        except Exception:
+            peg = None
+        verdict = apply_peg(verdict, peg)
+
+    # Proof-of-reserves BACKING (backed_oracle.py): is the recognized tokenized security
+    # actually collateralized (shares held vs tokens in circulation)? Keyless issuer PoR;
+    # under-collateralized -> GO->HOLD. Conservative-only, fail-open.
+    if backing_index is not None and asset_record and asset_record.get("symbol"):
+        from backed_oracle import apply_backing, assess_backing
+        try:
+            _bk = assess_backing(backing_index.backing(asset_record.get("symbol")))
+        except Exception:
+            _bk = None
+        verdict = apply_backing(verdict, _bk)
+
+    # DEX market-vs-NAV peg (dex_price.py): the oracle-managed peg tracks the underlying
+    # by construction, so it can't see the TOKEN trading off its NAV on an actual pool
+    # (bait/thin liquidity / market depeg). Read the token's live Uniswap-v3 price and
+    # compare to the underlying (Pyth). Off-peg -> HOLD. Opt-in, conservative, fail-open.
+    if (dex_source is not None and pyth_source is not None and asset_record
+            and asset_record.get("underlying_symbol") and clean.get("acquires")):
+        from dex_price import (apply_market_peg, assess_execution,
+                               assess_market_peg)
+        _acq = clean["acquires"]
+        try:
+            _underp = pyth_source.price(asset_record.get("underlying_symbol"))
+            # Prefer the EXECUTABLE price (QuoterV2, size-aware -- catches slippage at the
+            # agent's actual trade size); fall back to the pool SPOT mid if no quoter.
+            _exe = dex_source.executable_price(_acq.get("token"), _acq.get("chain"),
+                                               clean["amount"])
+            if _exe:
+                _mp = assess_execution(_exe["effective_price"], _underp, _exe["spot_price"])
+            else:
+                _dexp = dex_source.price(_acq.get("token"), _acq.get("chain"),
+                                         pool=_acq.get("dex_pool"))
+                _mp = assess_market_peg(_dexp, _underp)
+        except Exception:
+            _mp = None
+        verdict = apply_market_peg(verdict, _mp)
+
+    # Holder-concentration rug-check (holder_concentration.py): a single non-contract
+    # wallet holding a dominant share of the token supply -> dump/manipulation risk.
+    # Keyless Blockscout; HOLD-only, fail-open, contract holders excluded (issuer custody).
+    if holder_source is not None and clean.get("acquires"):
+        from holder_concentration import apply_concentration
+        _acq = clean["acquires"]
+        try:
+            _hc = holder_source.check(_acq.get("token"), _acq.get("chain"))
+        except Exception:
+            _hc = None
+        # ADVISORY (gate=False): records the signal + feeds the aggregate, but doesn't
+        # gate alone (noisier for RWAs). The aggregation layer weighs it collectively.
+        verdict = apply_concentration(verdict, _hc, gate=False)
+
+    # Aave reserve quality (aave_reserve.py) -- ADVISORY: a token Aave has FROZEN was
+    # de-risked by a major protocol (feeds the aggregate); a listed reserve is a
+    # positive note. Keyless eth_call; never gates alone, fail-open.
+    if aave_source is not None and clean.get("acquires"):
+        from aave_reserve import apply_aave
+        _acq = clean["acquires"]
+        try:
+            _av = aave_source.check(_acq.get("token"), _acq.get("chain"))
+        except Exception:
+            _av = None
+        verdict = apply_aave(verdict, _av)
+
+    # Earned ISSUER-TRUST grade (issuer_trust_gate.py) -- the payoff of the accumulation
+    # corpus: an issuer's LABELED settlement/outcome history graded high/medium/low. O(1)
+    # lookup off a precomputed snapshot. DESCRIPTIVE by default (ISSUER_TRUST_GATES lock
+    # off -> recorded, never gates); when calibrated + the lock flips, a LOW grade becomes
+    # an advisory signal the aggregate weighs. Never STOP, fail-open.
+    if issuer_trust_source is not None and asset_record and asset_record.get("issuer"):
+        from issuer_trust_gate import apply_issuer_trust
+        try:
+            _grade = issuer_trust_source.grade(asset_record.get("issuer"))
+        except Exception:
+            _grade = None
+        verdict = apply_issuer_trust(verdict, _grade)
+
+    # AGGREGATION / confidence layer (rwa_aggregate.py): compose the ~8 RWA signals into
+    # ONE weighted risk view (signals.rwa_risk: score/level/primary_concern/concerns) and
+    # apply the controlled collective rule -- advisory signals agreeing past a threshold
+    # escalate GO->HOLD once. Descriptive + conservative; the strong gates already decided.
+    if clean.get("acquires"):
+        from rwa_aggregate import aggregate, apply_aggregate
+        verdict = apply_aggregate(verdict, aggregate(verdict.get("signals")))
+
     # The receipt is the ledger's join key, so it must be UNIQUE PER PAYMENT --
     # not just a hash of the verdict content (two counterparties with identical
     # stats produce identical verdicts and would otherwise collide). Sign over
@@ -1141,6 +1329,20 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         "nonce": os.urandom(12).hex(),
     })
     verdict["receipt_id"] = sign_receipt(receipt_payload)
+
+    # ACCUMULATION (rwa_ledger.py): write down every RWA buy + its context (asset,
+    # restriction grade, peg, verdict), keyed by the receipt_id join key so a later
+    # OUTCOME can be linked back to it. The private corpus no competitor has.
+    # Fail-soft: logging must never break a verdict.
+    if rwa_ledger is not None and clean.get("acquires"):
+        try:
+            from rwa_ledger import build_rwa_event
+            rwa_ledger.record(build_rwa_event(clean, verdict, asset_record,
+                                              rwa_signal, peg, now=_now,
+                                              receipt_id=verdict["receipt_id"],
+                                              pre_balance=pre_balance))
+        except Exception:
+            pass
 
     if ledger is not None:
         # The caller gets a capability token to later report this payment's
@@ -1262,6 +1464,18 @@ class _Handler(BaseHTTPRequestHandler):
     category_index = None  # {category: on-chain median} for the category-price check, or None
     divergence_index = None  # {payee: settled/advertised ratio} bait-and-switch watch-list, or None
     enrichment_source = None  # blockscout.BlockscoutEnrichmentSource (REVIEW-only), or None
+    rwa_source = None  # rwa_readiness.RwaReadinessSource (RWA transfer-restriction), or None
+    stock_registry = None  # tokenized_stock_registry.TokenizedStockRegistry (discovery), or None
+    pyth_source = None  # pyth_price.PythPriceSource (peg/NAV divergence), or None
+    rwa_ledger = None  # rwa_ledger.RwaLedger (accumulation corpus), or None
+    balance_reader = None  # rwa_balance.BalanceReader (pre-buy snapshot), or None
+    backing_index = None  # backed_oracle.BackedOracleIndex (proof-of-reserves), or None
+    dex_source = None  # dex_price.DexPriceSource (market-vs-NAV peg), or None
+    holder_source = None  # holder_concentration.HolderConcentrationSource (rug-check), or None
+    aave_source = None  # aave_reserve.AaveReserveSource (advisory quality), or None
+    issuer_trust_source = None  # issuer_trust_gate.IssuerTrustSource (earned grade), or None
+    settlement_sim_source = None  # settlement_sim.SettlementSimSource (pre-sig feasibility)
+    auth_sim_source = None  # auth_sim.AuthorizationSimSource (EIP-3009 replay/window)
     graph_source = None  # payer_reputation.PayerReputationSource (Sybil corroboration)
     velocity_source = None  # settlement_velocity.VelocitySource (stale gate)
     openapi_server_url = None  # public origin for the openapi.json servers[] (or None)
@@ -1509,6 +1723,18 @@ class _Handler(BaseHTTPRequestHandler):
                                  category_index=self.category_index,
                                  divergence_index=self.divergence_index,
                                  enrichment_source=self.enrichment_source,
+                                 rwa_source=self.rwa_source,
+                                 stock_registry=self.stock_registry,
+                                 pyth_source=self.pyth_source,
+                                 rwa_ledger=self.rwa_ledger,
+                                 balance_reader=self.balance_reader,
+                                 backing_index=self.backing_index,
+                                 dex_source=self.dex_source,
+                                 holder_source=self.holder_source,
+                                 aave_source=self.aave_source,
+                                 issuer_trust_source=self.issuer_trust_source,
+                                 settlement_sim_source=self.settlement_sim_source,
+                                 auth_sim_source=self.auth_sim_source,
                                  verify_signer=_verify_signer)
         if err is not None:
             self._send_json(400, {"error": err})
@@ -1594,7 +1820,11 @@ class BlackwallServer:
                  hold_above=None, peer_index=None, openapi_server_url=None,
                  graph_source=None, velocity_source=None, verdict_anchor=None,
                  category_index=None, divergence_index=None, rate_limiter=None,
-                 enrichment_source=None):
+                 enrichment_source=None, rwa_source=None, stock_registry=None,
+                 pyth_source=None, rwa_ledger=None, balance_reader=None,
+                 backing_index=None, dex_source=None, holder_source=None,
+                 aave_source=None, issuer_trust_source=None,
+                 settlement_sim_source=None, auth_sim_source=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -1613,6 +1843,18 @@ class BlackwallServer:
         self.divergence_index = divergence_index
         self.rate_limiter = rate_limiter
         self.enrichment_source = enrichment_source
+        self.rwa_source = rwa_source
+        self.stock_registry = stock_registry
+        self.pyth_source = pyth_source
+        self.rwa_ledger = rwa_ledger
+        self.balance_reader = balance_reader
+        self.backing_index = backing_index
+        self.dex_source = dex_source
+        self.holder_source = holder_source
+        self.aave_source = aave_source
+        self.issuer_trust_source = issuer_trust_source
+        self.settlement_sim_source = settlement_sim_source
+        self.auth_sim_source = auth_sim_source
         self.stats = _Stats()
         self._httpd = None
 
@@ -1631,6 +1873,18 @@ class BlackwallServer:
                         "divergence_index": self.divergence_index,
                         "rate_limiter": self.rate_limiter,
                         "enrichment_source": self.enrichment_source,
+                        "rwa_source": self.rwa_source,
+                        "stock_registry": self.stock_registry,
+                        "pyth_source": self.pyth_source,
+                        "rwa_ledger": self.rwa_ledger,
+                        "balance_reader": self.balance_reader,
+                        "backing_index": self.backing_index,
+                        "dex_source": self.dex_source,
+                        "holder_source": self.holder_source,
+                        "aave_source": self.aave_source,
+                        "issuer_trust_source": self.issuer_trust_source,
+                        "settlement_sim_source": self.settlement_sim_source,
+                        "auth_sim_source": self.auth_sim_source,
                         "stats": self.stats,
                         "openapi_server_url": self.openapi_server_url})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
@@ -1945,6 +2199,216 @@ def main(argv=None):
                          "behavioral context; live call per verdict)\n" % _bs)
         sys.stdout.flush()
 
+    # OPT-IN (BLACKWALL_RWA_READINESS=1): pre-trade transfer-restriction readiness for
+    # agents BUYING tokenized RWAs with stablecoins. Only fires when a request carries
+    # `acquires`; adds a few eth_call view reads per such verdict against
+    # BLACKWALL_RWA_RPC_URL. Fail-open + conservative (GO->HOLD on a blocked transfer,
+    # never STOP). See docs/TOKENIZED_RWA.md.
+    rwa_source = None
+    if _env_flag("BLACKWALL_RWA_READINESS"):
+        from rwa_readiness import CombinedRwaReadinessSource, RwaReadinessSource
+        _rpc = os.environ.get("BLACKWALL_RWA_RPC_URL", "")
+        _sol_rpc = os.environ.get("BLACKWALL_RWA_SOLANA_RPC_URL", "")
+        _sources = [RwaReadinessSource(rpc_url=_rpc)]
+        if _sol_rpc:
+            from solana_rwa import SolanaRwaReadinessSource
+            _sources.append(SolanaRwaReadinessSource(rpc_url=_sol_rpc))
+        # ERC-8226 (RAMS) agent-authorization axis -- DORMANT-BUT-READY: idle until a
+        # request advertises `acquires.mandate_registry` (or BLACKWALL_RAMS_REGISTRY),
+        # then it reads canExecute on the same EVM RPC. Wired now so it activates the day
+        # an asset ships a RAMS hook, with zero code change. See docs/TOKENIZED_RWA.md.
+        if _rpc:
+            from rams_readiness import RamsReadinessSource
+            _sources.append(RamsReadinessSource(
+                rpc_url=_rpc,
+                default_registry=os.environ.get("BLACKWALL_RAMS_REGISTRY") or None))
+        rwa_source = CombinedRwaReadinessSource(_sources)
+        sys.stdout.write("blackwall: RWA transfer-restriction readiness ON (EVM %s%s -- "
+                         "pre-trade check when a request carries `acquires`; fail-open, "
+                         "HOLD-only)\n" % (_rpc or "NO RPC url -> fail-open unknown",
+                         "; Solana " + _sol_rpc if _sol_rpc else ""))
+        sys.stdout.flush()
+
+    # OPT-IN (BLACKWALL_STOCK_REGISTRY=1): tokenized-stock discovery enrichment. Fetches
+    # the keyless Backed/xStocks feed at startup (one network call) into an in-memory
+    # registry; recognizes a known tokenized security in `acquires` and annotates the
+    # verdict (issuer/underlying/ISIN + trading_halted HOLD). Fail-soft (empty on error).
+    stock_registry = None
+    if _env_flag("BLACKWALL_STOCK_REGISTRY"):
+        from tokenized_stock_registry import build_registry
+        stock_registry = build_registry()
+        sys.stdout.write("blackwall: tokenized-stock discovery ON (%d known deployments "
+                         "from the keyless Backed feed; descriptive + trading-halt HOLD)\n"
+                         % len(stock_registry))
+        sys.stdout.flush()
+
+    # With the registry on, also load Backed's keyless oracle + proof-of-reserves index:
+    # an authoritative Pyth feed map (hardens the peg gate) + a BACKING gate
+    # (under-collateralized -> HOLD). Fail-soft.
+    backing_index = None
+    if stock_registry is not None:
+        from backed_oracle import load_backed_oracle_index
+        backing_index = load_backed_oracle_index()
+        sys.stdout.write("blackwall: Backed oracle+PoR ON (%d reserves, %d authoritative "
+                         "Pyth feeds; under-collateralized HOLD)\n"
+                         % (len(backing_index.reserves), len(backing_index.feed_map())))
+        sys.stdout.flush()
+
+    # OPT-IN (BLACKWALL_PYTH=1, needs the stock registry): peg/NAV divergence via the
+    # keyless Pyth oracle -- flags a tokenized stock priced far over its real underlying.
+    # Seed the price source with the issuer-authoritative feed map so it resolves the
+    # exact Pyth feed instead of heuristically searching by ticker.
+    pyth_source = None
+    if _env_flag("BLACKWALL_PYTH") and stock_registry is not None:
+        from pyth_price import PythPriceSource
+        _fm = backing_index.feed_map() if backing_index is not None else None
+        pyth_source = PythPriceSource(feed_map=_fm)
+        sys.stdout.write("blackwall: peg/NAV divergence ON (keyless Pyth; overpay-vs-"
+                         "underlying HOLD when acquires carries unit_price/quantity)\n")
+        sys.stdout.flush()
+
+    # OPT-IN (BLACKWALL_DEX=1, needs pyth + an EVM RPC): DEX market-vs-NAV peg. Reads the
+    # token's live Uniswap-v3 price and flags a material deviation from the underlying
+    # (depeg / thin liquidity / bait pool) the oracle-managed peg can't see.
+    dex_source = None
+    if _env_flag("BLACKWALL_DEX") and pyth_source is not None:
+        _dex_rpc = os.environ.get("BLACKWALL_RWA_RPC_URL", "")
+        if _dex_rpc:
+            from dex_price import MIN_QUOTE_LIQUIDITY, DexPriceSource
+            try:
+                _min_liq = int(os.environ.get("BLACKWALL_DEX_MIN_LIQ", MIN_QUOTE_LIQUIDITY))
+            except ValueError:
+                _min_liq = MIN_QUOTE_LIQUIDITY
+            dex_source = DexPriceSource(rpc_url=_dex_rpc, min_liquidity=_min_liq)
+            sys.stdout.write("blackwall: DEX market-peg ON (Uniswap-v3 deepest pool >= "
+                             "%d USDC atomic; QuoterV2 executable price vs underlying NAV; "
+                             "off-peg/high-slippage HOLD)\n" % _min_liq)
+            sys.stdout.flush()
+
+    # OPT-IN (BLACKWALL_HOLDER_CONCENTRATION=1): holder-concentration rug-check. Keyless
+    # Blockscout; a dominant NON-CONTRACT holder -> HOLD. Fires on any RWA/token buy.
+    holder_source = None
+    if _env_flag("BLACKWALL_HOLDER_CONCENTRATION"):
+        from holder_concentration import HolderConcentrationSource
+        holder_source = HolderConcentrationSource()
+        sys.stdout.write("blackwall: holder-concentration rug-check ON (keyless "
+                         "Blockscout; dominant non-contract holder -> HOLD)\n")
+        sys.stdout.flush()
+
+    # OPT-IN (BLACKWALL_AAVE=1, needs an EVM RPC): Aave reserve quality (advisory). A
+    # token Aave has frozen -> risk note (feeds the aggregate); listed -> positive note.
+    aave_source = None
+    if _env_flag("BLACKWALL_AAVE"):
+        _aave_rpc = os.environ.get("BLACKWALL_RWA_RPC_URL", "")
+        if _aave_rpc:
+            from aave_reserve import AaveReserveSource
+            aave_source = AaveReserveSource(rpc_url=_aave_rpc)
+            sys.stdout.write("blackwall: Aave reserve quality ON (advisory; frozen "
+                             "reserve -> risk note, weighed collectively)\n")
+            sys.stdout.flush()
+
+    # OPT-IN (BLACKWALL_RWA_LEDGER=<path>): the ACCUMULATION corpus -- append every RWA
+    # buy + its asset/restriction/peg context to build the private history no one else has.
+    rwa_ledger = None
+    _rwa_led_path = os.environ.get("BLACKWALL_RWA_LEDGER", "")
+    if _rwa_led_path:
+        from rwa_ledger import RwaLedger
+        rwa_ledger = RwaLedger(_rwa_led_path)
+        sys.stdout.write("blackwall: RWA accumulation corpus ON -> %s (per-asset / "
+                         "per-issuer history)\n" % _rwa_led_path)
+        sys.stdout.flush()
+
+    # DEFINITIVE settlement snapshot: when the corpus is on AND an RPC is configured,
+    # snapshot the payer's pre-buy token balance so the outcome loop can prove arrival
+    # (post > pre). One balanceOf on the RWA hot path; opt-in via the same RPC vars.
+    balance_reader = None
+    if rwa_ledger is not None:
+        _bal_evm = os.environ.get("BLACKWALL_RWA_RPC_URL", "")
+        _bal_sol = os.environ.get("BLACKWALL_RWA_SOLANA_RPC_URL", "")
+        if _bal_evm or _bal_sol:
+            from rwa_balance import BalanceReader
+            balance_reader = BalanceReader(evm_rpc_url=_bal_evm, solana_rpc_url=_bal_sol)
+            sys.stdout.write("blackwall: definitive settlement snapshot ON (pre-buy "
+                             "balance recorded for the T+N delta)\n")
+            sys.stdout.flush()
+
+    # EARNED issuer-trust grade (issuer_trust_gate.py): when the accumulation corpus is
+    # on, precompute the per-issuer grade snapshot ONCE at startup so every RWA verdict
+    # carries the issuer's LABELED settlement/outcome grade (O(1) lookup on the hot path).
+    # DESCRIPTIVE by default (ISSUER_TRUST_GATES lock off); flips to an advisory signal
+    # only once calibrated. Fail-open -- a broken corpus yields an empty snapshot.
+    issuer_trust_source = None
+    if rwa_ledger is not None:
+        from issuer_trust_gate import IssuerTrustSource
+        issuer_trust_source = IssuerTrustSource.from_ledger(rwa_ledger)
+        sys.stdout.write("blackwall: issuer-trust grade ON (%d issuer(s) graded from the "
+                         "corpus; descriptive until ISSUER_TRUST_GATES is calibrated)\n"
+                         % len(issuer_trust_source))
+        sys.stdout.flush()
+
+    # OPT-IN (BLACKWALL_RPC_NODE_UPSTREAM=<url>): run OUR OWN JSON-RPC front door in
+    # this process, on a daemon thread, and point the simulation gates at it. Without
+    # this the sim gates talk straight to a public provider, leaking "this payer is about
+    # to pay this payee" on every check (docs/RPC_SELFHOST.md). Co-locating it makes the
+    # contained posture a ONE-VARIABLE change instead of a second service to operate:
+    # the node caches (a repeat check never re-leaks), coalesces concurrent duplicates,
+    # and refuses every non-read method. Set the upstream to YOUR node for zero
+    # third-party leakage. Explicit BLACKWALL_*_RPC_URL values still win.
+    _rpc_node_url = None
+    _rpc_upstream = os.environ.get("BLACKWALL_RPC_NODE_UPSTREAM", "")
+    if _rpc_upstream:
+        try:
+            import threading as _threading
+
+            from rpc_node import LocalRpcNode
+            _node = LocalRpcNode(
+                _rpc_upstream, host="127.0.0.1",
+                port=int(os.environ.get("BLACKWALL_RPC_NODE_PORT", "0") or 0),
+                ttl=float(os.environ.get("BLACKWALL_RPC_NODE_TTL", "30") or 30),
+                quiet=True)
+            _threading.Thread(target=_node.serve_forever, daemon=True).start()
+            for _ in range(500):                      # wait for the bind (port may be 0)
+                if _node._httpd is not None:
+                    break
+                time.sleep(0.01)
+            if _node._httpd is not None:
+                _rpc_node_url = "http://127.0.0.1:%d/" % _node.port
+                sys.stdout.write(
+                    "blackwall: own RPC node ON -> %s (upstream %s, cache ttl %.0fs, "
+                    "read-only allowlist; chain reads are contained)\n"
+                    % (_rpc_node_url, _rpc_upstream, _node.cache.ttl))
+                sys.stdout.flush()
+        except Exception as _e:                        # fail-open: never block startup
+            sys.stdout.write("blackwall: own RPC node FAILED to start (%s) -- "
+                             "simulation gates will use their configured RPC\n"
+                             % type(_e).__name__)
+            sys.stdout.flush()
+
+    # OPT-IN (BLACKWALL_SETTLEMENT_SIM=1 + an RPC): PRE-SIGNATURE settlement feasibility
+    # for every x402 payment -- simulate the USDC transfer and catch a frozen/blacklisted
+    # payee or payer BEFORE the agent signs. One eth_call on the hot path (a second only
+    # when the first reverts, to attribute the block); HOLD-only, never STOP, fail-open.
+    settlement_sim_source = None
+    auth_sim_source = None
+    if _env_flag("BLACKWALL_SETTLEMENT_SIM"):
+        _sim_rpcs = {}
+        for _chain, _var in (("base", "BLACKWALL_BASE_RPC_URL"),
+                             ("ethereum", "BLACKWALL_RWA_RPC_URL")):
+            # An explicit per-chain URL wins; otherwise route through our own node when
+            # it is running, so the contained path is the DEFAULT once it is enabled.
+            _u = os.environ.get(_var, "") or (_rpc_node_url or "")
+            if _u:
+                _sim_rpcs[_chain] = _u
+        if _sim_rpcs:
+            from settlement_sim import SettlementSimSource
+            settlement_sim_source = SettlementSimSource(rpc_by_chain=_sim_rpcs)
+            from auth_sim import AuthorizationSimSource
+            auth_sim_source = AuthorizationSimSource(rpc_by_chain=_sim_rpcs)
+            sys.stdout.write("blackwall: settlement simulation ON for %s (pre-signature "
+                             "revert check; HOLD-only, fail-open)\n"
+                             % ",".join(sorted(_sim_rpcs)))
+            sys.stdout.flush()
+
     # OPT-IN (BLACKWALL_ANCHOR=1): anchor every verdict's digest to Traceipt for a
     # tamper-evident audit trail. Non-blocking + fail-open; costs ~0.002 USDC/verdict
     # and needs a funded SIGNER_PRIVATE_KEY (else it 402s and fails open). OFF by
@@ -1970,6 +2434,18 @@ def main(argv=None):
                              divergence_index=divergence_index,
                              rate_limiter=rate_limiter,
                              enrichment_source=enrichment_source,
+                             rwa_source=rwa_source,
+                             stock_registry=stock_registry,
+                             pyth_source=pyth_source,
+                             rwa_ledger=rwa_ledger,
+                             balance_reader=balance_reader,
+                             backing_index=backing_index,
+                             dex_source=dex_source,
+                             holder_source=holder_source,
+                             aave_source=aave_source,
+                             issuer_trust_source=issuer_trust_source,
+                             settlement_sim_source=settlement_sim_source,
+                             auth_sim_source=auth_sim_source,
                              openapi_server_url=origin)
     try:
         server.serve_forever()

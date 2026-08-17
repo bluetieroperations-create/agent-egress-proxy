@@ -1,0 +1,81 @@
+# Run the full stdlib test suite on every push and pull request.
+#
+# WHY THIS EXISTS: the suite is this repo's primary quality guarantee -- it carries the
+# fail-open guarantees, the calibration locks (SYBIL_RING_GATES / ISSUER_TRUST_GATES /
+# REVERT_AXIS_GATES), and the adversarial red-team scorecard (an attack that stops being
+# caught, or a legit control that starts being blocked, fails the build). Until now it
+# only ever ran when someone remembered to run it locally, so nothing stopped a
+# regression from reaching main.
+#
+# No dependencies to install: everything under test is stdlib-only by design. The
+# integration plugins (integrations/langchain, integrations/wallets, integrations/openclaw)
+# need third-party packages and run from their own directories -- they are deliberately
+# NOT part of this job.
+#
+# Tests that need network access skip themselves, so this job does not depend on egress.
+
+name: tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Compile-check every module
+        run: python3 -m compileall -q .
+
+      - name: Run the full suite
+        run: |
+          python3 -m unittest \
+            test_egress_proxy.py test_blackwall.py test_ledger.py \
+            test_reputation_onchain.py test_settlement_watch.py test_addresses.py \
+            test_x402.py test_mcp_server.py test_reputation_store.py \
+            test_facilitator.py test_discovery.py test_sanctions.py \
+            test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py \
+            test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py \
+            test_payload_sim.py test_traceipt_pull.py test_keccak.py \
+            test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py \
+            test_aa_cosigner.py test_chain_backfill.py test_discovery_crawl.py \
+            test_ecosystem_scan.py test_http_util.py test_payer_graph.py \
+            test_payer_reputation.py test_settlement_velocity.py test_confidence.py \
+            test_redteam.py test_demo_flywheel.py test_verdict_anchor.py \
+            test_categories.py test_category_pricing.py test_check_seed_age.py \
+            test_price_integrity.py test_ratelimit.py test_fuzz_verdict.py \
+            test_blockscout.py test_verdict_oracle.py test_calibration_lock.py \
+            test_coverage_eval.py test_refresh_guard.py test_secret_scan.py \
+            test_bench.py test_two_stage_signer.py test_rwa_readiness.py \
+            test_tokenized_stock_registry.py test_solana_rwa.py test_pyth_price.py \
+            test_rwa_ledger.py test_rwa_outcomes.py test_rwa_balance.py \
+            test_rwa_report.py test_backed_oracle.py test_rams_readiness.py \
+            test_dex_price.py test_holder_concentration.py test_rwa_aggregate.py \
+            test_aave_reserve.py test_rwa_backfill.py test_issuer_trust_gate.py \
+            test_revert_scan.py test_transfer_sim.py test_settlement_sim.py \
+            test_rpc_node.py test_auth_sim.py
+
+      - name: Adversarial scorecard (must have no false positives or misses)
+        # redteam.py exits non-zero on a FALSE POSITIVE or an unmarked MISS, so this is
+        # a real gate, not a report. It prints the table for the build log either way.
+        run: python3 redteam.py

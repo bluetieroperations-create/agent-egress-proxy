@@ -66,6 +66,15 @@ ENV BLACKWALL_HOST=0.0.0.0 \
     BLACKWALL_SANCTIONS_REFRESH=1 \
     BLACKWALL_CATEGORY_INDEX=/app/data/category_index.json \
     BLACKWALL_DIVERGENCE_INDEX=/app/data/divergence_index.json
+# Simulation gates are OFF by default. To enable them, set at deploy time (see
+# docs/RPC_SELFHOST.md and fly.toml for the full profile):
+#   BLACKWALL_RPC_NODE_UPSTREAM -- run our own RPC front door in-process and route all
+#                                  chain reads through it (cache + single-flight +
+#                                  read-only allowlist). Point at YOUR node for zero
+#                                  third-party query leakage. Set this FIRST.
+#   BLACKWALL_SETTLEMENT_SIM=1  -- pre-signature settlement + EIP-3009 authorization sim
+#   BLACKWALL_RWA_READINESS=1   -- only if agents buy tokenized RWAs
+#
 # Set at deploy time (NOT baked into the image):
 #   BLACKWALL_PAY_TO       -- your funded EVM wallet (turns billing ON)
 #   BLACKWALL_FACILITATOR  -- real x402 facilitator base URL

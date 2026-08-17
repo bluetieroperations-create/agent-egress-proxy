@@ -35,6 +35,27 @@ primary_region = "iad"
   # past the platform's timeout on a cold store -> 502. Pre-warm from the manifest
   # instead (chain_backfill --payees-file data/seed_payees.txt).
   BLACKWALL_INGEST = "0"
+  # --- Simulation gates (OFF by default; see docs/RPC_SELFHOST.md) ---------------
+  # Uncomment to enable pre-signature settlement + EIP-3009 authorization simulation:
+  # "would this payment actually land, and is the payee/payer frozen?"
+  #
+  # Set BLACKWALL_RPC_NODE_UPSTREAM FIRST. It runs our own JSON-RPC front door inside
+  # this process (daemon thread) and routes every chain read through it -- cached, so a
+  # repeat check never re-leaks; concurrent duplicates coalesced; read-only method
+  # allowlist so it can never broadcast a transaction. Point it at YOUR OWN node for
+  # zero third-party leakage. Without it the gates query a public provider directly,
+  # disclosing "this payer is about to pay this payee" on every check.
+  #
+  #   BLACKWALL_RPC_NODE_UPSTREAM = "https://your-node.example"
+  #   BLACKWALL_SETTLEMENT_SIM = "1"
+  #
+  # Only if your agents BUY tokenized RWAs (needs an Ethereum-side RPC):
+  #   BLACKWALL_RWA_READINESS = "1"
+  #
+  # Advisory/noisier sources -- leave off until you want the extra risk view; they are
+  # weighed collectively by rwa_aggregate, never gating alone:
+  #   BLACKWALL_DEX / BLACKWALL_AAVE / BLACKWALL_HOLDER_CONCENTRATION / BLACKWALL_PYTH
+
   # Pricing posture (see PRICING.md): value-aligned / freemium-on-stakes.
   # Low-stakes verdicts are free (incl. sanctions safety); high-stakes pay.
   # Start generous to win adoption while the category has no data moat.

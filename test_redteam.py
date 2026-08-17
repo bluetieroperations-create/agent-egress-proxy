@@ -23,8 +23,38 @@ class TestScorecard(unittest.TestCase):
 
     def test_caught_set_does_not_shrink(self):
         caught = [r for r in self.results if r["disposition"] == "CAUGHT"]
-        # if a gate regresses (stops blocking its attack) this count drops.
-        self.assertGreaterEqual(len(caught), 12)
+        # if a gate regresses (stops blocking its attack) this count drops. Tightened
+        # from a loose floor to the ACTUAL count -- a weak floor guards nothing.
+        self.assertGreaterEqual(len(caught), 24)
+
+    def test_simulation_gates_are_represented_and_catch(self):
+        """The newest gates (settlement / authorization / RWA simulation) fold in
+        `forecast`, not `decide_payment`, so they were invisible to this scorecard
+        until now. Every one of these families must be present AND blocking."""
+        by_cat = {}
+        for r in self.results:
+            by_cat.setdefault(r["category"], []).append(r)
+        for cat in ("settlement-sim", "auth-sim", "rwa-sim"):
+            self.assertIn(cat, by_cat, "simulation family missing from the scorecard")
+            for r in by_cat[cat]:
+                if r["expect"] == "block":
+                    self.assertEqual(r["disposition"], "CAUGHT",
+                                     "%s regressed: %s" % (cat, r["name"]))
+
+    def test_simulation_gates_do_not_over_block(self):
+        """The real risk with a simulation gate is FALSE POSITIVES, so the controls
+        that pin its restraint are called out by name: a sender-side revert must not be
+        blamed on the receiver, an underfunded payer must not gate, and an unreachable
+        RPC must fail OPEN."""
+        names = {r["name"]: r for r in self.results}
+        for n in ("SENDER-side revert (attribution)",
+                  "underfunded payer (must not gate)",
+                  "RPC unreachable (fail-open)",
+                  "clean payment, sim ready",
+                  "valid fresh authorization"):
+            self.assertIn(n, names, "restraint control missing: %s" % n)
+            self.assertEqual(names[n]["disposition"], "CLEAN",
+                             "simulation gate over-blocked: %s" % n)
 
     def test_every_core_attack_is_caught(self):
         # the non-gap attacks, by category, must each be blocked.
