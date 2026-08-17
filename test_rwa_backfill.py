@@ -49,6 +49,14 @@ class TestAcquisitions(unittest.TestCase):
         items = [_xfer(B1, "0x%d" % i) for i in range(10)]
         self.assertEqual(len(token_acquisitions(self._fetch(items), TOKEN, cap=3)), 3)
 
+    def test_to_unix_robust(self):
+        # AUDIT REGRESSION: int(inf) raises OverflowError -- must fail to None, not crash.
+        self.assertIsNone(bf._to_unix(float("inf")))
+        self.assertIsNone(bf._to_unix(float("nan")))
+        self.assertIsNone(bf._to_unix("not-a-date"))
+        self.assertEqual(bf._to_unix(1735689600), 1735689600)
+        self.assertIsInstance(bf._to_unix("2026-01-01T00:00:00Z"), int)
+
     def test_pagination(self):
         pages = [([_xfer(B1, "0x1")], {"p": 2}), ([_xfer(B2, "0x2")], None)]
         calls = {"n": 0}

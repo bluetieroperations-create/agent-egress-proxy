@@ -42,7 +42,10 @@ def _addr(x):
 def _to_unix(ts):
     """ISO-8601 (or numeric) timestamp -> unix seconds, or None. NEVER raises."""
     if isinstance(ts, (int, float)):
-        return int(ts)
+        try:
+            return int(ts)                    # OverflowError on inf/nan
+        except (OverflowError, ValueError):
+            return None
     if not isinstance(ts, str):
         return None
     try:
