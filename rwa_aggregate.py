@@ -55,6 +55,9 @@ SIGNAL_SPECS = (
     ("holder_concentration", "advisory", 0.3,
      "token supply concentrated in one non-contract wallet",
      lambda s: s.get("grade") == "concentrated"),
+    ("aave", "advisory", 0.3,
+     "Aave has frozen this token's lending reserve (protocol de-risked it)",
+     lambda s: s.get("grade") == "frozen"),
 )
 
 _TOTAL_WEIGHT = sum(w for _k, _t, w, _l, _b in SIGNAL_SPECS)

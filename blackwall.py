@@ -984,7 +984,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              divergence_index=None, enrichment_source=None, verify_signer=True,
              rwa_source=None, stock_registry=None, pyth_source=None, rwa_ledger=None,
              balance_reader=None, backing_index=None, dex_source=None,
-             holder_source=None):
+             holder_source=None, aave_source=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
@@ -1250,6 +1250,18 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         # gate alone (noisier for RWAs). The aggregation layer weighs it collectively.
         verdict = apply_concentration(verdict, _hc, gate=False)
 
+    # Aave reserve quality (aave_reserve.py) -- ADVISORY: a token Aave has FROZEN was
+    # de-risked by a major protocol (feeds the aggregate); a listed reserve is a
+    # positive note. Keyless eth_call; never gates alone, fail-open.
+    if aave_source is not None and clean.get("acquires"):
+        from aave_reserve import apply_aave
+        _acq = clean["acquires"]
+        try:
+            _av = aave_source.check(_acq.get("token"), _acq.get("chain"))
+        except Exception:
+            _av = None
+        verdict = apply_aave(verdict, _av)
+
     # AGGREGATION / confidence layer (rwa_aggregate.py): compose the ~8 RWA signals into
     # ONE weighted risk view (signals.rwa_risk: score/level/primary_concern/concerns) and
     # apply the controlled collective rule -- advisory signals agreeing past a threshold
@@ -1415,6 +1427,7 @@ class _Handler(BaseHTTPRequestHandler):
     backing_index = None  # backed_oracle.BackedOracleIndex (proof-of-reserves), or None
     dex_source = None  # dex_price.DexPriceSource (market-vs-NAV peg), or None
     holder_source = None  # holder_concentration.HolderConcentrationSource (rug-check), or None
+    aave_source = None  # aave_reserve.AaveReserveSource (advisory quality), or None
     graph_source = None  # payer_reputation.PayerReputationSource (Sybil corroboration)
     velocity_source = None  # settlement_velocity.VelocitySource (stale gate)
     openapi_server_url = None  # public origin for the openapi.json servers[] (or None)
@@ -1670,6 +1683,7 @@ class _Handler(BaseHTTPRequestHandler):
                                  backing_index=self.backing_index,
                                  dex_source=self.dex_source,
                                  holder_source=self.holder_source,
+                                 aave_source=self.aave_source,
                                  verify_signer=_verify_signer)
         if err is not None:
             self._send_json(400, {"error": err})
@@ -1757,7 +1771,8 @@ class BlackwallServer:
                  category_index=None, divergence_index=None, rate_limiter=None,
                  enrichment_source=None, rwa_source=None, stock_registry=None,
                  pyth_source=None, rwa_ledger=None, balance_reader=None,
-                 backing_index=None, dex_source=None, holder_source=None):
+                 backing_index=None, dex_source=None, holder_source=None,
+                 aave_source=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -1784,6 +1799,7 @@ class BlackwallServer:
         self.backing_index = backing_index
         self.dex_source = dex_source
         self.holder_source = holder_source
+        self.aave_source = aave_source
         self.stats = _Stats()
         self._httpd = None
 
@@ -1810,6 +1826,7 @@ class BlackwallServer:
                         "backing_index": self.backing_index,
                         "dex_source": self.dex_source,
                         "holder_source": self.holder_source,
+                        "aave_source": self.aave_source,
                         "stats": self.stats,
                         "openapi_server_url": self.openapi_server_url})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
@@ -2220,6 +2237,18 @@ def main(argv=None):
                          "Blockscout; dominant non-contract holder -> HOLD)\n")
         sys.stdout.flush()
 
+    # OPT-IN (BLACKWALL_AAVE=1, needs an EVM RPC): Aave reserve quality (advisory). A
+    # token Aave has frozen -> risk note (feeds the aggregate); listed -> positive note.
+    aave_source = None
+    if _env_flag("BLACKWALL_AAVE"):
+        _aave_rpc = os.environ.get("BLACKWALL_RWA_RPC_URL", "")
+        if _aave_rpc:
+            from aave_reserve import AaveReserveSource
+            aave_source = AaveReserveSource(rpc_url=_aave_rpc)
+            sys.stdout.write("blackwall: Aave reserve quality ON (advisory; frozen "
+                             "reserve -> risk note, weighed collectively)\n")
+            sys.stdout.flush()
+
     # OPT-IN (BLACKWALL_RWA_LEDGER=<path>): the ACCUMULATION corpus -- append every RWA
     # buy + its asset/restriction/peg context to build the private history no one else has.
     rwa_ledger = None
@@ -2278,6 +2307,7 @@ def main(argv=None):
                              backing_index=backing_index,
                              dex_source=dex_source,
                              holder_source=holder_source,
+                             aave_source=aave_source,
                              openapi_server_url=origin)
     try:
         server.serve_forever()

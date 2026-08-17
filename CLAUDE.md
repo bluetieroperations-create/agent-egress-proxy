@@ -282,6 +282,12 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   COLLECTIVE rule (advisory signals agreeing past a weight threshold escalate GO->HOLD
   once). PURE, descriptive, conservative -- the strong gates already decided; this gives
   the operator ONE ranked view + controls noise. Folded last in `forecast`),
+  `aave_reserve.py` (ADVISORY quality/de-risk signal from Aave v3 reserve config:
+  `getReserveConfigurationData` -> is this token vetted enough for a major lending
+  protocol to LIST as collateral, and has Aave since FROZEN (de-risked) it? `frozen` ->
+  advisory concern (weighed collectively by rwa_aggregate, never gates alone); `listed` ->
+  positive note; `unlisted` (the common RWA case) -> NEUTRAL/no signal. Keyless eth_call,
+  fail-open, opt-in `BLACKWALL_AAVE`. Provider address verified live on WETH),
   `holder_concentration.py` (keyless rug/manipulation signal from token holder
   distribution (Blockscout): a single dominant NON-CONTRACT wallet holding >= 50% of
   supply -> HOLD (dump/manipulation risk). CONTRACT holders EXCLUDED (LP/issuer custody/
@@ -319,7 +325,7 @@ test_solana_rwa.py test_pyth_price.py test_rwa_ledger.py test_rwa_outcomes.py \
 test_rwa_balance.py test_rwa_report.py \
  test_backed_oracle.py test_rams_readiness.py \
  test_dex_price.py test_holder_concentration.py \
- test_rwa_aggregate.py
+ test_rwa_aggregate.py test_aave_reserve.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop
