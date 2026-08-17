@@ -188,6 +188,61 @@ class TransferSimulator:
             return json.loads(r.read())
 
 
+class BlockscoutHolderLookup:
+    """Find a REAL holder of a token, so the simulation has a funded sender.
+
+    Simulation needs a `from` that actually holds the token -- an empty wallet reverts on
+    BALANCE, which `to_readiness_probe` correctly refuses to treat as a restriction, so
+    without a holder the source silently answers "unknown" for every request. A live
+    request never carries one, so we look it up.
+
+    Results are CACHED per token: the top holder is stable, and re-fetching it on every
+    verdict would add a request to the hot path and leak the queried token repeatedly.
+    Keyless, fail-open (None on any error -> the source no-ops)."""
+
+    def __init__(self, bases=None, timeout=6.0, fetch=None, max_entries=512):
+        from holder_concentration import BLOCKSCOUT_BASES
+        self.bases = bases or BLOCKSCOUT_BASES
+        self.timeout = timeout
+        self._fetch = fetch
+        self._cache = {}
+        self.max_entries = max_entries
+
+    def __call__(self, token, chain):
+        # Coerce, don't assume: a non-string chain/token must no-op, not raise. (Caught
+        # by the module's own smoke test -- `5 or ""` is 5, and 5.strip() explodes.)
+        def _s(x):
+            return x.strip().lower() if isinstance(x, str) else ""
+        key = (_s(chain), _s(token))
+        if key in self._cache:
+            return self._cache[key]
+        holder = None
+        try:
+            holder = self._lookup(key[1], key[0])
+        except Exception:
+            holder = None
+        if len(self._cache) < self.max_entries:
+            self._cache[key] = holder          # cache misses too: a token with no
+        return holder                          # readable holders shouldn't be re-fetched
+
+    def _lookup(self, token, chain):
+        base = self.bases.get(chain)
+        if not base or not token:
+            return None
+        if self._fetch is not None:
+            data = self._fetch(token, chain)
+        else:
+            import http_util
+            data = http_util.get_json("%s/api/v2/tokens/%s/holders" % (base, token),
+                                      timeout=self.timeout)
+        for item in (data.get("items") or []) if isinstance(data, dict) else []:
+            addr = item.get("address") if isinstance(item, dict) else None
+            h = addr.get("hash") if isinstance(addr, dict) else addr
+            if isinstance(h, str) and h.startswith("0x"):
+                return h
+        return None
+
+
 class SimulationReadinessSource:
     """RWA readiness via SIMULATION -- the definitive answer the interface probe can't
     give (0/535 corpus tokens expose an interface). Drop-in for the `rwa_source` seam:
@@ -225,4 +280,11 @@ class SimulationReadinessSource:
             att = self.simulator.assess(token, holder, payer, amount, control=control)
         except Exception:
             return None
-        return assess_transfer_readiness(to_readiness_probe(att))
+        signal = assess_transfer_readiness(to_readiness_probe(att))
+        # RETURN None, NOT an "unknown" signal. CombinedRwaReadinessSource takes the
+        # FIRST non-None result, and this source is ordered FIRST -- so answering
+        # "unknown" here would SHADOW the interface probe and the RAMS axis instead of
+        # deferring to them. Declining lets the fallbacks have their turn.
+        if not signal or signal.get("grade") == "unknown":
+            return None
+        return signal

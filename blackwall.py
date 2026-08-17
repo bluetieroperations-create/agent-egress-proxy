@@ -2209,7 +2209,24 @@ def main(argv=None):
         from rwa_readiness import CombinedRwaReadinessSource, RwaReadinessSource
         _rpc = os.environ.get("BLACKWALL_RWA_RPC_URL", "")
         _sol_rpc = os.environ.get("BLACKWALL_RWA_SOLANA_RPC_URL", "")
-        _sources = [RwaReadinessSource(rpc_url=_rpc)]
+        # SIMULATION FIRST. CombinedRwaReadinessSource returns the FIRST non-None
+        # signal, and ordering is the whole fix here: a live probe of all 535 corpus
+        # tokens x 9 interface probes found 535/535 alive but 0/535 exposing ANY
+        # permissioned interface, so RwaReadinessSource answers "unknown" for
+        # essentially every real token. Simulating the transfer needs no interface and
+        # is how every permissioned issuer we know of was discovered (Ondo OUSG,
+        # BlackRock BUIDL, Matrixdock STBT). It also needs a FUNDED sender, which a live
+        # request never carries -- hence the holder lookup. Both are fail-open: no RPC,
+        # no holder, or a balance/opaque revert all yield "unknown" and the interface
+        # probe still gets its turn.
+        _sources = []
+        if _rpc:
+            from transfer_sim import (BlockscoutHolderLookup, SimulationReadinessSource,
+                                      TransferSimulator)
+            _sources.append(SimulationReadinessSource(
+                simulator=TransferSimulator(rpc_url=_rpc),
+                holder_lookup=BlockscoutHolderLookup()))
+        _sources.append(RwaReadinessSource(rpc_url=_rpc))
         if _sol_rpc:
             from solana_rwa import SolanaRwaReadinessSource
             _sources.append(SolanaRwaReadinessSource(rpc_url=_sol_rpc))
@@ -2223,10 +2240,13 @@ def main(argv=None):
                 rpc_url=_rpc,
                 default_registry=os.environ.get("BLACKWALL_RAMS_REGISTRY") or None))
         rwa_source = CombinedRwaReadinessSource(_sources)
-        sys.stdout.write("blackwall: RWA transfer-restriction readiness ON (EVM %s%s -- "
-                         "pre-trade check when a request carries `acquires`; fail-open, "
-                         "HOLD-only)\n" % (_rpc or "NO RPC url -> fail-open unknown",
-                         "; Solana " + _sol_rpc if _sol_rpc else ""))
+        sys.stdout.write("blackwall: RWA transfer-restriction readiness ON (%s; EVM %s%s "
+                         "-- pre-trade check when a request carries `acquires`; "
+                         "fail-open, HOLD-only)\n"
+                         % ("SIMULATION first, interface probe as fallback" if _rpc
+                            else "interface probe only",
+                            _rpc or "NO RPC url -> fail-open unknown",
+                            "; Solana " + _sol_rpc if _sol_rpc else ""))
         sys.stdout.flush()
 
     # OPT-IN (BLACKWALL_STOCK_REGISTRY=1): tokenized-stock discovery enrichment. Fetches

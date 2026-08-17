@@ -363,7 +363,12 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `decode_revert_error` / `attribute` / `to_readiness_probe` pure; `TransferSimulator`
   (injected transport) + `SimulationReadinessSource`, which emits the SAME probe shape
   `rwa_readiness.assess_transfer_readiness` already takes -- so it folds through the
-  EXISTING verdict path with zero new plumbing. Verified live: STBT + BUIDL -> blocked with
+  EXISTING verdict path with zero new plumbing. Wired FIRST in the server's
+  `CombinedRwaReadinessSource` (that class takes the FIRST non-None signal), with
+  `BlockscoutHolderLookup` supplying the funded sender a live request never carries --
+  otherwise the source silently answers "unknown" for everything. It returns None rather
+  than an `unknown` signal precisely so it DEFERS to the interface probe / RAMS axis
+  instead of shadowing them. Verified live: STBT + BUIDL -> blocked with
   their real revert strings, a freely-transferable control -> ready. Tests:
   `test_transfer_sim.py`),
   `settlement_sim.py` (PRE-SIGNATURE settlement feasibility for the CORE x402 path -- the
