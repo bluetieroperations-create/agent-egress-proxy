@@ -44,6 +44,16 @@ Read on-chain agent identity + reputation from the **ERC-8004** registry standar
 as an *input* signal (the shared rail others build on).
 - **Why deferred:** standard is young; wait for adoption before wiring it in.
 
+### RamsReadinessSource — ERC-8226 authorization axis  *(BUILT — dormant-but-ready)*
+**SHIPPED** as `rams_readiness.py`: reads `canExecute` from a mandate registry and folds
+via the shared `apply_rwa_readiness`, wired into `CombinedRwaReadinessSource` (idle) when
+the EVM RPC is set. It stays a NO-OP until a request advertises `acquires.mandate_registry`
+(or `BLACKWALL_RAMS_REGISTRY` is set), then activates with zero code change — so the day an
+asset ships a RAMS hook it just starts firing. Remaining once mainnet RAMS exists: map the
+finalized `ExecutionReason` enum to names (reported generically as "reason code N" today),
+and thread agent/principal identity from an ERC-8004 source instead of `payer` +
+`acquires.principal`. Original design note below.
+
 ### RamsReadinessSource — ERC-8226 authorization axis  *(consume, don't compete)*
 A thin, opt-in, fail-open readiness source that adds the **agent-AUTHORIZATION**
 revert-predicate to the tokenized-RWA gate (`rwa_readiness.py`, shipped). ERC-8226
@@ -112,11 +122,17 @@ rollup). **Deferred halves:**
     the agent received then moved the token before T+N, and is ambiguous if other buys of
     the same token landed in the window. The tx-hash of the settlement (or a tighter
     before/after around the exact tx) is the only fully-sound attribution -- deferred.
-- **Token-price (not just underlying) history** — mark-to-market uses the underlying's
-  move; also sampling the TOKEN's on-chain price would measure true peg tracking (did the
-  wrapper hold its peg to the stock), not just the stock's move.
+- ~~**Backing / proof-of-reserves + authoritative Pyth feed map**~~ — **BUILT**
+  (`backed_oracle.py`): keyless Backed `/public/proof-of-reserves` -> `backing_ratio`
+  (shares held vs tokens circulating); under-collateralized -> HOLD. `/public/oracles` ->
+  the issuer-declared Pyth feed map that hardens the peg gate. Folded via `backing_index`.
+- **True token-market peg (still deferred)** — Backed's oracle is Pyth-MANAGED, so the
+  token price tracks the underlying by construction; measuring the token's real DEX-market
+  deviation (bait pool / thin liquidity) needs per-token pool reads (Uniswap slot0/quoter).
+  That's the residual of "token-price sampling"; the oracle/PoR path covers the rest keyless.
 - **Gated-issuer seed** — `STATIC_SEED` is EMPTY; populate Ondo/Dinari/Robinhood from a
-  scrape-once VERIFIED address table (Backed is the only keyless live feed).
+  scrape-once VERIFIED address table (fetch from issuer docs -> verify each on a block
+  explorer -> cite both sources per address; Backed is the only keyless live feed). IN PROGRESS.
 - **Solana ATA auto-derivation** — the per-wallet frozen read currently needs
   `acquires.receiver_token_account`; auto-deriving the associated-token-account PDA
   (off-curve check) would make the Solana leg fully receiver-specific like the EVM one.

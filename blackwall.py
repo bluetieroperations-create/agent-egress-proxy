@@ -983,7 +983,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              graph_source=None, velocity_source=None, category_index=None,
              divergence_index=None, enrichment_source=None, verify_signer=True,
              rwa_source=None, stock_registry=None, pyth_source=None, rwa_ledger=None,
-             balance_reader=None):
+             balance_reader=None, backing_index=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
@@ -1199,6 +1199,17 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
             peg = None
         verdict = apply_peg(verdict, peg)
 
+    # Proof-of-reserves BACKING (backed_oracle.py): is the recognized tokenized security
+    # actually collateralized (shares held vs tokens in circulation)? Keyless issuer PoR;
+    # under-collateralized -> GO->HOLD. Conservative-only, fail-open.
+    if backing_index is not None and asset_record and asset_record.get("symbol"):
+        from backed_oracle import apply_backing, assess_backing
+        try:
+            _bk = assess_backing(backing_index.backing(asset_record.get("symbol")))
+        except Exception:
+            _bk = None
+        verdict = apply_backing(verdict, _bk)
+
     # The receipt is the ledger's join key, so it must be UNIQUE PER PAYMENT --
     # not just a hash of the verdict content (two counterparties with identical
     # stats produce identical verdicts and would otherwise collide). Sign over
@@ -1353,6 +1364,7 @@ class _Handler(BaseHTTPRequestHandler):
     pyth_source = None  # pyth_price.PythPriceSource (peg/NAV divergence), or None
     rwa_ledger = None  # rwa_ledger.RwaLedger (accumulation corpus), or None
     balance_reader = None  # rwa_balance.BalanceReader (pre-buy snapshot), or None
+    backing_index = None  # backed_oracle.BackedOracleIndex (proof-of-reserves), or None
     graph_source = None  # payer_reputation.PayerReputationSource (Sybil corroboration)
     velocity_source = None  # settlement_velocity.VelocitySource (stale gate)
     openapi_server_url = None  # public origin for the openapi.json servers[] (or None)
@@ -1605,6 +1617,7 @@ class _Handler(BaseHTTPRequestHandler):
                                  pyth_source=self.pyth_source,
                                  rwa_ledger=self.rwa_ledger,
                                  balance_reader=self.balance_reader,
+                                 backing_index=self.backing_index,
                                  verify_signer=_verify_signer)
         if err is not None:
             self._send_json(400, {"error": err})
@@ -1691,7 +1704,8 @@ class BlackwallServer:
                  graph_source=None, velocity_source=None, verdict_anchor=None,
                  category_index=None, divergence_index=None, rate_limiter=None,
                  enrichment_source=None, rwa_source=None, stock_registry=None,
-                 pyth_source=None, rwa_ledger=None, balance_reader=None):
+                 pyth_source=None, rwa_ledger=None, balance_reader=None,
+                 backing_index=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -1715,6 +1729,7 @@ class BlackwallServer:
         self.pyth_source = pyth_source
         self.rwa_ledger = rwa_ledger
         self.balance_reader = balance_reader
+        self.backing_index = backing_index
         self.stats = _Stats()
         self._httpd = None
 
@@ -1738,6 +1753,7 @@ class BlackwallServer:
                         "pyth_source": self.pyth_source,
                         "rwa_ledger": self.rwa_ledger,
                         "balance_reader": self.balance_reader,
+                        "backing_index": self.backing_index,
                         "stats": self.stats,
                         "openapi_server_url": self.openapi_server_url})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
@@ -2066,6 +2082,15 @@ def main(argv=None):
         if _sol_rpc:
             from solana_rwa import SolanaRwaReadinessSource
             _sources.append(SolanaRwaReadinessSource(rpc_url=_sol_rpc))
+        # ERC-8226 (RAMS) agent-authorization axis -- DORMANT-BUT-READY: idle until a
+        # request advertises `acquires.mandate_registry` (or BLACKWALL_RAMS_REGISTRY),
+        # then it reads canExecute on the same EVM RPC. Wired now so it activates the day
+        # an asset ships a RAMS hook, with zero code change. See docs/TOKENIZED_RWA.md.
+        if _rpc:
+            from rams_readiness import RamsReadinessSource
+            _sources.append(RamsReadinessSource(
+                rpc_url=_rpc,
+                default_registry=os.environ.get("BLACKWALL_RAMS_REGISTRY") or None))
         rwa_source = CombinedRwaReadinessSource(_sources)
         sys.stdout.write("blackwall: RWA transfer-restriction readiness ON (EVM %s%s -- "
                          "pre-trade check when a request carries `acquires`; fail-open, "
@@ -2086,12 +2111,27 @@ def main(argv=None):
                          % len(stock_registry))
         sys.stdout.flush()
 
+    # With the registry on, also load Backed's keyless oracle + proof-of-reserves index:
+    # an authoritative Pyth feed map (hardens the peg gate) + a BACKING gate
+    # (under-collateralized -> HOLD). Fail-soft.
+    backing_index = None
+    if stock_registry is not None:
+        from backed_oracle import load_backed_oracle_index
+        backing_index = load_backed_oracle_index()
+        sys.stdout.write("blackwall: Backed oracle+PoR ON (%d reserves, %d authoritative "
+                         "Pyth feeds; under-collateralized HOLD)\n"
+                         % (len(backing_index.reserves), len(backing_index.feed_map())))
+        sys.stdout.flush()
+
     # OPT-IN (BLACKWALL_PYTH=1, needs the stock registry): peg/NAV divergence via the
     # keyless Pyth oracle -- flags a tokenized stock priced far over its real underlying.
+    # Seed the price source with the issuer-authoritative feed map so it resolves the
+    # exact Pyth feed instead of heuristically searching by ticker.
     pyth_source = None
     if _env_flag("BLACKWALL_PYTH") and stock_registry is not None:
         from pyth_price import PythPriceSource
-        pyth_source = PythPriceSource()
+        _fm = backing_index.feed_map() if backing_index is not None else None
+        pyth_source = PythPriceSource(feed_map=_fm)
         sys.stdout.write("blackwall: peg/NAV divergence ON (keyless Pyth; overpay-vs-"
                          "underlying HOLD when acquires carries unit_price/quantity)\n")
         sys.stdout.flush()
@@ -2151,6 +2191,7 @@ def main(argv=None):
                              pyth_source=pyth_source,
                              rwa_ledger=rwa_ledger,
                              balance_reader=balance_reader,
+                             backing_index=backing_index,
                              openapi_server_url=origin)
     try:
         server.serve_forever()
