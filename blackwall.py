@@ -2164,10 +2164,15 @@ def main(argv=None):
     if _env_flag("BLACKWALL_DEX") and pyth_source is not None:
         _dex_rpc = os.environ.get("BLACKWALL_RWA_RPC_URL", "")
         if _dex_rpc:
-            from dex_price import DexPriceSource
-            dex_source = DexPriceSource(rpc_url=_dex_rpc)
-            sys.stdout.write("blackwall: DEX market-peg ON (Uniswap-v3 token price vs "
-                             "underlying NAV; off-peg HOLD)\n")
+            from dex_price import MIN_QUOTE_LIQUIDITY, DexPriceSource
+            try:
+                _min_liq = int(os.environ.get("BLACKWALL_DEX_MIN_LIQ", MIN_QUOTE_LIQUIDITY))
+            except ValueError:
+                _min_liq = MIN_QUOTE_LIQUIDITY
+            dex_source = DexPriceSource(rpc_url=_dex_rpc, min_liquidity=_min_liq)
+            sys.stdout.write("blackwall: DEX market-peg ON (Uniswap-v3 deepest pool >= "
+                             "%d USDC atomic; token price vs underlying NAV; off-peg HOLD)\n"
+                             % _min_liq)
             sys.stdout.flush()
 
     # OPT-IN (BLACKWALL_RWA_LEDGER=<path>): the ACCUMULATION corpus -- append every RWA

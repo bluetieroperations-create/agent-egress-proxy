@@ -111,6 +111,10 @@ def _addr_word(a):
     return "0x" + "0" * 24 + a[2:].lower()
 
 
+DEEP = 50_000 * 10 ** 6      # $50k USDC -> clears the dust floor
+DUST = 100 * 10 ** 6         # $100 USDC -> below the floor
+
+
 class TestDexPriceSource(unittest.TestCase):
     def _price_via(self, token_is_token0):
         sqrtp = _sqrt_for(200.0, 18 if token_is_token0 else 6,
@@ -120,6 +124,7 @@ class TestDexPriceSource(unittest.TestCase):
             (POOL, "slot0()"): _word(sqrtp) + "00" * 32 * 2,   # sqrt + extra words
             (POOL, "token0()"): _addr_word(token0),
             (TOKEN, "decimals()"): _word(18),
+            (USDC_ETH, "balanceOf(address)"): _word(DEEP),     # pool has real liquidity
         })
         src = DexPriceSource(eth_call=chain)
         return src.price(TOKEN, "ethereum", pool=POOL)
@@ -130,6 +135,18 @@ class TestDexPriceSource(unittest.TestCase):
     def test_explicit_pool_token1(self):
         self.assertAlmostEqual(self._price_via(False), 200.0, places=1)
 
+    def test_explicit_dust_pool_rejected(self):
+        # MUTATION: not depth-checking an explicit pool lets a manipulated thin pool set
+        # the price -> a false off-peg. A dust pool must yield None.
+        sqrtp = _sqrt_for(200.0, 18, 6, True)
+        chain = _Chain({
+            (POOL, "slot0()"): _word(sqrtp) + "00" * 64,
+            (POOL, "token0()"): _addr_word(TOKEN),
+            (TOKEN, "decimals()"): _word(18),
+            (USDC_ETH, "balanceOf(address)"): _word(DUST),
+        })
+        self.assertIsNone(DexPriceSource(eth_call=chain).price(TOKEN, "ethereum", pool=POOL))
+
     def test_pool_discovery_via_factory(self):
         sqrtp = _sqrt_for(50.0, 18, 6, True)
         factory = dp.DEX_CONFIG["ethereum"]["factory"]
@@ -138,9 +155,39 @@ class TestDexPriceSource(unittest.TestCase):
             (POOL, "slot0()"): _word(sqrtp) + "00" * 64,
             (POOL, "token0()"): _addr_word(TOKEN),
             (TOKEN, "decimals()"): _word(18),
+            (USDC_ETH, "balanceOf(address)"): _word(DEEP),
         })
         self.assertAlmostEqual(DexPriceSource(eth_call=chain).price(TOKEN, "ethereum"),
                                50.0, places=1)
+
+    def test_discovery_picks_deepest_pool(self):
+        # MUTATION: first-found (not deepest) would pick the thin 0.05% pool and its
+        # wrong price. The 0.3% pool here is deeper -> its price (60) must win over the
+        # 0.05% pool's (40).
+        factory = dp.DEX_CONFIG["ethereum"]["factory"]
+        POOL_THIN = "0x" + "77" * 20
+        POOL_DEEP = "0x" + "88" * 20
+        sel_getpool = selector("getPool(address,address,uint24)")
+
+        def chain(to, data):
+            tl = to.lower()
+            if tl == factory and data[:10] == sel_getpool:
+                fee = int(data[-64:], 16)
+                return _addr_word(POOL_THIN if fee == 500 else
+                                  (POOL_DEEP if fee == 3000 else "0x" + "00" * 20))
+            if data[:10] == selector("balanceOf(address)"):
+                who = "0x" + data[10 + 24:10 + 64]
+                return _word(DUST if who.lower() == POOL_THIN.lower() else DEEP)
+            if data[:10] == selector("slot0()"):
+                px = 40.0 if tl == POOL_THIN.lower() else 60.0
+                return _word(_sqrt_for(px, 18, 6, True)) + "00" * 64
+            if data[:10] == selector("token0()"):
+                return _addr_word(TOKEN)
+            if data[:10] == selector("decimals()"):
+                return _word(18)
+            return None
+        self.assertAlmostEqual(DexPriceSource(eth_call=chain).price(TOKEN, "ethereum"),
+                               60.0, places=1)
 
     def test_no_pool_found_none(self):
         # factory returns zero address for all fee tiers -> None.

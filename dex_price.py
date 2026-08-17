@@ -19,14 +19,16 @@ token's live pool price and flags a material deviation from the underlying fair 
     the v3 factory `getPool(token, USDC, fee)` across fee tiers) + `slot0` + `token0` +
     `decimals`, and computes the price. OPT-IN (network), injected transport, fail-open.
 
+DUST-POOL FILTER: a pool must hold >= `min_liquidity` QUOTE (USDC, default $5k) to be
+trusted for a price, and among fee tiers the DEEPEST qualifying pool is used -- so a
+thin/manipulated pool can't false-flag. Depth is proxied by the pool's USDC balance
+(`balanceOf(pool)`), which is simple + robust; below the floor -> no signal (fail-open).
+The gate is also HOLD-only and monotonic (can only ADD caution, never clear -- the
+paid-vs-underlying Pyth peg fires independently), so any residual is bounded.
+
 LIMITATIONS (audited & accepted):
-  * NO LIQUIDITY/DEPTH CHECK. We read a pool's spot price but not its depth, so a DUST
-    or MANIPULATED thin pool can yield a false `off_peg` -> a false HOLD. Bounded by
-    posture: the gate is HOLD-only and monotonic-toward-caution -- it can only ADD a
-    review, never clear a bad token (a manipulated `on_peg` pool leaves a GO a GO; the
-    paid-vs-underlying Pyth peg still fires independently). A real fix reads pool
-    liquidity / a USDC-balance floor and skips dust pools (deferred -- needs calibration).
-  * First-found fee tier (500 -> 3000 -> 10000); the deepest pool may be a later tier.
+  * USDC-balance is a proxy for depth, not the exact in-range v3 liquidity; good enough
+    to reject dust, not a microstructure model. Tune `min_liquidity` per deployment.
   * USDC-quote only; a token trading only against WETH yields no signal (fail-open).
 
 Stdlib; reuses rwa_readiness's ABI helpers.
@@ -51,6 +53,9 @@ DEX_CONFIG = {
 }
 FEE_TIERS = (500, 3000, 10000)
 MARKET_PEG_BAND = 0.10          # > 10% off NAV on-chain -> HOLD
+# A pool must hold at least this much QUOTE (USDC, atomic 6dp) to be trusted for a price:
+# below it, a dust/manipulated pool would give a false off-peg. $5,000 default.
+MIN_QUOTE_LIQUIDITY = 5000 * 10 ** 6
 
 
 def dex_token_price(sqrt_price_x96, dec0, dec1, token_is_token0):
@@ -134,19 +139,28 @@ class DexPriceSource:
     """Reads a Uniswap-v3 pool for a token's live price in USDC. OPT-IN, fail-open.
     `eth_call` is the test/RPC seam: callable(to, data_hex) -> result_hex | None."""
 
-    def __init__(self, rpc_url=None, timeout=2.5, eth_call=None):
+    def __init__(self, rpc_url=None, timeout=2.5, eth_call=None,
+                 min_liquidity=MIN_QUOTE_LIQUIDITY):
         self.rpc_url = (rpc_url or "").rstrip("/")
         self.timeout = timeout
         self._eth_call = eth_call
+        self.min_liquidity = int(min_liquidity)
 
     def price(self, token, chain, pool=None):
-        """Token price in USDC, or None. `pool` (from `acquires.dex_pool`) skips
-        discovery; otherwise the v3 factory is queried across fee tiers."""
+        """Token price in USDC, or None. Skips DUST pools (< `min_liquidity` USDC) so a
+        thin/manipulated pool can't false-flag. `pool` (from `acquires.dex_pool`) is
+        still depth-checked; otherwise the v3 factory is queried across fee tiers and the
+        DEEPEST qualifying pool is used (not first-found)."""
         cfg = DEX_CONFIG.get((chain or "").strip().lower())
         if not is_evm_address(token) or not cfg:
             return None
         quote, qdec = cfg["usdc"], cfg["usdc_decimals"]
-        pool = pool if is_evm_address(pool) else self._find_pool(cfg["factory"], token, quote)
+        if is_evm_address(pool):
+            bal = self._quote_balance(pool, quote)
+            if bal is None or bal < self.min_liquidity:
+                return None                          # dust / unreadable -> no signal
+        else:
+            pool = self._best_pool(cfg["factory"], token, quote)
         if not is_evm_address(pool):
             return None
         sqrtp = self._slot0_sqrt(pool)
@@ -160,13 +174,24 @@ class DexPriceSource:
         dec0, dec1 = (tdec, qdec) if token_is_token0 else (qdec, tdec)
         return dex_token_price(sqrtp, dec0, dec1, token_is_token0)
 
-    def _find_pool(self, factory, token, quote):
+    def _best_pool(self, factory, token, quote):
+        """The DEEPEST pool (most quote liquidity) across fee tiers that clears the dust
+        floor, or None if none does. Depth-ranked, not first-found."""
+        best, best_bal = None, self.min_liquidity - 1
         for fee in FEE_TIERS:
             p = decode_address(self._call(factory, eth_call_data(
                 "getPool(address,address,uint24)", (token, quote, fee))))
-            if is_evm_address(p):
-                return p
-        return None
+            if not is_evm_address(p):
+                continue
+            bal = self._quote_balance(p, quote)
+            if bal is not None and bal > best_bal:
+                best, best_bal = p, bal
+        return best
+
+    def _quote_balance(self, pool, quote):
+        """The pool's QUOTE (USDC) balance in atomic units -- the dust filter's depth
+        proxy. `balanceOf(pool)` on the quote token. None if unreadable."""
+        return decode_uint(self._call(quote, eth_call_data("balanceOf(address)", (pool,))))
 
     def _slot0_sqrt(self, pool):
         # slot0() returns (uint160 sqrtPriceX96, int24 tick, ...) -- first word is sqrt.
