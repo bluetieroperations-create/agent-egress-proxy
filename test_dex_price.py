@@ -6,8 +6,9 @@ gate. Each test names the MUTATION it kills.
 import unittest
 
 import dex_price as dp
-from dex_price import (DexPriceSource, apply_market_peg, assess_market_peg,
-                       dex_token_price)
+from dex_price import (DexPriceSource, apply_market_peg, assess_execution,
+                       assess_market_peg, dex_token_price,
+                       encode_quote_exact_input_single)
 from rwa_readiness import selector
 
 Q96 = 2 ** 96
@@ -91,6 +92,40 @@ class TestApplyMarketPeg(unittest.TestCase):
         base = self._go()
         self.assertEqual(apply_market_peg(base, None), base)
         self.assertNotIn("dex_market", base["signals"])
+
+
+class TestQuoterEncode(unittest.TestCase):
+    def test_selector_and_five_words(self):
+        data = encode_quote_exact_input_single(TOKEN, USDC_ETH, 1000000, 500)
+        self.assertTrue(data.startswith(selector(
+            "quoteExactInputSingle((address,address,uint256,uint24,uint160))")))
+        self.assertEqual(len(data), 10 + 64 * 5)      # inline static tuple = 5 words
+
+    def test_encode_never_raises_on_garbage(self):
+        # AUDIT REGRESSION: ABI encoders must not crash (matches eth_call_data).
+        for bad in (None, "", {}, float("inf"), float("nan"), b"x"):
+            d = encode_quote_exact_input_single(bad, bad, bad, bad)
+            self.assertEqual(len(d), 10 + 64 * 5)
+
+
+class TestAssessExecution(unittest.TestCase):
+    def test_on_peg_low_slippage(self):
+        self.assertEqual(assess_execution(101.0, 100.0, 100.5)["grade"], "on_peg")
+
+    def test_off_peg_on_nav(self):
+        r = assess_execution(130.0, 100.0, 129.0)
+        self.assertEqual(r["grade"], "off_peg")
+        self.assertTrue(any("NAV" in x for x in r["reasons"]))
+
+    def test_off_peg_on_high_slippage(self):
+        # effective 120 vs mid 100 = 20% slippage -> thin liquidity flag even if NAV ok.
+        # MUTATION: comparing only to NAV (not the mid) would miss size-based slippage.
+        r = assess_execution(120.0, 118.0, 100.0)
+        self.assertEqual(r["grade"], "off_peg")
+        self.assertTrue(any("slippage" in x for x in r["reasons"]))
+
+    def test_unknown_on_missing_price(self):
+        self.assertEqual(assess_execution(None, 100.0, 100.0)["grade"], "unknown")
 
 
 class _Chain:
@@ -188,6 +223,32 @@ class TestDexPriceSource(unittest.TestCase):
             return None
         self.assertAlmostEqual(DexPriceSource(eth_call=chain).price(TOKEN, "ethereum"),
                                60.0, places=1)
+
+    def test_executable_price_via_quoter(self):
+        # Buy $1000 of a $200 token (18dp) -> 5 tokens out -> effective $200; spot 200.
+        factory = dp.DEX_CONFIG["ethereum"]["factory"]
+        quoter = dp.DEX_CONFIG["ethereum"]["quoter"]
+        sqrtp = _sqrt_for(200.0, 18, 6, True)
+        chain = _Chain({
+            (factory, "getPool(address,address,uint24)"): _addr_word(POOL),
+            (USDC_ETH, "balanceOf(address)"): _word(DEEP),
+            (TOKEN, "decimals()"): _word(18),
+            (quoter, "quoteExactInputSingle((address,address,uint256,uint24,uint160))"):
+                _word(5 * 10 ** 18) + "00" * 32 * 3,        # amountOut + 3 extra words
+            (POOL, "slot0()"): _word(sqrtp) + "00" * 64,
+            (POOL, "token0()"): _addr_word(TOKEN),
+        })
+        r = DexPriceSource(eth_call=chain).executable_price(TOKEN, "ethereum", 1000)
+        self.assertAlmostEqual(r["effective_price"], 200.0, places=1)
+        self.assertAlmostEqual(r["slippage"], 0.0, places=3)
+
+    def test_executable_price_dust_pool_none(self):
+        factory = dp.DEX_CONFIG["ethereum"]["factory"]
+        chain = _Chain({
+            (factory, "getPool(address,address,uint24)"): _addr_word(POOL),
+            (USDC_ETH, "balanceOf(address)"): _word(DUST),   # below floor
+        })
+        self.assertIsNone(DexPriceSource(eth_call=chain).executable_price(TOKEN, "ethereum", 1000))
 
     def test_no_pool_found_none(self):
         # factory returns zero address for all fee tiers -> None.

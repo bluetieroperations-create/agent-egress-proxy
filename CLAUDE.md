@@ -272,14 +272,22 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   (or `BLACKWALL_RAMS_REGISTRY`), then activates with ZERO code change -- wired idle into
   `CombinedRwaReadinessSource`. The authorization revert-cause our eligibility reads miss;
   HOLD-only, fail-open. Enum names + ERC-8004 agent identity pending mainnet RAMS),
+  `holder_concentration.py` (keyless rug/manipulation signal from token holder
+  distribution (Blockscout): a single dominant NON-CONTRACT wallet holding >= 50% of
+  supply -> HOLD (dump/manipulation risk). CONTRACT holders EXCLUDED (LP/issuer custody/
+  bridges hold large shares legitimately -- esp. RWAs), zero/burn excluded. `top_eoa_share`
+  / `assess_concentration` / `apply_concentration` pure; `HolderConcentrationSource` fetches.
+  HOLD-only, fail-open, advisory (noisier for RWAs where issuer-EOA custody would false-flag).
+  Folded via `holder_source`, opt-in `BLACKWALL_HOLDER_CONCENTRATION`),
   `dex_price.py` (the token's REAL on-chain market price from a Uniswap-v3 pool + a
   market-vs-NAV peg gate -- the piece the oracle-managed Pyth peg can't see (the Backed
   oracle tracks the underlying by construction, so it misses the TOKEN trading off NAV on
   an actual pool: bait/manipulated pool, thin liquidity, market depeg). `dex_token_price`
   decodes `slot0().sqrtPriceX96` -> token price in USDC (verified live against the
   USDC/WETH pool); `assess_market_peg` flags >10% deviation from the underlying (Pyth) ->
-  HOLD; `DexPriceSource` discovers the pool via the v3 factory `getPool` across fee tiers
-  (or an explicit `acquires.dex_pool`) and reads slot0/token0/decimals. Conservative
+  HOLD; `DexPriceSource` discovers the DEEPEST pool via the v3 factory `getPool` across fee tiers
+  (dust-filtered by a USDC-balance floor) and prefers QuoterV2 `quoteExactInputSingle` for
+  the EXECUTABLE, size-aware price + slippage (falls back to slot0 spot). Conservative
   (HOLD-only, monotonic -- can only ADD caution, never clear), fail-open, opt-in
   `BLACKWALL_DEX`. KNOWN LIMITATION: no liquidity-depth check -> a dust pool can false-flag
   (bounded: HOLD-only; the Pyth paid-vs-underlying peg still fires independently)),
@@ -300,7 +308,7 @@ python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_re
 test_solana_rwa.py test_pyth_price.py test_rwa_ledger.py test_rwa_outcomes.py \
 test_rwa_balance.py test_rwa_report.py \
  test_backed_oracle.py test_rams_readiness.py \
- test_dex_price.py
+ test_dex_price.py test_holder_concentration.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop

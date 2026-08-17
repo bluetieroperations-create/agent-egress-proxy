@@ -983,7 +983,8 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              graph_source=None, velocity_source=None, category_index=None,
              divergence_index=None, enrichment_source=None, verify_signer=True,
              rwa_source=None, stock_registry=None, pyth_source=None, rwa_ledger=None,
-             balance_reader=None, backing_index=None, dex_source=None):
+             balance_reader=None, backing_index=None, dex_source=None,
+             holder_source=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
@@ -1216,16 +1217,36 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     # compare to the underlying (Pyth). Off-peg -> HOLD. Opt-in, conservative, fail-open.
     if (dex_source is not None and pyth_source is not None and asset_record
             and asset_record.get("underlying_symbol") and clean.get("acquires")):
-        from dex_price import apply_market_peg, assess_market_peg
+        from dex_price import (apply_market_peg, assess_execution,
+                               assess_market_peg)
         _acq = clean["acquires"]
         try:
-            _dexp = dex_source.price(_acq.get("token"), _acq.get("chain"),
-                                     pool=_acq.get("dex_pool"))
             _underp = pyth_source.price(asset_record.get("underlying_symbol"))
-            _mp = assess_market_peg(_dexp, _underp)
+            # Prefer the EXECUTABLE price (QuoterV2, size-aware -- catches slippage at the
+            # agent's actual trade size); fall back to the pool SPOT mid if no quoter.
+            _exe = dex_source.executable_price(_acq.get("token"), _acq.get("chain"),
+                                               clean["amount"])
+            if _exe:
+                _mp = assess_execution(_exe["effective_price"], _underp, _exe["spot_price"])
+            else:
+                _dexp = dex_source.price(_acq.get("token"), _acq.get("chain"),
+                                         pool=_acq.get("dex_pool"))
+                _mp = assess_market_peg(_dexp, _underp)
         except Exception:
             _mp = None
         verdict = apply_market_peg(verdict, _mp)
+
+    # Holder-concentration rug-check (holder_concentration.py): a single non-contract
+    # wallet holding a dominant share of the token supply -> dump/manipulation risk.
+    # Keyless Blockscout; HOLD-only, fail-open, contract holders excluded (issuer custody).
+    if holder_source is not None and clean.get("acquires"):
+        from holder_concentration import apply_concentration
+        _acq = clean["acquires"]
+        try:
+            _hc = holder_source.check(_acq.get("token"), _acq.get("chain"))
+        except Exception:
+            _hc = None
+        verdict = apply_concentration(verdict, _hc)
 
     # The receipt is the ledger's join key, so it must be UNIQUE PER PAYMENT --
     # not just a hash of the verdict content (two counterparties with identical
@@ -1383,6 +1404,7 @@ class _Handler(BaseHTTPRequestHandler):
     balance_reader = None  # rwa_balance.BalanceReader (pre-buy snapshot), or None
     backing_index = None  # backed_oracle.BackedOracleIndex (proof-of-reserves), or None
     dex_source = None  # dex_price.DexPriceSource (market-vs-NAV peg), or None
+    holder_source = None  # holder_concentration.HolderConcentrationSource (rug-check), or None
     graph_source = None  # payer_reputation.PayerReputationSource (Sybil corroboration)
     velocity_source = None  # settlement_velocity.VelocitySource (stale gate)
     openapi_server_url = None  # public origin for the openapi.json servers[] (or None)
@@ -1637,6 +1659,7 @@ class _Handler(BaseHTTPRequestHandler):
                                  balance_reader=self.balance_reader,
                                  backing_index=self.backing_index,
                                  dex_source=self.dex_source,
+                                 holder_source=self.holder_source,
                                  verify_signer=_verify_signer)
         if err is not None:
             self._send_json(400, {"error": err})
@@ -1724,7 +1747,7 @@ class BlackwallServer:
                  category_index=None, divergence_index=None, rate_limiter=None,
                  enrichment_source=None, rwa_source=None, stock_registry=None,
                  pyth_source=None, rwa_ledger=None, balance_reader=None,
-                 backing_index=None, dex_source=None):
+                 backing_index=None, dex_source=None, holder_source=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -1750,6 +1773,7 @@ class BlackwallServer:
         self.balance_reader = balance_reader
         self.backing_index = backing_index
         self.dex_source = dex_source
+        self.holder_source = holder_source
         self.stats = _Stats()
         self._httpd = None
 
@@ -1775,6 +1799,7 @@ class BlackwallServer:
                         "balance_reader": self.balance_reader,
                         "backing_index": self.backing_index,
                         "dex_source": self.dex_source,
+                        "holder_source": self.holder_source,
                         "stats": self.stats,
                         "openapi_server_url": self.openapi_server_url})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
@@ -2171,9 +2196,19 @@ def main(argv=None):
                 _min_liq = MIN_QUOTE_LIQUIDITY
             dex_source = DexPriceSource(rpc_url=_dex_rpc, min_liquidity=_min_liq)
             sys.stdout.write("blackwall: DEX market-peg ON (Uniswap-v3 deepest pool >= "
-                             "%d USDC atomic; token price vs underlying NAV; off-peg HOLD)\n"
-                             % _min_liq)
+                             "%d USDC atomic; QuoterV2 executable price vs underlying NAV; "
+                             "off-peg/high-slippage HOLD)\n" % _min_liq)
             sys.stdout.flush()
+
+    # OPT-IN (BLACKWALL_HOLDER_CONCENTRATION=1): holder-concentration rug-check. Keyless
+    # Blockscout; a dominant NON-CONTRACT holder -> HOLD. Fires on any RWA/token buy.
+    holder_source = None
+    if _env_flag("BLACKWALL_HOLDER_CONCENTRATION"):
+        from holder_concentration import HolderConcentrationSource
+        holder_source = HolderConcentrationSource()
+        sys.stdout.write("blackwall: holder-concentration rug-check ON (keyless "
+                         "Blockscout; dominant non-contract holder -> HOLD)\n")
+        sys.stdout.flush()
 
     # OPT-IN (BLACKWALL_RWA_LEDGER=<path>): the ACCUMULATION corpus -- append every RWA
     # buy + its asset/restriction/peg context to build the private history no one else has.
@@ -2232,6 +2267,7 @@ def main(argv=None):
                              balance_reader=balance_reader,
                              backing_index=backing_index,
                              dex_source=dex_source,
+                             holder_source=holder_source,
                              openapi_server_url=origin)
     try:
         server.serve_forever()

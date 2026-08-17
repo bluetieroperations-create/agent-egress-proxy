@@ -38,21 +38,25 @@ from __future__ import annotations
 import math
 
 from addresses import is_evm_address
-from rwa_readiness import decode_address, decode_uint, eth_call_data
+from rwa_readiness import decode_address, decode_uint, eth_call_data, selector
 
 _Q96 = 2 ** 96
 
-# Per-chain Uniswap-v3 factory + USDC quote (lowercased). Extend as needed.
+# Per-chain Uniswap-v3 factory + QuoterV2 + USDC quote (lowercased). Extend as needed.
 DEX_CONFIG = {
     "ethereum": {"factory": "0x1f98431c8ad98523631ae4a59f267346ea31f984",
+                 "quoter": "0x61ffe014ba17989e743c5f6cb21bf9697530b21e",
                  "usdc": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "usdc_decimals": 6},
     "base": {"factory": "0x33128a8fc17869897dce68ed026d694621f6fdfd",
+             "quoter": "0x3d4e44eb1374240ce5f1b871ab261cd16335b76a",
              "usdc": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", "usdc_decimals": 6},
     "arbitrum": {"factory": "0x1f98431c8ad98523631ae4a59f267346ea31f984",
+                 "quoter": "0x61ffe014ba17989e743c5f6cb21bf9697530b21e",
                  "usdc": "0xaf88d065e77c8cc2239327c5edb3a432268e5831", "usdc_decimals": 6},
 }
 FEE_TIERS = (500, 3000, 10000)
 MARKET_PEG_BAND = 0.10          # > 10% off NAV on-chain -> HOLD
+SLIPPAGE_HOLD = 0.05           # executable price >5% worse than the pool mid -> thin/illiquid
 # A pool must hold at least this much QUOTE (USDC, atomic 6dp) to be trusted for a price:
 # below it, a dust/manipulated pool would give a false off-peg. $5,000 default.
 MIN_QUOTE_LIQUIDITY = 5000 * 10 ** 6
@@ -79,6 +83,57 @@ def dex_token_price(sqrt_price_x96, dec0, dec1, token_is_token0):
         return None
     price = t1_per_t0 if token_is_token0 else (1.0 / t1_per_t0)
     return price if math.isfinite(price) else None
+
+
+def encode_quote_exact_input_single(token_in, token_out, amount_in, fee, sqrt_limit=0):
+    """Calldata for QuoterV2 `quoteExactInputSingle((address,address,uint256,uint24,
+    uint160))` -- a single all-static tuple arg, encoded inline as 5 words."""
+    sel = selector("quoteExactInputSingle((address,address,uint256,uint24,uint160))")
+    def aw(a):                                    # defensive, like eth_call_data
+        try:
+            return a[2:].lower().rjust(64, "0")
+        except (TypeError, AttributeError, IndexError):
+            return "0" * 64
+    def uw(v):
+        try:
+            return format(int(v), "x").rjust(64, "0")
+        except (TypeError, ValueError, OverflowError):
+            return "0" * 64
+    return sel + aw(token_in) + aw(token_out) + uw(amount_in) + uw(fee) + uw(sqrt_limit)
+
+
+def assess_execution(effective_price, underlying_price, spot_price,
+                     nav_band=MARKET_PEG_BAND, slip_band=SLIPPAGE_HOLD):
+    """PURE: the EXECUTABLE price (from QuoterV2, at the agent's size) vs the underlying
+    NAV and vs the pool mid -> a readiness signal. `off_peg` when the executable price is
+    materially off NAV OR slippage at size is high (thin liquidity). NEVER raises."""
+    ep, up, sp = _f(effective_price), _f(underlying_price), _f(spot_price)
+    sig = {"standard": "dex-exec", "effective_price": ep, "underlying_price": up,
+           "spot_price": sp}
+    if ep is None or ep <= 0:
+        return {"grade": "unknown", "standard": "dex-exec", "reasons": [], "signals": sig}
+    reasons, off, compared = [], False, False
+    if up and up > 0:
+        compared = True
+        r = ep / up
+        sig["exec_nav_ratio"] = r
+        if abs(r - 1.0) > nav_band:
+            off = True
+            reasons.append("executable price $%.2f is %.1f%% %s the underlying NAV ($%.2f) "
+                           "at your size" % (ep, abs(r - 1) * 100,
+                                             "above" if r > 1 else "below", up))
+    if sp and sp > 0:
+        compared = True
+        slip = ep / sp - 1.0
+        sig["slippage"] = slip
+        if slip > slip_band:
+            off = True
+            reasons.append("high slippage %.1f%% at your trade size vs the pool mid -- "
+                           "thin liquidity for this size" % (slip * 100))
+    grade = "off_peg" if off else ("on_peg" if compared else "unknown")
+    if grade == "on_peg" and not reasons:
+        reasons = ["executable price within band (size-aware)"]
+    return {"grade": grade, "standard": "dex-exec", "signals": sig, "reasons": reasons}
 
 
 def assess_market_peg(dex_price, underlying_price, band=MARKET_PEG_BAND):
@@ -163,6 +218,46 @@ class DexPriceSource:
             pool = self._best_pool(cfg["factory"], token, quote)
         if not is_evm_address(pool):
             return None
+        return self._spot_from_pool(pool, token, qdec)
+
+    def executable_price(self, token, chain, amount_usd, pool=None):
+        """The EXECUTABLE price (USDC per token) for buying `amount_usd` of the token via
+        QuoterV2, plus the pool mid and implied slippage: {effective_price, spot_price,
+        slippage, fee, amount_usd} or None. Size-aware -- catches thin liquidity at the
+        agent's actual trade size, not just the mid. OPT-IN, fail-open."""
+        cfg = DEX_CONFIG.get((chain or "").strip().lower())
+        if not is_evm_address(token) or not cfg or not cfg.get("quoter"):
+            return None
+        quote, qdec = cfg["usdc"], cfg["usdc_decimals"]
+        if is_evm_address(pool):
+            fee = self._pool_fee(pool)
+            if fee is None or (self._quote_balance(pool, quote) or 0) < self.min_liquidity:
+                return None
+        else:
+            pool, fee = self._best_pool_and_fee(cfg["factory"], token, quote)
+        if not is_evm_address(pool) or fee is None:
+            return None
+        tdec = decode_uint(self._call(token, eth_call_data("decimals()")))
+        try:
+            amount_in = int(round(float(amount_usd) * (10 ** qdec)))
+        except (TypeError, ValueError):
+            amount_in = 0
+        if tdec is None or amount_in <= 0:
+            return None
+        out = decode_uint(self._call(cfg["quoter"], encode_quote_exact_input_single(
+            quote, token, amount_in, fee)))
+        if not out or out <= 0:
+            return None
+        tokens_out = out / (10 ** int(tdec))
+        if tokens_out <= 0:
+            return None
+        effective = float(amount_usd) / tokens_out
+        spot = self._spot_from_pool(pool, token, qdec)
+        return {"effective_price": effective, "spot_price": spot, "fee": fee,
+                "slippage": (effective / spot - 1.0) if (spot and spot > 0) else None,
+                "amount_usd": float(amount_usd)}
+
+    def _spot_from_pool(self, pool, token, qdec):
         sqrtp = self._slot0_sqrt(pool)
         token0 = decode_address(self._call(pool, eth_call_data("token0()")))
         if sqrtp is None or token0 is None:
@@ -174,10 +269,16 @@ class DexPriceSource:
         dec0, dec1 = (tdec, qdec) if token_is_token0 else (qdec, tdec)
         return dex_token_price(sqrtp, dec0, dec1, token_is_token0)
 
+    def _pool_fee(self, pool):
+        return decode_uint(self._call(pool, eth_call_data("fee()")))
+
     def _best_pool(self, factory, token, quote):
-        """The DEEPEST pool (most quote liquidity) across fee tiers that clears the dust
-        floor, or None if none does. Depth-ranked, not first-found."""
-        best, best_bal = None, self.min_liquidity - 1
+        return self._best_pool_and_fee(factory, token, quote)[0]
+
+    def _best_pool_and_fee(self, factory, token, quote):
+        """The DEEPEST (pool, fee) across fee tiers that clears the dust floor, or
+        (None, None). Depth-ranked, not first-found."""
+        best, best_fee, best_bal = None, None, self.min_liquidity - 1
         for fee in FEE_TIERS:
             p = decode_address(self._call(factory, eth_call_data(
                 "getPool(address,address,uint24)", (token, quote, fee))))
@@ -185,8 +286,8 @@ class DexPriceSource:
                 continue
             bal = self._quote_balance(p, quote)
             if bal is not None and bal > best_bal:
-                best, best_bal = p, bal
-        return best
+                best, best_fee, best_bal = p, fee, bal
+        return best, best_fee
 
     def _quote_balance(self, pool, quote):
         """The pool's QUOTE (USDC) balance in atomic units -- the dust filter's depth

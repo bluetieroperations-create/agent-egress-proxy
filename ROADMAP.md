@@ -126,13 +126,14 @@ rollup). **Deferred halves:**
   (`backed_oracle.py`): keyless Backed `/public/proof-of-reserves` -> `backing_ratio`
   (shares held vs tokens circulating); under-collateralized -> HOLD. `/public/oracles` ->
   the issuer-declared Pyth feed map that hardens the peg gate. Folded via `backing_index`.
-- ~~**True token-market peg**~~ — **BUILT** (`dex_price.py`): reads the token's live
-  Uniswap-v3 pool price (`slot0().sqrtPriceX96`, verified live vs the USDC/WETH pool),
-  compares to the underlying (Pyth); >10% off NAV -> HOLD. Discovers the pool via the v3
-  factory across fee tiers (or `acquires.dex_pool`). Opt-in `BLACKWALL_DEX`, HOLD-only,
-  fail-open. RESIDUAL: no liquidity-depth check -> a dust pool can false-flag (bounded --
-  HOLD-only, and it can only ADD caution). Next refinement: a pool USDC-balance floor to
-  skip dust, and pick the deepest fee tier rather than first-found.
+- ~~**True token-market peg + liquidity filter + QuoterV2**~~ — **BUILT** (`dex_price.py`):
+  reads the token's live Uniswap-v3 price and compares to the underlying (Pyth); >10% off
+  NAV -> HOLD. Discovers the DEEPEST pool (USDC-balance dust floor, env `BLACKWALL_DEX_MIN_LIQ`)
+  and prefers **QuoterV2** `quoteExactInputSingle` for the EXECUTABLE, size-aware price +
+  slippage (catches thin liquidity at the agent's trade size; verified live vs the USDC/WETH
+  pool). Opt-in `BLACKWALL_DEX`, HOLD-only, fail-open.
+- ~~**Holder-concentration rug-check**~~ — **BUILT** (`holder_concentration.py`): keyless
+  Blockscout; a dominant non-contract holder -> HOLD (contract/issuer-custody excluded).
 - **Gated-issuer seed** — PARTIALLY DONE: 9 **Ondo Ethereum** tokenized stocks
   (AAPLon/TSLAon/NVDAon/MSFTon/GOOGLon/AMZNon/METAon/SPYon/QQQon) seeded into `STATIC_SEED`,
   each doubly-verified 2026-08-17 (Ondo's `docs.ondo.finance/addresses.md` + an independent
