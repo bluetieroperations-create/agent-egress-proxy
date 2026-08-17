@@ -38,10 +38,32 @@ _EVM_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 BACKED_ASSETS_URL = "https://api.backed.fi/api/v2/public/assets"
 
 # Operator-supplied entries for issuers without a keyless feed (Ondo/Dinari/Robinhood).
-# EMPTY by default -- fill with VERIFIED addresses only (never guess). Each entry:
+# Fill with VERIFIED addresses only (never guess). Each entry:
 #   {"issuer","symbol","isin"?,"underlying_symbol"?,"standard"?,
 #    "deployments":[{"network","address"}]}
-STATIC_SEED = []
+#
+# Ondo tokenized stocks (Ethereum). Doubly-verified 2026-08-17: (a) Ondo's official
+# token list at docs.ondo.finance/addresses.md, and (b) an independent on-chain
+# `symbol()`/`name()` read per address (eth.blockscout.com / public Ethereum RPC) that
+# returned the exact ticker + "(Ondo Tokenized)" name. Addresses lowercased. Other
+# issuers (Dinari) and other Ondo chains (BNB/Solana) / Robinhood remain EXCLUDED --
+# they could not be corroborated to the two-source standard (see docs/TOKENIZED_RWA.md).
+_ONDO_ETH = (
+    ("AAPLon", "AAPL", "0x14c3abf95cb9c93a8b82c1cdcb76d72cb87b2d4c"),
+    ("TSLAon", "TSLA", "0xf6b1117ec07684d3958cad8beb1b302bfd21103f"),
+    ("NVDAon", "NVDA", "0x2d1f7226bd1f780af6b9a49dcc0ae00e8df4bdee"),
+    ("MSFTon", "MSFT", "0xb812837b81a3a6b81d7cd74cfb19a7f2784555e5"),
+    ("GOOGLon", "GOOGL", "0xba47214edd2bb43099611b208f75e4b42fdcfedc"),
+    ("AMZNon", "AMZN", "0xbb8774fb97436d23d74c1b882e8e9a69322cfd31"),
+    ("METAon", "META", "0x59644165402b611b350645555b50afb581c71eb2"),
+    ("SPYon", "SPY", "0xfedc5f4a6c38211c1338aa411018dfaf26612c08"),
+    ("QQQon", "QQQ", "0x0e397938c1aa0680954093495b70a9f5e2249aba"),
+)
+STATIC_SEED = [
+    {"issuer": "ondo", "symbol": sym, "underlying_symbol": und,
+     "deployments": [{"network": "ethereum", "address": addr}]}
+    for sym, und, addr in _ONDO_ETH
+]
 
 
 def _norm_network(net):

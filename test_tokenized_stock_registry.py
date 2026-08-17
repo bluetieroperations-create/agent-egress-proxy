@@ -109,9 +109,25 @@ class TestRegistry(unittest.TestCase):
 
 
 class TestSeed(unittest.TestCase):
-    def test_static_seed_empty_by_default(self):
-        # MUTATION/guard: shipping FABRICATED addresses would mis-identify tokens.
-        self.assertEqual(tsr.STATIC_SEED, [])
+    def test_static_seed_is_verified_ondo(self):
+        # The seed carries ONLY doubly-verified Ondo Ethereum tokens (issuer docs +
+        # independent on-chain symbol()/name() read on 2026-08-17). Guard: every entry
+        # is Ondo, on ethereum, with a well-formed 0x address -- no fabricated/foreign row.
+        seed = tsr.STATIC_SEED
+        self.assertTrue(len(seed) >= 9)
+        for e in seed:
+            self.assertEqual(e["issuer"], "ondo")
+            self.assertTrue(e["symbol"].endswith("on"))
+            for dep in e["deployments"]:
+                self.assertEqual(dep["network"], "ethereum")
+                self.assertRegex(dep["address"], r"^0x[0-9a-f]{40}$")   # lowercased hex
+
+    def test_seed_recognizes_a_known_ondo_token(self):
+        reg = build_registry(get=lambda url: {"nodes": []})     # feed empty; seed only
+        rec = reg.lookup("0xf6b1117ec07684d3958cad8beb1b302bfd21103f", "ethereum")
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec["symbol"], "TSLAon")
+        self.assertEqual(rec["underlying_symbol"], "TSLA")
 
     def test_seed_drops_addressless_entry(self):
         self.assertEqual(parse_seed([{"issuer": "x", "symbol": "Y", "deployments": []}]), [])

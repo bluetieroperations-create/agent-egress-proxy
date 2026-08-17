@@ -130,9 +130,16 @@ rollup). **Deferred halves:**
   token price tracks the underlying by construction; measuring the token's real DEX-market
   deviation (bait pool / thin liquidity) needs per-token pool reads (Uniswap slot0/quoter).
   That's the residual of "token-price sampling"; the oracle/PoR path covers the rest keyless.
-- **Gated-issuer seed** — `STATIC_SEED` is EMPTY; populate Ondo/Dinari/Robinhood from a
-  scrape-once VERIFIED address table (fetch from issuer docs -> verify each on a block
-  explorer -> cite both sources per address; Backed is the only keyless live feed). IN PROGRESS.
+- **Gated-issuer seed** — PARTIALLY DONE: 9 **Ondo Ethereum** tokenized stocks
+  (AAPLon/TSLAon/NVDAon/MSFTon/GOOGLon/AMZNon/METAon/SPYon/QQQon) seeded into `STATIC_SEED`,
+  each doubly-verified 2026-08-17 (Ondo's `docs.ondo.finance/addresses.md` + an independent
+  on-chain `symbol()`/`name()` read). STILL EXCLUDED (couldn't meet the two-source bar):
+  Ondo BNB/Solana (issuer CSV only, explorers bot-blocked), Robinhood Chain (official
+  Blockscout + QuickNode but issuer registry not renderable; note: heavy on-chain
+  ticker-spoofing there -- verify hard), and Dinari dShares (no static per-ticker issuer
+  source; production addresses live only behind their `DShareFactory`/authenticated API).
+  Next: enumerate Ondo's other chains + Dinari's production `DShareFactory.getDShares()`
+  and confirm each on an explorer before adding.
 - **Solana ATA auto-derivation** — the per-wallet frozen read currently needs
   `acquires.receiver_token_account`; auto-deriving the associated-token-account PDA
   (off-curve check) would make the Solana leg fully receiver-specific like the EVM one.
