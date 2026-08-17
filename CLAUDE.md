@@ -318,6 +318,34 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   (HOLD-only, monotonic -- can only ADD caution, never clear), fail-open, opt-in
   `BLACKWALL_DEX`. KNOWN LIMITATION: no liquidity-depth check -> a dust pool can false-flag
   (bounded: HOLD-only; the Pyth paid-vs-underlying peg still fires independently)),
+  `transfer_sim.py` (the SHARED transfer-SIMULATION core -- ask the chain "would this
+  transfer actually succeed?" via eth_call, then decode + ATTRIBUTE the revert. Built
+  because interface probing FAILED: all 535 corpus tokens x 9 probes -> 535/535 alive but
+  0/535 exposing any permissioned interface, so `rwa_readiness` answered "unknown" for the
+  entire corpus. Simulation needs NO interface and is how every permissioned issuer we hold
+  was discovered. THE CONTROL IS THE POINT: every assessment runs TWICE (target + control
+  address) so a revert is attributed only when they disagree -- target fails + control OK =>
+  RECEIVER blocked; both fail => SENDER at fault, never blamed on the receiver. Reuses
+  `revert_scan.classify_revert` (calibrated on real strings). `clamp_amount` /
+  `decode_revert_error` / `attribute` / `to_readiness_probe` pure; `TransferSimulator`
+  (injected transport) + `SimulationReadinessSource`, which emits the SAME probe shape
+  `rwa_readiness.assess_transfer_readiness` already takes -- so it folds through the
+  EXISTING verdict path with zero new plumbing. Verified live: STBT + BUIDL -> blocked with
+  their real revert strings, a freely-transferable control -> ready. Tests:
+  `test_transfer_sim.py`),
+  `settlement_sim.py` (PRE-SIGNATURE settlement feasibility for the CORE x402 path -- the
+  crypto-side application of the whole RWA arc. Before the agent signs an EIP-3009
+  authorization, simulate the USDC transfer: if the PAYEE (or PAYER) is frozen/blacklisted
+  the payment would REVERT on-chain, and a Circle-blacklisted counterparty is itself a
+  serious risk signal. The CONTROL simulation separates payee-side from payer-side blocks.
+  `assess_settlement` -> ready/payee_blocked/payer_blocked/underfunded/unknown;
+  `apply_settlement_sim` folds `signals.settlement_sim`. HARD BOUNDARY (mirrors
+  blockscout.py): HOLD-only, NEVER STOP (sanctions.py stays the compliance authority),
+  never upgrades, fail-open. UNDERFUNDED is recorded but does NOT gate (balance can change
+  before signing). Opt-in `BLACKWALL_SETTLEMENT_SIM=1` + an RPC; folded via
+  `settlement_sim_source`. VERIFIED LIVE on mainnet USDC: a real Circle-blacklisted payee ->
+  payee_blocked + GO->HOLD with the real revert string, a clean payee -> ready/ungated.
+  Tests: `test_settlement_sim.py`),
   `revert_scan.py` (the settlement-reliability axis's DATA TAP -- read an RWA token's FAILED
   transfer attempts from public chain history, DECODE the revert reason, and CLASSIFY it so
   only ISSUER-CAUSED restriction reverts (allowlist/KYC/frozen/paused/compliance) count --
@@ -381,7 +409,8 @@ test_rwa_balance.py test_rwa_report.py \
  test_backed_oracle.py test_rams_readiness.py \
  test_dex_price.py test_holder_concentration.py \
  test_rwa_aggregate.py test_aave_reserve.py \
- test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py
+ test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
+ test_transfer_sim.py test_settlement_sim.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop

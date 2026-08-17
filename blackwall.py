@@ -984,7 +984,8 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              divergence_index=None, enrichment_source=None, verify_signer=True,
              rwa_source=None, stock_registry=None, pyth_source=None, rwa_ledger=None,
              balance_reader=None, backing_index=None, dex_source=None,
-             holder_source=None, aave_source=None, issuer_trust_source=None):
+             holder_source=None, aave_source=None, issuer_trust_source=None,
+             settlement_sim_source=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
@@ -1144,6 +1145,21 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         except Exception:
             readiness = None
         verdict = apply_readiness(verdict, readiness)
+
+    # PRE-SIGNATURE SETTLEMENT FEASIBILITY (settlement_sim.py) -- the CORE x402 path, not
+    # just RWA buys. Simulate the actual stablecoin transfer on-chain before the agent
+    # signs: if the PAYEE (or the PAYER) is frozen/blacklisted on the USDC contract, the
+    # payment would REVERT -- and a blacklisted counterparty is itself a serious risk
+    # signal (Circle freezes for cause). A CONTROL simulation separates payer-side from
+    # payee-side blocks so a revert is never misattributed. HOLD-only, never STOP
+    # (sanctions.py stays the compliance authority), fail-open, opt-in.
+    if settlement_sim_source is not None:
+        from settlement_sim import apply_settlement_sim
+        try:
+            _ss = settlement_sim_source.check(clean)
+        except Exception:
+            _ss = None
+        verdict = apply_settlement_sim(verdict, _ss)
 
     # Tokenized-RWA transfer-restriction readiness (rwa_readiness.py). When the agent
     # is BUYING a tokenized RWA (request carries `acquires`), pre-check whether the
@@ -1442,6 +1458,7 @@ class _Handler(BaseHTTPRequestHandler):
     holder_source = None  # holder_concentration.HolderConcentrationSource (rug-check), or None
     aave_source = None  # aave_reserve.AaveReserveSource (advisory quality), or None
     issuer_trust_source = None  # issuer_trust_gate.IssuerTrustSource (earned grade), or None
+    settlement_sim_source = None  # settlement_sim.SettlementSimSource (pre-sig feasibility)
     graph_source = None  # payer_reputation.PayerReputationSource (Sybil corroboration)
     velocity_source = None  # settlement_velocity.VelocitySource (stale gate)
     openapi_server_url = None  # public origin for the openapi.json servers[] (or None)
@@ -1699,6 +1716,7 @@ class _Handler(BaseHTTPRequestHandler):
                                  holder_source=self.holder_source,
                                  aave_source=self.aave_source,
                                  issuer_trust_source=self.issuer_trust_source,
+                                 settlement_sim_source=self.settlement_sim_source,
                                  verify_signer=_verify_signer)
         if err is not None:
             self._send_json(400, {"error": err})
@@ -1787,7 +1805,8 @@ class BlackwallServer:
                  enrichment_source=None, rwa_source=None, stock_registry=None,
                  pyth_source=None, rwa_ledger=None, balance_reader=None,
                  backing_index=None, dex_source=None, holder_source=None,
-                 aave_source=None, issuer_trust_source=None):
+                 aave_source=None, issuer_trust_source=None,
+                 settlement_sim_source=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -1816,6 +1835,7 @@ class BlackwallServer:
         self.holder_source = holder_source
         self.aave_source = aave_source
         self.issuer_trust_source = issuer_trust_source
+        self.settlement_sim_source = settlement_sim_source
         self.stats = _Stats()
         self._httpd = None
 
@@ -1844,6 +1864,7 @@ class BlackwallServer:
                         "holder_source": self.holder_source,
                         "aave_source": self.aave_source,
                         "issuer_trust_source": self.issuer_trust_source,
+                        "settlement_sim_source": self.settlement_sim_source,
                         "stats": self.stats,
                         "openapi_server_url": self.openapi_server_url})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
@@ -2305,6 +2326,26 @@ def main(argv=None):
                          % len(issuer_trust_source))
         sys.stdout.flush()
 
+    # OPT-IN (BLACKWALL_SETTLEMENT_SIM=1 + an RPC): PRE-SIGNATURE settlement feasibility
+    # for every x402 payment -- simulate the USDC transfer and catch a frozen/blacklisted
+    # payee or payer BEFORE the agent signs. One eth_call on the hot path (a second only
+    # when the first reverts, to attribute the block); HOLD-only, never STOP, fail-open.
+    settlement_sim_source = None
+    if _env_flag("BLACKWALL_SETTLEMENT_SIM"):
+        _sim_rpcs = {}
+        for _chain, _var in (("base", "BLACKWALL_BASE_RPC_URL"),
+                             ("ethereum", "BLACKWALL_RWA_RPC_URL")):
+            _u = os.environ.get(_var, "")
+            if _u:
+                _sim_rpcs[_chain] = _u
+        if _sim_rpcs:
+            from settlement_sim import SettlementSimSource
+            settlement_sim_source = SettlementSimSource(rpc_by_chain=_sim_rpcs)
+            sys.stdout.write("blackwall: settlement simulation ON for %s (pre-signature "
+                             "revert check; HOLD-only, fail-open)\n"
+                             % ",".join(sorted(_sim_rpcs)))
+            sys.stdout.flush()
+
     # OPT-IN (BLACKWALL_ANCHOR=1): anchor every verdict's digest to Traceipt for a
     # tamper-evident audit trail. Non-blocking + fail-open; costs ~0.002 USDC/verdict
     # and needs a funded SIGNER_PRIVATE_KEY (else it 402s and fails open). OFF by
@@ -2340,6 +2381,7 @@ def main(argv=None):
                              holder_source=holder_source,
                              aave_source=aave_source,
                              issuer_trust_source=issuer_trust_source,
+                             settlement_sim_source=settlement_sim_source,
                              openapi_server_url=origin)
     try:
         server.serve_forever()

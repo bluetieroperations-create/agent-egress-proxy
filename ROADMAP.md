@@ -183,7 +183,14 @@ rollup). **Deferred halves:**
       AS DESIGNED. This empirically confirms the semantic trap flagged before the build:
       **a restriction revert measures TRANSFER FRICTION, not issuer untrustworthiness.**
       Pinned by `test_revert_axis_lock_stays_off_reputable_issuer_would_false_flag`.
-    - **RE-HOMING is the real next step** (not flipping a lock): the signal is genuinely
+    - **SIMULATION-BASED READINESS — BUILT** (`transfer_sim.py`): the interface probe's
+    0/535 result is now moot. `SimulationReadinessSource` eth_calls the transfer to the
+    agent's own wallet and reads the revert, with a CONTROL call so a sender-side failure
+    is never blamed on the receiver. It emits the existing probe shape, so it folds through
+    `apply_rwa_readiness` unchanged. Verified live: STBT -> blocked
+    ("STBT: NO_RECEIVE_PERMISSION"), BUIDL -> blocked ("Wallet not in registry service"),
+    freely-transferable control -> ready (GO preserved, no false positive).
+  - **RE-HOMING is the real next step** (not flipping a lock): the signal is genuinely
       valuable to an agent buyer ("transfers here revert ~9% of the time — yours may too"),
       but it belongs beside `rwa_readiness` as an ASSET-level readiness signal — the
       realized, empirical counterpart to that module's proactive `canTransfer` probe.
