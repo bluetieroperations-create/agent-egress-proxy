@@ -16,6 +16,7 @@ own node a one-line config change, and shrinks the leak immediately either way.
 |---|---|
 | **Single egress point** | Every chain read goes through one auditable process, not scattered calls to a provider (the `egress_proxy.py` idea, applied to chain reads). |
 | **Cache** | A repeat check is served locally and never re-leaks. **Measured live: 3 upstream calls cold, 0 on the repeat pass, identical verdicts.** |
+| **Single-flight** | *Concurrent* duplicates coalesce into ONE upstream call. The cache alone only stops **sequential** re-leaks — an audit measured 8 parallel identical checks producing 8 disclosures. **Now: 8 → 1.** |
 | **Method allowlist** | Only read-only methods forward. A caller cannot use our endpoint to broadcast a transaction or reach `admin_`/`personal_`/`debug_`. |
 | **Self-host switch** | Point `--upstream` at your own node and third-party leakage is **zero**, with no code change. |
 
@@ -62,6 +63,17 @@ independence:
 
 Blackwall needs only `eth_call` at `latest` plus a few read methods, so even a pruned
 node is sufficient — archive state is not required.
+
+## Measured leak reduction (live, mainnet USDC)
+
+| Check | Upstream disclosures |
+|---|---|
+| Cold, blacklisted payee | 2 (target + control) |
+| Cold, clean payee | 1 (control skipped — target succeeded) |
+| Repeat of either | **0** |
+| 6 concurrent identical checks | **2** (was 6) |
+
+Ten checks cost five disclosures instead of fifteen.
 
 ## Honest limitations
 

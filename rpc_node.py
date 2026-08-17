@@ -144,6 +144,50 @@ class RpcCache:
             return len(self._data)
 
 
+class SingleFlight:
+    """Coalesce CONCURRENT identical requests into ONE upstream call.
+
+    AUDIT-DRIVEN, and load-bearing for this module's whole purpose: the cache only stops
+    SEQUENTIAL re-leaks. Measured before this existed, 8 concurrent identical requests
+    produced 8 upstream calls -- so an agent doing parallel checks (multi-step flows,
+    retries) leaked the same payer/payee pair N times over. The first caller for a key
+    fetches; the rest WAIT on it and reuse the answer, so N concurrent duplicates cost
+    exactly ONE disclosure."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._inflight = {}
+        self.coalesced = 0
+
+    def do(self, key, fn, timeout=30.0):
+        with self._lock:
+            slot = self._inflight.get(key)
+            leader = slot is None
+            if leader:
+                slot = {"event": threading.Event(), "value": None, "error": None}
+                self._inflight[key] = slot
+            else:
+                self.coalesced += 1
+        if leader:
+            try:
+                slot["value"] = fn()
+            except Exception as e:                    # noqa: BLE001 - re-raised below
+                slot["error"] = e
+            finally:
+                with self._lock:
+                    self._inflight.pop(key, None)
+                slot["event"].set()
+            if slot["error"] is not None:
+                raise slot["error"]
+            return slot["value"]
+        # follower: wait for the leader's answer rather than issuing our own call
+        if not slot["event"].wait(timeout):
+            raise TimeoutError("timed out waiting for an in-flight upstream call")
+        if slot["error"] is not None:
+            raise slot["error"]
+        return slot["value"]
+
+
 def forward_upstream(url, body, timeout=8.0, opener=None):
     """POST a JSON-RPC body upstream and return the parsed response. Raises on transport
     failure (the caller converts it into a JSON-RPC error)."""
@@ -160,7 +204,7 @@ def forward_upstream(url, body, timeout=8.0, opener=None):
 class _Handler(BaseHTTPRequestHandler):
     upstream = None
     cache = None
-    stats = None
+    inflight = None
     timeout = 8.0
     forwarder = None          # injectable for tests
     quiet = False
@@ -186,10 +230,16 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.rstrip("/") in ("/healthz", "/health"):
+            # AUDIT BUG: this used to read a static `stats` dict that was never
+            # updated, so healthz always reported 0/0 -- a monitoring lie. Read the
+            # cache's real counters.
+            c = self.cache
             self._send(200, {"ok": True,
-                             "cached": len(self.cache) if self.cache is not None else 0,
-                             "hits": self.stats.get("hits", 0) if self.stats else 0,
-                             "misses": self.stats.get("misses", 0) if self.stats else 0})
+                             "cached": len(c) if c is not None else 0,
+                             "hits": c.hits if c is not None else 0,
+                             "misses": c.misses if c is not None else 0,
+                             "coalesced": self.inflight.coalesced
+                                          if self.inflight is not None else 0})
             return
         self._send(404, {"error": "not found"})
 
@@ -227,8 +277,14 @@ class _Handler(BaseHTTPRequestHandler):
 
         fwd = self.forwarder or (lambda b: forward_upstream(self.upstream, b,
                                                             timeout=self.timeout))
+        call_body = {"jsonrpc": "2.0", "id": rid, "method": method, "params": params}
         try:
-            resp = fwd({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
+            if self.inflight is not None:
+                # Concurrent duplicates coalesce into ONE upstream call (one disclosure).
+                resp = self.inflight.do(key, lambda: fwd(call_body),
+                                        timeout=self.timeout + 5)
+            else:
+                resp = fwd(call_body)
         except Exception as e:
             self._err(rid, -32603, "upstream unavailable: %s" % type(e).__name__)
             return
@@ -264,6 +320,7 @@ class LocalRpcNode:
         self.host = host
         self.port = port
         self.cache = RpcCache(ttl=ttl)
+        self.inflight = SingleFlight()
         self.timeout = timeout
         self.forwarder = forwarder
         self.quiet = quiet
@@ -277,8 +334,7 @@ class LocalRpcNode:
         fwd = staticmethod(self.forwarder) if self.forwarder is not None else None
         return type("_BoundRpcHandler", (_Handler,), {
             "upstream": self.upstream, "cache": cache, "timeout": self.timeout,
-            "forwarder": fwd, "quiet": self.quiet,
-            "stats": {"hits": 0, "misses": 0},
+            "forwarder": fwd, "quiet": self.quiet, "inflight": self.inflight,
         })
 
     def serve_forever(self):

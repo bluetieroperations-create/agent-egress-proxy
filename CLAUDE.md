@@ -325,7 +325,8 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   that makes running your own a ONE-LINE config change and shrinks the leak either way:
   SINGLE EGRESS POINT (the egress_proxy.py idea applied to chain reads), CACHE (a repeat
   check never re-leaks -- measured live: 3 upstream calls cold, 0 on repeat, identical
-  verdicts), METHOD ALLOWLIST (read-only; no eth_send*/admin_/personal_/debug_ -- our
+  verdicts), SINGLE-FLIGHT (the cache only stops SEQUENTIAL re-leaks; an audit measured 8
+  CONCURRENT identical checks costing 8 disclosures -- now 8 -> 1), METHOD ALLOWLIST (read-only; no eth_send*/admin_/personal_/debug_ -- our
   endpoint can never broadcast a tx), and a SELF-HOST SWITCH (point --upstream at your own
   node -> zero third-party leakage, no code change; the env vars already take any URL).
   TTL defaults to 30s because staleness is a SAFETY tradeoff (a payee blacklisted 5 min ago

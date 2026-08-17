@@ -224,6 +224,69 @@ class TestServer(unittest.TestCase):
         self._post(dict(b2, id=2))
         self.assertEqual(len(transient), 2)         # transient NOT pinned -> retried
 
+    def test_concurrent_duplicates_coalesce_into_one_upstream_call(self):
+        # AUDIT BUG (measured): the cache stops SEQUENTIAL re-leaks only. 8 concurrent
+        # identical requests produced 8 upstream calls, so an agent doing parallel checks
+        # leaked the same payer/payee pair N times. SingleFlight makes N duplicates cost
+        # exactly ONE disclosure.
+        import threading
+        import time
+        seen = []
+
+        def slow(body):
+            seen.append(body)
+            time.sleep(0.25)
+            return {"jsonrpc": "2.0", "id": body.get("id"), "result": "0x1"}
+        self.node.forwarder = slow
+        self._restart()
+        body = {"jsonrpc": "2.0", "id": 1, "method": "eth_call",
+                "params": [{"to": "0x1", "from": "0xA"}, "latest"]}
+        ths = [threading.Thread(target=lambda i=i: self._post(dict(body, id=i)))
+               for i in range(8)]
+        for t in ths:
+            t.start()
+        for t in ths:
+            t.join()
+        self.assertEqual(len(seen), 1, "8 concurrent duplicates must cost ONE upstream call")
+
+    def test_singleflight_propagates_failure_to_followers(self):
+        # A leader's failure must not hang or silently succeed for the followers.
+        from rpc_node import SingleFlight
+        import threading
+        import time
+        sf = SingleFlight()
+        errs = []
+
+        def boom():
+            time.sleep(0.15)
+            raise IOError("down")
+
+        def run():
+            try:
+                sf.do("k", boom, timeout=5)
+            except Exception as e:
+                errs.append(type(e).__name__)
+        ths = [threading.Thread(target=run) for _ in range(4)]
+        for t in ths:
+            t.start()
+        for t in ths:
+            t.join()
+        self.assertEqual(len(errs), 4)
+        self.assertTrue(all(e == "OSError" for e in errs), errs)  # IOError is OSError
+
+    def test_healthz_reports_real_counters(self):
+        # AUDIT BUG: healthz read a static `stats` dict that was never updated, so it
+        # always reported 0/0 -- a monitoring lie.
+        body = {"jsonrpc": "2.0", "id": 1, "method": "eth_call",
+                "params": [{"to": "0x1", "from": "0xA"}, "latest"]}
+        self._post(body)
+        self._post(dict(body, id=2))
+        with urllib.request.urlopen(self.url + "healthz", timeout=5) as r:
+            h = json.loads(r.read())
+        self.assertEqual(h["hits"], self.node.cache.hits)
+        self.assertEqual(h["misses"], self.node.cache.misses)
+        self.assertGreater(h["hits"], 0)
+
     def test_healthz(self):
         with urllib.request.urlopen(self.url + "healthz", timeout=5) as r:
             self.assertTrue(json.loads(r.read())["ok"])
