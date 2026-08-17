@@ -34,6 +34,56 @@ from check_seed_age import REFRESH_WARN_DAYS
 # crawl, not churn. Keep >= this share of the old corpus's payees AND edges.
 MIN_RETENTION = 0.8
 
+# A refresh must not meaningfully shrink the set of payees that can actually EARN a GO.
+# MEASURED GAP: the 2026-08-17 refresh kept 85% of payees and 87% of edges -- clearing
+# MIN_RETENTION comfortably -- while gating-capable payees fell 237 -> 207 (-12.7%), so
+# 43 counterparties that previously cleared the gates would have started returning a
+# cold-start/Sybil HOLD. Size retention and `gating_reachable` (a BOOLEAN, true while any
+# single payee qualifies) were both blind to it. This is the utility metric: tighter than
+# MIN_RETENTION because it measures what users actually experience.
+MIN_GATING_RETENTION = 0.95
+
+# Mirrors blackwall's verdict gates -- imported lazily in gating_capable() to keep this
+# module importable without pulling in the whole engine.
+_GATE_MIN_SETTLEMENTS = 20      # blackwall.THIN_HISTORY_SETTLEMENTS
+_GATE_MIN_PAYERS = 3            # blackwall.MIN_DISTINCT_PAYERS
+
+
+def gating_capable(edges, graph=None, *, min_settlements=None, min_payers=None):
+    """PURE: how many payees could actually EARN a GO -- i.e. clear BOTH the thin-history
+    gate (>= N settlements) and the Sybil gate (>= M distinct payers)?
+
+    This is the corpus's UTILITY, as opposed to its size. Normalization matches
+    build_index exactly (lowercased, blanks and self-vouch edges dropped) so the counts
+    line up with the graph. NEVER raises."""
+    from collections import Counter
+    try:
+        from blackwall import MIN_DISTINCT_PAYERS, THIN_HISTORY_SETTLEMENTS
+    except Exception:                      # keep the guard usable standalone
+        THIN_HISTORY_SETTLEMENTS, MIN_DISTINCT_PAYERS = (_GATE_MIN_SETTLEMENTS,
+                                                         _GATE_MIN_PAYERS)
+    need_n = min_settlements if min_settlements is not None else THIN_HISTORY_SETTLEMENTS
+    need_p = min_payers if min_payers is not None else MIN_DISTINCT_PAYERS
+    if graph is None:
+        # build_index assumes well-formed (payer, payee) pairs and raises on junk; this
+        # function promises it never does, so absorb it here rather than loosening a
+        # contract other callers rely on.
+        try:
+            graph = PG.build_index(edges)
+        except Exception:
+            return 0
+    counts = Counter()
+    for edge in edges or ():
+        try:
+            payer, payee = PG._norm(edge[0]), PG._norm(edge[1])
+        except Exception:
+            continue
+        if not payer or not payee or payer == payee:
+            continue
+        counts[payee] += 1
+    return sum(1 for payee, payers in graph.get("payee_to_payers", {}).items()
+               if counts.get(payee, 0) >= need_n and len(payers) >= need_p)
+
 
 def store_stats(edges, *, age_days=None):
     """Pure structural summary of a store's settlement edges. `age_days` (freshness) is
@@ -52,6 +102,7 @@ def store_stats(edges, *, age_days=None):
         "payees": payees,
         "payers": payers,
         "edges": len(edges),
+        "gating_capable": gating_capable(edges, graph),
         "anchors": len(PR.anchor_payees(graph)),
         "age_days": age_days,
         "gating_reachable": reachable,
@@ -59,7 +110,8 @@ def store_stats(edges, *, age_days=None):
     }
 
 
-def assess_refresh(old, new, *, min_retention=MIN_RETENTION, warn_days=REFRESH_WARN_DAYS):
+def assess_refresh(old, new, *, min_retention=MIN_RETENTION, warn_days=REFRESH_WARN_DAYS,
+                   min_gating_retention=MIN_GATING_RETENTION):
     """Decide whether a freshly-crawled store may REPLACE the committed one. PURE.
     Returns {accept, reasons[], warnings[], old, new}. `reasons` non-empty => REJECT
     (keep the current store). `warnings` never block -- they annotate an accept."""
@@ -76,6 +128,17 @@ def assess_refresh(old, new, *, min_retention=MIN_RETENTION, warn_days=REFRESH_W
             "edge count collapsed %d -> %d (kept %.0f%%, need >= %.0f%%)"
             % (old["edges"], new["edges"],
                100.0 * new["edges"] / old["edges"], min_retention * 100))
+
+    # 1b. UTILITY retention -- the metric that survives a "healthy-looking" size check.
+    #     A corpus can keep 85% of its payees while losing 13% of the ones that can
+    #     actually clear the gates; those are the payees a user notices.
+    og, ng = old.get("gating_capable"), new.get("gating_capable")
+    if og and ng is not None and ng < og * min_gating_retention:
+        reasons.append(
+            "gating-capable payees collapsed %d -> %d (kept %.0f%%, need >= %.0f%%) -- "
+            "%d counterparty(ies) that could earn a GO would now be HELD; a size-only "
+            "check cannot see this" % (og, ng, 100.0 * ng / og,
+                                       min_gating_retention * 100, og - ng))
 
     # 2. freshness -- the refresh must make progress AND yield an actually-fresh store.
     na, oa = new.get("age_days"), old.get("age_days")

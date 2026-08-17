@@ -12,8 +12,8 @@
 # overwrite a good corpus. On REJECT the committed artifacts are left untouched and the
 # script exits non-zero.
 #
-# Usage:  sh scripts/refresh_seed.sh            (BACKFILL_PAGES=2 by default)
-#         BACKFILL_PAGES=3 sh scripts/refresh_seed.sh
+# Usage:  sh scripts/refresh_seed.sh            (BACKFILL_PAGES=4 by default)
+#         BACKFILL_PAGES=6 sh scripts/refresh_seed.sh
 #
 # Behind a proxy (local dev), export HTTPS_PROXY / SSL_CERT_FILE first; on a clean host
 # with direct egress, no env is needed.
@@ -21,13 +21,36 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
-PAGES="${BACKFILL_PAGES:-2}"
+# Depth. Raised from 2 now that the refresh MERGES: extra pages can only ADD payers
+# (which is what the Sybil gate needs), and if some fetches fail nothing is lost. Kept
+# modest on purpose -- more pages means more requests against the same keyless,
+# rate-limited Blockscout endpoint that already produced zero-item fetches, so pushing
+# this higher trades coverage risk for freshness gain.
+PAGES="${BACKFILL_PAGES:-4}"
 WORK="$(mktemp -d -t seedrefresh.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
 TMP_STORE="$WORK/rep.db"
 TMP_GZ="$WORK/reputation_seed.db.gz"
 TMP_CAT="$WORK/category_index.json"
 TMP_DIV="$WORK/divergence_index.json"
+
+# MERGE, don't REPLACE. Seed the candidate FROM the committed store, then crawl into
+# it -- so the refresh ACCUMULATES history instead of re-sampling a narrow window.
+#
+# Why this matters (measured on the 2026-08-17 run): a replace-style refresh dropped 41
+# established payees ENTIRELY -- median 100 settlements each, and all still visibly
+# active on-chain -- because their fetch returned 0 items (rate limiting, not inactivity).
+# 55 more lost enough distinct payers to trip the Sybil gate. Net effect: payees able to
+# earn a GO fell 237 -> 207. A settlement that happened last month still happened;
+# discarding it because today's crawl was throttled is simply wrong, and no amount of
+# extra pagination fixes a fetch that returned nothing.
+#
+# The store's natural key is UNIQUE(tx_hash, counterparty, amount) and re-ingest is
+# idempotent, so seeding from the committed store and re-crawling adds only genuinely
+# new settlements. A failed fetch now costs FRESHNESS, never COVERAGE.
+echo "refresh_seed: seeding candidate from the committed store (merge, not replace) ..."
+python3 -c "import gzip,shutil,sys; shutil.copyfileobj(gzip.open(sys.argv[1],'rb'), open(sys.argv[2],'wb'))" \
+    data/reputation_seed.db.gz "$TMP_STORE"
 
 echo "refresh_seed: backfilling data/seed_payees.txt (--max-pages $PAGES) -> temp ..."
 python3 chain_backfill.py --store "$TMP_STORE" \
