@@ -25,22 +25,52 @@ Stdlib.
 """
 from __future__ import annotations
 
+import re
 from collections import Counter
 
 from holder_concentration import BLOCKSCOUT_BASES
 
-# Restriction-class revert reasons -- ISSUER-CAUSED transfer blocks. Case-insensitive
-# substrings, curated from the permissioned-token standards (ERC-3643/T-REX, ERC-1404,
-# ERC-1400, allowlist ERC-20, OZ Pausable). These are the ONLY reverts that speak to
-# issuer trust; everything else (balance, allowance, gas) is caller error and dropped.
-RESTRICTION_PATTERNS = (
-    "not whitelisted", "whitelist", "allowlist", "not allowed", "not allowlisted",
+# Restriction-class revert reasons -- ISSUER-CAUSED transfer blocks, curated from the
+# permissioned-token standards (ERC-3643/T-REX, ERC-1404, ERC-1400, allowlist ERC-20, OZ
+# Pausable). These are the ONLY reverts that speak to issuer trust; everything else
+# (balance, allowance, gas) is caller error and dropped.
+#
+# Matched on WORD BOUNDARIES, not raw substrings. AUDIT-DRIVEN: naive `in` matching made
+# "transfer is unrestricted" / "contract is unpaused" / "account is unfrozen" /
+# "address unblocked" all classify as RESTRICTION -- fabricating restriction evidence out
+# of messages that say the opposite. A word boundary kills every un-prefixed case, because
+# "unfrozen" has no boundary before "frozen".
+#
+# Two groups, because negation means opposite things for each:
+#   POSITIVE_REQUIREMENT -- the ABSENCE is the restriction ("not whitelisted", "not
+#     verified"). Matched plainly; a bare mention in a revert reason already implies the
+#     check failed.
+#   NEGATIVE_CONDITION -- the PRESENCE is the restriction ("frozen", "paused",
+#     "blacklisted"). Must NOT be preceded by a negator, so "sender is not blacklisted"
+#     no longer counts as a restriction.
+POSITIVE_REQUIREMENT_PATTERNS = (
+    "whitelist", "whitelisted", "allowlist", "allowlisted", "not allowed",
     "not verified", "identity", "onchainid", "kyc", "not eligible", "eligibility",
     "compliance", "not compliant", "transfer not possible", "transferrestriction",
-    "restricted", "restriction", "frozen", "freeze", "paused", "pausable",
-    "blacklist", "blocklist", "blocked", "sanction", "forbidden",
-    "not authorized", "unauthorized", "receiver not", "sender not",
+    "not authorized", "unauthorized", "receiver not", "sender not", "freeze",
 )
+NEGATIVE_CONDITION_PATTERNS = (
+    "restricted", "restriction", "frozen", "paused", "pausable",
+    "blacklist", "blacklisted", "blocklist", "blocked", "sanction", "sanctioned",
+    "forbidden", "halted",
+)
+# Negators are fixed-width lookbehinds (Python `re` requires fixed width per lookbehind).
+_NEGATORS = ("not ", "never ", "non-", "isn't ", "wasn't ")
+_NEG_LOOKBEHIND = "".join("(?<!%s)" % re.escape(n) for n in _NEGATORS)
+_POS_RE = re.compile(
+    r"\b(?:%s)\b" % "|".join(re.escape(p) for p in POSITIVE_REQUIREMENT_PATTERNS))
+_NEG_RE = re.compile(
+    r"%s\b(?:%s)\b" % (_NEG_LOOKBEHIND,
+                       "|".join(re.escape(p) for p in NEGATIVE_CONDITION_PATTERNS)))
+
+# Back-compat alias: the full restriction vocabulary as one tuple (some callers/tests
+# introspect it). Not used for matching -- the compiled regexes above are authoritative.
+RESTRICTION_PATTERNS = POSITIVE_REQUIREMENT_PATTERNS + NEGATIVE_CONDITION_PATTERNS
 # Explicitly NON-issuer reverts (caller error / infra) -- classified so they never leak
 # into the restriction bucket even if a substring brushes a pattern.
 BALANCE_PATTERNS = ("exceeds balance", "insufficient balance", "amount exceeds balance",
@@ -95,13 +125,15 @@ def classify_revert(reason):
     r = reason.lower()
     # Caller-error classes first: these are precise, common, and must never be mistaken
     # for a restriction (a balance typo is not the issuer's fault).
-    if any(p in r for p in BALANCE_PATTERNS):
-        return "balance"
+    # Allowance BEFORE balance: "transfer amount exceeds allowance" also matches the
+    # broader "transfer amount exceeds" balance prefix, and the specific class wins.
     if any(p in r for p in ALLOWANCE_PATTERNS):
         return "allowance"
+    if any(p in r for p in BALANCE_PATTERNS):
+        return "balance"
     if "out of gas" in r or "gas required exceeds" in r:
         return "gas"
-    if any(p in r for p in RESTRICTION_PATTERNS):
+    if _POS_RE.search(r) or _NEG_RE.search(r):
         return "restriction"
     # Checked AFTER restriction: a reason-bearing revert that merely contains the word
     # "reverted" alongside a restriction phrase must still classify as restriction.
@@ -123,6 +155,26 @@ def summarize_reverts(reasons):
 MIN_RESTRICTION_EVIDENCE = 3
 
 
+def _as_count(x):
+    """Any JSON-ish value -> a non-negative int count, else 0. NEVER raises."""
+    if isinstance(x, bool):
+        return 0
+    if isinstance(x, int):
+        return x if x >= 0 else 0
+    if isinstance(x, float):
+        try:
+            return int(x) if x >= 0 and x == x and x != float("inf") else 0
+        except (OverflowError, ValueError):
+            return 0
+    if isinstance(x, str):
+        try:
+            v = int(x.strip())
+            return v if v >= 0 else 0
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
 def restriction_axis(landed, revert_summary, *, min_evidence=MIN_RESTRICTION_EVIDENCE):
     """PURE: fold a token/issuer's LANDED successes + its revert class-counts into the
     settlement-reliability axis. `restriction_revert_rate` = restriction reverts over
@@ -131,8 +183,11 @@ def restriction_axis(landed, revert_summary, *, min_evidence=MIN_RESTRICTION_EVI
     nothing (rate reported for observability but `evidence_sufficient=False`). NEVER raises.
     """
     rs = revert_summary if isinstance(revert_summary, dict) else {}
-    restr = rs.get("restriction") or 0
-    landed = landed if isinstance(landed, int) and landed >= 0 else 0
+    # Coerce defensively: the summary can arrive from an operator-edited JSON file
+    # (revert_scan's own --out), so its types are NOT guaranteed. A TypeError here would
+    # crash server startup -- the opposite of fail-open.
+    restr = _as_count(rs.get("restriction"))
+    landed = _as_count(landed)
     attempts = landed + restr
     rate = (restr / attempts) if attempts else None
     return {
@@ -206,8 +261,12 @@ class RevertScanner:
                     detail.get("revert_reason") if isinstance(detail, dict) else None))
             except Exception:
                 reasons.append(None)
-        return {"failed": len(failed_hashes), "reasons": reasons,
-                "summary": summarize_reverts(reasons)}
+        # NO SILENT CAPS: when more failures exist than we fetched details for, say so.
+        # The summary then UNDER-counts restrictions (conservative), and `truncated` lets
+        # a caller tell "few restrictions" from "we only looked at the first N".
+        return {"failed": len(failed_hashes), "sampled": len(reasons),
+                "truncated": len(failed_hashes) > len(reasons),
+                "reasons": reasons, "summary": summarize_reverts(reasons)}
 
 
 def scan_corpus_issuers(events, scanner, *, max_tokens_per_issuer=25):

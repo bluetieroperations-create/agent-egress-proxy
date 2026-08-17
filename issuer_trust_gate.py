@@ -50,10 +50,19 @@ def _fold_revert_axis(grade_info, axis_info, gates_on):
     rate is material, drag the grade to LOW. Dormant otherwise. NEVER raises."""
     if not axis_info:
         return grade_info
+    if not isinstance(grade_info, dict) or not isinstance(axis_info, dict):
+        return grade_info
     info = dict(grade_info)
     info["restriction_axis"] = axis_info
-    if (gates_on and axis_info.get("evidence_sufficient")
-            and (axis_info.get("restriction_revert_rate") or 0) >= RESTRICTION_REVERT_LOW_RATE):
+    # Coerce the rate: the axis can be rebuilt from an operator-edited JSON summary, so a
+    # string here must not raise (comparing str >= float is a TypeError).
+    rate = axis_info.get("restriction_revert_rate")
+    try:
+        rate = float(rate) if rate is not None else 0.0
+    except (TypeError, ValueError):
+        rate = 0.0
+    if gates_on and axis_info.get("evidence_sufficient") \
+            and rate >= RESTRICTION_REVERT_LOW_RATE:
         info["grade"] = "low"
         info["restriction_downgraded"] = True
     return info
@@ -76,16 +85,21 @@ def build_issuer_grades(ledger, events=None, revert_summaries=None):
                if isinstance(e, dict) and e.get("issuer")}
     out = {}
     for iss in issuers:
-        prof = ledger.issuer_profile(iss, events=evs)
-        if not prof:
+        # Fail-soft PER ISSUER: this snapshot is built at server startup, so one corrupt
+        # row must not take down the whole map (and with it the server).
+        try:
+            prof = ledger.issuer_profile(iss, events=evs)
+            if not prof:
+                continue
+            gi = {"grade": issuer_trust(prof)["grade"],
+                  "outcomes": prof.get("outcomes"),
+                  "settlement_success_rate": prof.get("settlement_success_rate")}
+            if iss in revert_summaries:
+                ax = restriction_axis(prof.get("outcomes") or 0, revert_summaries[iss])
+                gi = _fold_revert_axis(gi, ax, REVERT_AXIS_GATES)
+            out[iss] = gi
+        except Exception:
             continue
-        gi = {"grade": issuer_trust(prof)["grade"],
-              "outcomes": prof.get("outcomes"),
-              "settlement_success_rate": prof.get("settlement_success_rate")}
-        if iss in revert_summaries:
-            ax = restriction_axis(prof.get("outcomes") or 0, revert_summaries[iss])
-            gi = _fold_revert_axis(gi, ax, REVERT_AXIS_GATES)
-        out[iss] = gi
     return out
 
 
@@ -114,6 +128,8 @@ def apply_issuer_trust(verdict, grade_info, gates_on=None):
     if gates_on is None:
         gates_on = ISSUER_TRUST_GATES
     if not grade_info or not isinstance(grade_info, dict):
+        return verdict
+    if not isinstance(verdict, dict):        # honour the "NEVER raises" contract
         return verdict
     grade = grade_info.get("grade")
     if grade not in _GRADES:

@@ -168,6 +168,43 @@ class TestRevertAxis(unittest.TestCase):
         self.assertIn("restriction_axis", v["signals"]["issuer_trust"])
 
 
+class TestAuditRegressions(unittest.TestCase):
+    """Regressions for the adversarial audit sweep."""
+
+    def test_one_corrupt_issuer_does_not_kill_the_snapshot(self):
+        # AUDIT BUG (MEDIUM): build_issuer_grades runs at SERVER STARTUP. An exception
+        # from one issuer's profile took down the entire map -- and the server with it.
+        class ProfBoom:
+            def load(self):
+                return [{"event": "buy", "issuer": "good", "token": "0x1"},
+                        {"event": "buy", "issuer": "bad", "token": "0x2"}]
+
+            def issuer_profile(self, iss, events=None):
+                if iss == "bad":
+                    raise ValueError("corrupt row")
+                return {"issuer": iss, "outcomes": 9, "settlement_success_rate": 1.0,
+                        "verdicts": {}, "count": 1}
+
+        grades = build_issuer_grades(ProfBoom())
+        self.assertIn("good", grades)      # survivor still graded
+        self.assertNotIn("bad", grades)
+
+    def test_apply_never_raises_on_non_dict_verdict(self):
+        # AUDIT BUG (LOW): the docstring promises "NEVER raises" but dict(verdict)
+        # blew up on a non-dict.
+        for v in (None, "notadict", 42, []):
+            apply_issuer_trust(v, {"grade": "low", "outcomes": 9})
+
+    def test_fold_survives_string_rate(self):
+        # AUDIT BUG (MEDIUM): str >= float is a TypeError; the rate can come from an
+        # operator-edited JSON summary.
+        from issuer_trust_gate import _fold_revert_axis
+        r = _fold_revert_axis({"grade": "medium"},
+                              {"restriction_revert_rate": "0.9",
+                               "evidence_sufficient": True}, True)
+        self.assertIsInstance(r, dict)
+
+
 class TestAggregateIntegration(unittest.TestCase):
     def test_issuer_trust_advisory_bad_only_when_gated(self):
         from rwa_aggregate import aggregate

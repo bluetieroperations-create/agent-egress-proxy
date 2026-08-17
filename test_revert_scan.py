@@ -102,6 +102,60 @@ class TestRealWorldCalibration(unittest.TestCase):
             "restriction")
 
 
+class TestAuditRegressions(unittest.TestCase):
+    """Regressions for bugs found by the adversarial audit sweep. Each names the bug."""
+
+    def test_negation_words_are_not_restrictions(self):
+        # AUDIT BUG (HIGH): naive substring matching classified messages that say the
+        # OPPOSITE as restrictions -- "unrestricted" contains "restricted", "unpaused"
+        # contains "paused", etc. -- fabricating restriction evidence against an issuer.
+        for msg in ("transfer is unrestricted", "contract is unpaused",
+                    "account is unfrozen", "address unblocked",
+                    "sender is not blacklisted", "token is non-restricted"):
+            self.assertNotEqual(classify_revert(msg), "restriction", msg)
+
+    def test_real_restrictions_still_match_after_boundary_fix(self):
+        # The fix must not break true positives (word boundaries + negator lookbehind).
+        for msg in ("account is blacklisted", "wallet is frozen", "Pausable: paused",
+                    "recipient not whitelisted", "trading is halted"):
+            self.assertEqual(classify_revert(msg), "restriction", msg)
+
+    def test_allowance_beats_balance_prefix(self):
+        # AUDIT BUG (LOW): "transfer amount exceeds allowance" matched the broader
+        # balance prefix "transfer amount exceeds" first and mislabeled as `balance`.
+        self.assertEqual(classify_revert("ERC20: transfer amount exceeds allowance"),
+                         "allowance")
+
+    def test_axis_survives_non_numeric_counts(self):
+        # AUDIT BUG (MEDIUM): revert summaries can come from an operator-edited JSON
+        # file, so a string/list count must coerce -- not TypeError at server startup.
+        for bad in ({"restriction": "5"}, {"restriction": [1]}, {"restriction": None},
+                    {"restriction": 3.7}, "notadict", None, 42):
+            ax = restriction_axis(100, bad)
+            self.assertIsInstance(ax, dict)
+        self.assertEqual(restriction_axis(100, {"restriction": "5"})["restriction_reverts"], 5)
+
+    def test_axis_survives_bad_landed(self):
+        for bad in ("100", None, -5, float("inf"), 3.5):
+            self.assertIsInstance(restriction_axis(bad, {"restriction": 5}), dict)
+
+    def test_scan_reports_truncation(self):
+        # AUDIT (NO SILENT CAPS): when more failures exist than details fetched, the
+        # under-count must be VISIBLE, else "few restrictions" is indistinguishable
+        # from "we only looked at the first N".
+        def fetch_txns(token, params):
+            return ([{"hash": "0x%d" % i, "status": "error"} for i in range(500)], None)
+
+        def fetch_tx(h):
+            return {"revert_reason": _restr("recipient not whitelisted")}
+
+        sc = RevertScanner("ethereum", fetch_txns=fetch_txns, fetch_tx=fetch_tx)
+        out = sc.scan_token("0x" + "22" * 20, max_details=50)
+        self.assertEqual(out["failed"], 500)
+        self.assertEqual(out["sampled"], 50)
+        self.assertTrue(out["truncated"])
+
+
 class TestSummarize(unittest.TestCase):
     def test_counts_by_class(self):
         s = summarize_reverts(["Pausable: paused", "not whitelisted",
