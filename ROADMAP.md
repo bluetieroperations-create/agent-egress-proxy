@@ -162,7 +162,33 @@ rollup). **Deferred halves:**
       compliance blocks are VISIBLE rather than buried in `other`. Opaque reverts
       UNDER-count restrictions (conservative/fail-safe — never over-flags an issuer) but
       cap recall on old-style tokens. All four real strings are now regression fixtures.
-  - **NEXT (unbuilt, promising):** since 0/535 tokens expose a restriction interface,
+  - **PERMISSIONED ISSUERS SOURCED + INGESTED — and the axis is now ADJUDICATED.** Found
+    real permissioned RWAs via a TRANSFER SIMULATION (eth_call `transfer` from a real holder
+    to a fresh non-KYC address — decisive even when NO standard interface is exposed, which
+    was true for 535/535 of the old corpus). Each VERIFIED on-chain by name()/symbol();
+    unverifiable candidates were dropped, never seeded. Ingested 674 acquisitions across
+    Ondo OUSG, BlackRock BUIDL, Matrixdock STBT, Hashnote USYC.
+    - *Classifier recall was the first casualty:* on real permissioned reverts it caught
+      only **1 of 3** — missing BUIDL's `"Wallet not in registry service"` and STBT's
+      `"STBT: NO_RECEIVE_PERMISSION"` (the latter structurally, since `_` is a word char so
+      a word-boundary match cannot see inside a SCREAMING_SNAKE identifier). Fixed with
+      punctuation normalization + live-calibrated vocabulary; now **3/3**, still 0 false
+      positives on the adversarial negation set. BUIDL's history added two more real
+      strings: `"Under lock-up"` (restriction) and `"Not enough tokens"` (balance).
+    - *The axis ACTIVATED:* BUIDL 20 restriction reverts (9.1% of attempts), STBT 7 (3.4%).
+    - **VERDICT — `REVERT_AXIS_GATES` MUST STAY OFF, PERMANENTLY IN THIS HOME.** The measured
+      counterfactual is that flipping it downgrades **BlackRock BUIDL to LOW** — one of the
+      most reputable RWA issuers alive — *because* its lock-up and registry checks reject
+      non-allowlisted wallets, i.e. because it is a properly permissioned security working
+      AS DESIGNED. This empirically confirms the semantic trap flagged before the build:
+      **a restriction revert measures TRANSFER FRICTION, not issuer untrustworthiness.**
+      Pinned by `test_revert_axis_lock_stays_off_reputable_issuer_would_false_flag`.
+    - **RE-HOMING is the real next step** (not flipping a lock): the signal is genuinely
+      valuable to an agent buyer ("transfers here revert ~9% of the time — yours may too"),
+      but it belongs beside `rwa_readiness` as an ASSET-level readiness signal — the
+      realized, empirical counterpart to that module's proactive `canTransfer` probe.
+  - **NEXT (unbuilt, promising):** since 0/535 of the ORIGINAL corpus tokens expose a
+    restriction interface,
     `rwa_readiness` returns "unknown" for the entire corpus — but the blacklist simulation
     above shows an `eth_call` transfer SIMULATION yields a definitive pre-trade answer with
     NO interface required. A simulation-based readiness probe would cover the ~100% of

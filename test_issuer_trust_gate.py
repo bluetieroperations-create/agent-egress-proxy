@@ -195,6 +195,27 @@ class TestAuditRegressions(unittest.TestCase):
         for v in (None, "notadict", 42, []):
             apply_issuer_trust(v, {"grade": "low", "outcomes": 9})
 
+    def test_revert_axis_lock_stays_off_reputable_issuer_would_false_flag(self):
+        """CALIBRATION LOCK (measured, not cautious). Real ingested data: BlackRock BUIDL
+        has 20 restriction reverts over 220 attempts (9.1%) because its lock-up and
+        registry-service checks reject non-allowlisted wallets -- i.e. because it is a
+        properly permissioned security working AS DESIGNED. Flipping REVERT_AXIS_GATES
+        downgrades it to LOW, which is a catastrophic false flag on one of the most
+        reputable RWA issuers in existence. This test pins BOTH facts."""
+        from issuer_trust_gate import _fold_revert_axis
+        from revert_scan import restriction_axis
+        buidl = restriction_axis(200, {"restriction": 20})     # real measured shape
+        self.assertTrue(buidl["evidence_sufficient"])          # the axis DOES activate
+        self.assertGreaterEqual(buidl["restriction_revert_rate"], 0.05)
+        # Shipped default: lock OFF -> a reputable permissioned issuer is NOT downgraded.
+        self.assertFalse(itg.REVERT_AXIS_GATES)
+        self.assertEqual(
+            _fold_revert_axis({"grade": "medium"}, buidl, itg.REVERT_AXIS_GATES)["grade"],
+            "medium")
+        # ...and the reason the lock must stay off: flipping it WOULD downgrade it.
+        self.assertEqual(_fold_revert_axis({"grade": "medium"}, buidl, True)["grade"],
+                         "low")
+
     def test_fold_survives_string_rate(self):
         # AUDIT BUG (MEDIUM): str >= float is a TypeError; the rate can come from an
         # operator-edited JSON summary.

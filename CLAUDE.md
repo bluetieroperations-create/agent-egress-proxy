@@ -338,7 +338,15 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   (two-step, injected transport) + `scan_corpus_issuers` + `main()` produce a {issuer:
   summary} the grade folds. DORMANT-BUT-READY (mirrors rams_readiness): inert until an issuer
   has >= MIN_RESTRICTION_EVIDENCE restriction reverts -- zero on today's corpus, verified live
-  (8 real Backed reverts all balance-class -> axis dormant). Tests: `test_revert_scan.py`),
+  (8 real Backed reverts all balance-class -> axis dormant). ADJUDICATED: permissioned
+  issuers WERE then sourced (transfer-SIMULATION discovery) and ingested -- Ondo OUSG,
+  BlackRock BUIDL, Matrixdock STBT, Hashnote USYC, 674 acquisitions -- and the axis
+  ACTIVATED (BUIDL 20 restriction reverts/9.1%, STBT 7/3.4%). Its first act was to try to
+  downgrade BLACKROCK to LOW because its lock-up/registry checks reject non-allowlisted
+  wallets (i.e. because it works AS DESIGNED), so `REVERT_AXIS_GATES` STAYS OFF: a
+  restriction revert measures TRANSFER FRICTION, not issuer untrustworthiness. Re-home it
+  beside rwa_readiness as an ASSET-level signal; do NOT flip the lock.
+  Tests: `test_revert_scan.py`),
   `issuer_trust_gate.py` (GRADUATE the earned per-issuer trust grade into the RWA verdict --
   the payoff of the accumulation arc: `rwa_ledger.issuer_trust` grades an issuer from its
   LABELED settlement/outcome history (hard-to-fake), and this surfaces that grade in every

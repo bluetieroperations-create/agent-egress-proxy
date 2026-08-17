@@ -15,6 +15,23 @@ FAILED attempts. A live spike confirmed:
     amount exceeds balance"), NOT restriction reverts -- so the raw failure count is noise.
 The signal is therefore the RESTRICTION-CLASS revert, which this module isolates.
 
+*** CALIBRATION VERDICT: THE LOCK MUST STAY OFF (empirically proven, not cautious). ***
+Permissioned issuers were sourced and ingested (Ondo OUSG, BlackRock BUIDL, Matrixdock
+STBT, Hashnote USYC -- each VERIFIED on-chain via name()/symbol()), and the axis DID
+activate: BUIDL 20 restriction reverts (9.1% of attempts), STBT 7 (3.4%). The very first
+thing the axis did was try to downgrade **BlackRock BUIDL to LOW** -- one of the most
+reputable RWA issuers in existence -- because its lock-up and registry-service checks
+revert transfers. That is a catastrophic false flag, and it proves the SEMANTIC point:
+
+    a restriction revert measures TRANSFER FRICTION, not ISSUER UNTRUSTWORTHINESS.
+
+A permissioned security rejecting a non-KYC wallet is working AS DESIGNED. So this axis is
+genuinely useful to an agent buyer ("your transfer may revert here too") but it is MIS-HOMED
+as an issuer-trust downgrade. It belongs next to `rwa_readiness` as an ASSET-level readiness
+signal -- the realized, empirical counterpart to that module's proactive `canTransfer` probe.
+`REVERT_AXIS_GATES` therefore stays False permanently in its current home; re-homing the
+signal is the roadmap item, not flipping the lock.
+
 DORMANT-BUT-READY (mirrors rams_readiness). The classifier + scanner are built and tested;
 the axis stays inert until enough restriction-class reverts are observed for an issuer
 (`MIN_RESTRICTION_EVIDENCE`). On a freely-transferable issuer (Backed today) it reports
@@ -53,14 +70,24 @@ POSITIVE_REQUIREMENT_PATTERNS = (
     "not verified", "identity", "onchainid", "kyc", "not eligible", "eligibility",
     "compliance", "not compliant", "transfer not possible", "transferrestriction",
     "not authorized", "unauthorized", "receiver not", "sender not", "freeze",
+    # LIVE-CALIBRATED additions -- harvested by simulating transfers on REAL permissioned
+    # RWAs. Without these the classifier caught only 1 of 3 real restriction reverts:
+    #   BlackRock BUIDL (Securitize) -> "Wallet not in registry service"
+    #   Matrixdock STBT              -> "STBT: NO_RECEIVE_PERMISSION"
+    "permission", "not in registry", "registry service", "not registered",
 )
 NEGATIVE_CONDITION_PATTERNS = (
     "restricted", "restriction", "frozen", "paused", "pausable",
     "blacklist", "blacklisted", "blocklist", "blocked", "sanction", "sanctioned",
     "forbidden", "halted",
+    # LIVE-CALIBRATED: BlackRock BUIDL reverts historical transfers with "Under lock-up".
+    # A lock-up/vesting hold is an ISSUER-imposed transfer restriction -- exactly the
+    # transfer friction an agent buyer needs warned about.
+    "lock up", "lockup", "locked",
 )
 # Negators are fixed-width lookbehinds (Python `re` requires fixed width per lookbehind).
-_NEGATORS = ("not ", "never ", "non-", "isn't ", "wasn't ")
+_NORMALIZE_RE = re.compile(r"[^a-z0-9]+")
+_NEGATORS = ("not ", "never ", "non ", "isn t ", "wasn t ")
 _NEG_LOOKBEHIND = "".join("(?<!%s)" % re.escape(n) for n in _NEGATORS)
 _POS_RE = re.compile(
     r"\b(?:%s)\b" % "|".join(re.escape(p) for p in POSITIVE_REQUIREMENT_PATTERNS))
@@ -74,7 +101,10 @@ RESTRICTION_PATTERNS = POSITIVE_REQUIREMENT_PATTERNS + NEGATIVE_CONDITION_PATTER
 # Explicitly NON-issuer reverts (caller error / infra) -- classified so they never leak
 # into the restriction bucket even if a substring brushes a pattern.
 BALANCE_PATTERNS = ("exceeds balance", "insufficient balance", "amount exceeds balance",
-                    "transfer amount exceeds")
+                    "transfer amount exceeds",
+                    # LIVE-CALIBRATED: BUIDL's wording for a plain balance shortfall.
+                    "not enough tokens", "not enough balance", "not enough funds",
+                    "insufficient funds")
 ALLOWANCE_PATTERNS = ("exceeds allowance", "insufficient allowance")
 # OPAQUE reverts carry NO reason string -- pre-0.8 `assert`/`throw` compliance checks
 # (USDT's blacklist is the canonical example) burn gas with INVALID, and some reverts
@@ -122,7 +152,12 @@ def classify_revert(reason):
     an OZ-style message is unambiguous. NEVER raises."""
     if not reason or not isinstance(reason, str):
         return "unknown"
-    r = reason.lower()
+    # NORMALIZE punctuation to spaces before matching. Solidity revert reasons are often
+    # SCREAMING_SNAKE identifiers, and "_" is a WORD character -- so a word-boundary match
+    # cannot see inside "NO_RECEIVE_PERMISSION" (a real Matrixdock STBT restriction).
+    # Normalizing turns it into "no receive permission" so \bpermission\b matches, while
+    # single words like "unrestricted" are left intact so they still correctly DON'T match.
+    r = _NORMALIZE_RE.sub(" ", reason.lower()).strip()
     # Caller-error classes first: these are precise, common, and must never be mistaken
     # for a restriction (a balance typo is not the issuer's fault).
     # Allowance BEFORE balance: "transfer amount exceeds allowance" also matches the

@@ -94,6 +94,35 @@ class TestRealWorldCalibration(unittest.TestCase):
         self.assertEqual(ax["restriction_reverts"], 0)
         self.assertTrue(ax["dormant"])
 
+    def test_real_permissioned_rwa_restrictions(self):
+        """LIVE-harvested from REAL permissioned RWAs by simulating a transfer from a
+        real holder to a fresh non-KYC address. Before these were added the classifier
+        caught only 1 of 3 -- a 67% miss rate on exactly the tokens the axis exists for."""
+        for msg, src in [
+            ("CashKYCSenderReceiver: `to` address must be KYC'd to receive tokens",
+             "Ondo OUSG"),
+            ("Wallet not in registry service", "BlackRock BUIDL (Securitize)"),
+            ("STBT: NO_RECEIVE_PERMISSION", "Matrixdock STBT"),
+        ]:
+            self.assertEqual(classify_revert(msg), "restriction", src)
+
+    def test_real_buidl_historical_reverts(self):
+        """LIVE-harvested from BlackRock BUIDL's actual FAILED transfer history."""
+        # A lock-up is an ISSUER-imposed transfer restriction (real transfer friction).
+        self.assertEqual(classify_revert("Under lock-up"), "restriction")
+        # ...but BUIDL's wording for a plain shortfall is still caller error.
+        self.assertEqual(classify_revert("Not enough tokens"), "balance")
+        # and the negation must survive the new lock vocabulary.
+        self.assertNotEqual(classify_revert("tokens are unlocked"), "restriction")
+
+    def test_screaming_snake_identifiers_are_matched(self):
+        # STRUCTURAL: "_" is a word character, so \bpermission\b cannot see inside
+        # "NO_RECEIVE_PERMISSION" without punctuation normalization.
+        self.assertEqual(classify_revert("NO_RECEIVE_PERMISSION"), "restriction")
+        self.assertEqual(classify_revert("TRANSFER_NOT_ALLOWED"), "restriction")
+        # ...and normalization must NOT resurrect the un-prefix false positives.
+        self.assertNotEqual(classify_revert("UNRESTRICTED_TRANSFER"), "restriction")
+
     def test_restriction_wins_over_opaque_wording(self):
         # MUTATION: ordering opaque before restriction would swallow a real reason that
         # happens to contain "reverted".

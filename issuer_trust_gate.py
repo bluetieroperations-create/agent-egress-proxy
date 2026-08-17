@@ -31,10 +31,15 @@ from rwa_ledger import issuer_trust
 ISSUER_TRUST_GATES = False
 
 # Second, INDEPENDENT lock for the settlement-reliability axis (restriction-revert rate,
-# revert_scan.py). Off = the axis is recorded but never changes the grade. It is DORMANT on
-# today's corpus regardless (freely-transferable issuers emit zero restriction reverts; see
-# revert_scan.py), so this lock only matters once a permissioned issuer with real reverts
-# is ingested -- then flip it after the same ~0-false-flag proof.
+# revert_scan.py). Off = the axis is recorded but never changes the grade.
+#
+# DO NOT FLIP THIS. Permissioned issuers were ingested and the axis activated (BlackRock
+# BUIDL 20 restriction reverts / 9.1%, Matrixdock STBT 7 / 3.4%). The measured counterfactual
+# is that flipping it downgrades **BlackRock BUIDL to LOW** -- because its lock-up and
+# registry-service checks revert transfers, i.e. because it is a properly permissioned
+# security working AS DESIGNED. A restriction revert measures TRANSFER FRICTION, not issuer
+# untrustworthiness, so this signal is MIS-HOMED here. Re-home it as an asset-level readiness
+# signal beside rwa_readiness; do not turn it into an issuer-trust downgrade.
 REVERT_AXIS_GATES = False
 # A restriction-revert rate at/above this (with sufficient evidence) drags an issuer to LOW
 # once REVERT_AXIS_GATES is on. 5% of transfer ATTEMPTS reverting on restrictions is a
