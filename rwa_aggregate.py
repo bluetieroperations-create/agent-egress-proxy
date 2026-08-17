@@ -58,6 +58,9 @@ SIGNAL_SPECS = (
     ("aave", "advisory", 0.3,
      "Aave has frozen this token's lending reserve (protocol de-risked it)",
      lambda s: s.get("grade") == "frozen"),
+    ("issuer_trust", "advisory", 0.3,
+     "issuer earned-trust grade is LOW (settlement/outcome history)",
+     lambda s: bool(s.get("gated"))),
 )
 
 _TOTAL_WEIGHT = sum(w for _k, _t, w, _l, _b in SIGNAL_SPECS)

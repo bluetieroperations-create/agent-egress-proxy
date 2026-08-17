@@ -318,6 +318,17 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   (HOLD-only, monotonic -- can only ADD caution, never clear), fail-open, opt-in
   `BLACKWALL_DEX`. KNOWN LIMITATION: no liquidity-depth check -> a dust pool can false-flag
   (bounded: HOLD-only; the Pyth paid-vs-underlying peg still fires independently)),
+  `issuer_trust_gate.py` (GRADUATE the earned per-issuer trust grade into the RWA verdict --
+  the payoff of the accumulation arc: `rwa_ledger.issuer_trust` grades an issuer from its
+  LABELED settlement/outcome history (hard-to-fake), and this surfaces that grade in every
+  RWA verdict. `build_issuer_grades` precomputes {issuer: grade} from the corpus ONCE at
+  startup; `IssuerTrustSource.grade()` is the O(1) hot-path lookup; `apply_issuer_trust`
+  folds `signals.issuer_trust`. GRADUATION DISCIPLINE (mirrors SYBIL_RING_GATES): the
+  `ISSUER_TRUST_GATES` reversibility LOCK defaults False -> DESCRIPTIVE ONLY (recorded, never
+  affects the verdict) until the backfilled corpus proves ~0 false-flags on known-good
+  issuers; when flipped, a LOW grade becomes an ADVISORY signal rwa_aggregate weighs
+  COLLECTIVELY (never gates alone, never STOP, never clears). Built at startup from the
+  BLACKWALL_RWA_LEDGER corpus; folded via `issuer_trust_source`),
   `ROADMAP.md`, `docs/DATA_SOURCE_SPIKE.md`. Tests:
   `test_blackwall.py`, `test_ledger.py`, `test_reputation_onchain.py`,
   `test_settlement_watch.py`, `test_addresses.py`, `test_x402.py`,
@@ -337,7 +348,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_backed_oracle.py test_rams_readiness.py \
  test_dex_price.py test_holder_concentration.py \
  test_rwa_aggregate.py test_aave_reserve.py \
- test_rwa_backfill.py
+ test_rwa_backfill.py test_issuer_trust_gate.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop

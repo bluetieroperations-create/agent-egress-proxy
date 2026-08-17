@@ -100,9 +100,17 @@ enrichment fold** (`apply_asset_registry` -> `signals.rwa_asset` + trading-halt 
 receipt_id); and the **outcome-capture loop** (`rwa_outcomes.py` -- T+N mark-to-market via
 Pyth labels each buy underwater/in-profit, closing the flywheel; `issuer_trust` grades the
 rollup). **Deferred halves:**
-- **Graduate `issuer_trust` to a GATE** — it's descriptive today; once labeled outcomes
-  accrue and the grade is calibration-locked (like the sybil_ring graduation), fold it as
-  a conservative verdict input (earned floor, like `seller_audit`; HOLD-only, never STOP).
+- **Graduate `issuer_trust` to a GATE** — **DESCRIPTIVE FOLD BUILT** (`issuer_trust_gate.py`):
+  the grade is now precomputed from the corpus at startup (`IssuerTrustSource.from_ledger`,
+  O(1) hot-path lookup) and folded into every RWA verdict as `signals.issuer_trust`, wired
+  into `forecast` + the server (built whenever `BLACKWALL_RWA_LEDGER` is on). Behind the
+  `ISSUER_TRUST_GATES=False` reversibility lock it is DESCRIPTIVE ONLY today (recorded, never
+  affects the verdict) exactly like the sybil_ring observation phase. **REMAINING to flip the
+  lock:** once labeled outcomes accrue and the grade is calibrated, flip `ISSUER_TRUST_GATES`
+  so a LOW grade becomes an advisory signal `rwa_aggregate` weighs collectively (HOLD-only,
+  never STOP; the wiring is already in `SIGNAL_SPECS`). The stronger earned-FLOOR direction
+  (a HIGH grade CLEARING a cold-start HOLD, like `seller_audit`) stays deferred — clearing
+  needs more calibration than adding caution.
   - **TRIGGER (self-signaling, checkable):** `rwa_report.py`'s `issuer_directory` IS the
     readiness signal. Run it on the live corpus; when several issuers have graduated OUT
     of `trust: "insufficient"` (i.e. `>= ISSUER_TRUST_MIN_OUTCOMES` LABELED outcomes each,

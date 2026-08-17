@@ -984,7 +984,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              divergence_index=None, enrichment_source=None, verify_signer=True,
              rwa_source=None, stock_registry=None, pyth_source=None, rwa_ledger=None,
              balance_reader=None, backing_index=None, dex_source=None,
-             holder_source=None, aave_source=None):
+             holder_source=None, aave_source=None, issuer_trust_source=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
@@ -1262,6 +1262,19 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
             _av = None
         verdict = apply_aave(verdict, _av)
 
+    # Earned ISSUER-TRUST grade (issuer_trust_gate.py) -- the payoff of the accumulation
+    # corpus: an issuer's LABELED settlement/outcome history graded high/medium/low. O(1)
+    # lookup off a precomputed snapshot. DESCRIPTIVE by default (ISSUER_TRUST_GATES lock
+    # off -> recorded, never gates); when calibrated + the lock flips, a LOW grade becomes
+    # an advisory signal the aggregate weighs. Never STOP, fail-open.
+    if issuer_trust_source is not None and asset_record and asset_record.get("issuer"):
+        from issuer_trust_gate import apply_issuer_trust
+        try:
+            _grade = issuer_trust_source.grade(asset_record.get("issuer"))
+        except Exception:
+            _grade = None
+        verdict = apply_issuer_trust(verdict, _grade)
+
     # AGGREGATION / confidence layer (rwa_aggregate.py): compose the ~8 RWA signals into
     # ONE weighted risk view (signals.rwa_risk: score/level/primary_concern/concerns) and
     # apply the controlled collective rule -- advisory signals agreeing past a threshold
@@ -1428,6 +1441,7 @@ class _Handler(BaseHTTPRequestHandler):
     dex_source = None  # dex_price.DexPriceSource (market-vs-NAV peg), or None
     holder_source = None  # holder_concentration.HolderConcentrationSource (rug-check), or None
     aave_source = None  # aave_reserve.AaveReserveSource (advisory quality), or None
+    issuer_trust_source = None  # issuer_trust_gate.IssuerTrustSource (earned grade), or None
     graph_source = None  # payer_reputation.PayerReputationSource (Sybil corroboration)
     velocity_source = None  # settlement_velocity.VelocitySource (stale gate)
     openapi_server_url = None  # public origin for the openapi.json servers[] (or None)
@@ -1684,6 +1698,7 @@ class _Handler(BaseHTTPRequestHandler):
                                  dex_source=self.dex_source,
                                  holder_source=self.holder_source,
                                  aave_source=self.aave_source,
+                                 issuer_trust_source=self.issuer_trust_source,
                                  verify_signer=_verify_signer)
         if err is not None:
             self._send_json(400, {"error": err})
@@ -1772,7 +1787,7 @@ class BlackwallServer:
                  enrichment_source=None, rwa_source=None, stock_registry=None,
                  pyth_source=None, rwa_ledger=None, balance_reader=None,
                  backing_index=None, dex_source=None, holder_source=None,
-                 aave_source=None):
+                 aave_source=None, issuer_trust_source=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -1800,6 +1815,7 @@ class BlackwallServer:
         self.dex_source = dex_source
         self.holder_source = holder_source
         self.aave_source = aave_source
+        self.issuer_trust_source = issuer_trust_source
         self.stats = _Stats()
         self._httpd = None
 
@@ -1827,6 +1843,7 @@ class BlackwallServer:
                         "dex_source": self.dex_source,
                         "holder_source": self.holder_source,
                         "aave_source": self.aave_source,
+                        "issuer_trust_source": self.issuer_trust_source,
                         "stats": self.stats,
                         "openapi_server_url": self.openapi_server_url})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
@@ -2274,6 +2291,20 @@ def main(argv=None):
                              "balance recorded for the T+N delta)\n")
             sys.stdout.flush()
 
+    # EARNED issuer-trust grade (issuer_trust_gate.py): when the accumulation corpus is
+    # on, precompute the per-issuer grade snapshot ONCE at startup so every RWA verdict
+    # carries the issuer's LABELED settlement/outcome grade (O(1) lookup on the hot path).
+    # DESCRIPTIVE by default (ISSUER_TRUST_GATES lock off); flips to an advisory signal
+    # only once calibrated. Fail-open -- a broken corpus yields an empty snapshot.
+    issuer_trust_source = None
+    if rwa_ledger is not None:
+        from issuer_trust_gate import IssuerTrustSource
+        issuer_trust_source = IssuerTrustSource.from_ledger(rwa_ledger)
+        sys.stdout.write("blackwall: issuer-trust grade ON (%d issuer(s) graded from the "
+                         "corpus; descriptive until ISSUER_TRUST_GATES is calibrated)\n"
+                         % len(issuer_trust_source))
+        sys.stdout.flush()
+
     # OPT-IN (BLACKWALL_ANCHOR=1): anchor every verdict's digest to Traceipt for a
     # tamper-evident audit trail. Non-blocking + fail-open; costs ~0.002 USDC/verdict
     # and needs a funded SIGNER_PRIVATE_KEY (else it 402s and fails open). OFF by
@@ -2308,6 +2339,7 @@ def main(argv=None):
                              dex_source=dex_source,
                              holder_source=holder_source,
                              aave_source=aave_source,
+                             issuer_trust_source=issuer_trust_source,
                              openapi_server_url=origin)
     try:
         server.serve_forever()
