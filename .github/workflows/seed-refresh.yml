@@ -23,8 +23,8 @@ on:
   workflow_dispatch:
     inputs:
       max_pages:
-        description: "chain_backfill --max-pages per payee"
-        default: "2"
+        description: "chain_backfill --max-pages per payee (blank = script default, 4)"
+        default: ""
 
 permissions:
   contents: write        # to push the refresh branch
@@ -44,7 +44,11 @@ jobs:
       - name: Guarded refresh (temp candidate -> promote only on ACCEPT)
         id: refresh
         env:
-          BACKFILL_PAGES: ${{ github.event.inputs.max_pages || '2' }}
+          # NO hardcoded fallback. `:-` in refresh_seed.sh treats an empty value as
+          # unset, so leaving this blank lets the SCRIPT's default govern -- one source
+          # of truth. A literal '2' here silently overrode the script's default and made
+          # the depth setting inert on every scheduled run.
+          BACKFILL_PAGES: ${{ github.event.inputs.max_pages }}
         run: |
           set +e
           sh scripts/refresh_seed.sh
