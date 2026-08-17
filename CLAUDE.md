@@ -318,6 +318,21 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   (HOLD-only, monotonic -- can only ADD caution, never clear), fail-open, opt-in
   `BLACKWALL_DEX`. KNOWN LIMITATION: no liquidity-depth check -> a dust pool can false-flag
   (bounded: HOLD-only; the Pyth paid-vs-underlying peg still fires independently)),
+  `rpc_node.py` (OUR OWN JSON-RPC endpoint -- the single controlled front door for every
+  on-chain read. The simulation gates put a QUERY LEAK on the hot path ("this payer is about
+  to pay this payee this amount"), which is exactly what readiness.py avoids, so this closes
+  it. NOT a node (syncing one is TB + days; it is operated, not imported) -- it is the piece
+  that makes running your own a ONE-LINE config change and shrinks the leak either way:
+  SINGLE EGRESS POINT (the egress_proxy.py idea applied to chain reads), CACHE (a repeat
+  check never re-leaks -- measured live: 3 upstream calls cold, 0 on repeat, identical
+  verdicts), METHOD ALLOWLIST (read-only; no eth_send*/admin_/personal_/debug_ -- our
+  endpoint can never broadcast a tx), and a SELF-HOST SWITCH (point --upstream at your own
+  node -> zero third-party leakage, no code change; the env vars already take any URL).
+  TTL defaults to 30s because staleness is a SAFETY tradeoff (a payee blacklisted 5 min ago
+  must not read as fine); EVM reverts ARE cached (deterministic, and the blacklisted-payee
+  case is the most sensitive query), bare errors are NOT (transient). `is_allowed` /
+  `cache_key` / `validate_request` pure; `RpcCache` + `LocalRpcNode` + CLI
+  `python rpc_node.py --upstream URL`. See `docs/RPC_SELFHOST.md`. Tests: `test_rpc_node.py`),
   `transfer_sim.py` (the SHARED transfer-SIMULATION core -- ask the chain "would this
   transfer actually succeed?" via eth_call, then decode + ATTRIBUTE the revert. Built
   because interface probing FAILED: all 535 corpus tokens x 9 probes -> 535/535 alive but
@@ -410,7 +425,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_dex_price.py test_holder_concentration.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
- test_transfer_sim.py test_settlement_sim.py
+ test_transfer_sim.py test_settlement_sim.py test_rpc_node.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop
