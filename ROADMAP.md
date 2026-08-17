@@ -144,6 +144,29 @@ rollup). **Deferred halves:**
     axis dormant). Auto-activates with zero code change when the data appears (rams_readiness
     pattern). **REMAINING:** ingest a genuinely permissioned issuer (ERC-3643/T-REX,
     ERC-1404) whose transfers revert on restrictions, then calibrate + flip the lock.
+  - **INGESTION + CALIBRATION PASS — RUN, measured:**
+    - *Ingestion (where can the signal even exist?):* probed ALL **535** distinct corpus
+      tokens × 9 interface probes (`identityRegistry` / `isWhitelisted` /
+      `detectTransferRestriction` / `preTransferCheck` / `canTransfer` / `paused` /
+      blocklist), with a `decimals()` CONTROL per token. Result: **535/535 alive,
+      0/535 expose ANY permissioned interface.** So restriction reverts are *structurally
+      impossible* on today's corpus — the axis is provably, not merely observedly, dormant.
+      Sourcing a permissioned issuer is therefore a prerequisite, not an optimization.
+    - *Calibration (is the classifier right on REAL strings?):* harvested ground-truth
+      revert strings live by `eth_call`-simulating transfers FROM publicly OFAC/Circle-
+      blacklisted addresses. `classify_revert` scores **4/4**: USDC's
+      `"Blacklistable: account is blacklisted"` → `restriction` (true positive),
+      `"ERC20: transfer amount exceeds balance"` → `balance` (true negative).
+    - *Gap found + closed:* USDT's pre-0.8 blacklist reverts with **no reason string**
+      (`invalid opcode: INVALID`). Added an explicit `opaque` class so reason-less
+      compliance blocks are VISIBLE rather than buried in `other`. Opaque reverts
+      UNDER-count restrictions (conservative/fail-safe — never over-flags an issuer) but
+      cap recall on old-style tokens. All four real strings are now regression fixtures.
+  - **NEXT (unbuilt, promising):** since 0/535 tokens expose a restriction interface,
+    `rwa_readiness` returns "unknown" for the entire corpus — but the blacklist simulation
+    above shows an `eth_call` transfer SIMULATION yields a definitive pre-trade answer with
+    NO interface required. A simulation-based readiness probe would cover the ~100% of
+    tokens the interface probe misses.
 - ~~**On-chain settlement-held reader**~~ — **BUILT** (`rwa_balance.py`).
 - ~~**Definitive `settled` label**~~ — **BUILT**: `forecast` snapshots the payer's pre-buy
   balance (opt-in, via `balance_reader.balance_of`, one `balanceOf` on the RWA hot path);

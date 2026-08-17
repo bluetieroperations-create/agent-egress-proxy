@@ -326,7 +326,14 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   FAILED attempts. PROVEN via live spike: failed txns are queryable (Blockscout `filter=to`,
   `status`), the per-tx detail endpoint returns a DECODED `revert_reason` (list view nulls
   it), but the reverts on freely-transferable RWAs are generic ("exceeds balance") NOT
-  restriction -- so the signal is the RESTRICTION-CLASS revert this isolates. `extract_reason`
+  restriction -- so the signal is the RESTRICTION-CLASS revert this isolates.
+  CALIBRATED on REAL strings (harvested by eth_call-simulating transfers from OFAC/Circle-
+  blacklisted addrs): 4/4 -- USDC's "Blacklistable: account is blacklisted" -> restriction,
+  "ERC20: transfer amount exceeds balance" -> balance. An `opaque` class covers reason-less
+  pre-0.8 blocks (USDT's INVALID), which UNDER-count restrictions (fail-safe) but cap recall.
+  Ingestion probe: ALL 535 corpus tokens x 9 interface probes (decimals control) ->
+  535/535 alive, 0/535 permissioned, so restriction reverts are STRUCTURALLY impossible
+  on today's corpus. `extract_reason`
   / `classify_revert` / `summarize_reverts` / `restriction_axis` pure; `RevertScanner`
   (two-step, injected transport) + `scan_corpus_issuers` + `main()` produce a {issuer:
   summary} the grade folds. DORMANT-BUT-READY (mirrors rams_readiness): inert until an issuer

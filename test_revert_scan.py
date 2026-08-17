@@ -64,6 +64,44 @@ class TestClassify(unittest.TestCase):
         self.assertEqual(classify_revert(""), "unknown")
 
 
+class TestRealWorldCalibration(unittest.TestCase):
+    """CALIBRATION against REAL contract revert strings, harvested live by simulating
+    transfers from publicly OFAC/Circle-blacklisted addresses (eth_call with `from`) --
+    not hand-written fixtures. These are the ground-truth labels for the classifier."""
+
+    def test_real_usdc_blacklist_string_is_restriction(self):
+        # Harvested live from USDC (0xa0b8...eb48) simulating a transfer FROM a
+        # confirmed-blacklisted address (isBlacklisted() == true).
+        self.assertEqual(classify_revert("Blacklistable: account is blacklisted"),
+                         "restriction")
+
+    def test_real_balance_string_is_not_restriction(self):
+        # Harvested live from the same contract for a NON-blacklisted sender. The
+        # TRUE-NEGATIVE control: the classifier must not confuse the two.
+        self.assertEqual(classify_revert("ERC20: transfer amount exceeds balance"),
+                         "balance")
+
+    def test_real_reasonless_reverts_are_opaque_not_restriction(self):
+        # MEASURED GAP: USDT's pre-0.8 blacklist throws INVALID with NO reason string.
+        # It must NOT be silently bucketed as `other` (invisible) NOR as `restriction`
+        # (fabricated evidence) -- it is `opaque`, an ACKNOWLEDGED under-count.
+        for msg in ("invalid opcode: INVALID", "execution reverted"):
+            self.assertEqual(classify_revert(msg), "opaque", msg)
+
+    def test_opaque_never_inflates_restriction_evidence(self):
+        # The safety property: a pile of opaque reverts must leave the axis DORMANT.
+        ax = restriction_axis(100, summarize_reverts(["invalid opcode: INVALID"] * 40))
+        self.assertEqual(ax["restriction_reverts"], 0)
+        self.assertTrue(ax["dormant"])
+
+    def test_restriction_wins_over_opaque_wording(self):
+        # MUTATION: ordering opaque before restriction would swallow a real reason that
+        # happens to contain "reverted".
+        self.assertEqual(
+            classify_revert("execution reverted: recipient not whitelisted"),
+            "restriction")
+
+
 class TestSummarize(unittest.TestCase):
     def test_counts_by_class(self):
         s = summarize_reverts(["Pausable: paused", "not whitelisted",

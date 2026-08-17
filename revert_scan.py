@@ -46,6 +46,16 @@ RESTRICTION_PATTERNS = (
 BALANCE_PATTERNS = ("exceeds balance", "insufficient balance", "amount exceeds balance",
                     "transfer amount exceeds")
 ALLOWANCE_PATTERNS = ("exceeds allowance", "insufficient allowance")
+# OPAQUE reverts carry NO reason string -- pre-0.8 `assert`/`throw` compliance checks
+# (USDT's blacklist is the canonical example) burn gas with INVALID, and some reverts
+# return bare "execution reverted" with empty data. MEASURED, not assumed: simulating a
+# transfer from an OFAC-blacklisted address gave USDC the decoded string
+# "Blacklistable: account is blacklisted" but USDT only "invalid opcode: INVALID".
+# These are tracked as their OWN class so the blind spot is VISIBLE rather than buried in
+# `other`: a restriction hiding here is UNDER-counted, which is the conservative/fail-safe
+# direction (we never over-flag an issuer), but it caps recall on old-style tokens.
+OPAQUE_PATTERNS = ("invalid opcode", "execution reverted", "reverted without",
+                   "no reason", "reverted with no data")
 
 
 def extract_reason(revert_reason):
@@ -93,6 +103,10 @@ def classify_revert(reason):
         return "gas"
     if any(p in r for p in RESTRICTION_PATTERNS):
         return "restriction"
+    # Checked AFTER restriction: a reason-bearing revert that merely contains the word
+    # "reverted" alongside a restriction phrase must still classify as restriction.
+    if any(p in r for p in OPAQUE_PATTERNS) or r.startswith("0x"):
+        return "opaque"
     return "other"
 
 
@@ -101,7 +115,7 @@ def summarize_reverts(reasons):
     c = Counter(classify_revert(x) for x in (reasons or []))
     return {"total": sum(c.values()), "restriction": c["restriction"],
             "balance": c["balance"], "allowance": c["allowance"], "gas": c["gas"],
-            "other": c["other"], "unknown": c["unknown"]}
+            "opaque": c["opaque"], "other": c["other"], "unknown": c["unknown"]}
 
 
 # Minimum restriction-class reverts before the settlement-reliability axis will speak for
