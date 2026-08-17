@@ -985,7 +985,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              rwa_source=None, stock_registry=None, pyth_source=None, rwa_ledger=None,
              balance_reader=None, backing_index=None, dex_source=None,
              holder_source=None, aave_source=None, issuer_trust_source=None,
-             settlement_sim_source=None):
+             settlement_sim_source=None, auth_sim_source=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
@@ -1160,6 +1160,22 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         except Exception:
             _ss = None
         verdict = apply_settlement_sim(verdict, _ss)
+
+    # EIP-3009 AUTHORIZATION simulation (auth_sim.py). settlement_sim simulates a plain
+    # `transfer`, but x402 settles via `transferWithAuthorization` -- so a REPLAYED nonce,
+    # an out-of-window authorization, or a call that reverts for signature reasons are
+    # invisible to it. This checks the ACTUAL signed authorization against the chain
+    # (cheap `authorizationState` read first, full execution sim only if that is clean).
+    # HOLD-only; payload_sim keeps the STOP authority for a mismatched/forged payload.
+    if auth_sim_source is not None and clean.get("payment_authorization"):
+        from auth_sim import apply_auth_sim
+        try:
+            from x402 import decode_payment_header
+            _pay = decode_payment_header(clean["payment_authorization"])
+            _as = auth_sim_source.check(clean, _pay)
+        except Exception:
+            _as = None
+        verdict = apply_auth_sim(verdict, _as)
 
     # Tokenized-RWA transfer-restriction readiness (rwa_readiness.py). When the agent
     # is BUYING a tokenized RWA (request carries `acquires`), pre-check whether the
@@ -1459,6 +1475,7 @@ class _Handler(BaseHTTPRequestHandler):
     aave_source = None  # aave_reserve.AaveReserveSource (advisory quality), or None
     issuer_trust_source = None  # issuer_trust_gate.IssuerTrustSource (earned grade), or None
     settlement_sim_source = None  # settlement_sim.SettlementSimSource (pre-sig feasibility)
+    auth_sim_source = None  # auth_sim.AuthorizationSimSource (EIP-3009 replay/window)
     graph_source = None  # payer_reputation.PayerReputationSource (Sybil corroboration)
     velocity_source = None  # settlement_velocity.VelocitySource (stale gate)
     openapi_server_url = None  # public origin for the openapi.json servers[] (or None)
@@ -1717,6 +1734,7 @@ class _Handler(BaseHTTPRequestHandler):
                                  aave_source=self.aave_source,
                                  issuer_trust_source=self.issuer_trust_source,
                                  settlement_sim_source=self.settlement_sim_source,
+                                 auth_sim_source=self.auth_sim_source,
                                  verify_signer=_verify_signer)
         if err is not None:
             self._send_json(400, {"error": err})
@@ -1806,7 +1824,7 @@ class BlackwallServer:
                  pyth_source=None, rwa_ledger=None, balance_reader=None,
                  backing_index=None, dex_source=None, holder_source=None,
                  aave_source=None, issuer_trust_source=None,
-                 settlement_sim_source=None):
+                 settlement_sim_source=None, auth_sim_source=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -1836,6 +1854,7 @@ class BlackwallServer:
         self.aave_source = aave_source
         self.issuer_trust_source = issuer_trust_source
         self.settlement_sim_source = settlement_sim_source
+        self.auth_sim_source = auth_sim_source
         self.stats = _Stats()
         self._httpd = None
 
@@ -1865,6 +1884,7 @@ class BlackwallServer:
                         "aave_source": self.aave_source,
                         "issuer_trust_source": self.issuer_trust_source,
                         "settlement_sim_source": self.settlement_sim_source,
+                        "auth_sim_source": self.auth_sim_source,
                         "stats": self.stats,
                         "openapi_server_url": self.openapi_server_url})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
@@ -2331,6 +2351,7 @@ def main(argv=None):
     # payee or payer BEFORE the agent signs. One eth_call on the hot path (a second only
     # when the first reverts, to attribute the block); HOLD-only, never STOP, fail-open.
     settlement_sim_source = None
+    auth_sim_source = None
     if _env_flag("BLACKWALL_SETTLEMENT_SIM"):
         _sim_rpcs = {}
         for _chain, _var in (("base", "BLACKWALL_BASE_RPC_URL"),
@@ -2341,6 +2362,8 @@ def main(argv=None):
         if _sim_rpcs:
             from settlement_sim import SettlementSimSource
             settlement_sim_source = SettlementSimSource(rpc_by_chain=_sim_rpcs)
+            from auth_sim import AuthorizationSimSource
+            auth_sim_source = AuthorizationSimSource(rpc_by_chain=_sim_rpcs)
             sys.stdout.write("blackwall: settlement simulation ON for %s (pre-signature "
                              "revert check; HOLD-only, fail-open)\n"
                              % ",".join(sorted(_sim_rpcs)))
@@ -2382,6 +2405,7 @@ def main(argv=None):
                              aave_source=aave_source,
                              issuer_trust_source=issuer_trust_source,
                              settlement_sim_source=settlement_sim_source,
+                             auth_sim_source=auth_sim_source,
                              openapi_server_url=origin)
     try:
         server.serve_forever()

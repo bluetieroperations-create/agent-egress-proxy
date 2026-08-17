@@ -318,6 +318,23 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   (HOLD-only, monotonic -- can only ADD caution, never clear), fail-open, opt-in
   `BLACKWALL_DEX`. KNOWN LIMITATION: no liquidity-depth check -> a dust pool can false-flag
   (bounded: HOLD-only; the Pyth paid-vs-underlying peg still fires independently)),
+  `auth_sim.py` (simulate the ACTUAL EIP-3009 authorization, not a proxy transfer.
+  settlement_sim simulates `transfer`, but x402 settles via `transferWithAuthorization` --
+  so THREE failure modes are structurally invisible to it: (1) REPLAY, the nonce already
+  used/cancelled -- read DIRECTLY via `authorizationState(authorizer,nonce)`, not inferred
+  from a revert; (2) EXPIRY, validAfter/validBefore -- a pure clock check, no chain call;
+  (3) EXECUTION, the real 9-arg call reverting (bad signature, blacklist, balance).
+  Cheapest-first: window check is free, the state read is a tiny view, and the full
+  execution sim runs ONLY if those are clean. ABI NOTE: `rwa_readiness.eth_call_data`
+  handles address/uint only -- a bytes32 nonce falls through its numeric branch and encodes
+  ZEROS (simulating a DIFFERENT authorization), so `encode_bytes32`/`encode_uint`/
+  `encode_address`/`split_signature` are explicit + separately tested. HOLD-only, never
+  STOP (payload_sim keeps the STOP authority for a mismatched/forged payload), fail-open,
+  folded via `auth_sim_source` under the same `BLACKWALL_SETTLEMENT_SIM` flag. VERIFIED
+  LIVE on mainnet USDC: `authorizationState` returns a clean false for an unused nonce, and
+  the real transferWithAuthorization with a bogus signature reverts "ECRecover: invalid
+  signature" -- proving the encoding reaches the genuine function.
+  Tests: `test_auth_sim.py`),
   `rpc_node.py` (OUR OWN JSON-RPC endpoint -- the single controlled front door for every
   on-chain read. The simulation gates put a QUERY LEAK on the hot path ("this payer is about
   to pay this payee this amount"), which is exactly what readiness.py avoids, so this closes
@@ -426,7 +443,8 @@ test_rwa_balance.py test_rwa_report.py \
  test_dex_price.py test_holder_concentration.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
- test_transfer_sim.py test_settlement_sim.py test_rpc_node.py
+ test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
+ test_auth_sim.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop
