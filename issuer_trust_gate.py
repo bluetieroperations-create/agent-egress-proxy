@@ -23,22 +23,55 @@ a cached source. Stdlib.
 """
 from __future__ import annotations
 
+from revert_scan import restriction_axis
 from rwa_ledger import issuer_trust
 
 # Reversibility lock. Flip True ONLY after the backfilled corpus is calibrated and the
 # false-flag rate on known-good issuers is proven ~0. Off = descriptive (safe default).
 ISSUER_TRUST_GATES = False
 
+# Second, INDEPENDENT lock for the settlement-reliability axis (restriction-revert rate,
+# revert_scan.py). Off = the axis is recorded but never changes the grade. It is DORMANT on
+# today's corpus regardless (freely-transferable issuers emit zero restriction reverts; see
+# revert_scan.py), so this lock only matters once a permissioned issuer with real reverts
+# is ingested -- then flip it after the same ~0-false-flag proof.
+REVERT_AXIS_GATES = False
+# A restriction-revert rate at/above this (with sufficient evidence) drags an issuer to LOW
+# once REVERT_AXIS_GATES is on. 5% of transfer ATTEMPTS reverting on restrictions is a
+# materially gated (permissioned) token an agent buyer should be cautioned about.
+RESTRICTION_REVERT_LOW_RATE = 0.05
+
 _GRADES = ("high", "medium", "low", "insufficient")
 
 
-def build_issuer_grades(ledger, events=None):
-    """Precompute {issuer: {grade, outcomes, settlement_success_rate}} from the corpus.
-    Run once at startup / on refresh -- NOT per verdict. NEVER raises."""
+def _fold_revert_axis(grade_info, axis_info, gates_on):
+    """Attach the settlement-reliability axis to a grade dict (always, descriptive) and,
+    only when `gates_on` AND the axis has sufficient restriction-revert evidence AND the
+    rate is material, drag the grade to LOW. Dormant otherwise. NEVER raises."""
+    if not axis_info:
+        return grade_info
+    info = dict(grade_info)
+    info["restriction_axis"] = axis_info
+    if (gates_on and axis_info.get("evidence_sufficient")
+            and (axis_info.get("restriction_revert_rate") or 0) >= RESTRICTION_REVERT_LOW_RATE):
+        info["grade"] = "low"
+        info["restriction_downgraded"] = True
+    return info
+
+
+def build_issuer_grades(ledger, events=None, revert_summaries=None):
+    """Precompute {issuer: {grade, outcomes, settlement_success_rate[, restriction_axis]}}
+    from the corpus. Run once at startup / on refresh -- NOT per verdict.
+
+    `revert_summaries` (optional) is a precomputed {issuer: revert_class_counts} map from
+    `revert_scan` (an offline scan of the issuer's tokens). When present, the
+    settlement-reliability axis is folded in -- DORMANT unless REVERT_AXIS_GATES is on and
+    the issuer has material restriction-revert evidence. NEVER raises."""
     try:
         evs = events if events is not None else ledger.load()
     except Exception:
         return {}
+    revert_summaries = revert_summaries or {}
     issuers = {e.get("issuer") for e in evs
                if isinstance(e, dict) and e.get("issuer")}
     out = {}
@@ -46,9 +79,13 @@ def build_issuer_grades(ledger, events=None):
         prof = ledger.issuer_profile(iss, events=evs)
         if not prof:
             continue
-        out[iss] = {"grade": issuer_trust(prof)["grade"],
-                    "outcomes": prof.get("outcomes"),
-                    "settlement_success_rate": prof.get("settlement_success_rate")}
+        gi = {"grade": issuer_trust(prof)["grade"],
+              "outcomes": prof.get("outcomes"),
+              "settlement_success_rate": prof.get("settlement_success_rate")}
+        if iss in revert_summaries:
+            ax = restriction_axis(prof.get("outcomes") or 0, revert_summaries[iss])
+            gi = _fold_revert_axis(gi, ax, REVERT_AXIS_GATES)
+        out[iss] = gi
     return out
 
 
@@ -84,8 +121,12 @@ def apply_issuer_trust(verdict, grade_info, gates_on=None):
     v = dict(verdict)
     v["signals"] = dict(v.get("signals") or {})
     gated = bool(gates_on and grade == "low")
-    v["signals"]["issuer_trust"] = {"grade": grade, "gated": gated,
-                                    "outcomes": grade_info.get("outcomes")}
+    sig = {"grade": grade, "gated": gated, "outcomes": grade_info.get("outcomes")}
+    # Surface the settlement-reliability axis when present (descriptive; dormant on today's
+    # corpus). Lets an operator SEE the restriction-revert posture even while it can't gate.
+    if grade_info.get("restriction_axis"):
+        sig["restriction_axis"] = grade_info["restriction_axis"]
+    v["signals"]["issuer_trust"] = sig
     if grade == "low":
         reasons = list(v.get("reasons") or [])
         reasons.append(

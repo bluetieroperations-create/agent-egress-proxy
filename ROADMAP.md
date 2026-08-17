@@ -131,6 +131,19 @@ rollup). **Deferred halves:**
     volume but NOT value-outcome (no price-paid on a bare transfer). The underwater/mark
     dimension needs the organic flywheel (real buys carry the paid price) or a paired-swap
     parser that recovers the USDC leg of a historical buy.
+  - **SETTLEMENT-RELIABILITY AXIS — DORMANT-READY BUILT** (`revert_scan.py`): the backfill is
+    survivorship-biased (only landed transfers → `settle_rate` always 1.0), so the missing
+    denominator is FAILED attempts. Two live spikes settled feasibility: (1) failed txns to
+    an RWA token ARE queryable and the per-tx detail endpoint returns a DECODED revert reason;
+    but (2) the reverts on freely-transferable RWAs (Backed/Ondo today) are generic "exceeds
+    balance" NOISE, not restriction reverts, and (3) their transfers carry NO paired USDC leg
+    (0/16 sampled) so the underwater axis is also unfeedable here. So the axis isolates the
+    RESTRICTION-CLASS revert (allowlist/KYC/frozen/paused), stays behind its own
+    `REVERT_AXIS_GATES=False` lock, and is DORMANT until a permissioned issuer with real
+    restriction reverts is ingested — verified live (8 real Backed reverts → all balance →
+    axis dormant). Auto-activates with zero code change when the data appears (rams_readiness
+    pattern). **REMAINING:** ingest a genuinely permissioned issuer (ERC-3643/T-REX,
+    ERC-1404) whose transfers revert on restrictions, then calibrate + flip the lock.
 - ~~**On-chain settlement-held reader**~~ — **BUILT** (`rwa_balance.py`).
 - ~~**Definitive `settled` label**~~ — **BUILT**: `forecast` snapshots the payer's pre-buy
   balance (opt-in, via `balance_reader.balance_of`, one `balanceOf` on the RWA hot path);

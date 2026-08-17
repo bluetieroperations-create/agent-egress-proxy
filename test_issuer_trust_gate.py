@@ -122,6 +122,52 @@ class TestApplyFold(unittest.TestCase):
         self.assertFalse(v["signals"]["issuer_trust"]["gated"])
 
 
+class TestRevertAxis(unittest.TestCase):
+    def setUp(self):
+        self.led = RwaLedger(os.path.join(tempfile.mkdtemp(), "rwa.jsonl"))
+        for i in range(6):
+            tk = "0x" + ("%02x" % i) * 20
+            self.led.record(_buy("ondo", tk, i))
+            self.led.record(_out("ondo", tk, i))
+
+    def test_axis_attached_but_dormant_by_default(self):
+        # Restriction reverts present but the lock is OFF -> recorded, grade unchanged.
+        grades = build_issuer_grades(
+            self.led, revert_summaries={"ondo": {"restriction": 10}})
+        gi = grades["ondo"]
+        self.assertIn("restriction_axis", gi)
+        self.assertTrue(gi["restriction_axis"]["evidence_sufficient"])
+        self.assertNotEqual(gi["grade"], "low")            # lock off -> no downgrade
+        self.assertNotIn("restriction_downgraded", gi)
+
+    def test_balance_noise_never_downgrades_even_with_lock_on(self):
+        # THE POINT of revert_scan: balance-class reverts are already filtered OUT upstream
+        # (restriction=0), so even with the lock ON the axis is dormant. Simulate that.
+        from issuer_trust_gate import _fold_revert_axis
+        from revert_scan import restriction_axis
+        ax = restriction_axis(100, {"restriction": 0, "balance": 50})
+        gi = _fold_revert_axis({"grade": "medium"}, ax, gates_on=True)
+        self.assertNotEqual(gi["grade"], "low")
+        self.assertTrue(ax["dormant"])
+
+    def test_downgrade_only_when_lock_on_and_material(self):
+        # MUTATION: with the lock ON, sufficient evidence, and a material rate, the grade
+        # must drag to LOW. Kills a fold that ignores REVERT_AXIS_GATES.
+        from issuer_trust_gate import _fold_revert_axis
+        from revert_scan import restriction_axis
+        ax = restriction_axis(80, {"restriction": 20})     # 20% revert rate, 20 evidence
+        gi = _fold_revert_axis({"grade": "medium"}, ax, gates_on=True)
+        self.assertEqual(gi["grade"], "low")
+        self.assertTrue(gi["restriction_downgraded"])
+
+    def test_axis_surfaced_in_apply(self):
+        v = apply_issuer_trust(
+            {"verdict": "GO"},
+            {"grade": "medium", "outcomes": 9,
+             "restriction_axis": {"restriction_reverts": 0, "dormant": True}})
+        self.assertIn("restriction_axis", v["signals"]["issuer_trust"])
+
+
 class TestAggregateIntegration(unittest.TestCase):
     def test_issuer_trust_advisory_bad_only_when_gated(self):
         from rwa_aggregate import aggregate

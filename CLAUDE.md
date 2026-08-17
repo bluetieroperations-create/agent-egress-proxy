@@ -318,6 +318,20 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   (HOLD-only, monotonic -- can only ADD caution, never clear), fail-open, opt-in
   `BLACKWALL_DEX`. KNOWN LIMITATION: no liquidity-depth check -> a dust pool can false-flag
   (bounded: HOLD-only; the Pyth paid-vs-underlying peg still fires independently)),
+  `revert_scan.py` (the settlement-reliability axis's DATA TAP -- read an RWA token's FAILED
+  transfer attempts from public chain history, DECODE the revert reason, and CLASSIFY it so
+  only ISSUER-CAUSED restriction reverts (allowlist/KYC/frozen/paused/compliance) count --
+  never a fat-finger "insufficient balance" or a gas failure. Closes the survivorship bias:
+  the backfill only sees successes (`settle_rate` always 1.0), so the missing denominator is
+  FAILED attempts. PROVEN via live spike: failed txns are queryable (Blockscout `filter=to`,
+  `status`), the per-tx detail endpoint returns a DECODED `revert_reason` (list view nulls
+  it), but the reverts on freely-transferable RWAs are generic ("exceeds balance") NOT
+  restriction -- so the signal is the RESTRICTION-CLASS revert this isolates. `extract_reason`
+  / `classify_revert` / `summarize_reverts` / `restriction_axis` pure; `RevertScanner`
+  (two-step, injected transport) + `scan_corpus_issuers` + `main()` produce a {issuer:
+  summary} the grade folds. DORMANT-BUT-READY (mirrors rams_readiness): inert until an issuer
+  has >= MIN_RESTRICTION_EVIDENCE restriction reverts -- zero on today's corpus, verified live
+  (8 real Backed reverts all balance-class -> axis dormant). Tests: `test_revert_scan.py`),
   `issuer_trust_gate.py` (GRADUATE the earned per-issuer trust grade into the RWA verdict --
   the payoff of the accumulation arc: `rwa_ledger.issuer_trust` grades an issuer from its
   LABELED settlement/outcome history (hard-to-fake), and this surfaces that grade in every
@@ -328,7 +342,11 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   affects the verdict) until the backfilled corpus proves ~0 false-flags on known-good
   issuers; when flipped, a LOW grade becomes an ADVISORY signal rwa_aggregate weighs
   COLLECTIVELY (never gates alone, never STOP, never clears). Built at startup from the
-  BLACKWALL_RWA_LEDGER corpus; folded via `issuer_trust_source`),
+  BLACKWALL_RWA_LEDGER corpus; folded via `issuer_trust_source`. Now also folds the
+  SETTLEMENT-RELIABILITY AXIS from `revert_scan` (restriction-revert rate) behind a SECOND
+  independent lock `REVERT_AXIS_GATES` (default False) -- `build_issuer_grades(...,
+  revert_summaries=)` attaches it per issuer, `_fold_revert_axis` drags to LOW only when the
+  lock is on AND evidence is sufficient AND the rate is material; dormant on today's corpus),
   `ROADMAP.md`, `docs/DATA_SOURCE_SPIKE.md`. Tests:
   `test_blackwall.py`, `test_ledger.py`, `test_reputation_onchain.py`,
   `test_settlement_watch.py`, `test_addresses.py`, `test_x402.py`,
@@ -348,7 +366,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_backed_oracle.py test_rams_readiness.py \
  test_dex_price.py test_holder_concentration.py \
  test_rwa_aggregate.py test_aave_reserve.py \
- test_rwa_backfill.py test_issuer_trust_gate.py
+ test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop
