@@ -1,7 +1,7 @@
 {
-  "ai-agents": "0.01874325",
-  "dev-tools": "0.0045",
+  "ai-agents": "0.01",
+  "dev-tools": "0.005",
   "finance": "0.005",
-  "onchain": "0.0015625",
+  "onchain": "0.01",
   "search-data": "0.01"
 }
