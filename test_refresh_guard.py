@@ -91,5 +91,69 @@ class TestStoreStats(unittest.TestCase):
         self.assertFalse(s["gating_reachable"])
 
 
+class TestGatingCapableUtility(unittest.TestCase):
+    """The UTILITY metric. REGRESSION: the 2026-08-17 refresh kept 85% of payees and 87%
+    of edges -- clearing MIN_RETENTION -- while payees able to EARN a GO fell 237 -> 207.
+    Size retention and the boolean `gating_reachable` were both blind to it."""
+
+    def _edges(self, spec):
+        """spec: {payee: (n_settlements, n_distinct_payers)} -> edge list."""
+        out = []
+        for payee, (n, dp) in spec.items():
+            for i in range(n):
+                out.append(("0xpayer%d" % (i % dp), payee))
+        return out
+
+    def test_counts_only_payees_clearing_BOTH_gates(self):
+        e = self._edges({
+            "0xgood": (25, 4),     # clears both -> counts
+            "0xthin": (5, 4),      # too few settlements -> excluded
+            "0xsybil": (25, 2),    # too few distinct payers -> excluded
+        })
+        self.assertEqual(G.gating_capable(e), 1)
+
+    def test_boundaries_are_inclusive(self):
+        self.assertEqual(G.gating_capable(self._edges({"0xa": (20, 3)})), 1)
+        self.assertEqual(G.gating_capable(self._edges({"0xa": (19, 3)})), 0)
+        self.assertEqual(G.gating_capable(self._edges({"0xa": (20, 2)})), 0)
+
+    def test_normalization_matches_build_index(self):
+        # self-vouch edges are dropped by build_index; the count must agree or the two
+        # halves of the metric would disagree about who exists.
+        e = [("0xa", "0xa")] * 30 + [("0xp%d" % (i % 3), "0xb") for i in range(30)]
+        self.assertEqual(G.gating_capable(e), 1)      # only 0xb
+
+    def test_never_raises_on_junk_edges(self):
+        for bad in (None, [], [None], [("a",)], [(None, None)], ["notatuple"], [(1, 2)]):
+            G.gating_capable(bad)
+
+    def test_reject_on_utility_collapse_that_size_check_MISSES(self):
+        # THE REGRESSION, with the real shape: size retention passes, utility does not.
+        old = {"payees": 281, "edges": 23037, "gating_capable": 237, "age_days": 13,
+               "gating_reachable": True}
+        new = {"payees": 240, "edges": 20141, "gating_capable": 207, "age_days": 0,
+               "gating_reachable": True}
+        # size-only view would have been happy: 85% and 87%, both over MIN_RETENTION
+        self.assertGreater(new["payees"], old["payees"] * G.MIN_RETENTION)
+        self.assertGreater(new["edges"], old["edges"] * G.MIN_RETENTION)
+        r = G.assess_refresh(old, new)
+        self.assertFalse(r["accept"])
+        self.assertTrue(any("gating-capable" in x for x in r["reasons"]), r["reasons"])
+
+    def test_accept_when_utility_is_retained(self):
+        old = {"payees": 281, "edges": 23037, "gating_capable": 237, "age_days": 13,
+               "gating_reachable": True}
+        # what MERGE semantics actually produced on the real corpora: utility GREW.
+        new = {"payees": 281, "edges": 32971, "gating_capable": 251, "age_days": 0,
+               "gating_reachable": True}
+        self.assertTrue(G.assess_refresh(old, new)["accept"])
+
+    def test_absent_metric_does_not_block(self):
+        # fail-open: a stats dict without the new key must not start rejecting refreshes.
+        old = {"payees": 100, "edges": 1000, "age_days": 13, "gating_reachable": True}
+        new = {"payees": 100, "edges": 1000, "age_days": 0, "gating_reachable": True}
+        self.assertTrue(G.assess_refresh(old, new)["accept"])
+
+
 if __name__ == "__main__":
     unittest.main()
