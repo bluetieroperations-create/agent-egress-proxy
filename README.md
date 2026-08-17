@@ -215,5 +215,30 @@ as an MCP tool. Run: `python mcp_server.py` (stdio, stdlib-only). Tool
 **`forecast_payment`** returns GO / HOLD / STOP for paying a counterparty —
 behavioral reputation + price-anomaly (per-class + peer-group) + OFAC screening +
 a signed receipt. Optional **`report_outcome`** (with `BLACKWALL_LEDGER`) feeds
-reputation. See `docs/MCP.md`. Live HTTP endpoint + discovery:
-https://agent-egress-proxy.onrender.com/.well-known/x402
+reputation. See `docs/MCP.md`.
+
+### Run it yourself (30 seconds, no dependencies)
+
+```sh
+git clone https://github.com/bluetieroperations-create/agent-egress-proxy
+cd agent-egress-proxy
+python3 blackwall.py            # stdlib only -- nothing to install
+```
+
+Then, in another shell:
+
+```sh
+curl localhost:8402/healthz
+curl localhost:8402/.well-known/x402
+curl -s localhost:8402/v1/forecast-payment -H 'content-type: application/json' \
+  -d '{"counterparty":"0xabc...","amount":"0.05","asset":"USDC","chain":"base"}'
+# -> {"verdict":"HOLD", "reasons":[...], "signals":{...}, "receipt_id":"..."}
+```
+
+Boots in well under a second and answers with a full verdict on a cold, unknown
+counterparty. Deploy blueprints: `render.yaml` (paid, with a persistent disk),
+`render-free.yaml` (free tier), `fly.toml`, `Dockerfile` -- see `DEPLOY.md`.
+
+> **Hosted demo:** the previously advertised endpoint at
+> `agent-egress-proxy.onrender.com` is **not currently serving** (returns 404). Self-host
+> with the steps above until it is restored.

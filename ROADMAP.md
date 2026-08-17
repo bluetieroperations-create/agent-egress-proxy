@@ -200,6 +200,17 @@ rollup). **Deferred halves:**
     above shows an `eth_call` transfer SIMULATION yields a definitive pre-trade answer with
     NO interface required. A simulation-based readiness probe would cover the ~100% of
     tokens the interface probe misses.
+- **THE LEARN STAGE IS DATA-STARVED, and no amount of backfilling fixes it (measured).**
+  The corpus now holds 9,690 buys and 9,690 outcomes, but the outcome labels present are
+  ONLY `settled` / `holds_balance` — **zero** `underwater`, **zero** `mark_ratio`. Every
+  outcome came from backfill, where a landed transfer proves settlement but carries no
+  price paid. So `settlement_success_rate` is 1.0 *by construction*, `issuer_trust` grades
+  everything `medium`, and the grade cannot discriminate no matter how much history we
+  ingest. This is why `ISSUER_TRUST_GATES` is still descriptive-only, and it is a
+  DATA-AVAILABILITY fact, not a deferred implementation: the value-outcome dimension needs
+  organic buys (real agents, real prices recorded at buy time) or a paired-swap parser that
+  recovers the USDC leg of a historical acquisition. A live spike found 0/16 sampled RWA
+  transfers carried a USDC leg in the same transaction, so the parser is not cheap either.
 - ~~**On-chain settlement-held reader**~~ — **BUILT** (`rwa_balance.py`).
 - ~~**Definitive `settled` label**~~ — **BUILT**: `forecast` snapshots the payer's pre-buy
   balance (opt-in, via `balance_reader.balance_of`, one `balanceOf` on the RWA hot path);

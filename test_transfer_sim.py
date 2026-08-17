@@ -183,6 +183,107 @@ class TestSimulationReadinessSource(unittest.TestCase):
         self.assertEqual(v["signals"]["rwa_transfer_readiness"]["grade"], "blocked")
 
 
+class TestHolderLookup(unittest.TestCase):
+    """The lookup exists because a live request never carries a funded sender, and
+    without one the simulation source silently answers `unknown` for everything."""
+
+    def _lk(self, **kw):
+        from transfer_sim import BlockscoutHolderLookup
+        return BlockscoutHolderLookup(**kw)
+
+    def test_returns_first_holder(self):
+        lk = self._lk(fetch=lambda t, c: {"items": [{"address": {"hash": HOLDER}}]})
+        self.assertEqual(lk(TOKEN, "ethereum"), HOLDER)
+
+    def test_caches_per_token(self):
+        # MUTATION: re-fetching per verdict adds a request to the HOT PATH and re-leaks
+        # the queried token every time.
+        calls = []
+
+        def fetch(t, c):
+            calls.append(t)
+            return {"items": [{"address": {"hash": HOLDER}}]}
+        lk = self._lk(fetch=fetch)
+        lk(TOKEN, "ethereum")
+        lk(TOKEN, "ethereum")
+        lk(TOKEN.upper(), "Ethereum")           # same key after normalization
+        self.assertEqual(len(calls), 1)
+
+    def test_caches_misses_too(self):
+        calls = []
+
+        def fetch(t, c):
+            calls.append(t)
+            return {"items": []}
+        lk = self._lk(fetch=fetch)
+        self.assertIsNone(lk(TOKEN, "ethereum"))
+        self.assertIsNone(lk(TOKEN, "ethereum"))
+        self.assertEqual(len(calls), 1)         # a holder-less token isn't re-fetched
+
+    def test_fail_open_on_error_and_unknown_chain(self):
+        def boom(t, c):
+            raise IOError("net")
+        self.assertIsNone(self._lk(fetch=boom)(TOKEN, "ethereum"))
+        self.assertIsNone(self._lk(fetch=lambda t, c: {})(TOKEN, "dogechain"))
+
+    def test_never_raises_on_junk(self):
+        # AUDIT (self-caught): `5 or ""` is 5, and 5.strip() explodes -- a non-string
+        # chain/token must no-op, not raise.
+        lk = self._lk(fetch=lambda t, c: {"items": []})
+        for junk in (None, "", 5, {}, [], object()):
+            self.assertIsNone(lk(junk, junk))
+
+    def test_skips_malformed_rows(self):
+        lk = self._lk(fetch=lambda t, c: {"items": [
+            {"address": None}, {"address": {"hash": None}}, "notadict",
+            {"address": {"hash": HOLDER}}]})
+        self.assertEqual(lk(TOKEN, "ethereum"), HOLDER)
+
+
+class TestDeployedWiring(unittest.TestCase):
+    """GAP REGRESSION: the simulation source was built, live-verified, and NEVER wired
+    into the server -- so a deployed instance ran only the interface probe, which a live
+    sweep showed answers `unknown` for 535/535 real tokens. The gate was inert in
+    production. These pin the wiring contract."""
+
+    def _combined(self, sim_transport):
+        from rwa_readiness import CombinedRwaReadinessSource, RwaReadinessSource
+        from transfer_sim import SimulationReadinessSource
+        return CombinedRwaReadinessSource([
+            SimulationReadinessSource(
+                simulator=TransferSimulator(transport=sim_transport),
+                holder_lookup=lambda tok, chain: HOLDER),
+            RwaReadinessSource(rpc_url=None),
+        ])
+
+    def test_simulation_is_consulted_first(self):
+        calls = []
+
+        def t(p):
+            calls.append(p)
+            return _err("STBT: NO_RECEIVE_PERMISSION") if len(calls) == 1 \
+                else {"result": "0x1"}
+        # No `holder` in acquires -- exactly what a real request carries.
+        sig = self._combined(t).check({"token": TOKEN, "chain": "ethereum"}, AGENT)
+        self.assertEqual(sig["grade"], "blocked")
+        self.assertEqual(sig["standard"], "simulation")     # simulation, not the probe
+
+    def test_falls_through_when_simulation_cannot_answer(self):
+        # MUTATION: if simulation returned a signal even when indeterminate, it would
+        # SHADOW the interface probe instead of deferring to it.
+        def dead(p):
+            raise IOError("no rpc")
+        sig = self._combined(dead).check({"token": TOKEN, "chain": "ethereum"}, AGENT)
+        self.assertIsNone(sig)          # both declined -> no-op, verdict untouched
+
+    def test_no_holder_means_no_signal_not_a_false_block(self):
+        from transfer_sim import SimulationReadinessSource
+        src = SimulationReadinessSource(
+            simulator=TransferSimulator(transport=lambda p: _err("exceeds balance")),
+            holder_lookup=lambda tok, chain: None)
+        self.assertIsNone(src.check({"token": TOKEN, "chain": "ethereum"}, AGENT))
+
+
 class TestAuditRegressions(unittest.TestCase):
     """Regressions for the adversarial audit of the simulation core."""
 
