@@ -108,11 +108,21 @@ rollup). **Deferred halves:**
     of `trust: "insufficient"` (i.e. `>= ISSUER_TRUST_MIN_OUTCOMES` LABELED outcomes each,
     from `capture_outcomes` cron runs), there's enough data to calibrate. Until then the
     directory shows "insufficient" across the board — that's the honest "not yet" light.
+  - **DATA ACCELERANT (BUILT):** `rwa_backfill.py` seeds the corpus from PUBLIC on-chain
+    history with ZERO customers -- an on-chain transfer that landed is a settled outcome,
+    so a token's transfer history backfills real labeled settlements + distinct buyers per
+    issuer. Verified live: 74 real TSLAon acquisitions / 33 buyers -> Ondo `medium` (from
+    `insufficient`). Run it across the seed issuers and issuers become gradeable
+    immediately -- no waiting for live traffic.
   - **Calibration when triggered:** mirror `calibration_lock.py` / the sybil_ring
     graduation — pin the grade→floor mapping against the accrued corpus, add a
     reversibility lock (`ISSUER_TRUST_GATES=False` default), fold HOLD-only via
     `decide_payment` (like `verified_floor`), and prove the false-flag rate on known-good
     issuers (Backed/Ondo) is ~0 before flipping the lock on.
+  - **REMAINING for the grade to fully discriminate:** the backfill gives settlement +
+    volume but NOT value-outcome (no price-paid on a bare transfer). The underwater/mark
+    dimension needs the organic flywheel (real buys carry the paid price) or a paired-swap
+    parser that recovers the USDC leg of a historical buy.
 - ~~**On-chain settlement-held reader**~~ — **BUILT** (`rwa_balance.py`).
 - ~~**Definitive `settled` label**~~ — **BUILT**: `forecast` snapshots the payer's pre-buy
   balance (opt-in, via `balance_reader.balance_of`, one `balanceOf` on the RWA hot path);

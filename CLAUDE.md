@@ -253,6 +253,17 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   loop records `settled = post > pre` (actual arrival), preferred over the heuristic.
   Injected transports; fail-open. Residual attribution caveat: received-then-moved
   false-negatives + same-token cross-buy ambiguity -- the settlement tx hash is the real fix),
+  `rwa_backfill.py` (SEED the RWA outcome corpus from PUBLIC on-chain history with ZERO
+  customers -- the tokenized-RWA analogue of chain_backfill.py. On-chain history is already
+  LABELED: a token transfer that landed IS a successful settlement. Paginate a known token's
+  transfers (keyless Blockscout), reconstruct each acquisition (transfer to a real wallet =
+  mint/secondary buy), write an idempotent buy + `settled=True` outcome keyed by tx+recipient.
+  Moves an issuer from "insufficient" to a real hard-to-fake footprint (settlement volume +
+  distinct buyers) so `issuer_trust` can grade it. HONEST SCOPE: no price-paid on a bare
+  transfer -> no mark-to-market/underwater (those come from the organic flywheel); so a
+  backfill-only issuer grades on settlement + volume, not value-outcome. Verified live: 74
+  real TSLAon acquisitions / 33 distinct buyers -> Ondo graded `medium`. Targeted (per-token
+  cap), fail-soft, idempotent; CLI `python rwa_backfill.py rwa.jsonl --chain ethereum`),
   `rwa_report.py` (turn the accumulation corpus into operator INTELLIGENCE -- the payoff
   that makes the moat legible: totals + verdict mix + restriction-posture map, an ISSUER
   DIRECTORY ranked by earned `issuer_trust` grade (+ settlement/underwater rates), and
@@ -325,7 +336,8 @@ test_solana_rwa.py test_pyth_price.py test_rwa_ledger.py test_rwa_outcomes.py \
 test_rwa_balance.py test_rwa_report.py \
  test_backed_oracle.py test_rams_readiness.py \
  test_dex_price.py test_holder_concentration.py \
- test_rwa_aggregate.py test_aave_reserve.py
+ test_rwa_aggregate.py test_aave_reserve.py \
+ test_rwa_backfill.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop
