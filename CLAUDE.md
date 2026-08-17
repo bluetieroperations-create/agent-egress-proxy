@@ -272,6 +272,16 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   (or `BLACKWALL_RAMS_REGISTRY`), then activates with ZERO code change -- wired idle into
   `CombinedRwaReadinessSource`. The authorization revert-cause our eligibility reads miss;
   HOLD-only, fail-open. Enum names + ERC-8004 agent identity pending mainnet RAMS),
+  `rwa_aggregate.py` (the SIGNAL-AGGREGATION / confidence layer over the ~8 RWA gates.
+  Each gate is conservative+HOLD-only so STACKING is safe, but naively letting every one
+  flip GO->HOLD raises the cumulative FALSE-HOLD rate + piles up reasons. TIERS: each
+  signal is `gate` (may flip GO->HOLD alone -- eligibility/backing/peg) or `advisory`
+  (informs the risk view but doesn't gate alone -- noisier ones like holder-concentration
+  on an RWA). `aggregate(signals)` -> one weighted risk {score, level, primary_concern,
+  concerns[], gating[], advisory[]}; `apply_aggregate` records `signals.rwa_risk` + a
+  COLLECTIVE rule (advisory signals agreeing past a weight threshold escalate GO->HOLD
+  once). PURE, descriptive, conservative -- the strong gates already decided; this gives
+  the operator ONE ranked view + controls noise. Folded last in `forecast`),
   `holder_concentration.py` (keyless rug/manipulation signal from token holder
   distribution (Blockscout): a single dominant NON-CONTRACT wallet holding >= 50% of
   supply -> HOLD (dump/manipulation risk). CONTRACT holders EXCLUDED (LP/issuer custody/
@@ -308,7 +318,8 @@ python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_re
 test_solana_rwa.py test_pyth_price.py test_rwa_ledger.py test_rwa_outcomes.py \
 test_rwa_balance.py test_rwa_report.py \
  test_backed_oracle.py test_rams_readiness.py \
- test_dex_price.py test_holder_concentration.py
+ test_dex_price.py test_holder_concentration.py \
+ test_rwa_aggregate.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop

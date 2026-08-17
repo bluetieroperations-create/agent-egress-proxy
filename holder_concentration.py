@@ -81,10 +81,13 @@ def assess_concentration(share, address=None, threshold=CONCENTRATION_HOLD):
             "reasons": ["top non-contract holder %.0f%% of supply" % (share * 100)]}
 
 
-def apply_concentration(verdict, signal):
-    """PURE fold: annotate signals.holder_concentration; escalate GO->HOLD when
-    concentrated. CONSERVATIVE-ONLY (never upgrades / never STOP); None/unknown records
-    but never escalates. Non-mutating."""
+def apply_concentration(verdict, signal, gate=True):
+    """PURE fold: annotate signals.holder_concentration; when `gate` is True, escalate
+    GO->HOLD on `concentrated`. With `gate=False` (ADVISORY) it records the signal +
+    reason but does NOT flip the verdict on its own -- the aggregation layer weighs it
+    collectively instead (noisier for RWAs, where issuer-EOA custody false-flags).
+    CONSERVATIVE-ONLY (never upgrades / never STOP); None/unknown non-escalating.
+    Non-mutating."""
     if not signal or not isinstance(signal, dict):
         return verdict
     grade = signal.get("grade")
@@ -96,7 +99,7 @@ def apply_concentration(verdict, signal):
     reasons = list(v.get("reasons") or [])
     if grade == "concentrated":
         reasons.extend(signal.get("reasons") or [])
-        if v.get("verdict") == "GO":
+        if gate and v.get("verdict") == "GO":
             v["verdict"] = "HOLD"
             reasons.append("escalated GO->HOLD: token supply is concentrated in one "
                            "non-contract wallet (rug/manipulation risk)")

@@ -1246,7 +1246,17 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
             _hc = holder_source.check(_acq.get("token"), _acq.get("chain"))
         except Exception:
             _hc = None
-        verdict = apply_concentration(verdict, _hc)
+        # ADVISORY (gate=False): records the signal + feeds the aggregate, but doesn't
+        # gate alone (noisier for RWAs). The aggregation layer weighs it collectively.
+        verdict = apply_concentration(verdict, _hc, gate=False)
+
+    # AGGREGATION / confidence layer (rwa_aggregate.py): compose the ~8 RWA signals into
+    # ONE weighted risk view (signals.rwa_risk: score/level/primary_concern/concerns) and
+    # apply the controlled collective rule -- advisory signals agreeing past a threshold
+    # escalate GO->HOLD once. Descriptive + conservative; the strong gates already decided.
+    if clean.get("acquires"):
+        from rwa_aggregate import aggregate, apply_aggregate
+        verdict = apply_aggregate(verdict, aggregate(verdict.get("signals")))
 
     # The receipt is the ledger's join key, so it must be UNIQUE PER PAYMENT --
     # not just a hash of the verdict content (two counterparties with identical
