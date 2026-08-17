@@ -983,7 +983,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              graph_source=None, velocity_source=None, category_index=None,
              divergence_index=None, enrichment_source=None, verify_signer=True,
              rwa_source=None, stock_registry=None, pyth_source=None, rwa_ledger=None,
-             balance_reader=None, backing_index=None):
+             balance_reader=None, backing_index=None, dex_source=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
@@ -1210,6 +1210,23 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
             _bk = None
         verdict = apply_backing(verdict, _bk)
 
+    # DEX market-vs-NAV peg (dex_price.py): the oracle-managed peg tracks the underlying
+    # by construction, so it can't see the TOKEN trading off its NAV on an actual pool
+    # (bait/thin liquidity / market depeg). Read the token's live Uniswap-v3 price and
+    # compare to the underlying (Pyth). Off-peg -> HOLD. Opt-in, conservative, fail-open.
+    if (dex_source is not None and pyth_source is not None and asset_record
+            and asset_record.get("underlying_symbol") and clean.get("acquires")):
+        from dex_price import apply_market_peg, assess_market_peg
+        _acq = clean["acquires"]
+        try:
+            _dexp = dex_source.price(_acq.get("token"), _acq.get("chain"),
+                                     pool=_acq.get("dex_pool"))
+            _underp = pyth_source.price(asset_record.get("underlying_symbol"))
+            _mp = assess_market_peg(_dexp, _underp)
+        except Exception:
+            _mp = None
+        verdict = apply_market_peg(verdict, _mp)
+
     # The receipt is the ledger's join key, so it must be UNIQUE PER PAYMENT --
     # not just a hash of the verdict content (two counterparties with identical
     # stats produce identical verdicts and would otherwise collide). Sign over
@@ -1365,6 +1382,7 @@ class _Handler(BaseHTTPRequestHandler):
     rwa_ledger = None  # rwa_ledger.RwaLedger (accumulation corpus), or None
     balance_reader = None  # rwa_balance.BalanceReader (pre-buy snapshot), or None
     backing_index = None  # backed_oracle.BackedOracleIndex (proof-of-reserves), or None
+    dex_source = None  # dex_price.DexPriceSource (market-vs-NAV peg), or None
     graph_source = None  # payer_reputation.PayerReputationSource (Sybil corroboration)
     velocity_source = None  # settlement_velocity.VelocitySource (stale gate)
     openapi_server_url = None  # public origin for the openapi.json servers[] (or None)
@@ -1618,6 +1636,7 @@ class _Handler(BaseHTTPRequestHandler):
                                  rwa_ledger=self.rwa_ledger,
                                  balance_reader=self.balance_reader,
                                  backing_index=self.backing_index,
+                                 dex_source=self.dex_source,
                                  verify_signer=_verify_signer)
         if err is not None:
             self._send_json(400, {"error": err})
@@ -1705,7 +1724,7 @@ class BlackwallServer:
                  category_index=None, divergence_index=None, rate_limiter=None,
                  enrichment_source=None, rwa_source=None, stock_registry=None,
                  pyth_source=None, rwa_ledger=None, balance_reader=None,
-                 backing_index=None):
+                 backing_index=None, dex_source=None):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -1730,6 +1749,7 @@ class BlackwallServer:
         self.rwa_ledger = rwa_ledger
         self.balance_reader = balance_reader
         self.backing_index = backing_index
+        self.dex_source = dex_source
         self.stats = _Stats()
         self._httpd = None
 
@@ -1754,6 +1774,7 @@ class BlackwallServer:
                         "rwa_ledger": self.rwa_ledger,
                         "balance_reader": self.balance_reader,
                         "backing_index": self.backing_index,
+                        "dex_source": self.dex_source,
                         "stats": self.stats,
                         "openapi_server_url": self.openapi_server_url})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
@@ -2136,6 +2157,19 @@ def main(argv=None):
                          "underlying HOLD when acquires carries unit_price/quantity)\n")
         sys.stdout.flush()
 
+    # OPT-IN (BLACKWALL_DEX=1, needs pyth + an EVM RPC): DEX market-vs-NAV peg. Reads the
+    # token's live Uniswap-v3 price and flags a material deviation from the underlying
+    # (depeg / thin liquidity / bait pool) the oracle-managed peg can't see.
+    dex_source = None
+    if _env_flag("BLACKWALL_DEX") and pyth_source is not None:
+        _dex_rpc = os.environ.get("BLACKWALL_RWA_RPC_URL", "")
+        if _dex_rpc:
+            from dex_price import DexPriceSource
+            dex_source = DexPriceSource(rpc_url=_dex_rpc)
+            sys.stdout.write("blackwall: DEX market-peg ON (Uniswap-v3 token price vs "
+                             "underlying NAV; off-peg HOLD)\n")
+            sys.stdout.flush()
+
     # OPT-IN (BLACKWALL_RWA_LEDGER=<path>): the ACCUMULATION corpus -- append every RWA
     # buy + its asset/restriction/peg context to build the private history no one else has.
     rwa_ledger = None
@@ -2192,6 +2226,7 @@ def main(argv=None):
                              rwa_ledger=rwa_ledger,
                              balance_reader=balance_reader,
                              backing_index=backing_index,
+                             dex_source=dex_source,
                              openapi_server_url=origin)
     try:
         server.serve_forever()

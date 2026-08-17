@@ -126,10 +126,13 @@ rollup). **Deferred halves:**
   (`backed_oracle.py`): keyless Backed `/public/proof-of-reserves` -> `backing_ratio`
   (shares held vs tokens circulating); under-collateralized -> HOLD. `/public/oracles` ->
   the issuer-declared Pyth feed map that hardens the peg gate. Folded via `backing_index`.
-- **True token-market peg (still deferred)** — Backed's oracle is Pyth-MANAGED, so the
-  token price tracks the underlying by construction; measuring the token's real DEX-market
-  deviation (bait pool / thin liquidity) needs per-token pool reads (Uniswap slot0/quoter).
-  That's the residual of "token-price sampling"; the oracle/PoR path covers the rest keyless.
+- ~~**True token-market peg**~~ — **BUILT** (`dex_price.py`): reads the token's live
+  Uniswap-v3 pool price (`slot0().sqrtPriceX96`, verified live vs the USDC/WETH pool),
+  compares to the underlying (Pyth); >10% off NAV -> HOLD. Discovers the pool via the v3
+  factory across fee tiers (or `acquires.dex_pool`). Opt-in `BLACKWALL_DEX`, HOLD-only,
+  fail-open. RESIDUAL: no liquidity-depth check -> a dust pool can false-flag (bounded --
+  HOLD-only, and it can only ADD caution). Next refinement: a pool USDC-balance floor to
+  skip dust, and pick the deepest fee tier rather than first-found.
 - **Gated-issuer seed** — PARTIALLY DONE: 9 **Ondo Ethereum** tokenized stocks
   (AAPLon/TSLAon/NVDAon/MSFTon/GOOGLon/AMZNon/METAon/SPYon/QQQon) seeded into `STATIC_SEED`,
   each doubly-verified 2026-08-17 (Ondo's `docs.ondo.finance/addresses.md` + an independent
