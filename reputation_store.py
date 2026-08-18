@@ -157,6 +157,20 @@ class ReputationStore:
 # ===========================================================================
 # Combine on-chain breadth (store) with observed disputes (ledger)
 # ===========================================================================
+def _first_advertised_range(records):
+    """The first record supplying BOTH advertised bounds, kept as a unit.
+
+    Pure helper for merge_records -- see the call site for why the pair must not
+    be mixed across sources.
+    """
+    for record in records:
+        low = record.get("advertised_min_price")
+        high = record.get("advertised_max_price")
+        if low is not None and high is not None:
+            return {"advertised_min_price": low, "advertised_max_price": high}
+    return {"advertised_min_price": None, "advertised_max_price": None}
+
+
 def merge_records(records):
     """
     Field-wise merge of reputation records from multiple sources.
@@ -200,6 +214,13 @@ def merge_records(records):
                                for o in (r.get("price_observations") or [])],
         "sanctioned": any(r.get("sanctioned") for r in records),
         "known_bad": any(r.get("known_bad") for r in records),
+        # The payee's own advertised price bounds (advertised_prices.py), used by
+        # blackwall.price_stop_is_corroborated to withhold a price STOP on a
+        # published premium route. Taken as an ATOMIC PAIR from the first source
+        # that supplies both: mixing a min from one source with a max from another
+        # would synthesize a range NO catalog advertises, and a wider range is the
+        # permissive direction. Absent -> None -> "unknown", never "out of range".
+        **_first_advertised_range(records),
         "_meta": {
             "source": "combined",
             "known": any((r.get("_meta") or {}).get("known")
@@ -274,19 +295,35 @@ class SelfPopulatingReputationSource:
 
 
 def production_source(store_path, ledger=None, ingest=False, sanctioned=None,
-                      known_bad=None):
+                      known_bad=None, advertised_index=None):
     """
     Build the production reputation source from a SQLite store (+ optional
     ledger for disputes). With `ingest=True` the store self-populates from chain
     on first sight of a counterparty.
+
+    `advertised_index` is a path to the crawl artifact holding each payee's own
+    advertised price bounds (advertised_prices.py). It contributes ONLY those
+    bounds -- no settlements, no payer counts -- so it cannot move a reputation,
+    Sybil, or thin-history gate; it only lets a price STOP be withheld on a route
+    the payee publicly lists. Omitted -> that corroboration arm stays inert,
+    which is the behavior before this was wired.
     """
     store = ReputationStore(store_path, sanctioned=sanctioned, known_bad=known_bad)
     store_source = SelfPopulatingReputationSource(store) if ingest else store
+    sources = [store_source]
     if ledger is not None:
         from ledger import LedgerReputationSource
-        return CombinedReputationSource(
-            [store_source, LedgerReputationSource(ledger)])
-    return store_source
+        sources.append(LedgerReputationSource(ledger))
+    if advertised_index:
+        from advertised_prices import AdvertisedPriceSource
+        advertised = AdvertisedPriceSource.from_path(advertised_index)
+        # An empty index would add a source that never contributes; skip it so
+        # a missing/corrupt artifact is a genuine no-op rather than dead weight.
+        if len(advertised):
+            sources.append(advertised)
+    if len(sources) == 1:
+        return store_source
+    return CombinedReputationSource(sources)
 
 
 # ---------------------------------------------------------------------------

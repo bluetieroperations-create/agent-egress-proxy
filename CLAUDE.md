@@ -144,6 +144,22 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   2026-08-18: 73/195 hosts live+scoreable, 86 serving an opaque 402. Pure helpers +
   injected network; `rank_leads` is prioritisation only and NEVER touches a verdict.
   See `docs/DIRECTORY_LIVENESS.md`. Tests: `test_directory_liveness.py`),
+  `advertised_prices.py` (supply each payee's OWN advertised price bounds to the verdict --
+  the second arm of `price_stop_is_corroborated`. `ecosystem_scan` already writes
+  min/max per payee to `data/directory.json`; this turns that artifact into a
+  reputation source composing through `merge_records`, which had to learn to carry
+  the pair (it builds a FIXED dict, so unknown keys were silently dropped -- the
+  reason the arm was inert). Contributes ONLY the bounds: no settlements, no payer
+  counts, so it cannot move the reputation/Sybil/thin gates. MONOTONICALLY PERMISSIVE
+  (it only ever withholds a STOP), so two properties must hold: the range comes from
+  OUR committed crawl loaded at startup -- never the request, so a payee can't widen
+  it at payment time -- and it never reaches GO. The pair is ATOMIC across sources: a
+  min from one and a max from another would synthesize a range no catalog advertises.
+  Address keys are lowercased because a live 402 returns an EIP-55 CHECKSUMMED payTo
+  while the crawl stores lowercase (that join silently missed 64 of 69 live endpoints).
+  Fail-open: missing/corrupt artifact -> empty index -> "unknown", never "out of range".
+  Measured: takes live STOPs 3 -> 0 with ZERO attacks escaping at >=8x. Tests:
+  `test_advertised_prices.py`),
   `confidence.py` (how much EVIDENCE backs a verdict -- `assess_confidence(record,
   signals)` -> {level high/medium/low, score 0..1, backed_by[], missing[]} across
   five weighted dimensions: history depth, payer breadth, cross-counterparty
@@ -464,7 +480,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py test_directory_liveness.py test_price_corroboration.py
+ test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop

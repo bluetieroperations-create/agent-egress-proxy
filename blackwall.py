@@ -2207,8 +2207,14 @@ def main(argv=None):
     graph_source = velocity_source = None
     if args.store:
         from reputation_store import production_source, ReputationStore
+        # The advertised-price artifact (data/directory.json by default) lets a
+        # price STOP be withheld on a route the payee publicly lists -- see
+        # advertised_prices.py. Loaded from OUR committed crawl at startup, never
+        # from the request, because the signal is monotonically permissive.
+        _adv = os.environ.get("BLACKWALL_ADVERTISED_INDEX", "data/directory.json")
         reputation_source = production_source(args.store, ledger=led,
-                                              ingest=args.ingest)
+                                              ingest=args.ingest,
+                                              advertised_index=_adv)
         # Full signal stack off the same store: cross-counterparty Sybil
         # corroboration (payer graph + reputation) and the temporal `stale` gate.
         from payer_reputation import PayerReputationSource
