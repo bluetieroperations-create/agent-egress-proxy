@@ -129,6 +129,21 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `audit_candidates()` active/clean/not-yet-verified endpoints to pitch the
   Verified tier. Pure+stdlib, enrichment injected; `main()` crawls the Bazaar,
   backfills the top-N, and writes report/directory/candidates),
+  `directory_liveness.py` (does the ecosystem map still RESOLVE? `ecosystem_scan` writes
+  `data/directory.json` from what payees ADVERTISE; this probes every distinct host and
+  reports the answer in the terms that matter -- not "is it up" but "can we PARSE its
+  payment requirements", since `forecast` scores from the challenge's `accepts[]`.
+  Classes: body_accepts / hdr_accepts / wellknown / opaque_402 / other / dead / blocked.
+  Guards two artifacts that both UNDERCOUNT the live ecosystem, each a real error made
+  while running the survey by hand: GET-only probing (a 405 is a POST endpoint, not a
+  dead one -- the retry recovered 14 scoreable hosts) and body-only challenge parsing
+  (the x402 v2 style carries requirements in `WWW-Authenticate: X402 requirements=`).
+  FINDING: nothing in this repo reads that header -- every consumer takes `accepts` from
+  the body -- so a v2 endpoint is uncrawlable and unpayable though the engine would score
+  it fine; `parse_challenge` is the reference implementation if we close it. Measured
+  2026-08-18: 73/195 hosts live+scoreable, 86 serving an opaque 402. Pure helpers +
+  injected network; `rank_leads` is prioritisation only and NEVER touches a verdict.
+  See `docs/DIRECTORY_LIVENESS.md`. Tests: `test_directory_liveness.py`),
   `confidence.py` (how much EVIDENCE backs a verdict -- `assess_confidence(record,
   signals)` -> {level high/medium/low, score 0..1, backed_by[], missing[]} across
   five weighted dimensions: history depth, payer breadth, cross-counterparty
@@ -449,7 +464,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py
+ test_auth_sim.py test_directory_liveness.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop

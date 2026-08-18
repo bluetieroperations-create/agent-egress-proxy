@@ -73,7 +73,8 @@ jobs:
             test_dex_price.py test_holder_concentration.py test_rwa_aggregate.py \
             test_aave_reserve.py test_rwa_backfill.py test_issuer_trust_gate.py \
             test_revert_scan.py test_transfer_sim.py test_settlement_sim.py \
-            test_rpc_node.py test_auth_sim.py
+            test_rpc_node.py test_auth_sim.py \
+            test_directory_liveness.py
 
       - name: Adversarial scorecard (must have no false positives or misses)
         # redteam.py exits non-zero on a FALSE POSITIVE or an unmarked MISS, so this is
