@@ -38,6 +38,17 @@ services:
         value: "0"
       # Pricing posture (see PRICING.md): value-aligned / freemium-on-stakes.
       # Low-stakes verdicts free (incl. sanctions safety); high-stakes pay.
+      # Per-client rate limit for the PUBLIC endpoint (POST paths only; GET health/
+      # discovery stay unthrottled). Default is 0 = DISABLED, so an unset value ships
+      # an unthrottled public endpoint -- which matters most with billing OFF, where
+      # every call is free to the caller. 120 req/min per client IP, burst 30: generous
+      # for a legit agent, caps hammering/scraping/DoS.
+      - key: BLACKWALL_RATE_LIMIT
+        value: "120"
+      - key: BLACKWALL_RATE_WINDOW
+        value: "60"
+      - key: BLACKWALL_RATE_BURST
+        value: "30"
       - key: BLACKWALL_VALUE_PRICING
         value: "1"
       - key: BLACKWALL_FREE_BELOW

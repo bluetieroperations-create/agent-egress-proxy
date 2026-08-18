@@ -88,5 +88,41 @@ class DeployManifest(unittest.TestCase):
                       "the default advertised-index path is not COPYed into the image")
 
 
+class PublicEndpointDefaults(unittest.TestCase):
+    """A PUBLIC deploy must not ship with throttling off.
+
+    BLACKWALL_RATE_LIMIT defaults to "0", which DISABLES limiting. render-free.yaml
+    set it; render.yaml and fly.toml did not, so the paid and Fly deploys would have
+    exposed an unthrottled public endpoint -- worst with billing OFF, where every
+    call is free to the caller.
+    """
+
+    CONFIGS = ("render.yaml", "render-free.yaml", "fly.toml")
+
+    def test_every_public_deploy_config_sets_a_rate_limit(self):
+        # MUTATION: dropping the setting from any config -> that target ships
+        # unthrottled, and nothing else in the suite would notice.
+        for name in self.CONFIGS:
+            with open(os.path.join(ROOT, name)) as handle:
+                text = handle.read()
+            self.assertIn("BLACKWALL_RATE_LIMIT", text,
+                          "%s exposes a public endpoint with rate limiting at its "
+                          "default of 0 (disabled)" % name)
+            # Two shapes: TOML `KEY = "120"` and YAML `- key: KEY` / `value: "120"`
+            # on the NEXT line (the colon precedes the name there, not follows it).
+            value = re.search(
+                r'BLACKWALL_RATE_LIMIT(?:"?\s*=\s*|\s*\n\s*value:\s*)"?(\d+)', text)
+            self.assertIsNotNone(value, "%s: unparseable rate limit" % name)
+            self.assertGreater(int(value.group(1)), 0,
+                               "%s sets a rate limit of 0, which disables it" % name)
+
+    def test_every_public_deploy_config_binds_all_interfaces(self):
+        # A container that binds 127.0.0.1 is unreachable from outside; the default
+        # is localhost-only by design, so each config must opt in explicitly.
+        for name in self.CONFIGS:
+            with open(os.path.join(ROOT, name)) as handle:
+                self.assertIn("0.0.0.0", handle.read(), "%s does not bind 0.0.0.0" % name)
+
+
 if __name__ == "__main__":
     unittest.main()

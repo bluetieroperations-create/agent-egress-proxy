@@ -63,6 +63,12 @@ primary_region = "iad"
   # Pricing posture (see PRICING.md): value-aligned / freemium-on-stakes.
   # Low-stakes verdicts are free (incl. sanctions safety); high-stakes pay.
   # Start generous to win adoption while the category has no data moat.
+  # Per-client rate limit for the PUBLIC endpoint (POST only). Default 0 = DISABLED,
+  # so leaving this unset ships an unthrottled public endpoint -- especially risky
+  # with billing OFF, where every call is free to the caller.
+  BLACKWALL_RATE_LIMIT = "120"
+  BLACKWALL_RATE_WINDOW = "60"
+  BLACKWALL_RATE_BURST = "30"
   BLACKWALL_VALUE_PRICING = "1"
   BLACKWALL_FREE_BELOW = "10.00"
 
