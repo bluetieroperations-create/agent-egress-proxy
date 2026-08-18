@@ -32,6 +32,17 @@ session (tip `02055d2`, 824 tests green)._
 
 ---
 
+## 0. Arc handoffs
+
+Point-in-time handoffs for a specific block of work. Read the rules above first;
+these are the *what changed*.
+
+| doc | covers |
+|---|---|
+| `docs/HANDOFF_ARC_RWA_TO_ECOSYSTEM.md` | 2026-08-16 → 08-18: tokenized-RWA gate, the accumulation corpus, transfer **simulation** (the technique that replaced interface probing), our own RPC node, CI, and the **measured** x402 ecosystem map (`data/liveness.json`). **Traceipt: §1, §4, §5 are addressed to you** — a live-endpoint map to cross-reference against `OUTREACH_TARGETS.md`, and a 402-challenge-parsing finding that touches `x402_gate.py`. |
+
+---
+
 ## 1. Who owns what
 
 | Branch | Project | Where | Owns |
