@@ -1309,9 +1309,30 @@ class TestPerClassPriceSegmentation(unittest.TestCase):
         self.assertNotEqual(v["verdict"], "STOP")
         self.assertEqual(v["signals"]["price_basis"], "per-class")
 
-    def test_decide_pooled_stops_gouge(self):
+    def test_decide_pooled_holds_but_no_longer_stops_a_corroborated_tier(self):
+        # BEHAVIOR CHANGE (price-STOP corroboration, test_price_corroboration.py).
+        # This fixture's three $5000 charges come from three DISTINCT payers, so
+        # $5000 is an ESTABLISHED TIER, not a gouge -- exactly the false-gouge this
+        # class exists to document. Without class context the pooled median is $50,
+        # so the ratio is still ~100x and the payment is still blocked from GO; the
+        # corroboration only downgrades STOP -> HOLD, i.e. human review instead of
+        # "do not sign".
+        # MUTATION: reverting the corroboration -> this returns STOP again.
         v = bw.decide_payment("5000", self._rec(), [], counterparty="0xV",
                               resource=None, hold_above="100000")
+        self.assertEqual(v["verdict"], "HOLD")
+        self.assertNotEqual(v["verdict"], "GO")
+
+    def test_decide_pooled_still_stops_an_uncorroborated_gouge(self):
+        # The protection this class originally pinned, kept intact: the SAME 100x
+        # amount with the large charges coming from ONE payer is a wash-forged tier
+        # and must still STOP.
+        # MUTATION: dropping MIN_TIER_PAYERS -> this becomes HOLD and a self-dealt
+        # 100x gouge is waved through to human review instead of refused.
+        washed = (self.OBS[:20]
+                  + [{"payer": "0xsame", "amount": "5000", "resource": "invoice"}] * 3)
+        v = bw.decide_payment("5000", dict(self.REC, price_observations=washed), [],
+                              counterparty="0xV", resource=None, hold_above="100000")
         self.assertEqual(v["verdict"], "STOP")
 
 

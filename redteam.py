@@ -37,7 +37,11 @@ STABLE = ["0.09", "0.09", "0.088", "0.092"]     # median 0.09
 # a reputable, in-budget, fair-priced baseline record.
 GOOD = {"settlement_count": 500, "dispute_rate": 0.0, "distinct_payers": 30}
 
-# (name, category, expect: "block"|"allow", known_gap: bool, decide_payment kwargs)
+# (name, category, expect: "block"|"stop"|"allow", known_gap: bool, decide_payment kwargs)
+#   block -- must not GO (HOLD or STOP both acceptable)
+#   stop  -- must be STOP specifically; a HOLD is a MISS. Use when the SEVERITY is
+#            the property under test, so the scenario can actually fail.
+#   allow -- must GO
 SCENARIOS = [
     # --- attacks that MUST be caught ---
     ("sanctioned counterparty", "sanctions", "block", False,
@@ -51,6 +55,22 @@ SCENARIOS = [
           counterparty=ATTACKER, expected_recipient=LEGIT)),
     ("price gouge (>=8x median)", "price", "block", False,
      dict(amount="0.72", record=GOOD, price_history=STABLE, counterparty=LEGIT)),
+    # The price STOP is corroborated before it stands (blackwall.price_stop_is_
+    # corroborated), so a payee can try to MANUFACTURE the corroboration: self-pay
+    # three times at the inflated price (~$15, recovered on the first victim) to
+    # forge an "established tier", then quote it. The tier arm is payer-weighted
+    # precisely to stop this -- a wash farm controls settlement COUNT cheaply, but
+    # not independent counterparties.
+    # Expect "stop", NOT "block": a price gouge always scores anomaly 1.0 and so
+    # always HOLDs, which means a "block" expectation would pass even with
+    # MIN_TIER_PAYERS removed. Mutation-verified -- setting MIN_TIER_PAYERS = 0
+    # turns this into MISS (BUG) and fails the run.
+    ("wash-forged price tier", "price", "stop", False,
+     dict(amount="0.72", counterparty=LEGIT,
+          record=dict(GOOD, price_observations=(
+              [{"payer": "0x%040x" % i, "amount": "0.09"} for i in range(30)]
+              + [{"payer": ATTACKER, "amount": "0.72"}] * 3)),
+          price_history=STABLE + ["0.72"] * 3)),
     ("price anomaly (moderate)", "price", "block", False,
      dict(amount="0.30", record=GOOD, price_history=STABLE, counterparty=LEGIT)),
     ("thin history (<20 settlements)", "thin", "block", False,
@@ -136,6 +156,13 @@ SCENARIOS = [
                               "reputable_payers": 2, "avg_payer_reputation": 0.6})),
     # premium (15x the category median) is legit, not a gouge -> the category gate
     # (50x) must NOT false-positive on it. Guards the eval-calibrated threshold.
+    # NOTE: the restraint property for the wash-forged-tier attack above -- that a
+    # premium price backed by INDEPENDENT payers is downgraded to HOLD rather than
+    # STOP -- is NOT expressible here. This harness is binary (allow=GO,
+    # block=not-GO) and a corroborated anomaly is still an anomaly, so it HOLDs and
+    # would register as a FALSE POSITIVE. It is pinned exactly where the
+    # distinction lives instead: test_price_corroboration.EndToEndVerdict.
+    # test_legit_premium_tier_is_HOLD_not_STOP.
     ("premium price (15x, under category bar)", "control", "allow", False,
      dict(amount="0.30", record=GOOD, price_history=[], counterparty=LEGIT,
           category="finance", category_median="0.02")),   # 0.30 / 0.02 = 15x
@@ -289,6 +316,14 @@ def _disposition(expect, known_gap, verdict):
     blocked = verdict in ("HOLD", "STOP")
     if expect == "allow":
         return "CLEAN" if not blocked else "FALSE POSITIVE"
+    if expect == "stop":
+        # SEVERITY-AWARE. "block" cannot express every defense: some gates decide
+        # STOP vs HOLD, and both count as blocked, so a scenario written as "block"
+        # passes even with the gate removed -- coverage that cannot fail. Where the
+        # severity IS the property under test, assert it directly.
+        if verdict == "STOP":
+            return "CAUGHT"
+        return "KNOWN GAP" if known_gap else "MISS (BUG)"
     # expect == "block"
     if blocked:
         return "CAUGHT"
