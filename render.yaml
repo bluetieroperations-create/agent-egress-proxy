@@ -65,6 +65,13 @@ services:
       # OFAC screening ON by default: points at the snapshot baked into the image
       # (Dockerfile COPY sanctions.txt). Refresh with `python sanctions.py
       # sanctions.txt` + redeploy, or override to a self-maintained list on /data.
+      # Each payee's OWN advertised price bounds, from the x402 discovery crawl and
+      # baked into the image (Dockerfile). Lets a price STOP be WITHHELD on a premium
+      # route the payee publicly lists -- but only alongside real settlement evidence,
+      # since the range is payee-authored (see advertised_prices.py). Set explicitly
+      # rather than relying on the relative default resolving against WORKDIR.
+      - key: BLACKWALL_ADVERTISED_INDEX
+        value: /app/data/directory.json
       - key: BLACKWALL_SANCTIONS
         value: /app/sanctions.txt
       # Best-effort refresh the OFAC list from the published source on each start
