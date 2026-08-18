@@ -330,7 +330,8 @@ def describe_price_tiers(price_history, limit=3):
     return "tiers: " + ", ".join(parts)
 
 
-def tier_evidence(amount, observations, tolerance=TIER_TOLERANCE):
+def tier_evidence(amount, observations, tolerance=TIER_TOLERANCE,
+                  counterparty=None):
     """Pure: (settlements, distinct_payers) recorded within `tolerance` of `amount`.
 
     PAYER-WEIGHTED ON PURPOSE. Counting settlements alone is forgeable -- a payee
@@ -350,6 +351,11 @@ def tier_evidence(amount, observations, tolerance=TIER_TOLERANCE):
         return 0, 0
 
     low, high = target * (1 - tolerance), target * (1 + tolerance)
+    # SELF-PAYMENTS ARE NOT EVIDENCE. An address paying itself proves nothing about
+    # a price being real, and it is the cheapest thing an attacker can produce. The
+    # reputation store already excludes self-payments from its distinct-payer count
+    # for the Sybil gate; this keeps the tier check in step.
+    myself = str(counterparty).lower() if counterparty else None
     settlements, payers = 0, set()
     for observation in observations or []:
         if not isinstance(observation, dict):
@@ -360,10 +366,13 @@ def tier_evidence(amount, observations, tolerance=TIER_TOLERANCE):
             continue
         if not value.is_finite() or not (low <= value <= high):
             continue
-        settlements += 1
         payer = observation.get("payer")
+        payer = str(payer).lower() if payer else None
+        if myself and payer == myself:
+            continue
+        settlements += 1
         if payer:
-            payers.add(str(payer).lower())
+            payers.add(payer)
     return settlements, len(payers)
 
 
@@ -391,7 +400,8 @@ def within_advertised_range(amount, min_price, max_price):
 def price_stop_is_corroborated(amount, price_history, observations,
                                min_price=None, max_price=None,
                                min_settlements=MIN_TIER_SETTLEMENTS,
-                               min_payers=MIN_TIER_PAYERS):
+                               min_payers=MIN_TIER_PAYERS,
+                               counterparty=None):
     """Pure: may a price STOP stand, or is the quote corroborated?
 
     Returns (stop_stands, why). The STOP is downgraded when EITHER independent
@@ -406,19 +416,38 @@ def price_stop_is_corroborated(amount, price_history, observations,
     downgrade costs a human review rather than a signed overpayment. Missing data
     (no observations, no catalog) leaves the STOP standing.
     """
-    settlements, payers = tier_evidence(amount, observations)
+    settlements, payers = tier_evidence(amount, observations,
+                                        counterparty=counterparty)
     if settlements >= min_settlements and payers >= min_payers:
         return False, ("%d settlements from %d distinct payers at ~this price "
                        "-- established tier" % (settlements, payers))
 
+    # THE CATALOG LOWERS A BAR; IT DOES NOT REPLACE ONE. The advertised range is
+    # derived from what the PAYEE advertises (discovery_crawl reads their own
+    # accepts[].maxAmountRequired), so it is attacker-authored content that merely
+    # happens to be harvested by us. Letting it vouch ALONE was a serious weakening:
+    # measured on the shipped corpus, 111 payees could quote the top of their own
+    # catalog at >= 8x their settled median, and 89 were waved through on the
+    # catalog alone -- the worst with ZERO settlements near the price ($10 quoted
+    # against a $0.001 median). Requiring real settlement evidence closes 63 of
+    # those and still clears every endpoint this arm exists for: a fabricated
+    # catalog entry has no payment history, and a self-paid one has no non-self
+    # payer. So the catalog only relaxes the PAYER floor from min_payers to 1.
+    # NOTE [min,max] is the HULL of a price list, not the list -- a payee
+    # advertising $0.001 and $1000 does not advertise $50. Persisting the discrete
+    # prices would tighten this further.
     advertised = within_advertised_range(amount, min_price, max_price)
-    if advertised is True:
-        return False, "quoted amount is inside the payee's advertised price range"
+    if advertised is True and settlements >= min_settlements and payers >= 1:
+        return False, ("quoted amount is in the payee's advertised range with "
+                       "%d prior settlement(s) from %d payer(s)"
+                       % (settlements, payers))
 
     why = ("only %d settlement(s) from %d distinct payer(s) near this price"
            % (settlements, payers))
     if advertised is False:
         why += "; quote is OUTSIDE the payee's advertised range"
+    elif advertised is True:
+        why += "; advertised but not settled at this price"
     tiers = describe_price_tiers(price_history)
     if tiers:
         why += " (%s)" % tiers
@@ -684,7 +713,8 @@ def decide_payment(amount, record, price_history,
         # downgrade to HOLD, which still blocks an automatic GO.
         stop_stands, why = price_stop_is_corroborated(
             amount, price_history, observations,
-            record.get("advertised_min_price"), record.get("advertised_max_price"))
+            record.get("advertised_min_price"), record.get("advertised_max_price"),
+            counterparty=counterparty)
         if stop_stands:
             stop = True
             reasons.append(

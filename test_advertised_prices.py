@@ -154,9 +154,21 @@ class EndToEnd(unittest.TestCase):
     def test_advertised_range_clears_it_to_HOLD(self):
         # MUTATION: not wiring the pair through -> this stays STOP, which is the
         # exact false positive on netintel.dev / agent.kihustle.tech measured on
-        # live endpoints.
+        # live endpoints. The fixture has 4 REAL settlements at $0.25 from one
+        # repeat payer, which is what the catalog is allowed to relax.
         out = bw.decide_payment("0.25", self.record(("0.002", "0.65")), self.HISTORY)
         self.assertEqual(out["verdict"], "HOLD")
+
+    def test_a_catalog_with_no_settlements_at_the_price_does_not_clear(self):
+        # SECURITY REGRESSION: the range is payee-authored, so it must never vouch
+        # on its own. Same wide catalog, but nothing has ever settled near $0.25.
+        # MUTATION: hull-alone corroboration -> this becomes HOLD.
+        rec = {"settlement_count": 50, "dispute_rate": 0.0, "distinct_payers": 50,
+               "price_observations": [{"payer": "0x%040x" % i, "amount": "0.01"}
+                                      for i in range(50)],
+               "advertised_min_price": "0.002", "advertised_max_price": "0.65"}
+        out = bw.decide_payment("0.25", rec, ["0.01"] * 50)
+        self.assertEqual(out["verdict"], "STOP")
 
     def test_cleared_price_still_never_reaches_GO(self):
         # MUTATION: downgrading to GO -> a 25x overcharge is auto-signed because

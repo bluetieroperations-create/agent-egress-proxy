@@ -150,13 +150,49 @@ class StopCorroboration(unittest.TestCase):
         self.assertTrue(stands)
         self.assertIn("1 distinct payer", why)
 
-    def test_advertised_range_alone_can_downgrade(self):
-        # MUTATION: requiring BOTH arms -> a payee with a legitimate published
-        # premium route but little history at it still STOPs.
+    def test_advertised_range_ALONE_does_NOT_downgrade(self):
+        # SECURITY REGRESSION. The advertised range is derived from what the PAYEE
+        # advertises (discovery_crawl reads their own accepts[].maxAmountRequired),
+        # so a catalog alone is attacker-authored evidence. An earlier version let
+        # it vouch on its own; measured on the shipped corpus that waved through 89
+        # top-of-catalog quotes at >= 8x the settled median, the worst with ZERO
+        # settlements near the price.
+        # MUTATION: dropping the settlement requirement from the advertised arm ->
+        # this returns False and the bypass is back.
         stands, why = bw.price_stop_is_corroborated(
             "0.50", ["0.01"] * 200, self.HONEST, "0.01", "3.00")
+        self.assertTrue(stands)
+        self.assertIn("advertised but not settled", why)
+
+    def test_advertised_plus_real_settlements_downgrades(self):
+        # The legitimate case the arm exists for: a published premium route with
+        # real payment history, but from a single repeat customer -- so the tier
+        # arm (>= 2 payers) cannot vouch and the catalog relaxes THAT floor to 1.
+        # MUTATION: removing the advertised arm -> netintel.dev and the other two
+        # live endpoints go back to STOP.
+        observations = self.HONEST + obs([("buyer", "0.50")] * 3)
+        stands, why = bw.price_stop_is_corroborated(
+            "0.50", ["0.01"] * 200 + ["0.50"] * 3, observations, "0.01", "3.00")
         self.assertFalse(stands)
-        self.assertIn("advertised", why)
+        self.assertIn("advertised range", why)
+
+    def test_fabricated_wide_catalog_cannot_clear_a_gouge(self):
+        # THE ATTACK. A payee publishes two junk routes to widen its advertised
+        # range to [$0.000001, $1e9], then quotes $5000 against a $0.01 business.
+        # Cost: two lines in its own discovery doc.
+        # MUTATION: reverting to hull-alone corroboration -> this returns False.
+        stands, _why = bw.price_stop_is_corroborated(
+            "5000", ["0.01"] * 200, self.HONEST, "0.000001", "1000000000")
+        self.assertTrue(stands)
+
+    def test_self_payments_are_not_settlement_evidence(self):
+        # MUTATION: counting self-payments -> a payee funds its own "history" at
+        # the advertised price for the cost of gas and clears the gouge.
+        me = "0xpayee"
+        observations = self.HONEST + obs([(me, "0.50")] * 5)
+        stands, _why = bw.price_stop_is_corroborated(
+            "0.50", ["0.01"] * 200, observations, "0.01", "3.00", counterparty=me)
+        self.assertTrue(stands)
 
     def test_missing_evidence_leaves_the_stop_standing(self):
         # MUTATION: treating absent data as corroboration -> a cold-start payee
