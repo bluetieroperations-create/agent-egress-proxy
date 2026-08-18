@@ -151,9 +151,15 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   the pair (it builds a FIXED dict, so unknown keys were silently dropped -- the
   reason the arm was inert). Contributes ONLY the bounds: no settlements, no payer
   counts, so it cannot move the reputation/Sybil/thin gates. MONOTONICALLY PERMISSIVE
-  (it only ever withholds a STOP), so two properties must hold: the range comes from
-  OUR committed crawl loaded at startup -- never the request, so a payee can't widen
-  it at payment time -- and it never reaches GO. The pair is ATOMIC across sources: a
+  (it only ever withholds a STOP). AUDIT FINDING (fixed): the range is NOT trustworthy
+  ALONE -- discovery_crawl derives it from the payee's OWN advertised
+  `accepts[].maxAmountRequired`, so it is attacker-authored content we merely harvest,
+  and [min,max] is the HULL of a price list, not the list. Letting the hull vouch by
+  itself waved through 89/111 top-of-catalog quotes at >=8x the settled median, the
+  worst with ZERO settlements near the price. The catalog now only LOWERS the tier
+  arm's payer floor (2 -> 1) and still requires real NON-SELF settlement evidence at
+  the quoted price. Remaining safeguards: loaded at startup from our committed crawl
+  -- never the request -- and it never reaches GO. The pair is ATOMIC across sources: a
   min from one and a max from another would synthesize a range no catalog advertises.
   Address keys are lowercased because a live 402 returns an EIP-55 CHECKSUMMED payTo
   while the crawl stores lowercase (that join silently missed 64 of 69 live endpoints).
