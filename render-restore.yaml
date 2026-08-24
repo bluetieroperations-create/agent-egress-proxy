@@ -1,5 +1,19 @@
 # RESTORE blueprint -- brings back the ORIGINAL hostname.
 #
+# STATUS (corrected 2026-08-24): THIS IS OPTIONAL, and was written on a wrong
+# diagnosis. The engine was never deleted. It is LIVE and healthy at
+# blackwall-free.onrender.com (Render service `blackwall-free`, free plan,
+# Blueprint-managed from render-free.yaml). The 404 that prompted this file is
+# simply that the MCP server and demo page call a hostname the service no longer
+# uses. Probing agent-egress-proxy.onrender.com looked identical to a
+# never-existed name, and that was read as deletion -- it only ever meant the name
+# is unused.
+#
+# The SIMPLER fix is to repoint the two callers at blackwall-free.onrender.com
+# (the MCP server's oracle URL lives in the separate blackwall-mcp repo, and the
+# demo page's fetch target). Use THIS blueprint only if you specifically want the
+# original hostname back -- e.g. to avoid editing published links at all.
+#
 # WHY THIS FILE EXISTS, AND WHY THE NAME MATTERS MORE THAN THE CONFIG
 # ------------------------------------------------------------------
 # On Render the service `name` determines the hostname: name X -> X.onrender.com.
