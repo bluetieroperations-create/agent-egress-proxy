@@ -124,5 +124,55 @@ class PublicEndpointDefaults(unittest.TestCase):
                 self.assertIn("0.0.0.0", handle.read(), "%s does not bind 0.0.0.0" % name)
 
 
+class RestoreBlueprintKeepsTheOriginalHostname(unittest.TestCase):
+    """On Render the service `name` IS the hostname: name X -> X.onrender.com.
+
+    The engine's original address, agent-egress-proxy.onrender.com, is hard-wired
+    into things this repo does not control: the remote MCP server at
+    mcp.blackwalltier.com (which proxies to it), the public demo at
+    check.blackwalltier.com/demo, and the awesome-x402 listing that sends traffic
+    to both. With the backend down, every live forecast_payment call returns
+    "Black_Wall oracle error: HTTP 404. No verdict -- do not treat as GO."
+
+    Deploying render.yaml or render-free.yaml would come up as blackwall /
+    blackwall-free .onrender.com -- a WORKING service at the WRONG address, which
+    fixes nothing. So the restore blueprint's name is load-bearing, and renaming it
+    silently re-breaks every one of those callers.
+    """
+
+    HOSTNAME = "agent-egress-proxy"
+
+    def test_restore_blueprint_claims_the_original_service_name(self):
+        # MUTATION: renaming the service -> the MCP server and demo keep 404ing
+        # while the new deploy looks perfectly healthy at a different URL.
+        with open(os.path.join(ROOT, "render-restore.yaml")) as handle:
+            text = handle.read()
+        self.assertRegex(text, r"name:\s*%s\b" % re.escape(self.HOSTNAME))
+
+    def test_restore_blueprint_sets_the_advertised_index(self):
+        # The free posture has no disk, so every artifact must come from the image.
+        # MUTATION: dropping this -> the price-STOP corroboration arm is inert in
+        # production and legitimate premium-tier endpoints get STOP'd.
+        with open(os.path.join(ROOT, "render-restore.yaml")) as handle:
+            text = handle.read()
+        self.assertIn("BLACKWALL_ADVERTISED_INDEX", text)
+        self.assertIn("/app/data/directory.json", text)
+
+    def test_restore_blueprint_rate_limits_and_binds_publicly(self):
+        with open(os.path.join(ROOT, "render-restore.yaml")) as handle:
+            text = handle.read()
+        self.assertIn("0.0.0.0", text)
+        value = re.search(
+            r'BLACKWALL_RATE_LIMIT(?:"?\s*=\s*|\s*\n\s*value:\s*)"?(\d+)', text)
+        self.assertIsNotNone(value, "restore blueprint: unparseable rate limit")
+        self.assertGreater(int(value.group(1)), 0)
+
+    def test_docs_still_reference_the_hostname_we_are_restoring(self):
+        # If the docs ever move to a different address, this blueprint is restoring
+        # the wrong one. Keeps the two from drifting apart silently.
+        with open(os.path.join(ROOT, "docs", "REGISTRIES.md")) as handle:
+            self.assertIn(self.HOSTNAME + ".onrender.com", handle.read())
+
+
 if __name__ == "__main__":
     unittest.main()
