@@ -1,0 +1,22 @@
+# OPTIONAL: native constant-time Ed25519 for receipt signing.
+#
+# The engine core is stdlib-only and stays importable WITHOUT this. receipt_signer
+# falls back to cdp_auth's pure-Python RFC 8032 signer, which is correct (3/3 RFC
+# 8032 vectors) but has two properties that make it unfit for a public endpoint:
+#
+#   * ~163 ms per signature -- measured 3.6 ms -> 172.6 ms end-to-end on
+#     /v1/forecast-payment, a 48x regression on the hot path.
+#   * variable-time double-and-add: runtime tracks the nonce's Hamming weight
+#     (weight 1 -> 55 ms, 253 -> 109 ms), leaking r to anyone who can time
+#     responses. Recovering r recovers the signing key.
+#
+# With this installed the backend is native: constant-time, and measured 540x
+# faster (0.302 ms vs 162.9 ms). Signatures are IDENTICAL either way -- verified
+# bit-for-bit across edge-case messages in test_receipt_signer.Backend -- so a
+# receipt signed on one backend verifies against the other.
+#
+# blackwall.py REFUSES to boot with signing enabled on a public bind unless the
+# backend is constant-time, so on a public deploy this file is effectively
+# required. Signing is opt-in (BLACKWALL_SIGNING_SEED); without it, nothing here
+# is needed at all.
+cryptography>=44.0.0,<51.0.0

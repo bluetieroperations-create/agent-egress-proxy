@@ -78,6 +78,17 @@ jobs:
             test_advertised_prices.py test_deploy_manifest.py \
             test_receipt_signer.py
 
+      # The engine is stdlib-only and the suite above proves it runs that way.
+      # Production installs a NATIVE Ed25519 backend (requirements-signing.txt),
+      # which takes a different code path in receipt_signer -- and signatures from
+      # the two backends must be byte-identical, or a receipt would verify or not
+      # depending on which box signed it. Run the signer suite both ways.
+      - name: Receipt signer against the native backend (production path)
+        run: |
+          python3 -m pip install --quiet --only-binary :all: -r requirements-signing.txt
+          python3 -m unittest test_receipt_signer.py
+          python3 -m pip uninstall -y --quiet cryptography
+
       - name: Adversarial scorecard (must have no false positives or misses)
         # redteam.py exits non-zero on a FALSE POSITIVE or an unmarked MISS, so this is
         # a real gate, not a report. It prints the table for the build log either way.

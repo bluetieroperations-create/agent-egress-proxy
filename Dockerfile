@@ -29,6 +29,18 @@ COPY data/directory.json ./data/
 # Refresh periodically with:  python sanctions.py sanctions.txt  (then redeploy).
 COPY sanctions.txt ./
 
+# OPTIONAL native Ed25519 (see requirements-signing.txt). The core is stdlib-only
+# and runs without it -- receipt_signer falls back to a pure-Python RFC 8032
+# signer. But that fallback is variable-time and ~163ms/signature, and blackwall
+# REFUSES to boot with signing enabled on a public bind unless the backend is
+# constant-time. So a public deploy that wants verifiable receipts needs this.
+#
+# --only-binary :all: on purpose: cryptography builds from source require a Rust
+# toolchain, which this image does not have. Failing loudly on a missing wheel is
+# far better than a silent 10-minute build attempt that ends in an error.
+COPY requirements-signing.txt ./
+RUN pip install --no-cache-dir --only-binary :all: -r requirements-signing.txt
+
 # ca-certificates for the RUNTIME sanctions refresh (BLACKWALL_SANCTIONS_REFRESH=1
 # fetches the live OFAC list over HTTPS). No build-time network is used anymore.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
