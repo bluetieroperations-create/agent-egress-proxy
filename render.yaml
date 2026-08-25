@@ -38,6 +38,17 @@ services:
         value: "0"
       # Pricing posture (see PRICING.md): value-aligned / freemium-on-stakes.
       # Low-stakes verdicts free (incl. sanctions safety); high-stakes pay.
+      # Per-client rate limit for the PUBLIC endpoint (POST paths only; GET health/
+      # discovery stay unthrottled). Default is 0 = DISABLED, so an unset value ships
+      # an unthrottled public endpoint -- which matters most with billing OFF, where
+      # every call is free to the caller. 120 req/min per client IP, burst 30: generous
+      # for a legit agent, caps hammering/scraping/DoS.
+      - key: BLACKWALL_RATE_LIMIT
+        value: "120"
+      - key: BLACKWALL_RATE_WINDOW
+        value: "60"
+      - key: BLACKWALL_RATE_BURST
+        value: "30"
       - key: BLACKWALL_VALUE_PRICING
         value: "1"
       - key: BLACKWALL_FREE_BELOW
@@ -65,6 +76,13 @@ services:
       # OFAC screening ON by default: points at the snapshot baked into the image
       # (Dockerfile COPY sanctions.txt). Refresh with `python sanctions.py
       # sanctions.txt` + redeploy, or override to a self-maintained list on /data.
+      # Each payee's OWN advertised price bounds, from the x402 discovery crawl and
+      # baked into the image (Dockerfile). Lets a price STOP be WITHHELD on a premium
+      # route the payee publicly lists -- but only alongside real settlement evidence,
+      # since the range is payee-authored (see advertised_prices.py). Set explicitly
+      # rather than relying on the relative default resolving against WORKDIR.
+      - key: BLACKWALL_ADVERTISED_INDEX
+        value: /app/data/directory.json
       - key: BLACKWALL_SANCTIONS
         value: /app/sanctions.txt
       # Best-effort refresh the OFAC list from the published source on each start

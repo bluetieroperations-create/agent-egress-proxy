@@ -92,6 +92,25 @@ DIVERGENCE_HOLD_RATIO = 10.0      # settle >= 10x the most-expensive advertised 
 HOLD_AMOUNT_THRESHOLD = Decimal("10.00")  # amounts above this escalate (HOLD)
 HOLD_ANOMALY = 0.30               # price-anomaly score at/above this cannot GO
 STOP_ANOMALY_RATIO = 8.0          # charged >= 8x its own median => STOP (wildly off)
+# ...but that ratio is measured against a median POOLED ACROSS ALL of a payee's
+# routes, and chain data cannot say which route a settlement paid for (a USDC
+# transfer carries no resource label), so `select_class_observations` never finds
+# a per-class subset for backfilled history and everything falls through to the
+# blended median. A seller with a wide catalog therefore trips an 8x STOP on its
+# own premium routes: measured on 69 live Base endpoints, 5 legit sellers STOP'd,
+# and 70% of live payees advertise a spread wide enough to do it (netintel.dev
+# $0.002-$0.65, quicknode $0.0001-$10). STOP means "do not sign", so a false one
+# is the most expensive error this engine makes.
+# The fix is EVIDENCE, not a looser threshold: before a price STOP stands, ask
+# whether the quote is corroborated -- an established tier at that price, or the
+# payee's own published range. Both arms use data already in hand.
+TIER_TOLERANCE = Decimal("0.20")  # +/-20% of a price counts as the same tier
+MIN_TIER_SETTLEMENTS = 3          # settlements needed before a price cluster is a "tier"
+# The tier check MUST be payer-weighted. Counting settlements alone is forgeable:
+# a payee self-pays 3x at an inflated price (~$15) and manufactures its own tier,
+# which is exactly the wash attack robust_price_median already resists. A wash farm
+# controls settlement COUNT cheaply but not independent counterparties.
+MIN_TIER_PAYERS = 2               # distinct payers needed before a tier is credible
 # "Going bad": recent outcomes turning toxic even while the lifetime dispute rate --
 # drowned by past volume -- still looks clean. This is the compromised/rugging case a
 # stateless engine and a volume-averaged rate both miss.
@@ -254,6 +273,185 @@ def price_anomaly_ratio(amount, price_history, observations=None, resource=None)
     if median is None or median <= 0:
         return None
     return float(Decimal(str(amount)) / median)
+
+
+def discover_price_tiers(price_history, tolerance=TIER_TOLERANCE,
+                         min_settlements=MIN_TIER_SETTLEMENTS):
+    """Pure: cluster settled amounts into the payee's PRICE TIERS.
+
+    A wide catalog shows up on-chain as several clusters (a $0.01 tier with 200
+    settlements, a $0.25 tier with 4), which a single median cannot express --
+    it reports one number sitting between them and calls the premium tier an
+    anomaly. Clusters are grown greedily over sorted values, which is stable
+    because prices are strongly modal in practice.
+
+    Returns [(centre, count)] sorted by count desc, keeping only clusters with
+    at least `min_settlements` members. Descriptive: used for the reason string
+    and (via tier_evidence) for corroboration -- never as a median.
+    """
+    values = []
+    for price in price_history or []:
+        try:
+            value = Decimal(str(price))
+        except (InvalidOperation, ValueError, TypeError):
+            continue
+        if value.is_finite() and value > 0:
+            values.append(value)
+    values.sort()
+
+    clusters = []
+    for value in values:
+        for cluster in clusters:
+            if abs(value - cluster["centre"]) / cluster["centre"] <= tolerance:
+                cluster["members"].append(value)
+                cluster["centre"] = sum(cluster["members"]) / len(cluster["members"])
+                break
+        else:
+            clusters.append({"centre": value, "members": [value]})
+
+    tiers = [(c["centre"], len(c["members"])) for c in clusters
+             if len(c["members"]) >= min_settlements]
+    tiers.sort(key=lambda t: (-t[1], t[0]))
+    return tiers
+
+
+def describe_price_tiers(price_history, limit=3):
+    """Pure: a short human-readable tier map for the reason string.
+
+    "tiers: $0.01x200, $0.25x4" tells an operator instantly that the payee runs a
+    cheap and a premium route -- the context a bare ratio hides.
+    """
+    tiers = discover_price_tiers(price_history)
+    if not tiers:
+        return ""
+    parts = []
+    for centre, count in tiers[:limit]:
+        parts.append("$%sx%d" % (centre.normalize(), count))
+    return "tiers: " + ", ".join(parts)
+
+
+def tier_evidence(amount, observations, tolerance=TIER_TOLERANCE,
+                  counterparty=None):
+    """Pure: (settlements, distinct_payers) recorded within `tolerance` of `amount`.
+
+    PAYER-WEIGHTED ON PURPOSE. Counting settlements alone is forgeable -- a payee
+    self-pays three times at an inflated price and manufactures its own "tier" for
+    the cost of gas. Distinct independent counterparties are the part a wash farm
+    cannot cheaply fake, which is the same defense robust_price_median applies to
+    the median itself.
+
+    Observations without a payer contribute to the count but never to the payer
+    set, so unattributed history can never satisfy the payer floor on its own.
+    """
+    try:
+        target = Decimal(str(amount))
+    except (InvalidOperation, ValueError, TypeError):
+        return 0, 0
+    if not target.is_finite() or target <= 0:
+        return 0, 0
+
+    low, high = target * (1 - tolerance), target * (1 + tolerance)
+    # SELF-PAYMENTS ARE NOT EVIDENCE. An address paying itself proves nothing about
+    # a price being real, and it is the cheapest thing an attacker can produce. The
+    # reputation store already excludes self-payments from its distinct-payer count
+    # for the Sybil gate; this keeps the tier check in step.
+    myself = str(counterparty).lower() if counterparty else None
+    settlements, payers = 0, set()
+    for observation in observations or []:
+        if not isinstance(observation, dict):
+            continue
+        try:
+            value = Decimal(str(observation.get("amount")))
+        except (InvalidOperation, ValueError, TypeError):
+            continue
+        if not value.is_finite() or not (low <= value <= high):
+            continue
+        payer = observation.get("payer")
+        payer = str(payer).lower() if payer else None
+        if myself and payer == myself:
+            continue
+        settlements += 1
+        if payer:
+            payers.add(payer)
+    return settlements, len(payers)
+
+
+def within_advertised_range(amount, min_price, max_price):
+    """Pure: is the quote inside the payee's OWN published price range?
+
+    Returns True / False / None. None means "no catalog data" -- unknown, which
+    must never be read as evidence of wrongdoing.
+    """
+    if min_price is None or max_price is None:
+        return None
+    try:
+        value = Decimal(str(amount))
+        low = Decimal(str(min_price))
+        high = Decimal(str(max_price))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    if not (value.is_finite() and low.is_finite() and high.is_finite()):
+        return None
+    if low > high:
+        low, high = high, low
+    return low <= value <= high
+
+
+def price_stop_is_corroborated(amount, price_history, observations,
+                               min_price=None, max_price=None,
+                               min_settlements=MIN_TIER_SETTLEMENTS,
+                               min_payers=MIN_TIER_PAYERS,
+                               counterparty=None):
+    """Pure: may a price STOP stand, or is the quote corroborated?
+
+    Returns (stop_stands, why). The STOP is downgraded when EITHER independent
+    check vouches for the price:
+
+      - an ESTABLISHED TIER at this price: >= min_settlements settlements from
+        >= min_payers distinct payers, or
+      - the quote sits inside the payee's own ADVERTISED range.
+
+    Conservative in the direction that matters. Corroboration only ever downgrades
+    STOP -> HOLD; the payment is still withheld from an automatic GO, so a wrong
+    downgrade costs a human review rather than a signed overpayment. Missing data
+    (no observations, no catalog) leaves the STOP standing.
+    """
+    settlements, payers = tier_evidence(amount, observations,
+                                        counterparty=counterparty)
+    if settlements >= min_settlements and payers >= min_payers:
+        return False, ("%d settlements from %d distinct payers at ~this price "
+                       "-- established tier" % (settlements, payers))
+
+    # THE CATALOG LOWERS A BAR; IT DOES NOT REPLACE ONE. The advertised range is
+    # derived from what the PAYEE advertises (discovery_crawl reads their own
+    # accepts[].maxAmountRequired), so it is attacker-authored content that merely
+    # happens to be harvested by us. Letting it vouch ALONE was a serious weakening:
+    # measured on the shipped corpus, 111 payees could quote the top of their own
+    # catalog at >= 8x their settled median, and 89 were waved through on the
+    # catalog alone -- the worst with ZERO settlements near the price ($10 quoted
+    # against a $0.001 median). Requiring real settlement evidence closes 63 of
+    # those and still clears every endpoint this arm exists for: a fabricated
+    # catalog entry has no payment history, and a self-paid one has no non-self
+    # payer. So the catalog only relaxes the PAYER floor from min_payers to 1.
+    # NOTE [min,max] is the HULL of a price list, not the list -- a payee
+    # advertising $0.001 and $1000 does not advertise $50. Persisting the discrete
+    # prices would tighten this further.
+    advertised = within_advertised_range(amount, min_price, max_price)
+    if advertised is True and settlements >= min_settlements and payers >= 1:
+        return False, ("quoted amount is in the payee's advertised range with "
+                       "%d prior settlement(s) from %d payer(s)"
+                       % (settlements, payers))
+
+    why = ("only %d settlement(s) from %d distinct payer(s) near this price"
+           % (settlements, payers))
+    if advertised is False:
+        why += "; quote is OUTSIDE the payee's advertised range"
+    elif advertised is True:
+        why += "; advertised but not settled at this price"
+    tiers = describe_price_tiers(price_history)
+    if tiers:
+        why += " (%s)" % tiers
+    return True, why
 
 
 def peer_group_median(counterparty_medians, min_counterparties=MIN_PEER_COUNTERPARTIES):
@@ -507,11 +705,30 @@ def decide_payment(amount, record, price_history,
         stop = hard_stop = True
         reasons.append("counterparty is a known-bad address")
     if ratio is not None and ratio >= STOP_ANOMALY_RATIO:
-        stop = True
-        reasons.append(
-            "quoted amount is %.1fx the counterparty's own median -- price wildly off"
-            % ratio
-        )
+        # A price STOP is the most expensive false positive this engine can make,
+        # and the ratio behind it is measured against a route-BLIND median (see
+        # STOP_ANOMALY_RATIO). Require corroboration before it stands: an
+        # established multi-payer tier at this price, or the payee's own
+        # advertised range. Uncorroborated -> STOP as before; corroborated ->
+        # downgrade to HOLD, which still blocks an automatic GO.
+        stop_stands, why = price_stop_is_corroborated(
+            amount, price_history, observations,
+            record.get("advertised_min_price"), record.get("advertised_max_price"),
+            counterparty=counterparty)
+        if stop_stands:
+            stop = True
+            reasons.append(
+                "quoted amount is %.1fx the counterparty's own median -- price "
+                "wildly off (%s)" % (ratio, why)
+            )
+        else:
+            # No flag needed: ratio >= STOP_ANOMALY_RATIO puts a_score at 1.0,
+            # which is far above HOLD_ANOMALY, so the hold_conditions block below
+            # already denies the automatic GO. Downgrading only drops the STOP.
+            reasons.append(
+                "quoted amount is %.1fx the counterparty's own median, but %s -- "
+                "escalating instead of stopping" % (ratio, why)
+            )
 
     # ---- reputation / price / amount signals (always reported) ----
     reasons.append(
@@ -2020,8 +2237,14 @@ def main(argv=None):
     graph_source = velocity_source = None
     if args.store:
         from reputation_store import production_source, ReputationStore
+        # The advertised-price artifact (data/directory.json by default) lets a
+        # price STOP be withheld on a route the payee publicly lists -- see
+        # advertised_prices.py. Loaded from OUR committed crawl at startup, never
+        # from the request, because the signal is monotonically permissive.
+        _adv = os.environ.get("BLACKWALL_ADVERTISED_INDEX", "data/directory.json")
         reputation_source = production_source(args.store, ledger=led,
-                                              ingest=args.ingest)
+                                              ingest=args.ingest,
+                                              advertised_index=_adv)
         # Full signal stack off the same store: cross-counterparty Sybil
         # corroboration (payer graph + reputation) and the temporal `stale` gate.
         from payer_reputation import PayerReputationSource

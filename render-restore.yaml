@@ -1,0 +1,104 @@
+# RESTORE blueprint -- brings back the ORIGINAL hostname.
+#
+# STATUS (corrected 2026-08-24): THIS IS OPTIONAL, and was written on a wrong
+# diagnosis. The engine was never deleted. It is LIVE and healthy at
+# blackwall-free.onrender.com (Render service `blackwall-free`, free plan,
+# Blueprint-managed from render-free.yaml). The 404 that prompted this file is
+# simply that the MCP server and demo page call a hostname the service no longer
+# uses. Probing agent-egress-proxy.onrender.com looked identical to a
+# never-existed name, and that was read as deletion -- it only ever meant the name
+# is unused.
+#
+# The SIMPLER fix is to repoint the two callers at blackwall-free.onrender.com
+# (the MCP server's oracle URL lives in the separate blackwall-mcp repo, and the
+# demo page's fetch target). Use THIS blueprint only if you specifically want the
+# original hostname back -- e.g. to avoid editing published links at all.
+#
+# WHY THIS FILE EXISTS, AND WHY THE NAME MATTERS MORE THAN THE CONFIG
+# ------------------------------------------------------------------
+# On Render the service `name` determines the hostname: name X -> X.onrender.com.
+# The engine used to serve at `agent-egress-proxy.onrender.com`, and that exact URL
+# is still hard-wired into things we do NOT control or cannot cheaply change:
+#
+#   * the remote MCP server at mcp.blackwalltier.com -- it proxies to this oracle,
+#     and with the backend down every forecast_payment call returns
+#     "Black_Wall oracle error: HTTP 404. No verdict -- do not treat as GO."
+#   * the public demo page at check.blackwalltier.com/demo
+#   * the awesome-x402 listing, which drives real traffic to both of the above
+#   * docs/LAUNCH.md, docs/REGISTRIES.md, docs/ECOSYSTEM.md, cdp_bazaar_check.py
+#
+# Deploying render.yaml or render-free.yaml would come up as `blackwall` /
+# `blackwall-free`.onrender.com -- a WORKING service at the WRONG address, leaving
+# every reference above still broken. Hence a blueprint whose only real job is to
+# claim the original name back.
+#
+#   Render -> New -> Blueprint -> this repo -> Blueprint Path: render-restore.yaml
+#
+# If the old service still exists in the account (suspended, not deleted), prefer
+# Resume / Manual Deploy on it instead -- same hostname, no chance of losing the
+# subdomain to a race.
+#
+# Otherwise identical to render-free.yaml: free plan, no disk, warm corpus baked
+# into the image. Swap to render.yaml's paid plan + disk once the ledger needs to
+# survive restarts.
+services:
+  - type: web
+    # DO NOT RENAME. This string IS the hostname the MCP server and demo call.
+    name: agent-egress-proxy
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: oregon
+    autoDeploy: false
+    healthCheckPath: /healthz
+
+    envVars:
+      - key: BLACKWALL_HOST
+        value: "0.0.0.0"
+      # Free instances have no persistent disk: point at the warm corpus baked
+      # into the image so a cold start still serves real verdicts, not cold-start
+      # HOLDs. Anything written here is lost on restart, which is fine -- the
+      # store is read-only in this posture.
+      - key: BLACKWALL_STORE
+        value: /app/data/reputation.db
+      - key: BLACKWALL_CATEGORY_INDEX
+        value: /app/data/category_index.json
+      - key: BLACKWALL_DIVERGENCE_INDEX
+        value: /app/data/divergence_index.json
+      # Each payee's OWN advertised price bounds. Without this the price-STOP
+      # corroboration arm goes inert and legitimate premium-tier endpoints are
+      # STOP'd -- the loader fails open, so the service looks healthy either way.
+      - key: BLACKWALL_ADVERTISED_INDEX
+        value: /app/data/directory.json
+      # Cold-start HOLD instantly rather than a synchronous on-chain fetch on the
+      # hot path (which blocks past the platform timeout -> 502).
+      - key: BLACKWALL_INGEST
+        value: "0"
+      # Public endpoint: rate limiting defaults to 0 = DISABLED, so it must be set
+      # explicitly. 120/min per client IP, burst 30.
+      - key: BLACKWALL_RATE_LIMIT
+        value: "120"
+      - key: BLACKWALL_RATE_WINDOW
+        value: "60"
+      - key: BLACKWALL_RATE_BURST
+        value: "30"
+      # Value-aligned pricing: low-stakes verdicts free, high-stakes payable.
+      # With BLACKWALL_PAY_TO unset, billing stays OFF entirely and the server
+      # prints a loud warning -- the right posture for restoring service first.
+      - key: BLACKWALL_VALUE_PRICING
+        value: "1"
+      - key: BLACKWALL_FREE_BELOW
+        value: "10.00"
+      # OFAC screening on, from the snapshot baked into the image, refreshed
+      # best-effort at boot (fail-open to the snapshot).
+      - key: BLACKWALL_SANCTIONS
+        value: /app/sanctions.txt
+      - key: BLACKWALL_SANCTIONS_REFRESH
+        value: "1"
+      # Secrets -- Render prompts, never committed. Leave unset to run free/public.
+      - key: BLACKWALL_PAY_TO
+        sync: false
+      - key: BLACKWALL_FACILITATOR
+        sync: false
+      - key: BLACKWALL_RECEIPT_KEY
+        sync: false

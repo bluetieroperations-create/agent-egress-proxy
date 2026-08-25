@@ -129,6 +129,43 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `audit_candidates()` active/clean/not-yet-verified endpoints to pitch the
   Verified tier. Pure+stdlib, enrichment injected; `main()` crawls the Bazaar,
   backfills the top-N, and writes report/directory/candidates),
+  `directory_liveness.py` (does the ecosystem map still RESOLVE? `ecosystem_scan` writes
+  `data/directory.json` from what payees ADVERTISE; this probes every distinct host and
+  reports the answer in the terms that matter -- not "is it up" but "can we PARSE its
+  payment requirements", since `forecast` scores from the challenge's `accepts[]`.
+  Classes: body_accepts / hdr_accepts / wellknown / opaque_402 / other / dead / blocked.
+  Guards two artifacts that both UNDERCOUNT the live ecosystem, each a real error made
+  while running the survey by hand: GET-only probing (a 405 is a POST endpoint, not a
+  dead one -- the retry recovered 14 scoreable hosts) and body-only challenge parsing
+  (the x402 v2 style carries requirements in `WWW-Authenticate: X402 requirements=`).
+  FINDING: nothing in this repo reads that header -- every consumer takes `accepts` from
+  the body -- so a v2 endpoint is uncrawlable and unpayable though the engine would score
+  it fine; `parse_challenge` is the reference implementation if we close it. Measured
+  2026-08-18: 73/195 hosts live+scoreable, 86 serving an opaque 402. Pure helpers +
+  injected network; `rank_leads` is prioritisation only and NEVER touches a verdict.
+  See `docs/DIRECTORY_LIVENESS.md`. Tests: `test_directory_liveness.py`),
+  `advertised_prices.py` (supply each payee's OWN advertised price bounds to the verdict --
+  the second arm of `price_stop_is_corroborated`. `ecosystem_scan` already writes
+  min/max per payee to `data/directory.json`; this turns that artifact into a
+  reputation source composing through `merge_records`, which had to learn to carry
+  the pair (it builds a FIXED dict, so unknown keys were silently dropped -- the
+  reason the arm was inert). Contributes ONLY the bounds: no settlements, no payer
+  counts, so it cannot move the reputation/Sybil/thin gates. MONOTONICALLY PERMISSIVE
+  (it only ever withholds a STOP). AUDIT FINDING (fixed): the range is NOT trustworthy
+  ALONE -- discovery_crawl derives it from the payee's OWN advertised
+  `accepts[].maxAmountRequired`, so it is attacker-authored content we merely harvest,
+  and [min,max] is the HULL of a price list, not the list. Letting the hull vouch by
+  itself waved through 89/111 top-of-catalog quotes at >=8x the settled median, the
+  worst with ZERO settlements near the price. The catalog now only LOWERS the tier
+  arm's payer floor (2 -> 1) and still requires real NON-SELF settlement evidence at
+  the quoted price. Remaining safeguards: loaded at startup from our committed crawl
+  -- never the request -- and it never reaches GO. The pair is ATOMIC across sources: a
+  min from one and a max from another would synthesize a range no catalog advertises.
+  Address keys are lowercased because a live 402 returns an EIP-55 CHECKSUMMED payTo
+  while the crawl stores lowercase (that join silently missed 64 of 69 live endpoints).
+  Fail-open: missing/corrupt artifact -> empty index -> "unknown", never "out of range".
+  Measured: takes live STOPs 3 -> 0 with ZERO attacks escaping at >=8x. Tests:
+  `test_advertised_prices.py`),
   `confidence.py` (how much EVIDENCE backs a verdict -- `assess_confidence(record,
   signals)` -> {level high/medium/low, score 0..1, backed_by[], missing[]} across
   five weighted dimensions: history depth, payer breadth, cross-counterparty
@@ -449,7 +486,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py
+ test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop

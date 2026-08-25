@@ -41,6 +41,13 @@ services:
       # the image alongside the store. Fail-open: absent/thin -> signal just off.
       - key: BLACKWALL_DIVERGENCE_INDEX
         value: /app/data/divergence_index.json
+      # Each payee's OWN advertised price bounds, from the x402 discovery crawl and
+      # baked into the image (Dockerfile). Lets a price STOP be WITHHELD on a premium
+      # route the payee publicly lists -- but only alongside real settlement evidence,
+      # since the range is payee-authored (see advertised_prices.py). Set explicitly
+      # rather than relying on the relative default resolving against WORKDIR.
+      - key: BLACKWALL_ADVERTISED_INDEX
+        value: /app/data/directory.json
       - key: BLACKWALL_LEDGER
         value: /data/ledger.jsonl
       # 0: unknown counterparty -> instant cold-start HOLD (no blocking chain call).

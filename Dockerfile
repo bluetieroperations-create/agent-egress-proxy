@@ -16,6 +16,14 @@ COPY *.py ./
 # time anymore -- the store is PREBUILT and committed (see below).
 COPY data/seed_payees.txt data/seed_payees_bake.txt ./data/
 
+# The x402 discovery-crawl artifact: each payee's OWN advertised price bounds.
+# advertised_prices.py loads this at startup so a price STOP can be withheld on a
+# route the payee publicly lists (blackwall.price_stop_is_corroborated). WITHOUT
+# IT THE ARM IS SILENTLY INERT -- the loader fails OPEN to an empty index, so the
+# container would boot healthy and simply STOP three legitimate live endpoints.
+# That is exactly how the RWA gate shipped unwired once; do not drop this COPY.
+COPY data/directory.json ./data/
+
 # OFAC sanctioned-address snapshot (from the published 0xB10C list). Baked in so
 # screening is ON by default -- Blackwall is a SUPERSET of the free KYT baseline.
 # Refresh periodically with:  python sanctions.py sanctions.txt  (then redeploy).
