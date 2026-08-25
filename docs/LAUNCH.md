@@ -5,7 +5,7 @@ Do NOT add adoption/usage numbers (there are none yet) — lead with the capabil
 proof. Re-fetch the live endpoint before posting.
 
 ## The proof points (all verifiable)
-- Live on **Base mainnet**: `https://agent-egress-proxy.onrender.com`
+- Live on **Base mainnet**: `https://blackwall-free.onrender.com`
 - Real x402 settlement on Base: tx `0x9ddec827b762303c6f1f351530239f52901c86bb19df41ea6a02e8d276be9fd7`
 - **Reproducible STOP** — anyone can POST an overpriced amount and watch it return STOP
 - Live **OFAC screening** (`screening: ["sanctions-ofac"]` in the discovery descriptor)
@@ -20,7 +20,7 @@ proof. Re-fetch the live endpoint before posting.
 > counterparty reputation, price-anomaly, OFAC screening. Verdict-only, never
 > custody.
 >
-> Live on Base. 🛡️ agent-egress-proxy.onrender.com
+> Live on Base. 🛡️ blackwall-free.onrender.com
 
 ## Option B — the thread (recommended)
 
@@ -58,7 +58,7 @@ proof. Re-fetch the live endpoint before posting.
 > If you're building agents that pay — or a payout/AP system that releases funds
 > autonomously — this drops in front of the signature.
 >
-> Endpoint + discovery: agent-egress-proxy.onrender.com/.well-known/x402
+> Endpoint + discovery: blackwall-free.onrender.com/.well-known/x402
 > MCP tool: forecast_payment
 >
 > Tell me what it gets wrong.

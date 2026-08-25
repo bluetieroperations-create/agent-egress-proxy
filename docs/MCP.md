@@ -80,5 +80,5 @@ Pre-signature x402 payment-risk verdict as an MCP tool. Run: `python mcp_server.
 paying a counterparty — behavioral reputation + price-anomaly (per-class +
 peer-group) + OFAC screening + a signed receipt. Optional **`report_outcome`**
 (with `BLACKWALL_LEDGER`) feeds reputation. See `docs/MCP.md`. Live HTTP endpoint
-+ discovery: https://agent-egress-proxy.onrender.com/.well-known/x402
++ discovery: https://blackwall-free.onrender.com/.well-known/x402
 ```
