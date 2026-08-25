@@ -57,6 +57,20 @@ class DecodeRequirements(unittest.TestCase):
                 xc.decode_requirements('%s requirements="%s"' % (scheme, blob)),
                 [ACCEPT], scheme)
 
+    def test_scheme_must_be_a_whole_token(self):
+        # Mutation: startswith("x402") instead of a token match. "X402Bearer"
+        # is a DIFFERENT auth scheme; reading its parameters as x402 payment
+        # requirements would have us sign against a challenge nobody issued.
+        blob = base64.b64encode(json.dumps({"accepts": [ACCEPT]}).encode()).decode()
+        for scheme in ("X402Bearer", "x402-evil", "X402FAKE", "x402x"):
+            self.assertIsNone(
+                xc.decode_requirements('%s requirements="%s"' % (scheme, blob)), scheme)
+        # ...while the real scheme, with or without leading space, still works.
+        for scheme in ("X402", "x402", "  X402"):
+            self.assertEqual(
+                xc.decode_requirements('%s requirements="%s"' % (scheme, blob)),
+                [ACCEPT], scheme)
+
     def test_ignores_a_non_x402_scheme(self):
         # Mutation: dropping the scheme guard -- a Bearer/Basic challenge that
         # happened to contain requirements="..." would be read as a payment.
@@ -188,6 +202,54 @@ class AcceptsFromHttpError(unittest.TestCase):
         self.assertEqual(xc.accepts_from_http_error(err)[0], [ACCEPT])
         self.assertEqual(stream.reads, 1)
 
+    def test_oversize_body_is_dropped_not_parsed(self):
+        # Mutation: err.read() with no size argument. The crawler calls this on
+        # every fetched source including hostile ones; an uncapped read let a
+        # 43MB "402" reach 172MB of peak memory in an audit, defeating the
+        # read_capped protection http_util applies to the normal fetch path.
+        entry = dict(ACCEPT)
+        huge = json.dumps({"accepts": [entry] * 40000}).encode()
+        self.assertGreater(len(huge), xc.MAX_CHALLENGE_BYTES)
+        err = urllib.error.HTTPError("http://evil/", 402, "why", {}, _SizedStream(huge))
+        self.assertEqual(xc.accepts_from_http_error(err), (None, None))
+
+    def test_never_buffers_more_than_the_cap(self):
+        # Mutation: err.read() with no size argument. The LENGTH check alone
+        # still rejects an oversize body, so a result-only assertion cannot
+        # tell the two apart -- but by then the whole thing is already in
+        # memory, which is the actual harm (43MB body -> 172MB peak, measured).
+        # This asserts the bytes never leave the socket.
+        stream = _SizedStream(b"x" * (xc.MAX_CHALLENGE_BYTES * 4))
+        err = urllib.error.HTTPError("http://evil/", 402, "why", {}, stream)
+        xc.accepts_from_http_error(err)
+        self.assertLessEqual(stream.yielded, xc.MAX_CHALLENGE_BYTES + 1,
+                             "read the whole hostile body into memory")
+
+    def test_oversize_body_does_not_hide_a_header_challenge(self):
+        # Mutation: returning (None, None) early on an oversize body. A seller
+        # must not be able to suppress its own advertised requirements -- and a
+        # legitimately chatty error page alongside a valid header is realistic.
+        huge = b"x" * (xc.MAX_CHALLENGE_BYTES + 10)
+        err = urllib.error.HTTPError(
+            "http://seller/", 402, "why",
+            {"WWW-Authenticate": _hdr_value({"accepts": [ACCEPT]})}, _SizedStream(huge))
+        self.assertEqual(xc.accepts_from_http_error(err), ([ACCEPT], xc.HDR_ACCEPTS))
+
+    def test_body_at_the_cap_is_still_parsed(self):
+        # Mutation: an off-by-one that rejects a body of exactly the cap size.
+        body = json.dumps({"accepts": [ACCEPT]}).encode()
+        pad = b" " * (xc.MAX_CHALLENGE_BYTES - len(body))
+        err = urllib.error.HTTPError("http://s/", 402, "why", {}, _SizedStream(body + pad))
+        self.assertEqual(xc.accepts_from_http_error(err), ([ACCEPT], xc.BODY_ACCEPTS))
+
+    def test_stream_without_a_size_argument_still_works(self):
+        # Mutation: dropping the TypeError fallback. urllib's real response
+        # objects take a size, but a wrapped/adapted stream may not, and the
+        # crawler must not lose a legitimate challenge to that.
+        body = json.dumps({"accepts": [ACCEPT]}).encode()
+        err = urllib.error.HTTPError("http://s/", 402, "why", {}, _FakeStream(body))
+        self.assertEqual(xc.accepts_from_http_error(err), ([ACCEPT], xc.BODY_ACCEPTS))
+
     def test_a_non_402_is_not_a_challenge(self):
         # Mutation: dropping the status guard -- a 401 or a 500 error page
         # carrying an unrelated WWW-Authenticate would be read as a payment
@@ -214,6 +276,25 @@ class AcceptsFromHttpError(unittest.TestCase):
             {"WWW-Authenticate": _hdr_value({"accepts": [ACCEPT]})}, Exploding())
         # The header still carries the challenge even though the body died.
         self.assertEqual(xc.accepts_from_http_error(err), ([ACCEPT], xc.HDR_ACCEPTS))
+
+
+class _SizedStream:
+    """A stream that honours read(n), the way a real urllib response does."""
+
+    def __init__(self, body):
+        self._body = body
+        self._pos = 0
+        self.yielded = 0        # bytes actually handed out, for the cap test
+
+    def read(self, n=-1):
+        end = len(self._body) if n is None or n < 0 else self._pos + n
+        chunk = self._body[self._pos:end]
+        self._pos = end
+        self.yielded += len(chunk)
+        return chunk
+
+    def close(self):
+        pass
 
 
 class _FakeStream:

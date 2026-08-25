@@ -47,10 +47,20 @@ import re
 BODY_ACCEPTS = "body_accepts"
 HDR_ACCEPTS = "hdr_accepts"
 
-#: The scheme token that opens an x402 WWW-Authenticate challenge.
+#: The scheme token that opens an x402 WWW-Authenticate challenge. Matched as a
+#: whole TOKEN, not a prefix: "X402Bearer" and "x402-evil" are different schemes
+#: and must not be read as x402 payment requirements.
 SCHEME = "x402"
 
+_SCHEME_RE = re.compile(r'^\s*x402(?:\s|$)', re.IGNORECASE)
 _REQUIREMENTS_RE = re.compile(r'requirements="([^"]+)"')
+
+#: Hard ceiling on a 402 body we will parse. A challenge is a small JSON
+#: document -- real ones are a few KB -- so this is ~100x generous while still
+#: refusing to buffer a hostile seller's multi-GB "402". `http_util.read_capped`
+#: guards the normal fetch path for the same reason; an error body reached
+#: through a raised HTTPError bypasses it, so the cap has to live here too.
+MAX_CHALLENGE_BYTES = 1024 * 1024
 
 
 def accepts_of(doc):
@@ -73,7 +83,7 @@ def decode_requirements(value):
     base64 blob that decodes to a document with a non-empty accepts[].
     """
     value = str(value or "")
-    if not value.strip().lower().startswith(SCHEME):
+    if not _SCHEME_RE.match(value):
         return None
     match = _REQUIREMENTS_RE.search(value)
     if not match:
@@ -142,11 +152,26 @@ def accepts_from_http_error(err):
 
     Reads the body ONCE. HTTPError wraps a stream, so a second .read() returns
     b"" and would silently downgrade a body-carried challenge to "unreadable".
+
+    The read is CAPPED at MAX_CHALLENGE_BYTES. The crawler calls this on every
+    source it fetches, including hostile ones, and an oversize body is dropped
+    rather than truncated -- a partial document must never be parsed as if it
+    were what the server sent. The header is still consulted, so a seller cannot
+    hide its requirements behind a bloated body.
     """
     if getattr(err, "code", None) != 402:
         return None, None
     try:
-        body = err.read()
+        body = err.read(MAX_CHALLENGE_BYTES + 1)
+    except TypeError:
+        # A file-like that does not accept a size argument. Fall back to an
+        # uncapped read only for such objects, then enforce the cap below.
+        try:
+            body = err.read()
+        except Exception:
+            body = b""
     except Exception:
+        body = b""
+    if body is not None and len(body) > MAX_CHALLENGE_BYTES:
         body = b""
     return parse_challenge(body, getattr(err, "headers", None))
