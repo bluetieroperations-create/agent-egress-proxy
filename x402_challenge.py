@@ -1,0 +1,152 @@
+"""x402_challenge.py -- the ONE place that reads an x402 402 challenge.
+
+An x402 server can advertise its payment requirements through EITHER of two
+carriers:
+
+  1. the JSON body      -- {"x402Version":2,"accepts":[{...}]}   (v1 style)
+  2. a response HEADER  -- WWW-Authenticate: X402 requirements="<base64 json>"
+
+Every consumer in this repo used to read only the body. The directory-liveness
+survey measured the header carrier directly: of 195 distinct hosts probed,
+`hdr_accepts` was 2 -- small TODAY, and worth being precise about, because the
+survey's own parser already read them while nothing else did. (The 86
+`opaque_402` hosts in that same run are a DIFFERENT problem: they carry no
+readable requirements in either carrier, and this module does not help them.)
+
+The reason to close it anyway is structural rather than numeric. Those two
+endpoints are not broken and the verdict engine scores them fine once the
+requirements are in hand -- they were simply invisible, which made them both
+uncrawlable (no price, no payee harvested) and unpayable (the funded client
+could not find an `accepts` entry to sign against). The header form is the x402
+v2 style, so the count is a floor that grows as servers adopt it, and being
+blind to a carrier is the kind of gap that is cheap now and expensive later.
+
+This module is that missing half, factored out of `directory_liveness.py` so the
+survey, the crawler and the paying client all read a challenge the same way. It
+is PURE + stdlib: no network, no state. The transport-facing helper
+`accepts_from_http_error` takes an already-raised `urllib` error rather than
+making a request, so callers keep control of their own fetch policy.
+
+TOLERANT BY DESIGN. These parse arbitrary third-party responses, so nothing here
+raises: a malformed header must never mask a good body, and junk of any shape
+yields "no challenge" rather than an exception.
+
+BODY WINS when both carriers are present. They should agree; when they don't, the
+body is the one every x402 client already reads, so preferring it keeps us paying
+what the majority of the ecosystem would pay.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import re
+
+#: Which carrier a challenge came from. Callers record this so a survey can tell
+#: "readable today" from "readable only because we now parse the header".
+BODY_ACCEPTS = "body_accepts"
+HDR_ACCEPTS = "hdr_accepts"
+
+#: The scheme token that opens an x402 WWW-Authenticate challenge.
+SCHEME = "x402"
+
+_REQUIREMENTS_RE = re.compile(r'requirements="([^"]+)"')
+
+
+def accepts_of(doc):
+    """Return a non-empty accepts[] from an x402 challenge document, else None.
+
+    An `accepts` present but EMPTY is not a challenge: the server named the
+    field and offered no way to pay, so there is nothing to sign or price.
+    """
+    if isinstance(doc, dict):
+        accepts = doc.get("accepts")
+        if isinstance(accepts, list) and accepts:
+            return accepts
+    return None
+
+
+def decode_requirements(value):
+    """Decode a `WWW-Authenticate: X402 requirements="<b64>"` value -> accepts[].
+
+    Returns None unless the value opens with the x402 scheme AND carries a
+    base64 blob that decodes to a document with a non-empty accepts[].
+    """
+    value = str(value or "")
+    if not value.strip().lower().startswith(SCHEME):
+        return None
+    match = _REQUIREMENTS_RE.search(value)
+    if not match:
+        return None
+    blob = match.group(1)
+    try:
+        # Tolerate missing base64 padding -- servers strip it. Two extra '='
+        # is always enough and never harmful: b64decode ignores the surplus.
+        raw = base64.b64decode(blob + "==").decode("utf-8", "replace")
+        return accepts_of(json.loads(raw))
+    except Exception:
+        return None
+
+
+def parse_challenge(body, headers):
+    """Extract accepts[] from a 402 response, from EITHER carrier.
+
+    Returns (accepts, carrier) where carrier is BODY_ACCEPTS / HDR_ACCEPTS,
+    or (None, None) when the response carries no readable requirements.
+    """
+    # No bytes->str decode: json.loads takes str, bytes AND bytearray, and a
+    # body that is not valid UTF-8 raises inside the same try. An explicit
+    # decode branch here was dead code -- a mutation test proved removing it
+    # changed nothing.
+    try:
+        accepts = accepts_of(json.loads(body or ""))
+    except Exception:
+        accepts = None
+    if accepts:
+        return accepts, BODY_ACCEPTS
+
+    for key, value in _header_items(headers):
+        if str(key).lower() != "www-authenticate":
+            continue
+        accepts = decode_requirements(value)
+        if accepts:
+            return accepts, HDR_ACCEPTS
+    return None, None
+
+
+def _header_items(headers):
+    """(name, value) pairs from a dict, an email.Message, or anything else.
+
+    `urllib` hands back an `http.client.HTTPMessage`, which supports .items()
+    and repeats a name once per occurrence -- so a response carrying several
+    WWW-Authenticate headers gets every one considered, not just the last.
+    """
+    if headers is None:
+        return []
+    items = getattr(headers, "items", None)
+    if callable(items):
+        try:
+            return list(items())
+        except Exception:
+            return []
+    return []
+
+
+def accepts_from_http_error(err):
+    """(accepts, carrier) from a urllib HTTPError that is a 402 challenge.
+
+    A 402 arrives as a raised HTTPError, where the body and the headers both
+    still hang off the exception. Anything that is not a 402 -- or a 402 with no
+    readable requirements -- yields (None, None); the caller decides whether that
+    is fatal.
+
+    Reads the body ONCE. HTTPError wraps a stream, so a second .read() returns
+    b"" and would silently downgrade a body-carried challenge to "unreadable".
+    """
+    if getattr(err, "code", None) != 402:
+        return None, None
+    try:
+        body = err.read()
+    except Exception:
+        body = b""
+    return parse_challenge(body, getattr(err, "headers", None))
