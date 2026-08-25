@@ -1765,6 +1765,22 @@ class _Handler(BaseHTTPRequestHandler):
             # dependency without needing a coordinated deploy.
             signer = getattr(self, "receipt_signer", None)
             self._send_json(200, signer.jwks() if signer else {"keys": []})
+        elif self.path == "/v1/price-index":
+            # PUBLIC GOOD, and the cheapest distribution asset we have: a price
+            # index for agent services computed from SETTLED on-chain reality
+            # rather than what sellers advertise. Nothing else publishes one, and
+            # being the reference for what things cost is worth more than keeping
+            # the number private. Read-only, unauthenticated, cheap (a preloaded
+            # dict), so it sits with the other GET routes outside the rate limit.
+            idx = self.category_index or {}
+            self._send_json(200, {
+                "index": idx,
+                "unit": "USDC per call (median of settled on-chain payments)",
+                "categories": len(idx),
+                "method": "per-category median of settled amounts, payees "
+                          "classified by resource URL; see docs/CATEGORY.md",
+                "source": "https://github.com/bluetieroperations-create/agent-egress-proxy",
+            })
         elif self.path == "/openapi.json":
             # x402scan probes the origin root for this discovery document.
             self._send_json(200, self._openapi())
@@ -1780,7 +1796,8 @@ class _Handler(BaseHTTPRequestHandler):
         # the stdlib default returns 501, which reads as "service down". Mirror
         # do_GET's routing but send headers only, no body.
         code = 200 if self.path in ("/healthz", "/.well-known/x402",
-                                    "/v1/discovery", "/openapi.json") else 404
+                                    "/v1/discovery", "/openapi.json",
+                                    "/v1/price-index") else 404
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", "0")
@@ -1865,7 +1882,8 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         # Per-client rate limit on the (expensive) POST paths only -- GET health/
         # discovery are cheap and must stay unthrottled for health checkers.
-        if self.path in ("/v1/forecast-payment", "/v1/report-outcome", "/v1/session"):
+        if self.path in ("/v1/forecast-payment", "/v1/report-outcome", "/v1/session",
+                         "/v1/screen-payer"):
             if self.stats is not None:
                 self.stats.incr("requests")
             if not self._rate_ok():
@@ -1879,6 +1897,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._do_report_outcome()
             elif self.path == "/v1/session":
                 self._do_session()
+            elif self.path == "/v1/screen-payer":
+                self._do_screen_payer()
             else:
                 self._send_json(404, {"error": "not found"})
         except Exception as e:
@@ -1895,6 +1915,38 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(503, {"error": "verdict engine temporarily unavailable"})
             except Exception:
                 pass   # response may already be partly written; don't cascade
+
+    def _do_screen_payer(self):
+        """Screen a PAYER over HTTP -- the buyer side of the graph.
+
+        Everything in this repo scores the payee. This answers the mirror question a
+        facilitator or wallet asks before it settles an inbound payment: what does the
+        ecosystem know about the wallet that is paying? It delegates to the SAME
+        `graph_source.screen()` the `screen_payer` MCP tool calls, so the two
+        transports cannot drift -- MCP is the agent-facing surface, but the integrator
+        for this signal is a server, and servers speak HTTP.
+
+        POSTURE: an unknown payer is NEUTRAL cold-start, never a block. Most genuine
+        end-users are unknown the first time they pay; a screen that treated that as
+        negative would reject exactly the customers a seller wants. This endpoint
+        therefore returns a tier and evidence, never a verdict.
+        """
+        source = self.graph_source
+        if source is None or not hasattr(source, "screen"):
+            # Not configured is a SERVICE fact, not a client error, and it must not
+            # be mistaken for "we screened this payer and found nothing".
+            self._send_json(503, {"error": "payer screening unavailable: "
+                                           "no payer-reputation source configured"})
+            return
+        body, err = self._read_json_body()
+        if err:
+            self._send_json(400, {"error": err})
+            return
+        payer = (body or {}).get("payer")
+        if not isinstance(payer, str) or not is_evm_address(payer):
+            self._send_json(400, {"error": "payer must be a valid EVM address"})
+            return
+        self._send_json(200, source.screen(payer))
 
     def _do_verify_signer(self):
         """Stage-2 signer verification for a request that got a fast (deferred) verdict.

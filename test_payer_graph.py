@@ -102,5 +102,31 @@ class TestSource(unittest.TestCase):
         self.assertIs(gs.cross_signal(A), s)           # cached, same object
 
 
+
+class ZeroAddressIsNotAPayer(unittest.TestCase):
+    """A transfer from 0x0 is a MINT, not a payment."""
+
+    ZERO = "0x" + "0" * 40
+    PAYEE = "0x" + "ab" * 20
+    REAL = "0x" + "cd" * 20
+
+    def test_mint_does_not_count_as_a_distinct_payer(self):
+        # Mutation: dropping the ZERO_ADDRESS guard. The payee would be credited
+        # with 2 distinct payers when only 1 wallet ever chose to pay it --
+        # unearned breadth, and the cheapest possible assist past a Sybil gate.
+        g = PG.build_index([(self.REAL, self.PAYEE), (self.ZERO, self.PAYEE)])
+        self.assertEqual(g["payee_to_payers"][self.PAYEE], {self.REAL})
+
+    def test_zero_address_is_matched_case_insensitively(self):
+        # Mutation: comparing before _norm. Chain data is not consistently cased.
+        g = PG.build_index([("0X" + "0" * 40, self.PAYEE)])
+        self.assertEqual(g["payee_to_payers"].get(self.PAYEE), None)
+
+    def test_real_payers_are_untouched(self):
+        # Mutation: an over-broad guard that drops any leading-zero address.
+        low = "0x" + "0" * 39 + "1"
+        g = PG.build_index([(low, self.PAYEE)])
+        self.assertEqual(g["payee_to_payers"][self.PAYEE], {low})
+
 if __name__ == "__main__":
     unittest.main()
