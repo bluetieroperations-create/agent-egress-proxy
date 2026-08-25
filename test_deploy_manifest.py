@@ -53,6 +53,10 @@ class DeployManifest(unittest.TestCase):
             "the advertised-vs-settled divergence gate goes inert",
         "sanctions.txt":
             "OFAC screening falls back to empty -> the compliance floor is gone",
+        "requirements-signing.txt":
+            "the native constant-time Ed25519 backend is not installed, so "
+            "receipt_signer falls back to the variable-time pure-Python signer "
+            "and blackwall REFUSES to boot with signing on a public bind",
     }
 
     def test_every_required_artifact_is_copied_into_the_image(self):
@@ -122,6 +126,60 @@ class PublicEndpointDefaults(unittest.TestCase):
         for name in self.CONFIGS:
             with open(os.path.join(ROOT, name)) as handle:
                 self.assertIn("0.0.0.0", handle.read(), "%s does not bind 0.0.0.0" % name)
+
+
+class NativeSigningBackendIsInstalled(unittest.TestCase):
+    """The pure-Python Ed25519 fallback is variable-time and ~163ms/signature.
+
+    Measured: 3.6ms -> 172.6ms end-to-end, and runtime tracks the nonce's Hamming
+    weight (55ms at weight 1, 109ms at weight 253), leaking r to anyone who can
+    time responses. blackwall refuses to boot with signing enabled on a public
+    bind unless the backend is constant-time -- so an image without this installed
+    can serve verdicts but can never serve verifiable receipts publicly.
+    """
+
+    def test_dockerfile_installs_the_signing_requirements(self):
+        # MUTATION: dropping the pip step -> the image silently loses the native
+        # backend, and enabling receipts in production becomes a boot failure.
+        text = dockerfile()
+        self.assertIn("requirements-signing.txt", text)
+        self.assertRegex(text, r"pip install[^\n]*requirements-signing\.txt")
+
+    def test_install_refuses_a_source_build(self):
+        # MUTATION: dropping --only-binary -> a missing wheel triggers a source
+        # build needing a Rust toolchain this image does not have, turning a clear
+        # failure into a long confusing one.
+        #
+        # Asserts on the RUN LINE, not the file: the first version of this test
+        # checked `"--only-binary" in dockerfile()` and passed even with the flag
+        # deleted, because the phrase also appears in the comment above the step.
+        # Caught by mutating it.
+        run_lines = [l for l in dockerfile().splitlines()
+                     if l.strip().startswith("RUN ")
+                     and "requirements-signing.txt" in l]
+        self.assertTrue(run_lines, "no RUN line installs requirements-signing.txt")
+        for line in run_lines:
+            self.assertIn("--only-binary", line)
+
+    def test_requirement_is_version_bounded(self):
+        # An unbounded requirement makes builds non-reproducible for the one
+        # dependency that signs receipts.
+        with open(os.path.join(ROOT, "requirements-signing.txt")) as handle:
+            body = [l.strip() for l in handle
+                    if l.strip() and not l.strip().startswith("#")]
+        self.assertTrue(body, "requirements-signing.txt has no requirement")
+        self.assertTrue(any(">=" in l and "<" in l for l in body),
+                        "pin cryptography to a bounded range: %r" % body)
+
+    def test_core_still_imports_without_the_optional_dependency(self):
+        # THE invariant this whole design rests on: the engine is stdlib-only and
+        # must run with no third-party package installed.
+        # MUTATION: importing cryptography at module scope in receipt_signer ->
+        # fails here, and a plain python:slim image can no longer boot.
+        import receipt_signer
+        name, sign, _pub = receipt_signer.load_backend(prefer_native=False)
+        self.assertEqual(name, receipt_signer.BACKEND_PURE)
+        self.assertEqual(len(sign(bytes(range(32)), b"m")), 64)
 
 
 class RestoreBlueprintKeepsTheOriginalHostname(unittest.TestCase):
