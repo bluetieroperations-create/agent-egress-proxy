@@ -214,6 +214,21 @@ def build_openapi(server_url=None, min_fee="0.001", max_fee="0.10",
             "security": [],
             "responses": {"200": {"description": "Service healthy."}},
         }},
+        # The BUYER side of the graph. Everything else here scores the payee; this
+        # answers the mirror question a facilitator/wallet asks before it settles an
+        # inbound payment. Free + unauthenticated: an unknown payer is NEUTRAL
+        # cold-start, so there is nothing here worth gating behind a fee.
+        "/v1/screen-payer": {"post": {
+            "operationId": "screenPayer",
+            "summary": "Screen a PAYER wallet: tier (established / emerging / "
+                       "unknown), anchors paid, and breadth. Informational -- "
+                       "an unknown payer is neutral, never a block.",
+            "security": [],
+            "responses": {"200": {"description": "Payer profile."},
+                          "400": {"description": "Invalid payer address."},
+                          "503": {"description": "No payer-reputation source "
+                                                 "configured."}},
+        }},
         "/v1/report-outcome": {"post": {
             "operationId": "reportOutcome",
             "summary": "Report the realized outcome for a prior receipt "

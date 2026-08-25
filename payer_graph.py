@@ -43,6 +43,15 @@ MIN_DISTINCT_PAYERS = 3           # mirror blackwall's naive Sybil gate
 CAPTIVE_SYBIL_MAX_DISTINCT = 12
 
 
+#: The ERC-20 zero address. A transfer FROM it is a MINT, not a payment -- nobody
+#: chose to pay anyone -- so counting it as a distinct payer hands the payee breadth
+#: it never earned. Same class as the blank-payer bug already fixed at ingest, and
+#: it is the cheapest possible Sybil assist: mint once, look twice as broad.
+#: Measured on the shipped corpus: 1 settlement, 1 payee, whose real distinct-payer
+#: count is 1 rather than the 2 it was credited with.
+ZERO_ADDRESS = "0x" + "0" * 40
+
+
 def _norm(a):
     return a.lower() if isinstance(a, str) else None
 
@@ -57,6 +66,8 @@ def build_index(edges):
         payer, payee = _norm(payer), _norm(payee)
         if not payer or not payee:
             continue
+        if payer == ZERO_ADDRESS:
+            continue        # a mint is not a payment -- see ZERO_ADDRESS
         if payer == payee:
             # a payee paying its OWN address is a self-vouch: it would count itself
             # as a distinct payer AND (with breadth>=2) as one of its own established

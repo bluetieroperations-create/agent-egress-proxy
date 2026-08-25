@@ -28,6 +28,7 @@ import sys
 from decimal import Decimal
 
 import http_util
+import x402_challenge
 from addresses import is_evm_address
 
 _MAX_DEPTH = 6
@@ -125,14 +126,30 @@ def price_observations(resources):
 
 def crawl(sources, *, fetch=None):
     """Fetch each discovery source and aggregate its resource records. A source
-    that errors or returns junk is skipped, not fatal."""
+    that errors or returns junk is skipped, not fatal.
+
+    A source that answers **402** is not an error -- it is an endpoint quoting
+    its price, which is exactly what we came for. Its requirements may sit in
+    the body OR in `WWW-Authenticate: X402 requirements="<b64>"`; the header
+    form used to be dropped on the floor here, because get_json raises on 402
+    and the bare `except` swallowed it. The liveness survey measured the cost:
+    86 of 195 hosts served a challenge no consumer in this repo could read.
+    """
     getj = fetch or _urllib_get_json
     resources = []
     for s in sources or []:
         try:
             doc = getj(s)
-        except Exception:
-            continue
+        except Exception as exc:
+            accepts, _carrier = x402_challenge.accepts_from_http_error(exc)
+            if not accepts:
+                continue
+            # Carry the SOURCE URL as the parent resource. A header-carried
+            # challenge has no `resource` of its own, and without it every
+            # record lands with resource=None -- which costs the category
+            # classifier its input and price observations their per-resource
+            # key. An accept's own `resource` still wins (see _accept_record).
+            doc = {"resource": s, "accepts": accepts}
         resources.extend(extract_resources(doc))
     return resources
 

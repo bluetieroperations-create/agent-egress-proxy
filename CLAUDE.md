@@ -37,6 +37,21 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `reputation_store.py` (SQLite indexed reputation store + record merging),
   `facilitator_sim.py` (reference x402 facilitator for the HttpFacilitator path),
   `discovery.py` (x402 service-discovery descriptor -- Blackwall's OWN),
+  `x402_challenge.py` (the ONE parser for a 402 challenge -- requirements arrive in
+  EITHER the JSON body or `WWW-Authenticate: X402 requirements="<b64>"` (the v2 style),
+  and every consumer used to read only the body. Pure+stdlib, tolerant (never raises on
+  third-party junk), BODY WINS on disagreement since that is what other x402 clients pay.
+  `accepts_from_http_error` reads a raised 402 -- body ONCE, since HTTPError wraps a
+  stream and a second read silently downgrades a real challenge to "unreadable".
+  Consumed by `directory_liveness` (which it was factored out of), `discovery_crawl`
+  (a 402 is a price quote, not a fetch failure -- it carries the SOURCE URL in as the
+  parent resource, or the record loses its category and per-resource price key) and
+  `clients/x402_pay` (whose `_http_json` now returns response headers instead of
+  discarding them). SCOPE, measured not asserted: the survey found `hdr_accepts` = 2 of
+  195 hosts, NOT the 86 `opaque_402` ones -- those carry no readable requirements in
+  either carrier and are a different problem. Verified live against blockrun.ai, which
+  serves a JSON body with no accepts[] and its real requirements in the header.
+  Tests: `test_x402_challenge.py`, `test_x402_pay.py`),
   `discovery_crawl.py` (crawl OTHERS' x402 discovery/402 docs -> extract payees +
   advertised prices -> auto-feed chain_backfill (reputation), peer price baselines,
   and readiness targets; a self-populating map of the x402 seller ecosystem),
@@ -138,9 +153,10 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   while running the survey by hand: GET-only probing (a 405 is a POST endpoint, not a
   dead one -- the retry recovered 14 scoreable hosts) and body-only challenge parsing
   (the x402 v2 style carries requirements in `WWW-Authenticate: X402 requirements=`).
-  FINDING: nothing in this repo reads that header -- every consumer takes `accepts` from
-  the body -- so a v2 endpoint is uncrawlable and unpayable though the engine would score
-  it fine; `parse_challenge` is the reference implementation if we close it. Measured
+  FINDING (CLOSED): nothing in this repo read that header -- every consumer took `accepts`
+  from the body -- so a v2 endpoint was uncrawlable and unpayable though the engine would
+  score it fine. `parse_challenge` now lives in `x402_challenge.py` and this module
+  delegates to it, so survey, crawler and paying client agree on one parser. Measured
   2026-08-18: 73/195 hosts live+scoreable, 86 serving an opaque 402. Pure helpers +
   injected network; `rank_leads` is prioritisation only and NEVER touches a verdict.
   See `docs/DIRECTORY_LIVENESS.md`. Tests: `test_directory_liveness.py`),
@@ -522,7 +538,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py
+ test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop

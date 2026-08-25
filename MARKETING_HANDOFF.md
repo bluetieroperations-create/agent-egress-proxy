@@ -105,9 +105,9 @@ data worth a paid disk; peer-group price cross-check not built. Don't claim
 
 | Thing | Value |
 |---|---|
-| Live endpoint | `https://agent-egress-proxy.onrender.com` |
+| Live endpoint | `https://blackwall-free.onrender.com` |
 | Verdict API | `POST /v1/forecast-payment` |
-| Discovery descriptor | `https://agent-egress-proxy.onrender.com/.well-known/x402` |
+| Discovery descriptor | `https://blackwall-free.onrender.com/.well-known/x402` |
 | Health | `GET /healthz` |
 | MCP tool | `forecast_payment` (stdio) |
 | Network / asset | **Base mainnet**, USDC (`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`) |

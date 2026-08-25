@@ -2,7 +2,10 @@
 Tests for discovery_crawl.py -- parse x402 discovery, extract payees/prices,
 auto-feed the backfill. Fake fetch; each test states its mutation.
 """
+import base64
+import json
 import tempfile
+import urllib.error
 import unittest
 
 import discovery_crawl as D
@@ -172,6 +175,105 @@ class TestCrawlAndBackfill(unittest.TestCase):
         self.assertEqual(summary["ingested"], 1)
         self.assertGreaterEqual(store.lookup(P1).get("settlement_count", 0), 1)
 
+
+
+class CrawlReadsHeaderCarriedChallenges(unittest.TestCase):
+    """A 402 is a price quote, not a failure -- and its requirements may sit in
+    the WWW-Authenticate header rather than the body."""
+
+    ACCEPTS = [{"payTo": "0x" + "ab" * 20, "maxAmountRequired": "25000",
+                "asset": "0x" + "cd" * 20, "network": "base",
+                "resource": "https://seller/api"}]
+
+    @staticmethod
+    def _http_error(code=402, headers=None, body=b""):
+        class _Stream:
+            def read(self, *a):
+                return body
+
+            def close(self):
+                pass
+
+        return urllib.error.HTTPError("http://seller/", code, "why",
+                                      headers or {}, _Stream())
+
+    @classmethod
+    def _hdr(cls, accepts):
+        blob = base64.b64encode(json.dumps({"accepts": accepts}).encode()).decode()
+        return {"WWW-Authenticate": 'X402 requirements="%s"' % blob}
+
+    def test_harvests_a_header_carried_402(self):
+        # Mutation: reverting crawl() to a bare `except Exception: continue`.
+        # Such a seller was previously invisible, so neither its payee nor its
+        # advertised price ever reached reputation.
+        def fetch(url):
+            raise self._http_error(headers=self._hdr(self.ACCEPTS))
+
+        got = D.crawl(["https://seller/api"], fetch=fetch)
+        self.assertEqual([r["payTo"] for r in got], [self.ACCEPTS[0]["payTo"]])
+
+    def test_harvests_a_body_carried_402(self):
+        # Mutation: handling only the header carrier. get_json raises on ANY
+        # 402, so a body-carried challenge from a raising transport was lost too.
+        def fetch(url):
+            raise self._http_error(body=json.dumps({"accepts": self.ACCEPTS}).encode())
+
+        got = D.crawl(["https://seller/api"], fetch=fetch)
+        self.assertEqual([r["payTo"] for r in got], [self.ACCEPTS[0]["payTo"]])
+
+    def test_carries_the_source_url_as_the_resource(self):
+        # Mutation: building doc = {"accepts": accepts} without the URL. A
+        # header-carried challenge has no `resource` of its own, so the record
+        # lands with resource=None -- silently costing the category classifier
+        # its only input and price observations their per-resource key. Caught
+        # by running the real crawl against blockrun.ai, not by a unit test.
+        url = "https://seller/api/v1/quote"
+        # A header-carried challenge typically names no resource of its own --
+        # that is exactly why the source URL has to supply it.
+        bare = [{k: v for k, v in self.ACCEPTS[0].items() if k != "resource"}]
+
+        def fetch(_):
+            raise self._http_error(headers=self._hdr(bare))
+
+        got = D.crawl([url], fetch=fetch)
+        self.assertEqual([r["resource"] for r in got], [url])
+
+    def test_an_accepts_own_resource_still_wins(self):
+        # Mutation: overwriting the accept's resource with the source URL.
+        # A challenge that names its own resource is authoritative.
+        own = "https://seller/real-resource"
+        accepts = [dict(self.ACCEPTS[0], resource=own)]
+
+        def fetch(_):
+            raise self._http_error(headers=self._hdr(accepts))
+
+        got = D.crawl(["https://seller/probed-here"], fetch=fetch)
+        self.assertEqual([r["resource"] for r in got], [own])
+
+    def test_a_real_failure_is_still_skipped_not_fatal(self):
+        # Mutation: letting the new branch re-raise. A dead host, a 500, and a
+        # 402 with nothing readable must all stay non-fatal for the crawl.
+        def dead(url):
+            raise OSError("connection refused")
+
+        def five_hundred(url):
+            raise self._http_error(code=500)
+
+        def opaque(url):
+            raise self._http_error(body=b"<html>402</html>")
+
+        for bad in (dead, five_hundred, opaque):
+            self.assertEqual(D.crawl(["https://x/"], fetch=bad), [], bad.__name__)
+
+    def test_one_bad_source_does_not_truncate_the_crawl(self):
+        # Mutation: `continue` becoming `break`.
+        def mixed(url):
+            if url.endswith("bad"):
+                raise OSError("nope")
+            raise self._http_error(headers=self._hdr(self.ACCEPTS))
+
+        got = D.crawl(["https://x/bad", "https://x/good"], fetch=mixed)
+        self.assertEqual(len(got), 1)
 
 if __name__ == "__main__":
     unittest.main()
