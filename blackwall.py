@@ -1202,7 +1202,8 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              rwa_source=None, stock_registry=None, pyth_source=None, rwa_ledger=None,
              balance_reader=None, backing_index=None, dex_source=None,
              holder_source=None, aave_source=None, issuer_trust_source=None,
-             settlement_sim_source=None, auth_sim_source=None):
+             settlement_sim_source=None, auth_sim_source=None,
+             receipt_signer=None):
     """
     End-to-end: validate -> look up counterparty -> decide -> sign receipt.
 
@@ -1547,6 +1548,27 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     })
     verdict["receipt_id"] = sign_receipt(receipt_payload)
 
+    # INDEPENDENTLY VERIFIABLE RECEIPT (receipt_signer.py). `receipt_id` above is
+    # HMAC -- a fine audit-trail id and ledger join key, but SYMMETRIC: verifying
+    # it needs our secret, so only we can check it. When a signing key is
+    # configured we also attach an Ed25519 envelope a third party can verify
+    # offline against /jwks.json, with no access to any secret of ours.
+    # Fail-soft: signing must never break a verdict. Absent key -> field absent,
+    # which is honest; a receipt that looks signed but isn't would be worse.
+    if receipt_signer is not None:
+        try:
+            from receipt_signer import build_claims
+            envelope = receipt_signer.sign(build_claims(
+                verdict, {"counterparty": clean["counterparty"],
+                          "amount": str(clean["amount"]),
+                          "asset": clean["asset"], "chain": clean["chain"],
+                          "agent_id": clean.get("agent_id"),
+                          "receipt_id": verdict["receipt_id"]}))
+            if envelope:
+                verdict["receipt"] = envelope
+        except Exception as exc:                       # noqa: BLE001
+            sys.stderr.write("blackwall: receipt signing failed (%s)\n" % exc)
+
     # ACCUMULATION (rwa_ledger.py): write down every RWA buy + its context (asset,
     # restriction grade, peg, verdict), keyed by the receipt_id join key so a later
     # OUTCOME can be linked back to it. The private corpus no competitor has.
@@ -1734,6 +1756,15 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"status": "ok"})
         elif self.path in ("/.well-known/x402", "/v1/discovery"):
             self._send_json(200, self._descriptor())
+        elif self.path in ("/jwks.json",
+                           "/.well-known/blackwall-receipt-key.json"):
+            # PUBLIC signing keys, so a receipt can be verified offline with no
+            # secret of ours. Both paths on purpose: /jwks.json is the standard
+            # name, and blackwall-mcp-remote already fetches the .well-known one
+            # (src/index.mjs KEY_URL) -- serving both fixes that existing broken
+            # dependency without needing a coordinated deploy.
+            signer = getattr(self, "receipt_signer", None)
+            self._send_json(200, signer.jwks() if signer else {"keys": []})
         elif self.path == "/openapi.json":
             # x402scan probes the origin root for this discovery document.
             self._send_json(200, self._openapi())
@@ -1952,6 +1983,7 @@ class _Handler(BaseHTTPRequestHandler):
                                  issuer_trust_source=self.issuer_trust_source,
                                  settlement_sim_source=self.settlement_sim_source,
                                  auth_sim_source=self.auth_sim_source,
+                                 receipt_signer=getattr(self, "receipt_signer", None),
                                  verify_signer=_verify_signer)
         if err is not None:
             self._send_json(400, {"error": err})
@@ -2036,6 +2068,7 @@ class BlackwallServer:
                  ledger=None, billing=None, readiness_source=None,
                  hold_above=None, peer_index=None, openapi_server_url=None,
                  graph_source=None, velocity_source=None, verdict_anchor=None,
+                 receipt_signer=None,
                  category_index=None, divergence_index=None, rate_limiter=None,
                  enrichment_source=None, rwa_source=None, stock_registry=None,
                  pyth_source=None, rwa_ledger=None, balance_reader=None,
@@ -2055,6 +2088,7 @@ class BlackwallServer:
         self.graph_source = graph_source
         self.velocity_source = velocity_source
         self.openapi_server_url = openapi_server_url
+        self.receipt_signer = receipt_signer
         self.verdict_anchor = verdict_anchor
         self.category_index = category_index
         self.divergence_index = divergence_index
@@ -2102,6 +2136,7 @@ class BlackwallServer:
                         "issuer_trust_source": self.issuer_trust_source,
                         "settlement_sim_source": self.settlement_sim_source,
                         "auth_sim_source": self.auth_sim_source,
+                        "receipt_signer": self.receipt_signer,
                         "stats": self.stats,
                         "openapi_server_url": self.openapi_server_url})
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
@@ -2232,6 +2267,29 @@ def main(argv=None):
     if args.ledger:
         from ledger import EventLedger
         led = EventLedger(args.ledger)
+
+    # Ed25519 receipt signing (receipt_signer.py). FAIL LOUD, not soft: if the
+    # operator set BLACKWALL_SIGNING_SEED they intended verifiable receipts, so a
+    # malformed seed must stop the boot rather than quietly serve unsigned ones
+    # from a service that looks configured. Unset is fine -- no envelope is
+    # attached and nothing claims to be verifiable.
+    signer = None
+    try:
+        from receipt_signer import ReceiptSigner
+        signer = ReceiptSigner()
+        if signer.available:
+            sys.stdout.write("blackwall: receipt signing ON (Ed25519, kid=%s)\n"
+                             % signer.kid)
+        else:
+            sys.stdout.write(
+                "blackwall: receipt signing OFF -- set BLACKWALL_SIGNING_SEED "
+                "(32 bytes, base64url) to issue independently-verifiable "
+                "receipts\n")
+        sys.stdout.flush()
+    except ValueError as exc:
+        sys.stderr.write("blackwall: FATAL bad BLACKWALL_SIGNING_SEED -- %s\n" % exc)
+        sys.stderr.flush()
+        return 2
 
     reputation_source = None
     graph_source = velocity_source = None
@@ -2689,7 +2747,8 @@ def main(argv=None):
                              issuer_trust_source=issuer_trust_source,
                              settlement_sim_source=settlement_sim_source,
                              auth_sim_source=auth_sim_source,
-                             openapi_server_url=origin)
+                             openapi_server_url=origin,
+                             receipt_signer=signer)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

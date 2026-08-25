@@ -166,6 +166,30 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   Fail-open: missing/corrupt artifact -> empty index -> "unknown", never "out of range".
   Measured: takes live STOPs 3 -> 0 with ZERO attacks escaping at >=8x. Tests:
   `test_advertised_prices.py`),
+  `receipt_signer.py` (INDEPENDENTLY-VERIFIABLE receipts -- the Ed25519 half.
+  `sign_receipt`'s `receipt_id` is HMAC: a fine audit-trail id and ledger join key,
+  but SYMMETRIC -- verifying needs our secret, so only we can check it and anyone
+  holding it can forge. Blackwall nonetheless advertised "an independently-verifiable
+  Ed25519 signed receipt"; this makes that true. Envelope is byte-compatible with
+  Traceipt's (`{protected,payload,signature}`, signing input =
+  canonical_json({"payload","protected"}), kid = first 16 hex of sha256(pubkey)), so
+  ONE verifier covers both products -- `clients/traceipt-verify` reads this shape
+  already. STDLIB-ONLY: signs via `cdp_auth.ed25519_sign` (RFC 8032, hashlib only,
+  SIGN-ONLY by design -- exactly right, since we sign and third parties verify).
+  `build_claims` curates WHAT is signed: not the whole verdict, because `signals` is
+  a large version-unstable blob carrying floats, and floats have no canonical JSON
+  form -- `score` is emitted as a decimal STRING (signing the raw verdict made
+  canonical_json raise, and fail-soft then dropped EVERY receipt while the service
+  looked healthy). KEY HANDLING: no dev-key fallback (a receipt signed with a
+  committed key is WORSE than none -- it looks verifiable), fail LOUD at boot on a
+  malformed seed (set-but-bad means the operator intended signing), and
+  BLACKWALL_RECEIPT_KEY is explicitly refused as the seed. Served at BOTH
+  `/jwks.json` and `/.well-known/blackwall-receipt-key.json` -- the latter is the URL
+  `blackwall-mcp-remote` already fetches, so serving it fixes an existing broken
+  dependency. Retired keys stay published so receipts survive rotation. Opt-in via
+  `BLACKWALL_SIGNING_SEED`; absent -> no `receipt` field, which is honest.
+  Post-quantum (ML-DSA-65 hybrid) is phase 2 -- see `docs/RECEIPT_SIGNING_SCOPE.md`.
+  Tests: `test_receipt_signer.py`, incl. cross-verification under Node WebCrypto),
   `confidence.py` (how much EVIDENCE backs a verdict -- `assess_confidence(record,
   signals)` -> {level high/medium/low, score 0..1, backed_by[], missing[]} across
   five weighted dimensions: history depth, payer breadth, cross-counterparty
@@ -486,7 +510,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py
+ test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop
