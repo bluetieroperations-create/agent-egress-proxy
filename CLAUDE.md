@@ -188,7 +188,19 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `blackwall-mcp-remote` already fetches, so serving it fixes an existing broken
   dependency. Retired keys stay published so receipts survive rotation. Opt-in via
   `BLACKWALL_SIGNING_SEED`; absent -> no `receipt` field, which is honest.
-  Post-quantum (ML-DSA-65 hybrid) is phase 2 -- see `docs/RECEIPT_SIGNING_SCOPE.md`.
+  AUDIT FINDINGS (fixed): the pure-Python signer is CORRECT (3/3 RFC 8032 vectors)
+  but (1) added 48x latency -- measured 3.6ms -> 172.6ms end-to-end -- and (2) is
+  VARIABLE-TIME: `_scalarmult` adds only on SET bits, so runtime tracks the scalar's
+  Hamming weight (weight 1 -> 55ms, 126 -> 82ms, 253 -> 109ms). That scalar is the
+  Ed25519 nonce r = H(prefix||msg), and leaking it recovers the private key --
+  farmable by an unauthenticated caller. Fixed with a PLUGGABLE BACKEND that prefers
+  a native constant-time library (`cryptography` if installed, ~1000x faster) and
+  falls back to pure Python; plus a SAFE-BY-DEFAULT guard -- the server REFUSES to
+  boot with signing enabled on a PUBLIC bind using the variable-time backend unless
+  `BLACKWALL_ALLOW_SLOW_SIGNING=1`. Also `typ` is `blackwall-verdict+json`, NOT
+  Traceipt's `x402-receipt+json`: a verdict is a different claim from a receipt, and
+  a shared label would let a verifier trusting both issuers' keys accept one for the
+  other. Post-quantum (ML-DSA-65 hybrid) is phase 2 -- see `docs/RECEIPT_SIGNING_SCOPE.md`.
   Tests: `test_receipt_signer.py`, incl. cross-verification under Node WebCrypto),
   `confidence.py` (how much EVIDENCE backs a verdict -- `assess_confidence(record,
   signals)` -> {level high/medium/low, score 0..1, backed_by[], missing[]} across

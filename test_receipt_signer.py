@@ -151,7 +151,10 @@ class SignerContract(unittest.TestCase):
         self.assertEqual(sorted(env), ["payload", "protected", "signature"])
         self.assertIsInstance(env["protected"], dict)
         self.assertEqual(env["protected"]["alg"], "EdDSA")
-        self.assertEqual(env["protected"]["typ"], "x402-receipt+json")
+        # SHAPE matches Traceipt so one verifier covers both; the `typ` LABEL is
+        # deliberately distinct -- see DomainSeparation.
+        self.assertEqual(env["protected"]["typ"], rs.TYP)
+        self.assertNotEqual(env["protected"]["typ"], "x402-receipt+json")
         self.assertEqual(len(rs.b64url_decode(env["signature"])), 64)
 
     def test_signature_covers_protected_not_just_payload(self):
@@ -229,6 +232,66 @@ class CrossVerification(unittest.TestCase):
         env = rs.ReceiptSigner(seed=SEED).sign({"verdict": "GO"})
         with self.assertRaises(InvalidSignature):
             self.verify(env, rs.ReceiptSigner(seed=OTHER_SEED).jwks()["keys"][0])
+
+
+class Backend(unittest.TestCase):
+    """AUDIT: the pure-Python signer is CORRECT (3/3 RFC 8032 vectors) but is
+    variable-time and ~170ms/signature. Both were measured; see the module notes.
+    """
+
+    def test_pure_python_backend_always_available(self):
+        # MUTATION: making the native backend mandatory -> the stdlib-only engine
+        # cannot sign at all on a plain python:slim image.
+        name, sign, publickey = rs.load_backend(prefer_native=False)
+        self.assertEqual(name, rs.BACKEND_PURE)
+        self.assertEqual(len(sign(SEED, b"m")), 64)
+        self.assertEqual(len(publickey(SEED)), 32)
+
+    def test_backend_is_reported_and_flags_variable_time(self):
+        # MUTATION: reporting constant_time=True unconditionally -> the public-bind
+        # guard in main() stops firing and a timing-leaky signer ships publicly.
+        signer = rs.ReceiptSigner(seed=SEED, prefer_native=False)
+        self.assertEqual(signer.backend, rs.BACKEND_PURE)
+        self.assertFalse(signer.constant_time)
+
+    def test_both_backends_agree_bit_for_bit(self):
+        # If a native backend is present it MUST produce identical signatures --
+        # otherwise receipts would verify or not depending on what happened to be
+        # installed on the box that signed them.
+        native = rs._native_backend()
+        if not native:
+            self.skipTest("no native Ed25519 backend installed")
+        n_sign, n_pub = native
+        from cdp_auth import ed25519_publickey, ed25519_sign
+        self.assertEqual(n_pub(SEED), ed25519_publickey(SEED))
+        for msg in (b"", b"x", b"\x00" * 100, bytes(range(256))):
+            self.assertEqual(n_sign(SEED, msg), ed25519_sign(SEED, msg))
+
+    def test_broken_native_backend_falls_back_rather_than_raising(self):
+        # MUTATION: catching Exception instead of BaseException -> a half-installed
+        # `cryptography` raises pyo3 PanicException (NOT an Exception) and takes
+        # the whole server down at boot instead of degrading.
+        self.assertIsNotNone(rs.load_backend(prefer_native=True))
+
+
+class DomainSeparation(unittest.TestCase):
+    def test_typ_differs_from_traceipt_receipts(self):
+        # AUDIT (medium): Blackwall signs a payment VERDICT; Traceipt signs a
+        # payment RECEIPT ("x402-receipt+json"). Sharing a typ would let a
+        # verifier trusting a JWKS with both issuers accept one where the other
+        # is expected.
+        # MUTATION: reverting to the shared typ -> that confusion is possible again.
+        self.assertEqual(rs.TYP, "blackwall-verdict+json")
+        self.assertNotEqual(rs.TYP, "x402-receipt+json")
+
+    def test_typ_is_inside_the_signed_protected_header(self):
+        # The label only helps if it is COVERED by the signature.
+        env = rs.ReceiptSigner(seed=SEED).sign({"verdict": "GO"})
+        self.assertEqual(env["protected"]["typ"], rs.TYP)
+        a = rs.signing_input({"verdict": "GO"}, dict(env["protected"]))
+        b = rs.signing_input({"verdict": "GO"},
+                             dict(env["protected"], typ="x402-receipt+json"))
+        self.assertNotEqual(a, b)
 
 
 class BuildClaims(unittest.TestCase):

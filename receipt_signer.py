@@ -45,7 +45,13 @@ import json
 import os
 
 ALG = "EdDSA"
-TYP = "x402-receipt+json"
+# DOMAIN SEPARATION. Traceipt signs payment RECEIPTS with typ
+# "x402-receipt+json". Blackwall signs a payment VERDICT -- a different claim
+# about a different thing. Sharing a typ would let a verifier that trusts a JWKS
+# containing both issuers accept one where the other is expected. The envelope
+# shape is unchanged, so clients/traceipt-verify still verifies the signature;
+# only the semantic label differs, and it is now accurate.
+TYP = "blackwall-verdict+json"
 KTY = "OKP"
 CRV = "Ed25519"
 
@@ -142,6 +148,70 @@ def load_seed(environ=None):
     return seed
 
 
+# ---------------------------------------------------------------------------
+# Signing backend
+# ---------------------------------------------------------------------------
+# AUDIT FINDING (both HIGH, same root cause). cdp_auth's RFC 8032 signer is
+# CORRECT -- it reproduces all three RFC 8032 test vectors exactly -- but it is
+# pure Python, and that has two consequences on a PUBLIC endpoint:
+#
+#   1. LATENCY. Measured end to end on /v1/forecast-payment: 3.6 ms without
+#      signing, 172.6 ms with. A 48x regression, on an engine whose whole value
+#      is a verdict returned before an agent signs.
+#
+#   2. TIMING SIDE CHANNEL. _scalarmult is a textbook variable-time
+#      double-and-add: it performs an addition only on SET bits, so runtime
+#      tracks the Hamming weight of the scalar. Measured directly: weight 1 ->
+#      55 ms, weight 126 -> 82 ms, weight 253 -> 109 ms. In Ed25519 signing that
+#      scalar is r = H(prefix || msg) with `prefix` secret, and leaking r is
+#      fatal -- a = (s - r) * k^-1 recovers the private scalar. An unauthenticated
+#      caller can request unlimited signatures over a message it partly controls.
+#
+# So: prefer a NATIVE backend (constant-time and ~1000x faster) when one is
+# installed, and fall back to pure Python only where that is acceptable. The core
+# stays importable with no third-party package -- the fallback is always present.
+BACKEND_NATIVE = "native"
+BACKEND_PURE = "pure-python"
+
+
+def _native_backend():
+    """(sign, publickey) from a native constant-time library, or None."""
+    try:
+        # BaseException: a broken native build raises pyo3 PanicException, which
+        # does not derive from Exception and would otherwise escape.
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PrivateKey)
+        from cryptography.hazmat.primitives import serialization
+    except BaseException:
+        return None
+
+    def sign(seed, msg):
+        return Ed25519PrivateKey.from_private_bytes(seed).sign(msg)
+
+    def publickey(seed):
+        return Ed25519PrivateKey.from_private_bytes(seed).public_key(
+        ).public_bytes(serialization.Encoding.Raw,
+                       serialization.PublicFormat.Raw)
+
+    try:                                    # prove it works before advertising it
+        seed = bytes(range(32))
+        if len(sign(seed, b"probe")) != 64 or len(publickey(seed)) != 32:
+            return None
+    except BaseException:
+        return None
+    return sign, publickey
+
+
+def load_backend(prefer_native=True):
+    """Return (name, sign, publickey). Never raises: pure Python always works."""
+    if prefer_native:
+        native = _native_backend()
+        if native:
+            return (BACKEND_NATIVE,) + native
+    from cdp_auth import ed25519_publickey, ed25519_sign
+    return BACKEND_PURE, ed25519_sign, ed25519_publickey
+
+
 def build_protected(kid):
     return {"alg": ALG, "kid": kid, "typ": TYP}
 
@@ -187,16 +257,23 @@ def build_claims(verdict, request=None):
 class ReceiptSigner:
     """Signs verdict payloads. `available` is False when no seed is configured."""
 
-    def __init__(self, seed=None, environ=None, retired_public_keys=()):
+    def __init__(self, seed=None, environ=None, retired_public_keys=(),
+                 prefer_native=True):
         self._seed = seed if seed is not None else load_seed(environ)
         self.retired = [bytes(k) for k in retired_public_keys or ()]
+        self.backend, self._sign, self._publickey = load_backend(prefer_native)
         if self._seed is None:
             self.public_key = None
             self.kid = None
         else:
-            from cdp_auth import ed25519_publickey
-            self.public_key = ed25519_publickey(self._seed)
+            self.public_key = self._publickey(self._seed)
             self.kid = derive_kid(self.public_key)
+
+    @property
+    def constant_time(self):
+        """True only on a native backend. The pure-Python fallback leaks the
+        nonce's Hamming weight through timing (see the backend notes above)."""
+        return self.backend == BACKEND_NATIVE
 
     @property
     def available(self):
@@ -210,9 +287,8 @@ class ReceiptSigner:
         """
         if not self.available:
             return None
-        from cdp_auth import ed25519_sign
         protected = build_protected(self.kid)
-        signature = ed25519_sign(self._seed, signing_input(payload, protected))
+        signature = self._sign(self._seed, signing_input(payload, protected))
         return {"protected": protected, "payload": payload,
                 "signature": b64url(signature)}
 

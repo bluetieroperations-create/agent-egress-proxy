@@ -2278,8 +2278,30 @@ def main(argv=None):
         from receipt_signer import ReceiptSigner
         signer = ReceiptSigner()
         if signer.available:
-            sys.stdout.write("blackwall: receipt signing ON (Ed25519, kid=%s)\n"
-                             % signer.kid)
+            # SAFE BY DEFAULT. The pure-Python signer is correct but variable-time
+            # and ~170ms/signature. On a PUBLIC bind that is both a 48x latency
+            # regression and a nonce-Hamming-weight timing leak an unauthenticated
+            # caller can farm. Refuse rather than quietly ship it; a native
+            # backend (constant-time, ~1000x faster) or an explicit override are
+            # the two ways forward.
+            public_bind = args.host not in ("127.0.0.1", "localhost", "::1")
+            if public_bind and not signer.constant_time \
+                    and not _env_flag("BLACKWALL_ALLOW_SLOW_SIGNING"):
+                sys.stderr.write(
+                    "blackwall: FATAL receipt signing is enabled on a PUBLIC bind "
+                    "(%s) with the pure-Python backend. It is variable-time "
+                    "(leaks the nonce's Hamming weight to a caller who can time "
+                    "responses) and adds ~170ms per verdict. Install a native "
+                    "Ed25519 backend (pip install cryptography), bind localhost, "
+                    "unset BLACKWALL_SIGNING_SEED, or set "
+                    "BLACKWALL_ALLOW_SLOW_SIGNING=1 to accept both risks.\n"
+                    % args.host)
+                sys.stderr.flush()
+                return 2
+            sys.stdout.write(
+                "blackwall: receipt signing ON (Ed25519, kid=%s, backend=%s%s)\n"
+                % (signer.kid, signer.backend,
+                   "" if signer.constant_time else ", VARIABLE-TIME"))
         else:
             sys.stdout.write(
                 "blackwall: receipt signing OFF -- set BLACKWALL_SIGNING_SEED "
