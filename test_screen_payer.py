@@ -167,3 +167,71 @@ class PriceIndexIsPublic(unittest.TestCase):
         self.assertEqual(st, 200)
         self.assertEqual(body["index"], {})
         self.assertEqual(body["categories"], 0)
+
+
+class CorsAllowsBrowserClients(unittest.TestCase):
+    """The verdict endpoint is a public API that browser pages call directly
+    (check.blackwalltier.com's demo). Without CORS the browser blocks the
+    response even though the server answered it correctly."""
+
+    def setUp(self):
+        handler = type("_HC", (bw._Handler,),
+                       {"reputation_source": bw.MockReputationSource()})
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        self.httpd.shutdown(); self.httpd.server_close()
+
+    def _raw(self, request):
+        import socket
+        s = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        s.sendall(request.encode())
+        data = b""
+        while True:
+            c = s.recv(4096)
+            if not c:
+                break
+            data += c
+        s.close()
+        return data.decode("latin-1")
+
+    def test_preflight_is_answered(self):
+        # Mutation: no do_OPTIONS -> BaseHTTPRequestHandler answers 501, the
+        # browser never sends the real POST, and the demo page silently fails.
+        resp = self._raw(
+            "OPTIONS /v1/forecast-payment HTTP/1.1\r\nHost: x\r\n"
+            "Origin: https://check.blackwalltier.com\r\n"
+            "Access-Control-Request-Method: POST\r\nConnection: close\r\n\r\n")
+        self.assertIn("204", resp.split("\r\n", 1)[0])
+        self.assertIn("Access-Control-Allow-Origin: *", resp)
+
+    def test_preflight_allows_the_x402_payment_headers(self):
+        # Mutation: dropping a header from Allow-Headers. A browser STRIPS any
+        # request header not listed at preflight, so an omission breaks the paid
+        # flow silently rather than loudly.
+        resp = self._raw(
+            "OPTIONS /v1/forecast-payment HTTP/1.1\r\nHost: x\r\n"
+            "Connection: close\r\n\r\n")
+        # Compare PARSED TOKENS, not substrings: "X-PAYMENT-SESSION" contains
+        # "X-PAYMENT", so a substring assertion passes even with X-PAYMENT
+        # removed -- a test that cannot fail. (It survived a mutation run.)
+        line = next(l for l in resp.split("\r\n")
+                    if l.lower().startswith("access-control-allow-headers:"))
+        allowed = {t.strip().lower() for t in line.split(":", 1)[1].split(",")}
+        self.assertEqual(
+            allowed,
+            {"content-type", "x-payment", "payment-signature",
+             "x-payment-session", "authorization"})
+
+    def test_actual_response_carries_the_cors_header(self):
+        # Mutation: CORS only on the preflight. The browser also checks the
+        # REAL response, so a preflight-only implementation still blocks it.
+        body = json.dumps({"counterparty": "0x" + "1" * 40, "amount": "0.01",
+                           "asset": "USDC", "chain": "base"})
+        resp = self._raw(
+            "POST /v1/forecast-payment HTTP/1.1\r\nHost: x\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: %d\r\nConnection: close\r\n\r\n%s" % (len(body), body))
+        self.assertIn("Access-Control-Allow-Origin: *", resp)

@@ -1,0 +1,29 @@
+# gitleaks config for agent-egress-proxy.
+#
+# Extends the default ruleset. The allowlist below documents KNOWN-BENIGN matches
+# that the generic-api-key rule flags, so a REAL leak is never lost in the noise.
+# Each entry states why it is safe. Re-triaged 2026-07-07.
+title = "agent-egress-proxy gitleaks"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Vetted false positives: synthetic test fixtures + the public Anvil test key"
+
+# Path-scoped: these test files contain SYNTHETIC base64 strings (explicitly
+# commented "no real-secret bytes") used to prove load_creds emits credential
+# NAMES, never VALUES. No real secret is present.
+paths = [
+  '''test_creds_local\.py''',
+  '''creds_local\.py''',
+]
+
+# Value-scoped: the Anvil/Hardhat DEFAULT account #1 private key. This is a
+# PUBLIC, well-known local-dev key (address 0x7099...79C8) shipped with every
+# Anvil install and used only in a local-testing example in clients/README.md.
+# Allowlisting the exact value (not the whole file) keeps the file scanned for
+# any OTHER secret. This regex also allowlists its own occurrence in this config.
+regexes = [
+  '''0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d''',
+]
