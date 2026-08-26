@@ -1,18 +1,24 @@
 # Blackwall — roadmap
 
-Deferred work, captured so it isn't lost. Nothing here is built yet; each item
-notes *why it's deferred* and the *caveat that matters*. Ordered loosely by
-leverage, not commitment.
+Deferred work, captured so it isn't lost. Each item notes *why it's deferred* and
+the *caveat that matters*. Ordered loosely by leverage, not commitment.
+
+Some entries are now marked **SHIPPED** or **BUILT — dormant-but-ready** rather
+than deleted, so the reasoning behind them survives.
 
 ## Shipped (for context)
 Verdict engine (GO/HOLD/STOP) · behavioral counterparty reputation ·
 wash-trade-resistant price-anomaly · OFAC sanctions screening · self-owned
 endpoint-readiness · value-aligned pricing · x402 billing (EIP-3009 / facilitator
-seam) · MCP stdio server · service-discovery descriptor · **deployed live on Base
-mainnet** · **real mainnet USDC settlement driven end-to-end** (paid x402 path:
-402 → EIP-3009 sign → facilitator verify+settle → verdict; caught a 100× price
-gouge on live ingested reputation) · listed on awesome-x402 · adversarially
-audited (315 tests).
+seam) · MCP stdio server **and Streamable-HTTP transport** ·
+service-discovery descriptor · **deployed live on Base mainnet** · **real mainnet
+USDC settlement driven end-to-end** (paid x402 path: 402 → EIP-3009 sign →
+facilitator verify+settle → verdict; caught a 100× price gouge on live ingested
+reputation) · listed on awesome-x402 · independently-verifiable Ed25519 receipts ·
+**one x402 challenge parser** covering both carriers (JSON body and
+`WWW-Authenticate: X402`) · **payer-side scoring** (`POST /v1/screen-payer`) ·
+**public price index** (`GET /v1/price-index`) · CORS · adversarially audited
+(1,609 tests; redteam 25 caught / 2 known gaps / 0 false positives).
 
 ---
 
@@ -32,10 +38,18 @@ Sybil-bounded; opt-in via a `peer_index` + `resource_class`). See `docs/MARKETPL
 - **Caveat:** peer grouping is the hard part (what counts as "comparable"?); a bad
   grouping is worse than none. `resource_class` must be a shared taxonomy.
 
-### Self-owned readiness calibration
+### Self-owned readiness calibration  — **UNBLOCKED; the fix is known**
 `LocalReadinessSource` detects a 402 via **GET**, so a POST-only x402 endpoint
 with no manifest can score a false `needs_work`.
-- **Why deferred:** needs calibration against a corpus of real live endpoints.
+- **No longer deferred for lack of data.** Both blockers are gone:
+  - The corpus exists — `data/liveness.json`, 195 real hosts classified.
+  - The same GET-only bug was hit and fixed in `directory_liveness.probe_host`,
+    which retries with POST because **a 405 is a POST-only endpoint, not a dead
+    one**. That retry recovered **14** hosts a GET-only sweep had written off.
+    Port the same retry here.
+- **Calibration target:** of 195 hosts, 71 `body_accepts` / 2 `hdr_accepts` /
+  23 `wellknown` are the ones readiness should score as fine; the 86 `opaque_402`
+  are the genuinely ambiguous set. See `docs/PAYABILITY.md`.
 - **Caveat:** conservative-only (it can only *add* caution), so it's a quality
   issue, not a safety bug.
 
@@ -280,8 +294,17 @@ before you sign." Captures developers at build time.
 
 ### Listing follow-ups
 - ~~Update the awesome-x402 entry to "Live on Base".~~ **Done.**
-- Submit to additional registries (Smithery / Glama MCP) once the MCP-over-HTTP
-  transport exists (below) — they want a reachable MCP endpoint, not stdio.
+- ~~Submit to additional registries once MCP-over-HTTP exists.~~ **The gate is
+  now OPEN** — the transport shipped (below), and `mcp.blackwalltier.com` has been
+  a reachable hosted MCP endpoint for a while. Smithery and Glama are eligible
+  today; neither has been submitted.
+- **Do NOT double-publish on Smithery.** `bluetier-operations/blackwall` is already
+  listed there (the generalized blackwalltier product). A second listing for the
+  x402 engine fragments the presence — see `docs/REGISTRIES.md`, which records the
+  identity split and the canonical copy for every surface.
+- `Merit-Systems/awesome-x402` (the second active index) was never submitted.
+- Every listing must point at `blackwall-free.onrender.com`; the old
+  `agent-egress-proxy.onrender.com` returns 404.
 
 ---
 
@@ -294,8 +317,17 @@ eviction so memory/state stays flat under load.
 - **Why deferred:** there's no traffic yet. Pay for persistence when there's data
   worth keeping (watch Render logs for `/v1/forecast-payment` + the payTo wallet).
 
-### MCP-over-HTTP
-The MCP server is **stdio/local-only**; an HTTP transport lets *remote* agents and
-MCP registries use it.
-- **Why deferred:** post-traffic; the HTTP verdict API + discovery cover discovery
-  today.
+### MCP-over-HTTP  — **SHIPPED**
+An HTTP transport so *remote* agents and MCP registries can reach the MCP server,
+which was previously stdio/local-only.
+- **Shipped** as `mcp_server.serve_http()` / `http_handler_class()`: MCP
+  Streamable HTTP on a single POST endpoint, stateless, 202 for notifications,
+  405 on GET, body cap, optional `Origin` allowlist (DNS-rebinding guard).
+  Hardened for chunked-body pollution and slowloris.
+- **KNOWN GAP:** unauthenticated with **no rate limit**, only a body cap — unlike
+  `blackwall.py`'s HTTP server. It binds `127.0.0.1` by default and nothing
+  deploys it, so nothing is exposed; do not put it on a public bind without a
+  limiter in front.
+- Separately, `mcp.blackwalltier.com` is a Cloudflare Worker proxying the verdict
+  engine. That is a different thing: this transport makes the engine itself
+  `mcp add`-able and self-hostable.
