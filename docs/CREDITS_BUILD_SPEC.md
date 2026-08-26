@@ -64,7 +64,7 @@ value-pricing is the *rate*. Don't invent a separate rate card.
   idea**, and keep the burn/skip rules identical (safety free, low-stakes free).
 - **Verdict parity:** whichever backend actually scores, the credit-burn decision
   must sit *in front of* the same verdict engine — see the two-backend
-  reconciliation note in `docs/TIER2_HANDOFF.md`.
+  reconciliation note kept with the operator handoff (not in this repo).
 
 ## Definition of done
 - Buy → balance up; forecast (paid) → balance down by 1; safety/low-stakes →

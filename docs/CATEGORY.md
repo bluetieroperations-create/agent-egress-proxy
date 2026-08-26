@@ -22,7 +22,7 @@ economy sells*).
 ## 1. Handoff to Traceipt — tag receipts with category
 
 **For the `claude/x402-product-ideas-6adgah` (Traceipt) session.** This is a shared-seam
-item (see `docs/HANDOFF.md` §4): the classifier lives on the Blackwall branch but the
+item (a known open item): the classifier lives on the Blackwall branch but the
 receipt schema lives in `traceipt/`, so this is a proposal, not a unilateral change.
 
 **Proposal:** when Traceipt issues a receipt for an x402 settlement, tag it with
