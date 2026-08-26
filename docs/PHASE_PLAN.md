@@ -243,6 +243,138 @@ Until all three hold, Phase 1 *is* the work.
 5. Look at that list. **If it surprises you, it will surprise a rep — and that reaction
    is the entire product.**
 
+---
+
+## Who you sell to in Phase 1, and how
+
+Answered to the same standard as `FMCSA_GTM.md`: named segments, named companies,
+the title that owns the card, and the actual mechanism.
+
+### The honest headline
+
+**In Phase 1 you do not sell. You publish, and the product sells itself.** There is no
+demo, no call, no proposal. At $149/month nobody needs approval, so the entire job is
+getting the right person to look at their own territory once. Everything below is in
+service of that single event.
+
+The exception is one segment small enough to email by hand — and it is the sharpest one.
+
+### The buyers, ranked by "will enter a card without asking anyone"
+
+#### 1. Surplus and used lab-equipment dealers — the contraction-native buyer
+
+This is the segment I underweighted, and it may be the beachhead.
+
+When a lab loses funding it liquidates equipment. These firms run **lab closures as an
+explicit service line** — which means *a lab shutting down is literally their lead*.
+Your product tells them which labs are about to shut down, weeks before the phone rings.
+
+Named, and the list is nearly complete: **EquipNet**, **Copia Scientific** (the merged
+BioSurplus / BioDirect / Boston Microscopes), **American Laboratory Trading**,
+**Surplus Solutions**, **The Lab World Group**, **Lab Liquidators**, **LabX**.
+
+- **Who signs:** founder, VP of Acquisitions, or head of asset recovery. Small firms —
+  often the owner.
+- **Why they're first:** perhaps 15–25 firms nationally, all findable in an afternoon,
+  all reachable by email, and each one values a single liquidation lead at tens of
+  thousands of dollars. **These are the only people you should cold-email**, and you
+  should charge them far more than $149 — a dealer tier at $999/month is defensible
+  against one recovered liquidation.
+- **The email is not a pitch.** It is: *"Six labs in your region had NIH funding end in
+  the last 90 days. Here they are."* Delivery, not persuasion — the same discipline as
+  the freight plan.
+
+#### 2. Small and mid-size life-science vendors — the volume
+
+Thousands of reagent, antibody, instrument, consumable and lab-software companies sell
+into academic labs. The market is **fragmented enough that the largest antibody supplier
+holds under 5% share**, which tells you the long tail is enormous.
+
+- **Who signs:** founder/CEO at the small end, VP Sales or Head of Commercial at the mid.
+  They own the card and answer to nobody at $149.
+- **Why they buy:** they have *no* market intelligence. The incumbents — Clarivate,
+  IQVIA, Salesmotion and friends — are enterprise, custom-priced, and quoted on request.
+  **Nothing exists at $149 self-serve.** That gap is your entire pricing position.
+- **Honest gap:** I could not find a clean published count of US life-science vendors.
+  Building that list is a week-one task and it is entirely public — trade-media
+  advertiser lists (GenomeWeb, LabX Media Group), SAMPS membership, and supplier
+  directories. **The prospect list is itself a public-data exercise**, which is on-brand.
+
+#### 3. Independent manufacturer's reps and regional distributors
+
+A real and often-forgotten category in lab equipment: commission-driven, territory-based,
+and with no data budget whatsoever. **Laboratory Equipment Company**, **Life Scientific
+Inc.** and dozens of regional firms operate this way. A rep whose income is a percentage
+of a territory has the most direct possible incentive to know which accounts still have
+money.
+
+#### 4. Life-science recruiters
+
+Funding changes drive both hiring and layoffs. Recruiters buy tools on a card, move fast,
+and a lab that just won a large award is about to post three positions.
+
+**Adjacent, revisit later:** university research-development offices (institutional, so
+slower), biotech BD and competitive intelligence, CRO and CDMO business development.
+
+### The mechanism, in three layers
+
+**Layer 1 — the tracker does the selling.** The free public funding tracker ranks for
+searches that worried researchers, administrators, reps and journalists are already
+making right now. Press citation is free distribution. This is the top of the funnel and
+it costs nothing to run.
+
+**Layer 2 — the places your buyer already gathers, all reachable without travel:**
+
+- **SAMPS** — *Serving Sales & Marketing Professionals in Life Science*. Describes itself
+  as the first and only organization dedicated to sales and marketing professionals in
+  life sciences and applied research, and it runs **newsletters and online events**. This
+  is your buyer, pre-assembled, with a remote-accessible stage. Speak at an online event.
+- **GenomeWeb** — reaches exactly the supplier-and-executive audience; its advertisers
+  *are* your customers.
+- **LabX Media Group** and **Life Science Connect** — newsletters, webinars and
+  communities aimed at lab professionals and the vendors selling to them.
+- **LinkedIn** — where life-science commercial people genuinely live. Post the findings,
+  never the product.
+
+**Layer 3 — direct email, to segment 1 only.** Fifteen to twenty-five surplus dealers is
+a list you work by hand in a day. Everyone else arrives inbound.
+
+### The funnel, as an actual Tuesday
+
+1. A rep sees a LinkedIn post: *"the 20 institutions that lost the most NIH funding this
+   quarter."*
+2. They click through to the free tracker and search their own state — because of course
+   they do.
+3. They recognise three accounts they are still actively working.
+4. They hit the limit: one territory, weekly. Unlimited territories and daily alerts is
+   the paid tier.
+5. Card entered. Elapsed time: under four minutes, no human involved.
+
+### Pricing ladder
+
+| Tier | Price | Who |
+|---|---|---|
+| Free | $0 | One territory, weekly, no signup — the lead magnet and SEO asset |
+| Rep | **$149/mo** | Individual reps, recruiters, independent manufacturer's reps |
+| Team | **$499/mo** | Small vendors, 5 seats, shared territory lists |
+| Dealer | **$999/mo** | Surplus and liquidation firms — closure alerts, priority feed |
+
+The ladder matters because the dealer tier can carry the business while the volume
+segments compound, and it is the tier you can sell by hand starting in week five.
+
+### What you never do in Phase 1
+
+No demos. No discovery calls. No enterprise pilots. No conference booths. The moment
+you agree to a call for a $149 product, the economics break and the remote constraint
+starts costing you money instead of protecting it.
+
+## Additional sources
+
+- Surplus and liquidation dealers — [EquipNet](https://www.equipnet.com/), [Copia Scientific](https://www.excedr.com/blog/lab-equipment-from-copia-scientific-formerly-biosurplus), [American Laboratory Trading](https://americanlaboratorytrading.com/), [Surplus Solutions](https://ssllc.com/), [The Lab World Group](https://www.thelabworldgroup.com/), [Lab Liquidators](https://labliquidators.com/)
+- Where the buyer gathers — [SAMPS](https://www.samps.org/), [GenomeWeb](https://www.linkedin.com/company/genomeweb-llc), [LabX Media Group](https://www.labxmediagroup.com/), [Life Science Connect communities](https://lifescienceconnect.com/communities/)
+- Incumbent positioning — [Clarivate life-sciences commercialization](https://clarivate.com/life-sciences-healthcare/commercialization/), [life-sciences sales intelligence tools roundup](https://salesmotion.io/blog/life-sciences-sales-intelligence-tools-biotech)
+- Market fragmentation — [Mordor: life science reagents market](https://www.mordorintelligence.com/industry-reports/life-science-reagents-market)
+
 ## Sources
 
 - **NIH RePORTER** — [API v2](https://api.reporter.nih.gov/), [repoRter.nih R interface](https://cran.r-project.org/web/packages/repoRter.nih/vignettes/repoRter_nih.pdf)
