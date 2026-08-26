@@ -230,6 +230,172 @@ government has already published.
 And it forces you to build US business entity resolution — the substrate under six of
 the other nine opportunities.
 
+---
+
+## Who buys this — named, and how you reach them
+
+Answered before any code is written, because if this section is wrong nothing
+downstream matters.
+
+### Two findings that narrow the target
+
+**The broker channel is closed.** Not crowded — *closed*. TIA runs its Watchdog
+fraud program **in partnership with Highway**, so the association-endorsed slot at
+1,700+ member brokerages is already occupied. DAT ships **DAT Verified** with
+behaviour-anomaly detection on the load board itself. Selling carrier vetting to
+brokers now means displacing an association partnership and a load-board feature at
+$149/month. Confirmed: do not go there.
+
+**Both target markets are consolidating.** Love's Financial acquired TBS Factoring;
+eCapital absorbed TAFS; Federated Mutual acquired HDVI on 1 August 2026. Fewer buyers,
+each bigger. That is *good* for a data business — a shorter list of larger accounts
+with real fraud P&L — and bad for anyone whose plan depended on volume across hundreds
+of small logos.
+
+### Ring 1 — design partners: freight factoring companies
+
+The people who wire money against an invoice from a carrier they onboarded last week.
+When that carrier is a reincarnation, they eat the advance.
+
+**Named targets** (the top of the market, roughly ordered by volume and by how
+publicly they have engaged with fraud):
+
+- **Triumph Financial** (Triumph Business Capital + the TriumphPay network) — the
+  single best first call. They sit on both the factoring *and* the broker-payment
+  side, they have publicly campaigned on freight fraud, and they have the data to
+  validate you instantly.
+- **RTS Financial** (Roadrunner/Ryder-adjacent scale), **Apex Capital Corp**,
+  **OTR Solutions**, **eCapital** (now carrying TAFS), **Love's Financial** (now
+  carrying TBS), **TAFS**, **Thunder Funding**, **Porter Freight Funding**,
+  **Bobtail**, **Denim**, **Outgo** (DAT-affiliated).
+- Roughly **247 invoice factoring firms** exist in the US and the count is falling
+  (−5.4% in 2025, −16.1% the year before). Realistically **15–25 of them** matter for
+  freight. That is your entire Ring 1 list, and it fits on one page.
+
+**Who signs:** VP of Risk, Chief Credit Officer, or Head of Underwriting. At the
+smaller shops it is the founder/CEO directly. Not a CTO, not a Head of Product — this
+is bought by whoever owns the charge-off number.
+
+**What they are measured on:** losses as a percentage of advances. That is the metric
+your pitch must move. Everything else is noise to them.
+
+### Ring 2 — revenue: cargo and trucking insurers, MGAs
+
+They price risk on FMCSA data they already ingest. You are adding one variable to an
+existing feed, not creating a category — which is why the procurement path is short.
+
+- **Data-first insurtech underwriters first**: **Nirvana Insurance** (AI/telematics
+  underwriting, prices at bind rather than adjusting after), **Cover Whale**, **HDVI**
+  (now inside Federated Mutual), **Loadsure** (cargo-specific MGA).
+  These buy new underwriting variables faster than anyone else in insurance because
+  their entire differentiation is data.
+- **Then the traditional motor-truck-cargo writers**: Great West Casualty, Northland
+  (Travelers), Canal Insurance, Protective Insurance, Berkley Prime Transportation,
+  Sentry. Longer cycles, larger cheques.
+- **Then the large trucking-focused brokers/MGAs** who influence which data their
+  carriers use: Reliance Partners, Cottingham & Butler, Marquee Insurance Group.
+
+**Who signs:** Head of Underwriting or Chief Underwriting Officer. At insurtechs, often
+the Head of Data Science jointly.
+
+### Ring 3 — scale: platforms, including the incumbents
+
+Sell the lineage layer *to* the companies that own the workflow, instead of fighting
+them for the desk.
+
+- **The vetting incumbents themselves**: Highway, Carrier Assure, Descartes
+  MyCarrierPortal, Carrier411, CarrierOK. They own distribution and lack the graph.
+- **Load boards and networks**: DAT, Truckstop.
+- **TMS and factoring software**: the systems where onboarding actually happens.
+
+This ring is the largest revenue and the slowest to reach. It becomes viable only
+*after* Rings 1 and 2 have proved the signal — nobody licences an unvalidated feed.
+
+---
+
+## How you actually reach them
+
+Four channels, ranked by how well they work in *this* industry. Note that the first
+three are all forms of the same move: publish the number and let it pull.
+
+### 1. The published report → the freight fraud press
+
+Freight has a real, named fraud beat. That is unusual and it is your cheapest
+distribution:
+
+- **Clarissa Hawes** (FreightWaves) — investigative, has broken multiple
+  double-brokering network stories.
+- **Phil Brink** — Head of Fraud Media and Education at FreightWaves, and a former
+  brokerage operator. He exists specifically to amplify this material.
+- Plus **Overdrive**, **Commercial Carrier Journal**, **Trucking Dive**, **Land Line**,
+  **Transport Topics**.
+
+**What you send:** not a pitch. A methodology-first report with a number nobody has
+published — *how many revoked→new-entity clusters are active right now* — with
+anonymized examples and your false-positive rate stated up front. One paragraph of
+email, the report attached, no product mentioned.
+
+### 2. The IFA rooms — where Ring 1 is physically standing
+
+This is the highest-density channel that exists for your buyer:
+
+- **IFA Annual Factoring Conference** — May 6–8, Omni Hotel, Nashville. ~850 attendees:
+  factors, banks, transportation specialists, fintechs. It runs a **Fraud Roundtable**
+  and dedicated transportation-factoring sessions.
+- **IFA Annual Transportation Factoring Meeting** — smaller, and built *entirely* around
+  factors serving trucking. Fraud and risk mitigation is core programming.
+
+Go to the transportation meeting first. It is smaller, more targeted, and the entire
+room is Ring 1. Speak if you can — a data talk with a novel number is exactly what
+these agendas want, and speaking converts far better than a booth.
+
+### 3. TIA — the task force, not the Watchdog slot
+
+TIA's **Fraud Task Force** explicitly includes technology companies working on
+tech-driven fraud solutions, and TIA has routed 200+ fraud reports to federal
+authorities producing 17 indictments and $4.2M recovered. The Watchdog partnership is
+Highway's; the task force is a *forum*. Contribute data to it. It is credibility and
+relationships, not a sales channel — treat it that way and it pays off in Ring 3.
+
+### 4. Direct, but only after 1–3
+
+Fifteen to twenty-five named accounts is a list you work by hand: LinkedIn to the VP of
+Risk, warm intros from the IFA rooms, and the free-retro offer. Do not run a cold email
+sequence at this list — it is too small to burn, and each name is worth a real
+conversation.
+
+---
+
+## The sequence, in the words you'd actually use
+
+1. **Publish** the cluster count. No product, no CTA beyond "methodology here."
+2. **Post it** where the buyers read: LinkedIn, the trade press, the TIA task force.
+3. **When someone engages**, offer the specific thing: *"we found N active clusters —
+   three in your state. Want us to check whether any are on your book?"*
+4. **Run the free retro** on their charge-off list, point-in-time, false positives
+   disclosed.
+5. **Only then** quote a price, anchored to the losses the retro surfaced.
+
+You are not selling a product for the first three months. You are publishing a finding
+and running free analyses. The product is what they ask for afterwards.
+
+---
+
+## The question that decides whether this business exists
+
+Ask it on the first five calls, before writing any detection code:
+
+> **"How much did you write off to carrier identity fraud last year — and do you know
+> which specific accounts they were?"**
+
+If they answer with a number and can produce the accounts, you have a buyer and a
+labeled test set in the same breath. If they say *"we book it as credit loss, we don't
+break it out"* — and some will — then they cannot value your product, because they
+cannot see the problem you are solving. Two or three of those in a row is a real signal
+to reconsider the buyer, not the technology.
+
+That call costs nothing and can be made this week, before a line of code exists.
+
 ## Sources
 
 - Cargo theft losses — [Verisk Q2 2026: $304.6M](https://www.verisk.com/company/newsroom/cargo-theft-losses-more-than-double-to-$304-million-in-q2-despite-a-drop-in-thefts-driven-by-high-value-metals-and-technology-heists/), [Insurance Journal](https://www.insurancejournal.com/news/national/2026/08/14/881495.htm), [HDT on 2025 totals](https://www.truckinginfo.com/news/cargo-theft-losses-more-than-double-in-q2-despite-fewer-incidents)
