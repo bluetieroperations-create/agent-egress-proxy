@@ -1740,10 +1740,43 @@ class _Handler(BaseHTTPRequestHandler):
                             extra_headers={"Retry-After": str(int(retry) + 1)})
         return allowed
 
+    # CORS: the verdict endpoint is a PUBLIC API, so allow browser clients (the
+    # check.blackwalltier.com demo page, a Farcaster mini-app) to call it
+    # cross-origin. Responses carry only a verdict + a public-key-verifiable
+    # receipt -- no secrets -- so `*` WITHOUT credentials exposes nothing the
+    # endpoint does not already serve to any caller.
+    _CORS = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        # The x402 REQUEST headers the service actually reads: X-PAYMENT
+        # (single-shot / v1-CDP), PAYMENT-SIGNATURE (v2 canonical) and
+        # X-PAYMENT-SESSION (session reuse), plus Authorization for token-gated
+        # routes. A browser STRIPS any request header not listed here at the
+        # preflight, so an omission silently breaks that paid flow rather than
+        # failing loudly.
+        "Access-Control-Allow-Headers": (
+            "Content-Type, X-PAYMENT, PAYMENT-SIGNATURE, X-PAYMENT-SESSION, "
+            "Authorization"),
+        "Access-Control-Max-Age": "86400",
+    }
+
+    def do_OPTIONS(self):
+        # CORS preflight: a browser sends OPTIONS before any cross-origin POST
+        # carrying a JSON body or an X-PAYMENT header. Answer 204 with the CORS
+        # headers so the real request is allowed to proceed.
+        self.send_response(204)
+        for k, v in self._CORS.items():
+            self.send_header(k, v)
+        self.send_header("Content-Length", "0")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
     def _send_json(self, code, obj, extra_headers=None):
         body = json.dumps(obj, separators=(",", ":")).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
+        for k, v in self._CORS.items():
+            self.send_header(k, v)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Connection", "close")
         for k, v in (extra_headers or {}).items():
