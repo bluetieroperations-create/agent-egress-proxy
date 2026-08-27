@@ -1,69 +1,62 @@
-# Vendor outreach — draft for you to send
+# Outreach — researched targets
 
-Send from your own address. Do not attach the dataset. One finding, one method,
-one question. If nobody replies, that is the answer and it cost an afternoon.
+The original five were companies picked from search results. Reading the actual
+bylines changed the list materially.
 
-## Targets
+## What the byline check found
 
-| Company | Why them | Who to find |
-|---|---|---|
-| **JFrog** | Ships an MCP registry product; needs to know which catalog entries are junk | Product lead, MCP/AI catalog |
-| **Snyk** | Sells supply-chain scanning; MCP is the adjacent surface | Security research / product |
-| **Checkmarx** | Published MCP security guidance | Research lead |
-| **UpGuard** | Published "Six MCP Security Incidents" | Research lead |
-| **Bishop Fox** | Published MCP supply-chain research | Research lead |
+| Target | Author of their MCP work | Published email? | Verdict |
+|---|---|---|---|
+| **Snyk** | Acquired **Invariant Labs** — the team that discovered MCP tool poisoning and rug pulls, and built MCP-Scan | **Yes** (below) | **Best target.** Also most likely to already do this |
+| **Bishop Fox** | Derek Rush, Managing Senior Consultant | No — LinkedIn only | Real researcher; route via LinkedIn |
+| **Checkmarx** | Steve Boone | No | Route via LinkedIn |
+| **UpGuard** | Shane Moosa, **Content Writer** (reviewed by the CMO) | No | **Deprioritised** — marketing post, not research |
+| **JFrog** | No named MCP author found | No | Unresolved |
 
-## The email
+## Addresses used — all self-published
 
-> **Subject:** 24 MCP servers advertise tools they don't serve — data offer
->
-> Hi [name],
->
-> I probed all 13,901 remotely-reachable servers in the official MCP registry on
-> 27 Aug and recorded every tool definition — 127,403 of them, including
-> descriptions and input schemas.
->
-> One result you may care about: 24 servers from 21 unrelated publishers, on 24
-> different hosts, serve only `echo`/`add`/`server_time` while advertising real
-> capabilities. Two of them advertise safety functions — "rug check, honeypot
-> sell-sim, drainer scan" and "pre-trade safety verdicts" — and implement none of
-> it. An agent told a drainer-scan tool exists may act as though it ran.
->
-> Also: 2,631 listed servers (18.9%) don't answer at all, and 47 complete the
-> handshake and expose nothing.
->
-> None of this is in the registry metadata. It only shows up if you call every
-> server and hash what comes back.
->
-> I'm taking this reading monthly. The part I think is worth more than any single
-> snapshot is the diff: which servers change their tool definitions **without
-> changing their version** — the rug-pull signature, where a tool keeps its name
-> and its description (the text the model obeys) gets rewritten.
->
-> Is that a feed [company] would want? Happy to send the current reading so you
-> can check the numbers yourself.
->
-> [name]
+- **Marc Fischer** — `mail@marcfischer.at`. Co-founder and former CEO of Invariant
+  Labs, now Research Engineer at Snyk. Address published on his own site for contact.
+- **Luca Beurer-Kellner** — `luca.beurer-kellner@inf.ethz.ch`. Chief Scientist,
+  Invariant Labs; SRI Lab, ETH Zurich. Published on his ETH staff page.
+- **Mislav Balunović** — `mislav.balunovic@inf.ethz.ch`. Former CTO, Invariant
+  Labs; Post-Doc, SRI Lab. Published on his ETH staff page. On cc.
 
-## Why this email is shaped this way
+No address was guessed or inferred from a naming pattern. Nothing was sent to a
+`security@` inbox — that channel is for vulnerability disclosure and this is not one.
 
-- **Leads with a specific verified number**, not a pitch.
-- **Names the limitation** — intent is not claimed, only the mismatch. Security
-  researchers check things; overclaiming ends the conversation.
-- **Offers the data free** to verify. The product is the feed, not the file.
-- **One question at the end.** Not a meeting request — this stays behind a
-  computer, per the standing constraint.
+## Two different emails, deliberately
+
+**To Marc Fischer** (personal/professional address, now at a vendor): includes the
+commercial question, because it is appropriate to his role.
+
+**To the ETH addresses**: framed as research correspondence, not a sales approach.
+An academic address is published for scholarly contact; pitching a paid feed into
+one is a misuse of it. The email offers the dataset freely, credits their prior
+work, and asks whether the measurement is redundant. If a commercial conversation
+follows, it follows from their interest — not from the cold email.
+
+## Both emails lead with the correction
+
+Each states plainly that the first pass wrongly flagged a 53-server group that
+turned out to be one publisher's directory. Researchers trust people who volunteer
+their own errors, and it demonstrates the method rather than asserting it.
+
+## The question that matters most
+
+Both emails ask directly: **does MCP-Scan already do this registry-wide and
+longitudinally?** Invariant/Snyk are the only people qualified to answer, and a
+"yes" saves months. That question is deliberately placed before the offer.
 
 ## What counts as a result
 
-- **Reply asking for the data** — real interest, send it.
-- **Reply saying "we already do this"** — valuable; ask what they use, then stop.
-- **Silence from all five** — the honest signal that there is no buyer here.
-  Stop before spending months, exactly the mistake made 19 times before this.
+- **They want the data** — real interest, send it.
+- **"We already do this"** — the most valuable answer available. Stop, and say thank you.
+- **Silence from all three** — the signal to stop, not to build more. This is the
+  step skipped 19 times before.
 
-## What NOT to do
+## Still unresolved
 
-- Do not name individual publishers publicly as bad actors. Intent is unproven,
-  some are likely abandoned scaffolding, and being wrong about one costs the
-  credibility of the whole finding.
-- Do not send the retracted "53 brands" claim. It was checked and was false.
+No published email for JFrog, Checkmarx or Bishop Fox. LinkedIn is the route:
+Derek Rush's profile is public (linkedin.com/in/derek-r-715772b/). Drafts for
+those three are in Gmail with the recipient line blank.
