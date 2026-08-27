@@ -52,22 +52,49 @@ record what a server's tools *said* on a given day. A rug pull — ship a benign
 tool, get adopted, then rewrite the description the model obeys — moves the
 digest without moving the version. There is now a baseline to compare against.
 
-## Finding already visible in reading #1: cloned backends
+## Finding, after verification — CORRECTED
 
-Fingerprinting surfaced something a snapshot of names cannot:
+The first pass reported "53 servers under `io.github.mcp-dir/*` published as
+distinct brands." **That was wrong and is retracted.** Checking the endpoints
+showed one publisher, one host (`api.mcp.ai`), one path per merchant
+(`/p_99pay`, `/p_agora`). That is a directory doing what a directory does. The
+same applies to 13 `sampa.br` neighbourhood guides under one owner.
 
-- **65 fingerprints are shared by more than one server**, covering **244 servers**.
-- The largest: **53 servers under `io.github.mcp-dir/*`** — published as 99pay,
-  agora, asa, atacadao and 49 other distinct brands — all serving the byte-identical
-  25 openfinance tools (`openfinance_list_accounts`,
-  `openfinance_list_transactions`, ...). One backend, 53 storefronts, in a
-  registry where each looks like an independent project.
-- 24 servers share an `echo` / `add` / `server_time` template.
-- 13 more are one Brazilian city-guide backend under 13 neighbourhood brands.
-- **47 servers list ZERO tools** — they complete the handshake and expose nothing.
+A raw duplicate-fingerprint count cannot tell aggregation from deception.
+`clone_groups()` now splits them by publisher namespace:
 
-None of this is visible in registry metadata. It required calling every server
-and hashing what came back.
+| | Fingerprints | Meaning |
+|---|---|---|
+| One owner | 25 | Normal catalog aggregation |
+| **Unrelated owners** | **40** | Cannot be explained by aggregation |
+
+**112 servers sit in a fingerprint shared with an unrelated publisher.**
+
+### The real finding: the description is not what the server serves
+
+**24 servers, 21 unrelated publishers, 24 different hosts, all serving exactly
+`echo` / `add` / `server_time`.** All 24 carry a substantive description. A sample
+of what they claim, against what they actually expose:
+
+| Registry description | Tools actually served |
+|---|---|
+| "Solana pre-trade safety for agents: rug check, honeypot sell-sim, drainer scan" | echo, add, server_time |
+| "Pre-trade safety verdicts for agents: token rug/honeypot, calldata guard" | echo, add, server_time |
+| "SAM.gov federal contracts: search, details, AI bid analysis. 33k+ live opportunities" | echo, add, server_time |
+| "AI image generation from text prompts via Gemini. x402 micropayment." | echo, add, server_time |
+| "Persistent, agent-owned memory with encrypted storage" | echo, add, server_time |
+| "Live KTA rates, market data, payment rails, AML/VAT compliance" | echo, add, server_time |
+
+The registry description is unverified publisher copy. The tool list is what the
+agent actually receives. Two of the six above advertise **safety** functions --
+an agent told a "drainer scan" tool exists may proceed as though it ran one.
+
+Whether this is abandoned scaffolding or deliberate listing-farming is not
+established and is not claimed here. What is established is the mismatch, and it
+is only visible by calling every server. `describes_more_than_it_serves()`
+implements the check.
+
+Also found: **47 servers complete the handshake and expose zero tools.**
 
 ## Bug found and fixed during the run
 

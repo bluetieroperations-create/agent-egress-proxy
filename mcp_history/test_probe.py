@@ -248,3 +248,79 @@ class TestSSEEarlyStop(unittest.TestCase):
         r = self._Resp([])
         out = p._read_sse(r, 2_000_000, __import__("time").monotonic() - 1)
         self.assertIsNone(out)
+
+
+class TestCloneGroups(unittest.TestCase):
+    """Regression for the reading-#1 correction: the largest duplicate group was
+    one publisher's directory, not 53 fake identities."""
+
+    def _row(self, name, digest):
+        return {"name": name, "tools_digest": digest, "class": p.TOOLS_LISTED}
+
+    def test_same_owner_is_aggregation_not_a_clone(self):
+        # kills: counting one publisher's catalog as unrelated servers faking
+        # independence -- the false headline this function exists to prevent
+        g = p.clone_groups([self._row("io.github.dir/a", "d"),
+                            self._row("io.github.dir/b", "d")])
+        self.assertEqual(len(g["unrelated"]), 0)
+        self.assertEqual(g["aggregated"][0]["count"], 2)
+
+    def test_different_owners_are_flagged(self):
+        # kills: collapsing both cases together, which hides the real signal
+        g = p.clone_groups([self._row("io.github.alice/a", "d"),
+                            self._row("io.github.bob/b", "d")])
+        self.assertEqual(len(g["aggregated"]), 0)
+        self.assertEqual(g["unrelated"][0]["owners"],
+                         ["io.github.alice", "io.github.bob"])
+
+    def test_empty_tool_servers_excluded(self):
+        # kills: every zero-tool server hashing alike into one meaningless
+        # mega-group that would dominate the output
+        e = p.tools_digest([])
+        g = p.clone_groups([self._row("a/x", e), self._row("b/y", e)])
+        self.assertEqual(g["unrelated"], [])
+        self.assertEqual(g["aggregated"], [])
+
+    def test_singletons_ignored(self):
+        # kills: reporting unique servers as groups of one
+        g = p.clone_groups([self._row("a/x", "d1"), self._row("b/y", "d2")])
+        self.assertEqual(g["unrelated"], [])
+
+    def test_unrelated_sorted_by_size(self):
+        # kills: unordered output, burying the largest group
+        rows = [self._row("a/1", "big"), self._row("b/2", "big"),
+                self._row("c/3", "big"), self._row("d/4", "small"),
+                self._row("e/5", "small")]
+        g = p.clone_groups(rows)
+        self.assertEqual([e["count"] for e in g["unrelated"]], [3, 2])
+
+
+class TestDescriptionMismatch(unittest.TestCase):
+    def test_boilerplate_with_real_description_flags(self):
+        # kills: trusting the description, which is unverified publisher copy
+        row = {"class": p.TOOLS_LISTED,
+               "tools": [tool("echo"), tool("add"), tool("server_time")]}
+        self.assertTrue(p.describes_more_than_it_serves(
+            row, "Solana pre-trade safety for agents: rug check, honeypot sell-sim"))
+
+    def test_real_tools_do_not_flag(self):
+        # kills: flagging every server with a long description
+        row = {"class": p.TOOLS_LISTED, "tools": [tool("search_flights")]}
+        self.assertFalse(p.describes_more_than_it_serves(
+            row, "Search and book flights across 400 airlines worldwide today"))
+
+    def test_boilerplate_with_stub_description_does_not_flag(self):
+        # kills: flagging honest demo servers that never claimed anything
+        row = {"class": p.TOOLS_LISTED, "tools": [tool("echo")]}
+        self.assertFalse(p.describes_more_than_it_serves(row, "test"))
+
+    def test_unreachable_server_is_not_a_mismatch(self):
+        # kills: blaming a gated or dead server for not listing tools -- that is
+        # a reachability fact, not a false claim
+        row = {"class": p.AUTH_REQUIRED, "tools": []}
+        self.assertFalse(p.describes_more_than_it_serves(row, "A" * 80))
+
+    def test_mixed_real_and_trivial_does_not_flag(self):
+        # kills: flagging a genuine server that merely also ships a health probe
+        row = {"class": p.TOOLS_LISTED, "tools": [tool("echo"), tool("get_invoice")]}
+        self.assertFalse(p.describes_more_than_it_serves(row, "A" * 80))

@@ -339,3 +339,70 @@ def census(entries):
         "with_remote": len(remote),
         "package_only": len(active) - len(remote),
     }
+
+
+def namespace(name):
+    """Publisher namespace of a registry name ('io.github.acme/thing' -> 'io.github.acme')."""
+    return (name or "").split("/")[0]
+
+
+def clone_groups(rows):
+    """Servers sharing a tool fingerprint, SPLIT by whether the owners are related.
+
+    MEASURED CORRECTION (reading #1): a raw duplicate-fingerprint count is
+    misleading. The largest group -- 53 servers -- was one publisher
+    (`io.github.mcp-dir`) serving one host (`api.mcp.ai`) under per-merchant
+    paths: a directory doing exactly what a directory does. Reporting that as
+    "53 fake identities" would have been false.
+
+    What matters is UNRELATED publishers converging on identical tools, which
+    cannot be explained by aggregation. So groups are split:
+
+    - `aggregated`: one namespace. Normal; a publisher organizing its catalog.
+    - `unrelated`: two or more namespaces. Either copied scaffolding or shared
+      infrastructure presented as independent projects.
+
+    Empty-tool servers are excluded: everything serving nothing hashes alike,
+    so they would form one meaningless mega-group.
+    """
+    empty = tools_digest([])
+    groups = {}
+    for r in rows:
+        d = r.get("tools_digest")
+        if not d or d == empty:
+            continue
+        groups.setdefault(d, []).append(r)
+
+    aggregated, unrelated = [], []
+    for d, g in groups.items():
+        if len(g) < 2:
+            continue
+        owners = {namespace(r.get("name")) for r in g}
+        entry = {"digest": d, "servers": sorted(r.get("name") for r in g),
+                 "owners": sorted(owners), "count": len(g)}
+        (aggregated if len(owners) == 1 else unrelated).append(entry)
+
+    unrelated.sort(key=lambda e: -e["count"])
+    aggregated.sort(key=lambda e: -e["count"])
+    return {"aggregated": aggregated, "unrelated": unrelated}
+
+
+def describes_more_than_it_serves(row, description, trivial_tools=frozenset(
+        {"echo", "add", "server_time", "ping", "hello", "greet"}), min_desc=40):
+    """True when a server advertises a real capability but serves only boilerplate.
+
+    The registry description is unverified publisher copy; the tool list is what
+    the agent actually gets. When a server promising "rug check, honeypot
+    sell-sim, drainer scan" serves `echo`/`add`/`server_time`, an agent selecting
+    on description is misled -- and a model told a safety tool exists may act as
+    if it ran.
+
+    Only flags servers that DID list tools. Anything unreachable or gated is a
+    separate class and is not a mismatch.
+    """
+    if row.get("class") != TOOLS_LISTED:
+        return False
+    names = {t.get("name") for t in row.get("tools") or []}
+    if not names or not names.issubset(trivial_tools):
+        return False
+    return len(description or "") >= min_desc
