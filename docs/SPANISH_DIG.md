@@ -49,3 +49,53 @@ Two assets from this work were built, verified, and never taken to a buyer:
 
 Neither is blocked by a competitor. Both are blocked by not having been sent to
 anyone. That is a different problem from the one the last three rounds were solving.
+
+---
+
+# Follow-up: "can they build it, or have they?"
+
+Right question. Finding data is not shipping a product, and several kills above were
+made on the existence of a *mirror* rather than a *product*. Re-checked. Answer: they
+have built it — including the two assets I had listed as unclaimed.
+
+## The incumbents are products, not mirrors
+
+- **Brazil CNPJ** — Casa dos Dados ships an API + webhooks. Linkana and MonitorCNPJ
+  add real-time risk scoring, ownership-change alerts, sanctions and lawsuit
+  monitoring. The change-detection layer I assumed was the gap is the product.
+- **SAT 69-B** — native **Odoo ERP modules** flag a blacklisted supplier at invoice
+  time; CrisKco runs scheduled re-screening pushed into SAP Business One, Contpaqi
+  and Aspel. Not a lookup. Integrated monitoring.
+
+## Both "unused assets" are already published
+
+- **PFAS** — DEAD. **CheckPFAS** is a free independent tool mapping UCMR 5 to every
+  US ZIP. **EWG** maintains an interactive national map, refreshed with EPA's March
+  2026 data. And the exact figure I computed — *1,717 systems exceed EPA limits* —
+  is already published verbatim in public writeups. I did not find something. I
+  recomputed something.
+- **NIH** — DEAD. The like-for-like correction is the **forward-funding** story, and
+  it is reported by **Science/AAAS**, the **AAU**, and **STAT**: forward funding rose
+  from 5-15% of new grant dollars in FY2024 to ~40% in FY2025, which is exactly why
+  total obligations look stable while new-award counts fall 8.6%. Congress has since
+  capped it. This is a covered story, not an overlooked one.
+
+## Correctness note on the PFAS code
+
+`pfas/pfas_exceedance.py` is now **out of date regardless of its commercial value**.
+In May 2026 EPA moved to roll back limits on GenX (HFPO-DA), PFBS, PFNA and PFHxS,
+retaining only PFOA and PFOS; the compliance deadline is proposed to slip 2029 -> 2031.
+`LIMIT_NGL` still carries all five, so the module over-counts exceedances against the
+current rule. Fix before any reuse.
+
+## Conclusion
+
+19 checks, 0 survivors — and the two "survivors" only survived because I had not
+checked them. In every single case the data was found *and* built on by someone with
+more resources and a head start.
+
+The generalizable finding is not about any one dataset. It is that the gap I kept
+looking for — "they have the data but nobody built the analytical layer" — did not
+occur once in nineteen attempts. Public data attracts builders at a rate that closes
+that gap faster than a solo search can find it. This approach should be abandoned,
+not iterated.
