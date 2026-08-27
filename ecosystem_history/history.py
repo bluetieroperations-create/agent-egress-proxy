@@ -31,6 +31,7 @@ DESIGN NOTES
 - Pure functions only. Reading and writing files is confined to the bottom.
 """
 
+import gzip
 import json
 import os
 import re
@@ -40,12 +41,18 @@ from datetime import date
 # Classes from directory_liveness that mean "we can actually parse a price".
 SCOREABLE = frozenset({"body_accepts", "hdr_accepts"})
 
-SNAPSHOT_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.json$")
+SNAPSHOT_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.json(\.gz)?$")
 
 
-def snapshot_name(when):
-    """Filename for a snapshot taken on `when` (a date)."""
-    return f"{when.isoformat()}.json"
+def snapshot_name(when, compress=False):
+    """Filename for a snapshot taken on `when` (a date).
+
+    Readings carrying full text (MCP tool descriptions and schemas) run to
+    hundreds of MB uncompressed, so they are stored gzipped. The date, not the
+    extension, is the identity -- `store` refuses either form if the other
+    already exists for that date.
+    """
+    return f"{when.isoformat()}.json.gz" if compress else f"{when.isoformat()}.json"
 
 
 def parse_snapshot_name(filename):
@@ -158,17 +165,27 @@ def still_alive(snapshots, as_of):
 
 # --- I/O ------------------------------------------------------------------
 
-def store(directory, results, when):
+def _existing(directory, when):
+    for name in (snapshot_name(when), snapshot_name(when, True)):
+        path = os.path.join(directory, name)
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def store(directory, results, when, compress=False):
     """Write a dated snapshot. Refuses to overwrite an existing one.
 
     Append-only is the whole point: silently replacing a past measurement
     destroys the one thing here a competitor cannot reproduce.
     """
     os.makedirs(directory, exist_ok=True)
-    path = os.path.join(directory, snapshot_name(when))
-    if os.path.exists(path):
-        raise FileExistsError(path)
-    with open(path, "w") as fh:
+    clash = _existing(directory, when)
+    if clash:
+        raise FileExistsError(clash)
+    path = os.path.join(directory, snapshot_name(when, compress))
+    opener = gzip.open if compress else open
+    with opener(path, "wt") as fh:
         json.dump(results, fh)
     return path
 
@@ -180,6 +197,8 @@ def load_all(directory):
         when = parse_snapshot_name(name)
         if when is None:
             continue
-        with open(os.path.join(directory, name)) as fh:
+        path = os.path.join(directory, name)
+        opener = gzip.open if name.endswith(".gz") else open
+        with opener(path, "rt") as fh:
             out.append((when, json.load(fh)))
     return out

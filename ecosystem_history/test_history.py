@@ -181,3 +181,43 @@ class TestStore(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCompressedStore(unittest.TestCase):
+    def test_gzip_roundtrip(self):
+        # kills: writing gzip but reading as plain text (or the reverse)
+        with tempfile.TemporaryDirectory() as d:
+            h.store(d, [row("a")], date(2026, 8, 27), compress=True)
+            loaded = h.load_all(d)
+            self.assertEqual(loaded[0][1][0]["host"], "a")
+
+    def test_gzip_blocks_plain_for_same_date(self):
+        # kills: the extension becoming the identity instead of the DATE --
+        # storing both forms would silently duplicate a reading and let a
+        # rewritten one shadow the original
+        with tempfile.TemporaryDirectory() as d:
+            h.store(d, [row("a")], date(2026, 8, 27), compress=True)
+            with self.assertRaises(FileExistsError):
+                h.store(d, [row("b")], date(2026, 8, 27))
+
+    def test_plain_blocks_gzip_for_same_date(self):
+        # kills: the collision check being one-directional
+        with tempfile.TemporaryDirectory() as d:
+            h.store(d, [row("a")], date(2026, 8, 27))
+            with self.assertRaises(FileExistsError):
+                h.store(d, [row("b")], date(2026, 8, 27), compress=True)
+
+    def test_mixed_formats_load_in_date_order(self):
+        # kills: sorting by filename, where ".json.gz" and ".json" interleave
+        # wrongly and scramble the series
+        with tempfile.TemporaryDirectory() as d:
+            h.store(d, [row("b")], date(2026, 9, 1), compress=True)
+            h.store(d, [row("a")], date(2026, 8, 27))
+            self.assertEqual([w for w, _ in h.load_all(d)],
+                             [date(2026, 8, 27), date(2026, 9, 1)])
+
+    def test_parses_gz_name(self):
+        # kills: the filename regex rejecting the compressed form, which would
+        # make every gzipped reading invisible to load_all
+        self.assertEqual(h.parse_snapshot_name("2026-08-27.json.gz"),
+                         date(2026, 8, 27))
