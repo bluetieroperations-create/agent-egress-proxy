@@ -130,6 +130,24 @@ def parse_challenge(body, headers):
         if str(key).lower() != "www-authenticate":
             continue
         value = str(value)
+
+        # MEASURED CORRECTION (2026-08-27): this function originally required the
+        # header to start with "x402" and carry requirements="<base64>". Probing
+        # all 195 surveyed hosts found 11 serving a challenge and NONE matching
+        # that shape -- the real scheme token is `Payment`, the parameter is
+        # `request`, and the encoding is base64URL and unpadded. Every one of
+        # those hosts was being recorded as `opaque_402`, i.e. indistinguishable
+        # from broken. See x402_challenge.py and docs/TECHNICAL_FINDINGS.md.
+        try:
+            import x402_challenge
+            entry = x402_challenge.to_accepts(value)
+        except Exception:
+            entry = None
+        if entry:
+            return [entry], HDR_ACCEPTS
+
+        # Retain the originally-assumed shape as a fallback: it costs nothing and
+        # a server somewhere may yet use it.
         if not value.lower().startswith("x402"):
             continue
         match = _REQUIREMENTS_RE.search(value)

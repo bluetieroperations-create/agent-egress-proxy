@@ -98,11 +98,27 @@ direct overlap between the two datasets.
 - **Zero tool poisoning** across 127,403 definitions, giving reading #2 a clean
   floor to diff against (`POISON_SCAN_BASELINE.md`).
 
-## What to do with this
+## Wiring — DONE, and measured
 
-1. **Wire `x402_challenge.accepts_from_response` into the body-only consumers.**
-   It is additive and tested; it makes header-style endpoints payable and
-   scoreable for the first time.
+`x402_challenge` is now wired into every body-only consumer, additively:
+
+| Consumer | Change |
+|---|---|
+| `directory_liveness.parse_challenge` | corrected scheme/param; body still wins |
+| `discovery_crawl.extract_resources` | optional `_headers=`; header entry appended after body entries |
+| `traceipt_attest._first_accepts` | optional `headers=`; body preferred |
+| `clients/x402_pay` | `_http_json` now returns response headers; 402 falls back to the header challenge |
+
+**Measured result:** re-probing the 86 hosts previously classed `opaque_402`,
+**5 are now `hdr_accepts` — scoreable and payable for the first time**:
+`api.onesource.io`, `api.webbersites.com`, `stable-financial.vercel.app`,
+`stable-travel...vercel.app`, `x402.donnyautomation.com`.
+
+The rest of the 86 are genuinely not challenges: 49 still opaque, 12 are POST-only
+(405), 11 are 404, 5 no longer return 402 at all. So the header gap accounted for
+about **6% of the opaque set**, not all of it — a real recovery, not a cure-all.
+
+## Remaining actions
 2. **Do not assume Base.** Chain 4217 is live and being paid.
 3. **Do not assume 6 decimals.** Carry None and refuse rather than guess.
 4. **Treat gateway concentration as a real risk input** — a payee behind

@@ -133,3 +133,68 @@ class TestAcceptsFromResponse(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestConsumerWiring(unittest.TestCase):
+    """The v2 header must reach the consumers that previously read only the body."""
+
+    HDR = {"WWW-Authenticate": EVM}
+
+    def test_directory_liveness_classifies_header_challenge(self):
+        # kills: the original regex, which required scheme "x402" and
+        # requirements= -- it matched NONE of the 11 live challenges, so every
+        # one was recorded as opaque_402, indistinguishable from broken
+        import directory_liveness as dl
+        accepts, carrier = dl.parse_challenge("", self.HDR)
+        self.assertEqual(carrier, dl.HDR_ACCEPTS)
+        self.assertEqual(accepts[0]["payTo"],
+                         "0xdd5fcEa81CA6f1EB39FEd5B973DE794293B81ba6")
+
+    def test_directory_liveness_body_still_wins(self):
+        # kills: the header shadowing a good body, changing what works today
+        import directory_liveness as dl
+        _, carrier = dl.parse_challenge('{"accepts":[{"payTo":"0xb"}]}', self.HDR)
+        self.assertEqual(carrier, dl.BODY_ACCEPTS)
+
+    def test_crawler_records_a_header_only_payee(self):
+        # kills: the crawl skipping v2 sellers entirely, so they never enter
+        # reputation, price baselines or the directory
+        import discovery_crawl as dc
+        recs = dc.extract_resources({"resource": "https://x.test/a"}, _headers=self.HDR)
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0]["payTo"],
+                         "0xdd5fcea81ca6f1eb39fed5b973de794293b81ba6")
+        self.assertEqual(recs[0]["price_atomic"], 10000)
+        self.assertEqual(recs[0]["network"], "eip155:8453")
+
+    def test_crawler_is_additive_not_replacing(self):
+        # kills: the header entry displacing body entries
+        import discovery_crawl as dc
+        body = {"accepts": [{"payTo": "0x" + "b" * 40, "maxAmountRequired": "1",
+                             "asset": "0x" + "c" * 40, "network": "eip155:8453"}]}
+        self.assertEqual(len(dc.extract_resources(body, _headers=self.HDR)), 2)
+
+    def test_crawler_unchanged_without_headers(self):
+        # kills: the new branch altering existing body-only crawl behaviour
+        import discovery_crawl as dc
+        self.assertEqual(dc.extract_resources({"resource": "https://x.test/a"}), [])
+
+    def test_attest_falls_back_to_header(self):
+        # kills: traceipt_attest reading only the body, so a v2 Traceipt-style
+        # endpoint yields no requirements and the auto-pay silently no-ops
+        import traceipt_attest as ta
+        got = ta._first_accepts({}, self.HDR)
+        self.assertEqual(got["payTo"], "0xdd5fcEa81CA6f1EB39FEd5B973DE794293B81ba6")
+
+    def test_attest_prefers_body(self):
+        # kills: the header overriding an explicit body requirement
+        import traceipt_attest as ta
+        got = ta._first_accepts({"accepts": [{"payTo": "0xbody"}]}, self.HDR)
+        self.assertEqual(got["payTo"], "0xbody")
+
+    def test_attest_without_headers_is_unchanged(self):
+        # kills: a signature change breaking existing single-arg callers
+        import traceipt_attest as ta
+        self.assertIsNone(ta._first_accepts({}))
+        self.assertEqual(ta._first_accepts({"accepts": [{"payTo": "0xa"}]})["payTo"],
+                         "0xa")

@@ -89,23 +89,31 @@ def _to_0x_hex(b):
 
 
 def _http_json(url, body=None, headers=None, timeout=30):
-    """POST (or GET) JSON; return (status, parsed-or-raw, raw_bytes)."""
+    """POST (or GET) JSON; return (status, parsed-or-raw, raw_bytes, resp_headers).
+
+    Response headers are returned because the v2 x402 style carries the payment
+    requirements in `WWW-Authenticate`, not the body -- a body-only read makes
+    those endpoints look unpayable. See x402_challenge.py.
+    """
     data = json.dumps(body).encode() if body is not None else None
     hdrs = {"content-type": "application/json", "accept": "application/json"}
     hdrs.update(headers or {})
     req = urllib.request.Request(url, data=data, headers=hdrs,
                                  method="POST" if data is not None else "GET")
+    resp_headers = {}
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             raw = r.read()
             status = r.status
+            resp_headers = dict(r.headers.items())
     except urllib.error.HTTPError as e:        # 402 lands here
         raw = e.read()
         status = e.code
+        resp_headers = dict(e.headers.items()) if e.headers else {}
     try:
-        return status, json.loads(raw), raw
+        return status, json.loads(raw), raw, resp_headers
     except ValueError:
-        return status, None, raw
+        return status, None, raw, resp_headers
 
 
 def _rpc(rpc_url, method, params, timeout=20):
@@ -316,14 +324,29 @@ def main(argv=None):
     sys.stdout.write("signer:       %s\n" % signer_addr)
     sys.stdout.write("POST %s  (no payment)\n" % args.url)
 
-    status, parsed, raw = _http_json(args.url, body)
+    status, parsed, raw, resp_headers = _http_json(args.url, body)
     if status != 402:
         sys.stdout.write("expected 402, got %s:\n%s\n"
                          % (status, raw.decode("utf-8", "replace")))
         return 1
     accepts = (parsed or {}).get("accepts") or []
     if not accepts:
-        sys.stdout.write("402 had no `accepts` array:\n%s\n" % raw.decode())
+        # v2 style: requirements ride in WWW-Authenticate, not the body. Without
+        # this the endpoint reads as unpayable even though the engine scores it.
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            import x402_challenge
+            entry = x402_challenge.to_accepts(
+                next((v for k, v in resp_headers.items()
+                      if str(k).lower() == "www-authenticate"), None))
+        except Exception:
+            entry = None
+        if entry:
+            accepts = [entry]
+            sys.stdout.write("402 requirements came from WWW-Authenticate (v2 header style)\n")
+    if not accepts:
+        sys.stdout.write("402 had no `accepts` array and no parseable "
+                         "WWW-Authenticate challenge:\n%s\n" % raw.decode())
         return 1
     req = accepts[0]
     # v2 uses `amount`; keep the v1 `maxAmountRequired` fallback for display.
@@ -342,7 +365,7 @@ def main(argv=None):
     x_payment = payment_header(req, pk, signer_addr, args.network, rpc_url)
     sys.stdout.write("signed EIP-3009 authorization; resending with X-PAYMENT...\n")
 
-    status, parsed, raw = _http_json(args.url, body, headers={"X-PAYMENT": x_payment})
+    status, parsed, raw, _ = _http_json(args.url, body, headers={"X-PAYMENT": x_payment})
     sys.stdout.write("HTTP %s\n" % status)
     if parsed is not None:
         sys.stdout.write(json.dumps(parsed, indent=2) + "\n")

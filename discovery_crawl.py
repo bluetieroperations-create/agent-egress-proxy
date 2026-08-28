@@ -62,7 +62,15 @@ def _accept_record(accept, parent_resource):
             "price_atomic": _price_atomic(accept)}
 
 
-def extract_resources(doc, _depth=0):
+def _www_authenticate(headers):
+    """The WWW-Authenticate value from a header mapping, case-insensitively."""
+    for k, v in (headers or {}).items():
+        if str(k).lower() == "www-authenticate":
+            return str(v)
+    return None
+
+
+def extract_resources(doc, _depth=0, _headers=None):
     """Recursively pull x402 resource records from a discovery doc / 402 body /
     resource list -> [{resource, payTo, asset, network, price_atomic}]. Bounded
     depth; never raises."""
@@ -82,6 +90,19 @@ def extract_resources(doc, _depth=0):
     if isinstance(accepts, list):
         for a in accepts:
             rec = _accept_record(a, parent_resource)
+            if rec:
+                out.append(rec)
+    # v2 header-style challenge: the requirements live in `WWW-Authenticate`, not
+    # the body, so a body-only crawl records these payees as if they did not exist.
+    # Additive -- appended after body entries, never replacing them.
+    if _headers and _depth == 0:
+        try:
+            import x402_challenge
+            entry = x402_challenge.to_accepts(_www_authenticate(_headers))
+        except Exception:
+            entry = None
+        if entry:
+            rec = _accept_record(entry, parent_resource)
             if rec:
                 out.append(rec)
     for key in _NESTED_KEYS:

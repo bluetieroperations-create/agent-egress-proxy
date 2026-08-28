@@ -63,13 +63,28 @@ def build_attest_request(digest, ref=None, type_=ATTEST_TYPE):
     return body
 
 
-def _first_accepts(resp):
-    """The chosen PaymentRequirements (`accepts[0]`) from a 402 body, or None."""
-    if not isinstance(resp, dict):
-        return None
-    accepts = resp.get("accepts")
-    if isinstance(accepts, list) and accepts and isinstance(accepts[0], dict):
-        return accepts[0]
+def _first_accepts(resp, headers=None):
+    """The chosen PaymentRequirements (`accepts[0]`), from the BODY then the HEADER.
+
+    Body wins -- it is what every consumer already reads. The header fallback
+    covers the v2 style, where the requirements are carried in
+    `WWW-Authenticate: Payment ... request="<base64url>"` and a body-only read
+    sees an unpayable endpoint. See x402_challenge.py.
+    """
+    if isinstance(resp, dict):
+        accepts = resp.get("accepts")
+        if isinstance(accepts, list) and accepts and isinstance(accepts[0], dict):
+            return accepts[0]
+    for key, value in (headers or {}).items():
+        if str(key).lower() != "www-authenticate":
+            continue
+        try:
+            import x402_challenge
+            entry = x402_challenge.to_accepts(str(value))
+        except Exception:
+            entry = None
+        if entry:
+            return entry
     return None
 
 
