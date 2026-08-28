@@ -39,20 +39,14 @@ CANDIDATE_MIN_RESOURCES = 1
 # rendered in USD when its `asset` is one of these -- otherwise the atomic amount's
 # decimals are UNKNOWN (an 18-dp token divided by 10^6 reads as ~10^12x too large;
 # that decimals mismatch, not a real "$10T price", is what an agent must not sign).
-USDC_6DP = frozenset({
-    "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",  # Base
-    "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",  # Polygon PoS
-    "0xaf88d065e77c8cc2239327c5edb3a432268e5831",  # Arbitrum
-    "0x0b2c639c533813f4aa9d7837caf62653d097ff85",  # Optimism
-    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",  # Ethereum
-    "0xb97ad0e74fa7d920791e90258a6e2085088b4320",  # Avalanche
-    "0x036cbd53842c5426634e7929541ec2318f3dcf7e",  # Base Sepolia (test)
-    "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238",  # Sepolia (test)
-})
+# The canonical 6-decimal USDC table now lives in discovery_crawl (the lower
+# layer), so there is ONE table rather than two that can drift apart. Re-exported
+# here because callers and tests reference ecosystem_scan.USDC_6DP.
+from discovery_crawl import USDC_6DP, is_usdc6 as _is_usdc6_shared  # noqa: E402
 
 
 def _is_usdc6(asset):
-    return isinstance(asset, str) and asset.lower() in USDC_6DP
+    return _is_usdc6_shared(asset)
 
 
 def _usdc_price_atomic(rec):

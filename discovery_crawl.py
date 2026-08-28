@@ -103,6 +103,34 @@ def payees(resources):
     return out
 
 
+#: Canonical native USDC (Circle), 6 decimals, keyed by contract. A price is only
+#: comparable in USD when we KNOW its decimals: an 18-dp token divided by 10^6
+#: reads as ~10^12x too large, and that decimals mismatch -- not a real "$10T
+#: price" -- is what an agent must not act on.
+#:
+#: Lives HERE, the lower layer, and is imported by ecosystem_scan so there is one
+#: table rather than two that can drift. AUDIT_ZEROCUSTOMER filed this defect as
+#: H2 and it was fixed in ecosystem_scan's price layer only; price_observations
+#: kept the bad assumption ("USDC (6dp) assumed") until 2026-08-28. Found on the
+#: live catalog: CoinMarketCap advertises Base USDC AND BSC 18-dp options for the
+#: same resource, and the 18-dp ones were reported as 10,000,000,000 USDC.
+USDC_6DP = frozenset({
+    "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",  # Base
+    "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",  # Polygon PoS
+    "0xaf88d065e77c8cc2239327c5edb3a432268e5831",  # Arbitrum
+    "0x0b2c639c533813f4aa9d7837caf62653d097ff85",  # Optimism
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",  # Ethereum
+    "0xb97ad0e74fa7d920791e90258a6e2085088b4320",  # Avalanche
+    "0x036cbd53842c5426634e7929541ec2318f3dcf7e",  # Base Sepolia (test)
+    "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238",  # Sepolia (test)
+})
+
+
+def is_usdc6(asset):
+    """True when `asset` is a contract whose decimals we KNOW to be 6."""
+    return isinstance(asset, str) and asset.lower() in USDC_6DP
+
+
 def _human(atomic, decimals=6):
     try:
         d = Decimal(int(atomic)) / (Decimal(10) ** decimals)
@@ -113,9 +141,17 @@ def _human(atomic, decimals=6):
 
 def price_observations(resources):
     """Advertised list prices as cross-counterparty price observations (feed a
-    peer-group baseline). USDC (6dp) assumed for the human amount."""
+    peer-group baseline).
+
+    ONLY known 6-decimal USDC contributes a USD amount. An asset whose decimals we
+    do not know is EXCLUDED rather than guessed: dividing an 18-dp token by 10^6
+    yields a number ~10^12x too large, and a peer baseline is exactly the place
+    where one such outlier does the most damage.
+    """
     out = []
     for r in resources or []:
+        if not is_usdc6(r.get("asset")):
+            continue
         amt = _human(r.get("price_atomic"))
         if amt:
             out.append({"counterparty": r["payTo"], "resource": r.get("resource"),

@@ -45,9 +45,14 @@ Three things change, and none of them is "more data":
 2. **Independence from the Bazaar.** Requirements can now be read from the endpoint
    itself rather than only from Coinbase's catalog. The endpoint is authoritative for
    its *current* price; a catalog lags, and can be stale, wrong, or unavailable.
-3. **A cross-check that did not exist.** Having both sides — what a payee advertises
-   in the Bazaar and what it serves at its own live 402 — makes catalog-vs-live
-   divergence measurable for the first time. That is a new signal, not yet built.
+3. **A cross-check that did not exist — measured, and NOT worth building.** Having
+   both sides makes catalog-vs-live divergence measurable. So it was measured:
+   **170 live quotes compared against the catalog, 0 divergent.** (An earlier run on
+   a narrower Base-only filter found 1 of 126, at 4.5x.) It is also redundant where
+   it matters: in x402 the agent pays what the LIVE 402 says, so a catalog mismatch
+   misdirects *selection*, not price — and an anomalous live quote is already caught
+   at verdict time by the quoted-vs-settled-median gate, whatever the catalog said.
+   Recorded here so nobody builds it twice.
 
 An x402 client cannot pay what it cannot parse. The 402 response is the entire
 negotiation: it carries the payee, the amount, the asset and the chain. An endpoint
