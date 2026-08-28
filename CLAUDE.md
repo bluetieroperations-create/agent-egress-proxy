@@ -214,6 +214,15 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   plausibly abandoned scaffolding), never clears, fail-open on an unmeasured payee.
   Verified end-to-end: the same payment is GO with the guard off and HOLD with it on.
   Tests: `test_mcp_trust.py`),
+  `token_decimals.py` (read an ERC-20's `decimals()` ON-CHAIN, cached FOREVER -- closes
+  the residual left by the decimals audit, where an unlisted token failed safe but was
+  never verified. Separate from `rpc_node.py` on purpose: that node uses a short 30s TTL
+  because staleness is a safety tradeoff there, whereas `decimals()` is IMMUTABLE, so
+  this costs ONE upstream call per token EVER rather than one per payment. Table wins
+  over the network, caller value wins over both; opt-in `BLACKWALL_TOKEN_DECIMALS=1`,
+  fail-open, misses cached, concurrent lookups coalesced, implausible answers (outside
+  0..36) rejected before reaching `10**n`. Live-verified on BSC.
+  Tests: `test_token_decimals.py`),
   `confidence.py` (how much EVIDENCE backs a verdict -- `assess_confidence(record,
   signals)` -> {level high/medium/low, score 0..1, backed_by[], missing[]} across
   five weighted dimensions: history depth, payer breadth, cross-counterparty
@@ -534,7 +543,8 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_mcp_trust.py
+ test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_mcp_trust.py test_token_decimals.py \
+test_x402_challenge.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop

@@ -175,6 +175,18 @@ KNOWN_SYMBOL_DECIMALS = {"usdc": 6, "usdt": 6, "dai": 18, "weth": 18,
                          "eth": 18, "wbtc": 8, "gusd": 2}
 
 
+# Optional on-chain resolver, installed by the caller at startup (see
+# token_decimals.resolver). Left None by default so nothing here ever touches the
+# network unless the operator opted in.
+_ONCHAIN = None
+
+
+def set_onchain_resolver(resolver):
+    """Install (or clear) the on-chain `decimals()` reader used as a LAST resort."""
+    global _ONCHAIN
+    _ONCHAIN = resolver
+
+
 def resolve_decimals(claim, decimals=None):
     """The asset's decimals, or None when genuinely unknown.
 
@@ -204,6 +216,14 @@ def resolve_decimals(claim, decimals=None):
             return KNOWN_DECIMALS[key]
         if not key.startswith("0x") and key in KNOWN_SYMBOL_DECIMALS:
             return KNOWN_SYMBOL_DECIMALS[key]
+        # Last resort: read decimals() on-chain. Opt-in, cached forever (the value
+        # is immutable), and fail-open -- an unreachable node returns None, which
+        # is exactly the safe behaviour the static table already produces.
+        if _ONCHAIN is not None:
+            try:
+                return _ONCHAIN.lookup(asset)
+            except Exception:
+                return None
     return None
 
 
