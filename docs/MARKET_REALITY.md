@@ -95,3 +95,53 @@ None of them are the x402 per-call market the competitors are fighting over.
 3. The measured finding that supersedes both: **the addressable per-call market is
    currently tiny**, and any monetisation path runs through fiat B2B buyers, not
    through x402 micropayments.
+
+---
+
+# CORRECTION (same day): the market-size claim was overstated
+
+The section above concluded "the x402 per-call market has essentially no revenue."
+That over-generalised from the sample I had.
+
+**What I actually measured:** 198 payees in `data/directory.json`, which is a
+*targeted crawl of the Bazaar catalog* — the long tail of listed API sellers. Their
+payer counts (3–52 for verdict vendors, 134 at the ceiling) are real and the
+conclusion holds **for that slice**: selling verdicts to catalog-listed API sellers
+is not a business.
+
+**What I did not measure, and wrongly generalised over:** the protocol as a whole.
+Third-party figures put x402 at roughly **$600M annualised across chains** and
+**35M transactions on Solana by March 2026**. I have not verified those independently
+— they are vendor/blog figures and should be treated as unconfirmed — but they are
+large enough that "no revenue" is not a defensible statement about x402 overall.
+
+Both can be true: volume concentrated in a few large flows, with a long tail of
+catalog sellers earning almost nothing. My sample was the tail.
+
+**Status of the earlier conclusion:** the *recommendation* survives (money is in
+fiat B2B, not per-call sales to the tail) but the *reason given* was wrong in scope.
+
+# Wallet-provider incumbency — checked before emailing
+
+| Provider | Risk/screening slot | Verdict |
+|---|---|---|
+| **Privy** | **Filled.** Privy integrates **Blockaid** — transaction simulation and validation against known malicious addresses, *before the signature is generated*. Blockaid is used by MetaMask, Coinbase and Uniswap. | **Do not pitch the generic guard.** The slot has a well-funded incumbent. |
+| **Turnkey** | **No named risk partner found.** Turnkey runs a verifiable policy engine in secure enclaves and publishes an AI-Agents solution page. Its own material describes policy scopes that include *"requiring co-approval from a user, operator, **or risk service**, before executing high-value agent actions."* | **The open door.** They name the third-party slot and appear not to have filled it. |
+
+Absence of a published partnership is not proof there is none — this is a
+web-visible check, not an inside view.
+
+## What this means for the pitch
+
+Blockaid answers *"is this transaction malicious?"* — drainer contracts, known-bad
+addresses, simulation of asset movement. That is consumer-wallet threat detection.
+
+It does not appear to answer *"is this **payment** sane?"* — the questions
+`decide_payment` exists for: is the price wildly off this payee's own settled
+history, do the signed EIP-3009 authorisation and the stated claim match, is the
+payee's payer set a wash-farm, has this endpoint's advertised capability changed
+since yesterday. A clean contract paying a fair-looking address at 40x the going
+rate is not malicious; it is a bad payment.
+
+That distinction is the entire pitch, and it must be made honestly — as
+*complementary to* transaction-security scanning, not a replacement for it.
