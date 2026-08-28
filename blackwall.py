@@ -1240,6 +1240,12 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     # Any mismatch is a hard STOP; warnings are advisory.
     sim_claim = {"counterparty": clean["counterparty"], "amount": clean["amount"],
                  "asset": clean["asset"], "chain": clean["chain"]}
+    # Asset decimals: taken from the request when the caller knows them (the
+    # x402 v2 challenge carries them in methodDetails -- see x402_challenge.py),
+    # otherwise resolved from the asset itself. NEVER assumed to be 6: an audit
+    # showed a hardcoded 6 both false-STOPped a valid 18-decimal payment and let
+    # a 10^12 underpayment pass as a match. See docs/DECIMALS_AUDIT.md.
+    _decimals = payload.get("decimals") if isinstance(payload, dict) else None
     from payload_sim import check_payment_authorization
     from calldata import screen_transaction
     # Phase 1 (recipient/amount/asset/chain field match) is cheap (~us) and stays inline
@@ -1250,7 +1256,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     # signer-verified.
     _now = int(time.time()) if now is None else int(now)
     pay_check = check_payment_authorization(
-        sim_claim, clean.get("payment_authorization"), decimals=6,
+        sim_claim, clean.get("payment_authorization"), decimals=_decimals,
         now=_now, verify_signer=verify_signer)
     tx_check = screen_transaction(sim_claim, clean.get("transaction"))
     sim_mismatches = pay_check["mismatches"] + tx_check["mismatches"]
@@ -1643,7 +1649,7 @@ def verify_signed_payment(payload, now=None):
              "asset": body.get("asset"), "chain": body.get("chain")}
     _now = int(time.time()) if now is None else int(now)
     res = check_payment_authorization(claim, body.get("payment_authorization"),
-                                      decimals=6, now=_now, verify_signer=True)
+                                      decimals=None, now=_now, verify_signer=True)
     return {"ok": not res["mismatches"], "signer_status": res.get("signer_status"),
             "mismatches": res["mismatches"], "warnings": res["warnings"]}
 

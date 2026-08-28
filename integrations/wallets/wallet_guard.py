@@ -187,7 +187,32 @@ def _atomic_to_decimal(atomic, decimals):
     return format(d, "f") if d > 0 else None
 
 
-def claim_from_tx(tx, *, chain="base", token_decimals=6, native_decimals=18):
+def _token_decimals(token, override):
+    """Decimals for an ERC-20, resolved from the token address.
+
+    MEASURED DEFECT (audit 2026-08-27): this defaulted to 6 for EVERY token, so
+    the human amount handed to the verdict was wrong by 10^(d-6). Both directions
+    are broken, and one is a real bypass:
+
+      * 18-decimal (DAI/WETH): a 1,000 DAI transfer reported as 10^15 -- an
+        absurd amount that false-STOPs a legitimate payment;
+      * sub-6-decimal (GUSD is 2dp): a **50,000 GUSD transfer reported as "5"**,
+        which sails straight under a `hold_above=100` spending cap. The guard is
+        in the SIGNING path, so that is a cap bypass, not just a display bug.
+
+    Returns None when the token is unknown, so the caller can refuse to
+    manufacture an amount it cannot trust.
+    """
+    if override is not None:
+        return override
+    try:
+        from payload_sim import resolve_decimals
+        return resolve_decimals({"asset": token})
+    except Exception:
+        return None
+
+
+def claim_from_tx(tx, *, chain="base", token_decimals=None, native_decimals=18):
     """Best-effort: turn a transaction the wallet is about to sign into a Blackwall
     forecast payload. Decodes ERC-20 transfer/transferFrom to recover the real
     recipient + amount; falls back to the tx target for native/other calls. Always
@@ -206,18 +231,35 @@ def claim_from_tx(tx, *, chain="base", token_decimals=6, native_decimals=18):
     if dec and dec.get("name") in ("transfer", "transferFrom"):
         counterparty = dec["args"].get("to")
         asset = to                         # the token contract being called
-        amount = _atomic_to_decimal(dec["args"].get("amount", 0), token_decimals)
+        _dec = _token_decimals(to, token_decimals)
+        # Unknown token -> do NOT invent an amount. A wrong amount is worse than
+        # none: it either false-STOPs or slips under a spending cap. Leaving it
+        # None means the amount-based gates see nothing to clear, while the
+        # Phase-3 calldata screen still runs on the raw transaction.
+        amount = (_atomic_to_decimal(dec["args"].get("amount", 0), _dec)
+                  if _dec is not None else None)
     elif value > 0:
         amount = _atomic_to_decimal(value, native_decimals)
         asset = asset or "native"
 
     # forecast needs a positive amount; use a nominal placeholder for non-value
     # calls (e.g. approve) so the verdict + calldata drainer-screen still run.
+    #
+    # CRITICAL DISTINCTION (audit 2026-08-27): the placeholder is correct for a
+    # call that MOVES NO VALUE. It is NOT correct for a real transfer whose amount
+    # we could not scale, because presenting a 50,000-token transfer as "0.000001"
+    # slips it under every spending cap. Those two cases must not be conflated, so
+    # the unscalable transfer is FLAGGED and the guard forces a human confirm.
+    amount_unverified = False
     if amount is None:
+        amount_unverified = bool(dec and dec.get("name") in ("transfer", "transferFrom"))
         amount = "0.000001"
-    return {"counterparty": counterparty, "amount": amount,
-            "asset": asset or "USDC", "chain": tx.get("chain") or chain,
-            "transaction": {"to": to, "data": data, "value": value}}
+    claim = {"counterparty": counterparty, "amount": amount,
+             "asset": asset or "USDC", "chain": tx.get("chain") or chain,
+             "transaction": {"to": to, "data": data, "value": value}}
+    if amount_unverified:
+        claim["amount_unverified"] = True
+    return claim
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +359,15 @@ class WalletGuard:
         if v == "STOP":
             return Decision(action=BLOCK, **common)
         if v == "GO":
+            # A GO earned on a placeholder amount is not a GO. When the transfer's
+            # decimals could not be resolved, the amount-based gates (spending cap,
+            # price anomaly) never actually saw the real sum -- so require a human.
+            if isinstance(payload, dict) and payload.get("amount_unverified"):
+                common["reasons"] = common["reasons"] + [
+                    "amount NOT verified: the token's decimals are unknown, so the "
+                    "transfer amount could not be scaled and the spending-cap and "
+                    "price checks did not see the real sum"]
+                return Decision(action=CONFIRM, **common)
             return Decision(action=ALLOW, **common)
         return Decision(action=CONFIRM, **common)         # HOLD / unknown
 
