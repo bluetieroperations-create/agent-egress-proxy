@@ -47,6 +47,14 @@ SCHEME_RE = re.compile(r'^\s*Payment\b', re.I)
 PARAM_RE = re.compile(r'(\w+)="([^"]*)"')
 
 
+def _is_address(value):
+    """True for a syntactically valid 0x EVM address. Type-checked on purpose:
+    the value comes from an untrusted server and may be any JSON type."""
+    return (isinstance(value, str) and len(value) == 42
+            and value.startswith("0x")
+            and all(ch in "0123456789abcdefABCDEF" for ch in value[2:]))
+
+
 def parse_params(header):
     """{name: value} for the quoted parameters of a Payment challenge.
 
@@ -89,7 +97,8 @@ def to_accepts(header):
     if not isinstance(req, dict):
         return None
 
-    details = req.get("methodDetails") or {}
+    details = req.get("methodDetails")
+    details = details if isinstance(details, dict) else {}
     chain_id = details.get("chainId")
     currency = req.get("currency")
     asset = req.get("asset")
@@ -102,13 +111,30 @@ def to_accepts(header):
     else:
         address, symbol = None, currency or asset
 
+    # The challenge is written by an UNTRUSTED third-party server, so every field
+    # is attacker-controlled. AUDIT (2026-08-27): before this, a `recipient` of
+    # {"evil": 1} propagated a dict into the payTo slot, and a junk string
+    # propagated as a payee address. `discovery_crawl` validated it downstream,
+    # but `traceipt_attest` and `clients/x402_pay` did not. Reject at the parse
+    # boundary instead of hoping each consumer re-checks.
+    recipient = req.get("recipient")
+    if not _is_address(recipient):
+        return None
+    amount = req.get("amount")
+    if not isinstance(amount, (str, int)) or isinstance(amount, bool):
+        return None
+
     return {
-        "payTo": req.get("recipient"),
-        "maxAmountRequired": req.get("amount"),
+        "payTo": recipient,
+        "maxAmountRequired": str(amount),
         "asset": address,
         "assetSymbol": symbol,
-        "decimals": details.get("decimals"),
-        "network": ("eip155:%s" % chain_id) if chain_id is not None else None,
+        "decimals": (details.get("decimals")
+                     if isinstance(details.get("decimals"), int)
+                     and not isinstance(details.get("decimals"), bool) else None),
+        "network": ("eip155:%d" % chain_id
+                    if isinstance(chain_id, int) and not isinstance(chain_id, bool)
+                    else None),
         "chainId": chain_id,
         "method": params.get("method"),
         "realm": params.get("realm"),

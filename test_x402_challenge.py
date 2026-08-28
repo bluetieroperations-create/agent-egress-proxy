@@ -198,3 +198,78 @@ class TestConsumerWiring(unittest.TestCase):
         self.assertIsNone(ta._first_accepts({}))
         self.assertEqual(ta._first_accepts({"accepts": [{"payTo": "0xa"}]})["payTo"],
                          "0xa")
+
+
+class TestUntrustedInput(unittest.TestCase):
+    """The challenge is written by an untrusted third-party server, so every
+    field is attacker-controlled and may be any JSON type."""
+
+    def _hdr(self, payload):
+        import base64, json
+        blob = base64.b64encode(json.dumps(payload).encode()).decode()
+        return 'Payment id="i", method="evm", request="%s"' % blob
+
+    def test_non_address_recipient_rejected(self):
+        # kills: propagating a junk string as a payee address. discovery_crawl
+        # validated downstream; traceipt_attest and x402_pay did not.
+        self.assertIsNone(x.to_accepts(self._hdr({"amount": "1",
+                                                  "recipient": "NOT_AN_ADDRESS"})))
+
+    def test_non_string_recipient_rejected(self):
+        # kills: a dict or list reaching the payTo slot and flowing into the
+        # payment path as if it were an address
+        for bad in ({"evil": 1}, ["0x" + "a" * 40], 12345, None, True):
+            self.assertIsNone(
+                x.to_accepts(self._hdr({"amount": "1", "recipient": bad})), repr(bad))
+
+    def test_wrong_length_address_rejected(self):
+        # kills: a length check loose enough to admit a truncated address
+        for bad in ("0x" + "a" * 39, "0x" + "a" * 41, "0x"):
+            self.assertIsNone(x.to_accepts(self._hdr({"amount": "1", "recipient": bad})))
+
+    def test_non_hex_address_rejected(self):
+        # kills: accepting 42 arbitrary characters that merely start with 0x
+        self.assertIsNone(
+            x.to_accepts(self._hdr({"amount": "1", "recipient": "0x" + "z" * 40})))
+
+    def test_non_scalar_amount_rejected(self):
+        # kills: a dict/list amount reaching the atomic-value comparison
+        for bad in ({"a": 1}, [1], None, True):
+            self.assertIsNone(
+                x.to_accepts(self._hdr({"amount": bad, "recipient": "0x" + "a" * 40})),
+                repr(bad))
+
+    def test_non_integer_chain_id_does_not_forge_a_network(self):
+        # kills: string-formatting an attacker value into "eip155:<anything>"
+        a = x.to_accepts(self._hdr({"amount": "1", "recipient": "0x" + "a" * 40,
+                                    "methodDetails": {"chainId": "8453; DROP"}}))
+        self.assertIsNone(a["network"])
+
+    def test_non_integer_decimals_is_dropped(self):
+        # kills: a string or bool decimals reaching 10**n scaling
+        for bad in ("6", True, {"n": 6}):
+            a = x.to_accepts(self._hdr({"amount": "1", "recipient": "0x" + "a" * 40,
+                                        "methodDetails": {"decimals": bad}}))
+            self.assertIsNone(a["decimals"], repr(bad))
+
+    def test_non_dict_method_details_does_not_raise(self):
+        # kills: assuming methodDetails is an object
+        a = x.to_accepts(self._hdr({"amount": "1", "recipient": "0x" + "a" * 40,
+                                    "methodDetails": "nope"}))
+        self.assertIsNone(a["chainId"])
+
+    def test_valid_challenge_still_parses(self):
+        # kills: hardening so aggressive it rejects the real thing
+        a = x.to_accepts(self._hdr({"amount": "10000", "recipient": "0x" + "a" * 40,
+                                    "currency": "0x" + "b" * 40,
+                                    "methodDetails": {"chainId": 8453, "decimals": 6}}))
+        self.assertEqual(a["maxAmountRequired"], "10000")
+        self.assertEqual(a["network"], "eip155:8453")
+        self.assertEqual(a["decimals"], 6)
+
+    def test_oversize_header_does_not_hang(self):
+        # kills: a regex that degrades on a hostile 200KB header
+        import time
+        t = time.time()
+        x.parse_params('Payment id="' + "a" * 200000 + '", request="e30"')
+        self.assertLess(time.time() - t, 1.0)

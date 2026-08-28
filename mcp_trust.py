@@ -51,6 +51,18 @@ UNREACHABLE = "unreachable"      # listed but did not answer when measured
 UNKNOWN = "unknown"              # not in the reading; fail-open
 
 _GRADES = (READY, MISMATCH, EMPTY, UNREACHABLE, UNKNOWN)
+
+# Precedence when ONE HOST serves several registry entries. Higher wins.
+#
+# AUDIT BUG (found 2026-08-27): this used `_GRADES.index()`, which ranks by how
+# much we KNOW, not by how much it MATTERS. UNREACHABLE sat above MISMATCH, so a
+# host with one lying entry and one dead entry graded `unreachable` and did NOT
+# gate -- an unrelated stale registry row silently masked the lie.
+#
+# Gating grades must therefore always outrank non-gating ones. Between the rest,
+# a host demonstrably serving real tools is READY; a dead sibling entry is a
+# stale row, not evidence the host is down.
+_PRECEDENCE = {UNKNOWN: 0, UNREACHABLE: 1, READY: 2, EMPTY: 3, MISMATCH: 4}
 # Only these escalate. UNREACHABLE deliberately does NOT: the reading may be
 # weeks old and an endpoint being down when measured is not evidence about a
 # payment happening now. It is recorded for the operator, not gated.
@@ -117,7 +129,7 @@ def build_index(reading, descriptions=None):
         prior = index.get(host)
         # A host serving several registry entries keeps the WORST grade: if any
         # entry on it advertises what it does not serve, the host is implicated.
-        if prior and _GRADES.index(prior["grade"]) >= _GRADES.index(grade):
+        if prior and _PRECEDENCE.get(prior["grade"], 0) >= _PRECEDENCE.get(grade, 0):
             continue
         index[host] = {
             "grade": grade,

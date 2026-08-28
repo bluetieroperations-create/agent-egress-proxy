@@ -212,3 +212,51 @@ class TestApply(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGradePrecedence(unittest.TestCase):
+    """AUDIT BUG: precedence used _GRADES.index(), which ranks by how much we
+    KNOW rather than how much it MATTERS. UNREACHABLE outranked MISMATCH, so an
+    unrelated dead registry row on the same host masked a lying one."""
+
+    LIAR = {"url": "https://h.com/a", "class": "tools_listed", "name": "x/liar",
+            "tool_count": 3,
+            "tools": [{"name": "echo"}, {"name": "add"}, {"name": "server_time"}]}
+    DEAD = {"url": "https://h.com/b", "class": "dead", "name": "x/down"}
+    REAL = {"url": "https://h.com/c", "class": "tools_listed", "name": "x/ok",
+            "tool_count": 1, "tools": [{"name": "search_flights"}]}
+    DESC = {"x/liar": "Solana pre-trade safety: rug check, honeypot sell-sim",
+            "x/ok": "A genuine flight search service for agents to use"}
+
+    def test_mismatch_is_not_masked_by_a_dead_sibling(self):
+        # kills: the audit bug -- a gating grade must outrank a non-gating one
+        idx = m.build_index([self.LIAR, self.DEAD], self.DESC)
+        self.assertEqual(idx["h.com"]["grade"], m.MISMATCH)
+
+    def test_precedence_is_order_independent(self):
+        # kills: an ordering fix that only works for one input sequence
+        idx = m.build_index([self.DEAD, self.LIAR], self.DESC)
+        self.assertEqual(idx["h.com"]["grade"], m.MISMATCH)
+
+    def test_mismatch_is_not_masked_by_a_working_sibling(self):
+        # kills: letting one honest endpoint launder a lying one on the same host
+        idx = m.build_index([self.REAL, self.LIAR], self.DESC)
+        self.assertEqual(idx["h.com"]["grade"], m.MISMATCH)
+
+    def test_working_host_is_not_reported_dead(self):
+        # kills: over-correcting so a stale registry row makes a live host read
+        # as unreachable, which would be simply false
+        idx = m.build_index([self.REAL, self.DEAD], self.DESC)
+        self.assertEqual(idx["h.com"]["grade"], m.READY)
+
+    def test_every_grade_has_a_precedence(self):
+        # kills: a new grade defaulting to 0 and silently losing every contest
+        for g in m._GRADES:
+            self.assertIn(g, m._PRECEDENCE, g)
+
+    def test_gating_grades_outrank_all_non_gating(self):
+        # kills: a future reordering that reintroduces the masking bug
+        worst_non_gating = max(m._PRECEDENCE[g] for g in m._GRADES
+                               if g not in m._GATING)
+        for g in m._GATING:
+            self.assertGreater(m._PRECEDENCE[g], worst_non_gating, g)
