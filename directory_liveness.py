@@ -76,6 +76,7 @@ USER_AGENT = "blackwall-liveness/1.0 (+x402 directory check)"
 #: paying client must agree on what "readable requirements" means.
 BODY_ACCEPTS = x402_challenge.BODY_ACCEPTS
 HDR_ACCEPTS = x402_challenge.HDR_ACCEPTS
+PAYMENT_REQUIRED = x402_challenge.PAYMENT_REQUIRED
 WELLKNOWN = "wellknown"
 OPAQUE_402 = "opaque_402"
 OTHER = "other"
@@ -83,7 +84,7 @@ DEAD = "dead"
 BLOCKED = "blocked"
 
 #: Classes whose payment requirements Blackwall can actually read and score.
-SCOREABLE = (BODY_ACCEPTS, HDR_ACCEPTS)
+SCOREABLE = (BODY_ACCEPTS, HDR_ACCEPTS, PAYMENT_REQUIRED)
 
 #: Free hosting subdomains. A payee on one of these is far more likely to be a
 #: weekend demo than a business, so `rank_leads` filters them out of a BD list.

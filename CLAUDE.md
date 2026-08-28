@@ -41,8 +41,9 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `facilitator_sim.py` (reference x402 facilitator for the HttpFacilitator path),
   `discovery.py` (x402 service-discovery descriptor -- Blackwall's OWN),
   `x402_challenge.py` (the ONE parser for a 402 challenge -- requirements arrive in
-  EITHER the JSON body or `WWW-Authenticate: X402 requirements="<b64>"` (the v2 style),
-  and every consumer used to read only the body. Pure+stdlib, tolerant (never raises on
+  ANY OF THREE carriers: the JSON body, `WWW-Authenticate: X402 requirements="<b64>"`
+  (the v2 style), or a bare-base64 `payment-required:` header (by far the most common
+  -- see SCOPE below), and every consumer used to read only the body. Pure+stdlib, tolerant (never raises on
   third-party junk), BODY WINS on disagreement since that is what other x402 clients pay.
   `accepts_from_http_error` reads a raised 402 -- body ONCE, since HTTPError wraps a
   stream and a second read silently downgrades a real challenge to "unreadable".
@@ -50,10 +51,18 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   (a 402 is a price quote, not a fetch failure -- it carries the SOURCE URL in as the
   parent resource, or the record loses its category and per-resource price key) and
   `clients/x402_pay` (whose `_http_json` now returns response headers instead of
-  discarding them). SCOPE, measured not asserted: the survey found `hdr_accepts` = 2 of
-  195 hosts, NOT the 86 `opaque_402` ones -- those carry no readable requirements in
-  either carrier and are a different problem. Verified live against blockrun.ai, which
-  serves a JSON body with no accepts[] and its real requirements in the header.
+  discarding them). SCOPE, measured not asserted: `hdr_accepts` (the
+  WWW-Authenticate form) is only 2 of 195 hosts. The 86 filed as `opaque_402` were
+  NOT a different problem, as first believed -- they were a THIRD carrier: probing
+  all 86 on 2026-08-28 found 80 serving a complete v2 challenge in a
+  `payment-required:` header with `{}` as the body, and the other 6 simply moved or
+  gone (400/404/405/410). Implementing that one carrier moved scoreable hosts from
+  73/195 (37.4%) to 153/195 (78.5%). These are not demos: api.ipintel.ai, one of the
+  80, has 78 distinct payers and 145 settlements -- people were paying endpoints we
+  could not read. Matched by EXACT header name; the discovery probe decoded every
+  header looking for x402, which is right for discovery and far too permissive to
+  ship. Verified live against blockrun.ai (WWW-Authenticate form) and api.ipintel.ai
+  (payment-required form), both harvested end-to-end by the crawler.
   Tests: `test_x402_challenge.py`, `test_x402_pay.py`),
   `discovery_crawl.py` (crawl OTHERS' x402 discovery/402 docs -> extract payees +
   advertised prices -> auto-feed chain_backfill (reputation), peer price baselines,

@@ -1,6 +1,13 @@
 # The state of x402 payability
 
-**44% of x402 endpoints advertise a price no client can read.**
+> **SUPERSEDED 2026-08-28 — read this first.** The headline below was wrong, and
+> wrong in our favour to fix. The 86 `opaque_402` hosts were not opaque: **80 of
+> them carry a complete x402 v2 challenge in a `payment-required:` header** that
+> nothing in this repo read. Their bodies are literally `{}`, which is why they
+> looked empty. The other 6 have simply moved or gone (400/404/405/410) since the
+> survey. Scoreable hosts go from **73/195 (37.4%) to 153/195 (78.5%)**. The
+> carrier is now implemented in `x402_challenge.py`; the sections below are kept
+> as the record of what a body-and-`WWW-Authenticate`-only client sees.
 
 Measured 2026-08-18 by probing every distinct host in `data/directory.json`
 (`directory_liveness.py`). Method and raw data are in this repo; `data/liveness.json`
@@ -50,13 +57,28 @@ ecosystem look smaller than it is. Anyone repeating this work should avoid them:
    parsed by `x402_challenge.py`. It is only 2 hosts today — but it is 2 hosts that
    every body-only client in the ecosystem still cannot pay.
 
-## What we cannot say
+## What we could not say — now answered
 
-We do not know *why* the 86 are opaque. Candidates: a third carrier nobody has
-implemented, a middlebox stripping the header, an incomplete server, or a deliberate
-choice to gate discovery. **Nobody has inspected more than a sample by hand**, and
-this survey classifies rather than diagnoses. That is the obvious next piece of work
-and we have not done it.
+The original text read: *"We do not know why the 86 are opaque. Candidates: a third
+carrier nobody has implemented, a middlebox stripping the header, an incomplete
+server, or a deliberate choice to gate discovery."*
+
+**It was the first candidate.** Probed all 86 on 2026-08-28:
+
+| | hosts |
+|---|---|
+| `payment-required:` header, bare base64 x402 v2 doc | **80** |
+| moved or gone since the survey (400/404/405/410) | 6 |
+
+They are not demos and not abandoned. `api.ipintel.ai` — one of the 80 — has **78
+distinct payers and 145 settlements**. Someone has been paying these endpoints all
+along; we simply could not read what they were asking for.
+
+The lesson generalises past this repo: **three different carriers now exist for the
+same challenge** (JSON body, `WWW-Authenticate: X402 requirements=""`, and
+`payment-required:`), and a client that implements one or two of them silently sees
+a smaller ecosystem than exists. Measured cost of reading only two of three: 41
+percentage points of the ecosystem invisible.
 
 The sample is also not the whole ecosystem — it is the hosts reachable from our crawl
 of the CDP Bazaar and public discovery documents, not a census.
