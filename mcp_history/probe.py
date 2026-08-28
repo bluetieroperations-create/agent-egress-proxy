@@ -428,3 +428,84 @@ def describes_more_than_it_serves(row, description, trivial_tools=frozenset(
     if not names or not names.issubset(trivial_tools):
         return False
     return len(description or "") >= min_desc
+
+
+# --- tool-poisoning scan ------------------------------------------------
+
+# Characters that render as nothing (or reorder text) to a human reading a tool
+# description, while remaining in the string the model is given. This is the
+# mechanism behind tool poisoning: the reviewer and the model see different text.
+INVISIBLE_CP = frozenset({0x200B, 0x200C, 0x200D, 0xFEFF, 0x2060, 0x180E, 0x00AD})
+BIDI_CP = frozenset(range(0x202A, 0x202F)) | frozenset(range(0x2066, 0x206A))
+TAG_CP = frozenset(range(0xE0000, 0xE0080))     # fully invisible Unicode TAG block
+
+INJECTION_PATTERNS = (
+    ("hide_from_user",
+     r"(do not (tell|mention|inform|reveal)|don't (tell|mention)|never (mention|reveal))"
+     r"\s+(the\s+)?(user|human)"),
+    ("important_block", r"<IMPORTANT>|<SYSTEM>|<\|im_start\|>|\[\[SYSTEM\]\]"),
+    ("ignore_prior",
+     r"ignore (all )?(previous|prior|above|earlier) (instructions|prompts|rules)"),
+    ("read_secrets",
+     r"(read|open|cat|load)\b[^.]{0,40}(\.env|id_rsa|private key|mnemonic|seed phrase|credentials)"),
+)
+
+
+def tool_text(tool):
+    """Everything in a tool definition the MODEL reads.
+
+    The input schema is included, not just the description: property names and
+    their `description` fields are equally instruction text to the model, and an
+    attack that hides in the schema is invisible to a description-only scan.
+    """
+    if not isinstance(tool, dict):
+        return ""
+    return (tool.get("description") or "") + " " + json.dumps(tool.get("inputSchema") or {})
+
+
+def hidden_characters(text):
+    """Classes of human-invisible characters present in `text`."""
+    cps = {ord(c) for c in text or ""}
+    found = []
+    if cps & INVISIBLE_CP:
+        found.append("zero_width")
+    if cps & BIDI_CP:
+        found.append("bidi_override")
+    if cps & TAG_CP:
+        found.append("unicode_tag")
+    if any(c < 32 and c not in (10, 13, 9) for c in cps):
+        found.append("control_char")
+    return found
+
+
+def scan_tool(tool):
+    """Poisoning indicators for ONE tool definition. Pure; never raises.
+
+    CALIBRATION NOTE (reading #1): run across all 127,403 captured definitions,
+    every `INJECTION_PATTERNS` hit was a FALSE POSITIVE on inspection -- security
+    scanners describing the attacks they detect, and legitimate UX instructions
+    ("do not tell the user the payment succeeded if it failed"). So these
+    patterns are REPORTING-ONLY and must not gate anything. They exist to be
+    diffed: a pattern appearing on a server that did not carry it last month is
+    the signal, not its presence today.
+    """
+    import re
+    text = tool_text(tool)
+    out = {"hidden": hidden_characters(text), "patterns": []}
+    for name, pat in INJECTION_PATTERNS:
+        if re.search(pat, text, re.I):
+            out["patterns"].append(name)
+    return out
+
+
+def scan_reading(rows):
+    """{server_name: {tool_name: indicators}} for everything flagged."""
+    flagged = {}
+    for row in rows or []:
+        if not isinstance(row, dict) or row.get("class") != TOOLS_LISTED:
+            continue
+        for tool in row.get("tools") or []:
+            res = scan_tool(tool)
+            if res["hidden"] or res["patterns"]:
+                flagged.setdefault(row.get("name"), {})[tool.get("name")] = res
+    return flagged
