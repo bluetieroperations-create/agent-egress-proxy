@@ -159,6 +159,64 @@ class PaymentRequiredHeader(unittest.TestCase):
             self.assertEqual(xc.parse_challenge("", {"payment-required": bad}),
                              (None, None), bad)
 
+    def test_headers_are_read_only_once(self):
+        # Mutation: calling _header_items(headers) separately per carrier. A
+        # lazy/generator-backed mapping yields its headers on the FIRST call only,
+        # so the second pass sees nothing and the challenge is silently lost --
+        # exactly the class of silent miss this module exists to prevent.
+        class SingleUse:
+            def __init__(self):
+                self.calls = 0
+
+            def items(self):
+                self.calls += 1
+                if self.calls == 1:
+                    return iter([("payment-required", _pr_value({"accepts": [ACCEPT]}))])
+                return iter([])
+
+        h = SingleUse()
+        accepts, carrier = xc.parse_challenge("", h)
+        self.assertEqual(carrier, xc.PAYMENT_REQUIRED)
+        self.assertEqual(accepts, [ACCEPT])
+        self.assertEqual(h.calls, 1, "headers must be materialized exactly once")
+
+    def test_oversize_header_value_is_refused(self):
+        # Mutation: no size guard on the header path. The BODY path is capped at
+        # MAX_CHALLENGE_BYTES; leaving headers uncapped was an inconsistency.
+        # Measured before the fix: a 19.2 MB value decoded to 200,000 accepts at
+        # 85 MB peak. urllib caps a header line at 65536 bytes so this cannot
+        # arrive over HTTP, but parse_challenge is public and takes any mapping.
+        # The guard exists to avoid DOING the work, not to change the result: an
+        # oversize value returns None either way, because base64 of "AAAA..."
+        # decodes to garbage that json.loads rejects. A result-only assertion
+        # therefore cannot fail, so assert the decode is never ATTEMPTED.
+        huge = "A" * (xc.MAX_CHALLENGE_BYTES + 1)
+        calls = []
+        real = xc.base64.b64decode
+
+        def spy(*a, **kw):
+            calls.append(len(a[0]) if a else 0)
+            return real(*a, **kw)
+
+        xc.base64.b64decode = spy
+        try:
+            self.assertIsNone(xc.decode_payment_required(huge))
+            self.assertEqual(xc.parse_challenge("", {"payment-required": huge}),
+                             (None, None))
+            self.assertEqual(calls, [], "oversize value must not reach b64decode")
+        finally:
+            xc.base64.b64decode = real
+
+    def test_oversize_www_authenticate_value_is_refused(self):
+        huge = 'X402 requirements="%s"' % ("A" * (xc.MAX_CHALLENGE_BYTES + 1))
+        self.assertIsNone(xc.decode_requirements(huge))
+
+    def test_a_normal_sized_header_still_parses(self):
+        # Mutation: an off-by-one that rejects legitimate challenges.
+        accepts, carrier = xc.parse_challenge(
+            "", {"payment-required": _pr_value({"accepts": [ACCEPT]})})
+        self.assertEqual(carrier, xc.PAYMENT_REQUIRED)
+
     def test_an_unrelated_header_is_not_scanned(self):
         # Mutation: scanning EVERY header for anything base64-decodable. That is
         # how the survey probe found this, but it is too permissive to ship --

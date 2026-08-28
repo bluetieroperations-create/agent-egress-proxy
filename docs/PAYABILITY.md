@@ -8,6 +8,13 @@
 > survey. Scoreable hosts go from **73/195 (37.4%) to 153/195 (78.5%)**. The
 > carrier is now implemented in `x402_challenge.py`; the sections below are kept
 > as the record of what a body-and-`WWW-Authenticate`-only client sees.
+>
+> **What that 78.5% does and does not buy — measured, not assumed.** It is a
+> parseability number, not a data-volume one. Crawling all 86 yields 65 resource
+> records across 55 payees, and **every one was already known from the Bazaar**:
+> 65/65 payees already had advertised min/max in `data/directory.json`, and 0
+> resource URLs were new. The reputation corpus does not grow by a single payee.
+> What actually changes is listed in "Why this matters" below.
 
 Measured 2026-08-18 by probing every distinct host in `data/directory.json`
 (`directory_liveness.py`). Method and raw data are in this repo; `data/liveness.json`
@@ -28,6 +35,19 @@ is the full result.
 **Only 73 of 195 hosts (37.4%) present payment requirements a client can parse and act on.**
 
 ## Why this matters
+
+Three things change, and none of them is "more data":
+
+1. **Payability.** `clients/x402_pay` can now sign against these endpoints. Before,
+   it saw a 402 with `{}`, found no `accepts[]`, and gave up. This is the funded-
+   signer path, so it is the difference between being able to transact with 80
+   endpoints and not.
+2. **Independence from the Bazaar.** Requirements can now be read from the endpoint
+   itself rather than only from Coinbase's catalog. The endpoint is authoritative for
+   its *current* price; a catalog lags, and can be stale, wrong, or unavailable.
+3. **A cross-check that did not exist.** Having both sides — what a payee advertises
+   in the Bazaar and what it serves at its own live 402 — makes catalog-vs-live
+   divergence measurable for the first time. That is a new signal, not yet built.
 
 An x402 client cannot pay what it cannot parse. The 402 response is the entire
 negotiation: it carries the payee, the amount, the asset and the chain. An endpoint
