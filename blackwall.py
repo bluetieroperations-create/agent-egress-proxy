@@ -1199,6 +1199,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              hold_above=None, peer_index=None, seller_registry=None, now=None,
              graph_source=None, velocity_source=None, category_index=None,
              divergence_index=None, enrichment_source=None, verify_signer=True,
+             mcp_source=None,
              rwa_source=None, stock_registry=None, pyth_source=None, rwa_ledger=None,
              balance_reader=None, backing_index=None, dex_source=None,
              holder_source=None, aave_source=None, issuer_trust_source=None,
@@ -1335,6 +1336,18 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         enrichment=enrichment,
         secret_findings=secret_findings,
     )
+    # MCP capability mismatch (mcp_trust.py): does this payee's MCP endpoint actually
+    # serve what it advertises? HOLD-only, never STOP (intent is not established for
+    # any publisher), fail-open, and read from the COMMITTED reading -- never the
+    # request -- so a payload cannot inject a trust claim.
+    if mcp_source is not None:
+        try:
+            import mcp_trust
+            _mcp = mcp_source.signal(clean.get("resource") or clean.get("counterparty"))
+            verdict = mcp_trust.apply_mcp_trust(verdict, _mcp)
+        except Exception:
+            pass
+
     # Surface advisory (non-blocking) simulation warnings, e.g. an expired auth or
     # a bounded approval.
     if sim_warnings:

@@ -202,6 +202,18 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   a shared label would let a verifier trusting both issuers' keys accept one for the
   other. Post-quantum (ML-DSA-65 hybrid) is phase 2 -- see `docs/RECEIPT_SIGNING_SCOPE.md`.
   Tests: `test_receipt_signer.py`, incl. cross-verification under Node WebCrypto),
+  `mcp_trust.py` (fold the MCP ecosystem reading into the verdict -- an MCP server that
+  charges via x402 is BOTH a tool the agent calls and a payee Blackwall scores, and
+  reading #1 found 98 hosts in both `data/mcp_snapshots/` and `data/directory.json`.
+  The signal nothing else can see: THE PAYEE DOES NOT DO WHAT IT SELLS -- 24 hosts
+  advertise substantive capability while serving only `echo`/`add`/`server_time`,
+  one of them selling "Escrow protection for agent payments". `build_index` is built
+  ONCE at startup from the COMMITTED reading -- never the request, so a payload cannot
+  inject a trust claim and no network call touches the hot path. Worst-grade-wins per
+  host. HOLD-only, NEVER STOP (intent is NOT established for any publisher; some is
+  plausibly abandoned scaffolding), never clears, fail-open on an unmeasured payee.
+  Verified end-to-end: the same payment is GO with the guard off and HOLD with it on.
+  Tests: `test_mcp_trust.py`),
   `confidence.py` (how much EVIDENCE backs a verdict -- `assess_confidence(record,
   signals)` -> {level high/medium/low, score 0..1, backed_by[], missing[]} across
   five weighted dimensions: history depth, payer breadth, cross-counterparty
@@ -522,7 +534,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py
+ test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_mcp_trust.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop

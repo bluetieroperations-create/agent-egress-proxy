@@ -154,6 +154,27 @@ TIMEOUT = 15
 MAX_BODY = 2_000_000
 
 
+def _decode_json(raw):
+    """Parse a JSON payload that may be bytes, invalid UTF-8, or not JSON at all.
+
+    MEASURED BUG (reading #1): `json.loads` was handed raw BYTES, and on invalid
+    UTF-8 it raises UnicodeDecodeError -- which is a ValueError but NOT a
+    JSONDecodeError, so the narrow `except json.JSONDecodeError` did not catch
+    it. The exception escaped to the generic handler and the server was recorded
+    as "tools/list UnicodeDecodeError" with its tool definitions lost. That hit
+    128 servers. Decode first with errors="replace", then catch ValueError, which
+    covers both failures.
+
+    Returns None when the payload is not usable, never raises.
+    """
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", "replace")
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return None
+
+
 def _read_sse(resp, limit, deadline):
     """Read an SSE response only until the first complete JSON-RPC message.
 
@@ -166,19 +187,26 @@ def _read_sse(resp, limit, deadline):
     """
     import time as _t
     buf = b""
+    scanned = 0            # bytes already searched; the buffer only grows
     while len(buf) < limit and _t.monotonic() < deadline:
         chunk = resp.read1(8192) if hasattr(resp, "read1") else resp.read(8192)
         if not chunk:
             break
         buf += chunk
-        for line in buf.split(b"\n"):
+        # Only COMPLETE lines are parseable. A `data:` payload split across two
+        # reads is valid JSON only once its newline arrives; parsing the trailing
+        # fragment would either fail spuriously or, worse, succeed on a truncated
+        # prefix. Rescan from the last newline, not from zero -- scanning the whole
+        # buffer every chunk is quadratic on a long stream.
+        end = buf.rfind(b"\n") + 1
+        if not end:
+            continue
+        for line in buf[scanned:end].split(b"\n"):
             if line.startswith(b"data:"):
-                payload = line[5:].strip()
-                if payload:
-                    try:
-                        return json.loads(payload)
-                    except json.JSONDecodeError:
-                        continue
+                parsed = _decode_json(line[5:].strip())
+                if parsed is not None:
+                    return parsed
+        scanned = end
     return _parse_body(buf, "text/event-stream")
 
 
@@ -193,17 +221,11 @@ def _parse_body(raw, content_type):
     if "text/event-stream" in (content_type or "") or text.startswith("event:"):
         for line in text.splitlines():
             if line.startswith("data:"):
-                chunk = line[5:].strip()
-                if chunk:
-                    try:
-                        return json.loads(chunk)
-                    except json.JSONDecodeError:
-                        continue
+                parsed = _decode_json(line[5:].strip())
+                if parsed is not None:
+                    return parsed
         return None
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return None
+    return _decode_json(text)
 
 
 def _rpc(url, payload, session=None, timeout=TIMEOUT):

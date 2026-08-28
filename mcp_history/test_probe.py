@@ -324,3 +324,65 @@ class TestDescriptionMismatch(unittest.TestCase):
         # kills: flagging a genuine server that merely also ships a health probe
         row = {"class": p.TOOLS_LISTED, "tools": [tool("echo"), tool("get_invoice")]}
         self.assertFalse(p.describes_more_than_it_serves(row, "A" * 80))
+
+
+class TestDecodeJson(unittest.TestCase):
+    """Regression for the 128 servers lost at reading #1 to UnicodeDecodeError."""
+
+    def test_invalid_utf8_bytes_still_parse(self):
+        # kills: passing raw bytes to json.loads, where invalid UTF-8 raises
+        # UnicodeDecodeError -- a ValueError but NOT a JSONDecodeError, so a
+        # narrow except lets it escape and the server's tools are lost
+        self.assertEqual(p._decode_json(b'{"a":"\xff\xfe"}')["a"], "��")
+
+    def test_non_json_returns_none(self):
+        # kills: raising on an HTML error page instead of classifying it
+        self.assertIsNone(p._decode_json(b"<html>nope</html>"))
+
+    def test_accepts_str(self):
+        # kills: assuming bytes only, breaking the _parse_body caller
+        self.assertEqual(p._decode_json('{"ok":1}'), {"ok": 1})
+
+    def test_empty_is_none(self):
+        # kills: an empty payload raising rather than being skipped
+        self.assertIsNone(p._decode_json(b""))
+
+
+class TestSSEPartialLines(unittest.TestCase):
+    """A `data:` payload split across two reads is only valid once its newline
+    arrives; parsing the trailing fragment risks a truncated prefix."""
+
+    class _Resp:
+        def __init__(self, chunks):
+            self.chunks = list(chunks)
+
+        def read1(self, n):
+            return self.chunks.pop(0) if self.chunks else b""
+
+    def _read(self, chunks):
+        import time
+        return p._read_sse(self._Resp(chunks), 2_000_000, time.monotonic() + 5)
+
+    def test_payload_split_across_chunks(self):
+        # kills: parsing an incomplete trailing line -- here the first chunk ends
+        # mid-JSON and only the second completes it
+        self.assertEqual(
+            self._read([b'data: {"result":{"too', b'ls":[]}}\n']),
+            {"result": {"tools": []}})
+
+    def test_invalid_utf8_in_stream_recovers(self):
+        # kills: the same UnicodeDecodeError escaping through the SSE path
+        out = self._read([b'data: {"n":"\xff"}\n'])
+        self.assertEqual(out, {"n": "�"})
+
+    def test_does_not_rescan_earlier_lines(self):
+        # kills: quadratic rescanning of the whole buffer on every chunk, and
+        # ensures the first complete payload still wins
+        self.assertEqual(
+            self._read([b": ping\n", b'data: {"first":1}\n', b'data: {"second":2}\n']),
+            {"first": 1})
+
+    def test_stream_with_no_newline_yet_does_not_return_early(self):
+        # kills: returning on a fragment that has no terminating newline at all
+        self.assertIsNone(self._read([b'data: {"partial":'])
+                          or None)
