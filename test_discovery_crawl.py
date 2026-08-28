@@ -177,6 +177,59 @@ class TestCrawlAndBackfill(unittest.TestCase):
 
 
 
+class PriceObservationsRespectDecimals(unittest.TestCase):
+    """price_observations divided EVERY asset by 10^6 ("USDC (6dp) assumed").
+
+    A payee that offers several chains -- CoinMarketCap advertises Base USDC and
+    BSC 18-decimal options for the same resource -- had its 18-dp options read as
+    10^12 times too large. Measured on the live catalog: 0.01 became 10,000,000,000.
+
+    This is the same defect AUDIT_ZEROCUSTOMER filed as H2 and fixed in
+    ecosystem_scan's price layer; it was never fixed here. Not on the verdict path
+    (reputation_store's price_observations come from the settlements table), but
+    this function exists to feed peer-group price baselines, and a 10^12 outlier
+    poisons any baseline built from it.
+    """
+
+    BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+    BSC_18DP = "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d"
+
+    def _rec(self, asset, atomic):
+        return {"payTo": "0x" + "ab" * 20, "resource": "https://s/api",
+                "asset": asset, "network": "eip155:8453", "price_atomic": atomic}
+
+    def test_known_6dp_usdc_is_converted(self):
+        obs = D.price_observations([self._rec(self.BASE_USDC, 10000)])
+        self.assertEqual([o["amount"] for o in obs], ["0.01"])
+
+    def test_unknown_decimals_asset_is_excluded(self):
+        # Mutation: converting every asset at 6dp. 0.01 of an 18-dp token would
+        # be reported as 10000000000.000000 -- a 10^12 error presented as a price.
+        obs = D.price_observations([self._rec(self.BSC_18DP, 10000000000000000)])
+        self.assertEqual(obs, [], "unknown-decimals asset must not yield a USD price")
+
+    def test_a_multi_chain_payee_keeps_only_its_comparable_option(self):
+        # The real shape: one resource, several accepts, different chains.
+        obs = D.price_observations([self._rec(self.BASE_USDC, 10000),
+                                    self._rec(self.BSC_18DP, 10000000000000000)])
+        self.assertEqual([o["amount"] for o in obs], ["0.01"])
+
+    def test_asset_match_is_case_insensitive(self):
+        # Mutation: comparing the checksummed address without .lower().
+        obs = D.price_observations([self._rec(self.BASE_USDC.lower(), 10000)])
+        self.assertEqual(len(obs), 1)
+
+    def test_missing_or_non_positive_amounts_are_dropped(self):
+        for atomic in (None, 0, -1, "junk"):
+            self.assertEqual(D.price_observations([self._rec(self.BASE_USDC, atomic)]),
+                             [], repr(atomic))
+
+    def test_missing_asset_is_excluded(self):
+        # Mutation: treating an absent asset as USDC. Decimals unknown means the
+        # number is not comparable, and guessing is how the 10^12 error happened.
+        self.assertEqual(D.price_observations([self._rec(None, 10000)]), [])
+
+
 class CrawlReadsHeaderCarriedChallenges(unittest.TestCase):
     """A 402 is a price quote, not a failure -- and its requirements may sit in
     the WWW-Authenticate header rather than the body."""

@@ -46,6 +46,7 @@ import re
 #: "readable today" from "readable only because we now parse the header".
 BODY_ACCEPTS = "body_accepts"
 HDR_ACCEPTS = "hdr_accepts"
+PAYMENT_REQUIRED = "payment_required_hdr"
 
 #: The scheme token that opens an x402 WWW-Authenticate challenge. Matched as a
 #: whole TOKEN, not a prefix: "X402Bearer" and "x402-evil" are different schemes
@@ -54,6 +55,22 @@ SCHEME = "x402"
 
 _SCHEME_RE = re.compile(r'^\s*x402(?:\s|$)', re.IGNORECASE)
 _REQUIREMENTS_RE = re.compile(r'requirements="([^"]+)"')
+
+#: The THIRD carrier: a bare base64 x402 document in its own header, with no
+#: `requirements=""` wrapper and no auth scheme.
+#:
+#: Measured 2026-08-28. The liveness survey filed 86 hosts as `opaque_402` -- a
+#: 402 whose requirements were unreadable in either known carrier. **80 of those
+#: 86 carry a complete x402 v2 challenge here**, with `{}` as the body, which is
+#: precisely why they looked opaque. They are not broken or abandoned:
+#: api.ipintel.ai is one of them, with 78 distinct payers and 145 settlements.
+#: The remaining 6 have simply moved or gone (400/404/405/410) since the survey.
+#:
+#: Matched by EXACT header name. The survey probe found this by decoding every
+#: header and seeing what looked like x402, which is the right move for discovery
+#: and much too permissive to ship -- an unrelated header must never be mistaken
+#: for payment requirements.
+PAYMENT_REQUIRED_HEADER = "payment-required"
 
 #: Hard ceiling on a 402 body we will parse. A challenge is a small JSON
 #: document -- real ones are a few KB -- so this is ~100x generous while still
@@ -76,6 +93,32 @@ def accepts_of(doc):
     return None
 
 
+def _too_big(value):
+    """A header value larger than a plausible challenge. Defence in depth.
+
+    urllib caps a single header LINE at 65536 bytes, so an oversize value cannot
+    arrive over HTTP through our own consumers -- but `parse_challenge` is public
+    and takes headers from anywhere, and the BODY path is already capped. Leaving
+    headers uncapped was an inconsistency, not a live hole: measured, a 19.2 MB
+    header value decoded to 200,000 accepts entries at 85 MB peak.
+    """
+    try:
+        return len(value) > MAX_CHALLENGE_BYTES
+    except TypeError:
+        return False
+
+
+def decode_payment_required(value):
+    """Decode a bare-base64 `payment-required` header value -> accepts[], or None."""
+    if _too_big(value):
+        return None
+    try:
+        raw = base64.b64decode(str(value or "").strip().strip('"') + "==")
+        return accepts_of(json.loads(raw.decode("utf-8", "replace")))
+    except Exception:
+        return None
+
+
 def decode_requirements(value):
     """Decode a `WWW-Authenticate: X402 requirements="<b64>"` value -> accepts[].
 
@@ -83,7 +126,7 @@ def decode_requirements(value):
     base64 blob that decodes to a document with a non-empty accepts[].
     """
     value = str(value or "")
-    if not _SCHEME_RE.match(value):
+    if _too_big(value) or not _SCHEME_RE.match(value):
         return None
     match = _REQUIREMENTS_RE.search(value)
     if not match:
@@ -115,12 +158,28 @@ def parse_challenge(body, headers):
     if accepts:
         return accepts, BODY_ACCEPTS
 
-    for key, value in _header_items(headers):
+    # Materialize ONCE. Two passes over _header_items(headers) would call .items()
+    # twice, and a lazy/generator-backed mapping yields its headers only on the
+    # first call -- the second pass would see nothing and the challenge would be
+    # silently lost. urllib's HTTPMessage returns a list so our own consumers were
+    # unaffected, but this function is public and tolerant by contract.
+    items = _header_items(headers)
+
+    # Header carriers, in a DETERMINISTIC order. `www-authenticate` is checked
+    # first because it shipped first: adding a carrier must not change what an
+    # already-working endpoint resolves to.
+    for key, value in items:
         if str(key).lower() != "www-authenticate":
             continue
         accepts = decode_requirements(value)
         if accepts:
             return accepts, HDR_ACCEPTS
+    for key, value in items:
+        if str(key).lower() != PAYMENT_REQUIRED_HEADER:
+            continue
+        accepts = decode_payment_required(value)
+        if accepts:
+            return accepts, PAYMENT_REQUIRED
     return None, None
 
 

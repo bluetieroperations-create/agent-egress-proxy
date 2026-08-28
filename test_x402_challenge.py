@@ -95,6 +95,137 @@ class DecodeRequirements(unittest.TestCase):
             self.assertIsNone(xc.decode_requirements(bad), bad)
 
 
+def _pr_value(doc):
+    """A `payment-required:` header value: bare base64, no requirements="" wrapper."""
+    return base64.b64encode(json.dumps(doc).encode()).decode()
+
+
+class PaymentRequiredHeader(unittest.TestCase):
+    """The THIRD carrier: `payment-required: <base64 x402 doc>`.
+
+    Measured 2026-08-28: of the 86 hosts the liveness survey filed as
+    `opaque_402` -- a 402 with no readable requirements anywhere -- **80 carry a
+    complete x402 v2 challenge in this header**. Their bodies are literally `{}`,
+    which is why they looked opaque. api.ipintel.ai (78 distinct payers, 145
+    settlements) is one of them: real, paid, and unreadable by us.
+    """
+
+    def test_reads_a_bare_base64_payment_required_header(self):
+        # Mutation: not reading this header. That is the status quo ante, and it
+        # made 80 live paying endpoints invisible.
+        accepts, carrier = xc.parse_challenge(
+            "{}", {"payment-required": _pr_value({"x402Version": 2, "accepts": [ACCEPT]})})
+        self.assertEqual(accepts, [ACCEPT])
+        self.assertEqual(carrier, xc.PAYMENT_REQUIRED)
+
+    def test_header_name_is_case_insensitive(self):
+        accepts, carrier = xc.parse_challenge(
+            "", {"Payment-Required": _pr_value({"accepts": [ACCEPT]})})
+        self.assertEqual(carrier, xc.PAYMENT_REQUIRED)
+        self.assertEqual(accepts, [ACCEPT])
+
+    def test_body_still_wins(self):
+        # Mutation: letting a header outrank the body. The body is what every
+        # other x402 client pays; that precedence must not change.
+        body_accept = dict(ACCEPT, amount="1")
+        accepts, carrier = xc.parse_challenge(
+            json.dumps({"accepts": [body_accept]}),
+            {"payment-required": _pr_value({"accepts": [dict(ACCEPT, amount="999")]})})
+        self.assertEqual(carrier, xc.BODY_ACCEPTS)
+        self.assertEqual(accepts[0]["amount"], "1")
+
+    def test_www_authenticate_still_wins_over_payment_required(self):
+        # Both are v2-style header carriers. Order must be DETERMINISTIC, and the
+        # pre-existing carrier keeps precedence so no shipped behaviour changes.
+        accepts, carrier = xc.parse_challenge(
+            "", {"www-authenticate": _hdr_value({"accepts": [dict(ACCEPT, amount="7")]}),
+                 "payment-required": _pr_value({"accepts": [dict(ACCEPT, amount="9")]})})
+        self.assertEqual(carrier, xc.HDR_ACCEPTS)
+        self.assertEqual(accepts[0]["amount"], "7")
+
+    def test_tolerates_stripped_padding(self):
+        blob = _pr_value({"accepts": [ACCEPT]}).rstrip("=")
+        accepts, carrier = xc.parse_challenge("", {"payment-required": blob})
+        self.assertEqual(carrier, xc.PAYMENT_REQUIRED)
+
+    def test_junk_header_does_not_mask_a_good_body(self):
+        accepts, carrier = xc.parse_challenge(
+            json.dumps({"accepts": [ACCEPT]}), {"payment-required": "!!!not-base64!!!"})
+        self.assertEqual(carrier, xc.BODY_ACCEPTS)
+
+    def test_junk_header_alone_is_not_a_challenge(self):
+        for bad in ("!!!", "", base64.b64encode(b"not json").decode(),
+                    _pr_value({"accepts": []}), _pr_value(["not", "a", "dict"])):
+            self.assertEqual(xc.parse_challenge("", {"payment-required": bad}),
+                             (None, None), bad)
+
+    def test_headers_are_read_only_once(self):
+        # Mutation: calling _header_items(headers) separately per carrier. A
+        # lazy/generator-backed mapping yields its headers on the FIRST call only,
+        # so the second pass sees nothing and the challenge is silently lost --
+        # exactly the class of silent miss this module exists to prevent.
+        class SingleUse:
+            def __init__(self):
+                self.calls = 0
+
+            def items(self):
+                self.calls += 1
+                if self.calls == 1:
+                    return iter([("payment-required", _pr_value({"accepts": [ACCEPT]}))])
+                return iter([])
+
+        h = SingleUse()
+        accepts, carrier = xc.parse_challenge("", h)
+        self.assertEqual(carrier, xc.PAYMENT_REQUIRED)
+        self.assertEqual(accepts, [ACCEPT])
+        self.assertEqual(h.calls, 1, "headers must be materialized exactly once")
+
+    def test_oversize_header_value_is_refused(self):
+        # Mutation: no size guard on the header path. The BODY path is capped at
+        # MAX_CHALLENGE_BYTES; leaving headers uncapped was an inconsistency.
+        # Measured before the fix: a 19.2 MB value decoded to 200,000 accepts at
+        # 85 MB peak. urllib caps a header line at 65536 bytes so this cannot
+        # arrive over HTTP, but parse_challenge is public and takes any mapping.
+        # The guard exists to avoid DOING the work, not to change the result: an
+        # oversize value returns None either way, because base64 of "AAAA..."
+        # decodes to garbage that json.loads rejects. A result-only assertion
+        # therefore cannot fail, so assert the decode is never ATTEMPTED.
+        huge = "A" * (xc.MAX_CHALLENGE_BYTES + 1)
+        calls = []
+        real = xc.base64.b64decode
+
+        def spy(*a, **kw):
+            calls.append(len(a[0]) if a else 0)
+            return real(*a, **kw)
+
+        xc.base64.b64decode = spy
+        try:
+            self.assertIsNone(xc.decode_payment_required(huge))
+            self.assertEqual(xc.parse_challenge("", {"payment-required": huge}),
+                             (None, None))
+            self.assertEqual(calls, [], "oversize value must not reach b64decode")
+        finally:
+            xc.base64.b64decode = real
+
+    def test_oversize_www_authenticate_value_is_refused(self):
+        huge = 'X402 requirements="%s"' % ("A" * (xc.MAX_CHALLENGE_BYTES + 1))
+        self.assertIsNone(xc.decode_requirements(huge))
+
+    def test_a_normal_sized_header_still_parses(self):
+        # Mutation: an off-by-one that rejects legitimate challenges.
+        accepts, carrier = xc.parse_challenge(
+            "", {"payment-required": _pr_value({"accepts": [ACCEPT]})})
+        self.assertEqual(carrier, xc.PAYMENT_REQUIRED)
+
+    def test_an_unrelated_header_is_not_scanned(self):
+        # Mutation: scanning EVERY header for anything base64-decodable. That is
+        # how the survey probe found this, but it is too permissive to ship --
+        # an unrelated header could be mistaken for payment requirements.
+        self.assertEqual(
+            xc.parse_challenge("", {"x-some-cache": _pr_value({"accepts": [ACCEPT]})}),
+            (None, None))
+
+
 class ParseChallenge(unittest.TestCase):
     def test_reads_accepts_from_the_body(self):
         accepts, carrier = xc.parse_challenge(
