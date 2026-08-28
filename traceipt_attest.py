@@ -75,16 +75,14 @@ def _first_accepts(resp, headers=None):
         accepts = resp.get("accepts")
         if isinstance(accepts, list) and accepts and isinstance(accepts[0], dict):
             return accepts[0]
-    for key, value in (headers or {}).items():
-        if str(key).lower() != "www-authenticate":
-            continue
-        try:
-            import x402_challenge
-            entry = x402_challenge.to_accepts(str(value))
-        except Exception:
-            entry = None
-        if entry:
-            return entry
+    try:
+        import x402_challenge
+        for value in x402_challenge.www_authenticate_values(headers):
+            entry = x402_challenge.to_accepts(value)
+            if entry:
+                return entry
+    except Exception:
+        pass
     return None
 
 

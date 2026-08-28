@@ -273,3 +273,51 @@ class TestUntrustedInput(unittest.TestCase):
         t = time.time()
         x.parse_params('Payment id="' + "a" * 200000 + '", request="e30"')
         self.assertLess(time.time() - t, 1.0)
+
+
+class TestMultipleHeaders(unittest.TestCase):
+    """HTTP permits WWW-Authenticate to repeat; dict(headers.items()) keeps only
+    the last, so a Bearer challenge could hide a Payment one."""
+
+    class Msg:
+        def __init__(self, values):
+            self.values = values
+
+        def get_all(self, name):
+            return self.values if name.lower() == "www-authenticate" else []
+
+        def items(self):
+            return [("WWW-Authenticate", self.values[-1])]
+
+    def test_get_all_object(self):
+        # kills: ignoring the email.Message API that http.client actually returns
+        m = self.Msg(['Bearer realm="a"', EVM])
+        self.assertEqual(len(x.www_authenticate_values(m)), 2)
+
+    def test_payment_found_behind_a_bearer_challenge(self):
+        # kills: the dict-collapse bug -- Bearer first would win and the Payment
+        # challenge would be invisible
+        m = self.Msg(['Bearer realm="a"', EVM])
+        self.assertEqual(len(x.accepts_from_response({}, m)), 1)
+
+    def test_pair_list_and_plain_dict(self):
+        # kills: supporting only one header container shape
+        self.assertEqual(
+            x.www_authenticate_values([("WWW-Authenticate", "Payment a"),
+                                       ("X", "y"), ("www-authenticate", "Bearer b")]),
+            ["Payment a", "Bearer b"])
+        self.assertEqual(x.www_authenticate_values({"WWW-Authenticate": "Payment z"}),
+                         ["Payment z"])
+
+    def test_none_and_empty(self):
+        self.assertEqual(x.www_authenticate_values(None), [])
+        self.assertEqual(x.www_authenticate_values({}), [])
+
+    def test_single_string_still_accepted(self):
+        # kills: a signature change breaking callers that pass one value
+        self.assertEqual(len(x.accepts_from_response({}, EVM)), 1)
+
+    def test_only_the_first_valid_payment_challenge_is_used(self):
+        # kills: emitting one accepts entry per header, inflating the options
+        m = self.Msg([EVM, EVM])
+        self.assertEqual(len(x.accepts_from_response({}, m)), 1)

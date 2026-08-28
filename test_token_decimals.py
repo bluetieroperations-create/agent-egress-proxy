@@ -186,3 +186,108 @@ class TestPayloadSimIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSolana(unittest.TestCase):
+    """SPL mint accounts are an 82-byte layout with decimals at offset 44 --
+    verified live against USDC on mainnet-beta."""
+
+    def _mint(self, decimals, length=82):
+        import base64
+        raw = bytearray(length)
+        if length > 44:
+            raw[44] = decimals
+        return base64.b64encode(bytes(raw)).decode()
+
+    def test_decodes_mint_decimals(self):
+        self.assertEqual(TD.decode_spl_decimals(self._mint(6)), 6)
+        self.assertEqual(TD.decode_spl_decimals(self._mint(9)), 9)
+
+    def test_rejects_short_account(self):
+        # kills: reading offset 44 of a TOKEN ACCOUNT (165 bytes) or any other
+        # account -- that byte is part of somebody's balance, not decimals
+        self.assertIsNone(TD.decode_spl_decimals(self._mint(6, length=40)))
+
+    def test_rejects_implausible(self):
+        # kills: a corrupt byte reaching 10**n
+        self.assertIsNone(TD.decode_spl_decimals(self._mint(200)))
+
+    def test_garbage_is_none(self):
+        self.assertIsNone(TD.decode_spl_decimals("not base64!!"))
+        self.assertIsNone(TD.decode_spl_decimals(None))
+        self.assertIsNone(TD.decode_spl_decimals(""))
+
+    def test_lookup_routes_base58_to_solana(self):
+        # kills: sending a base58 mint to eth_call, which cannot answer it
+        seen = []
+
+        def transport(url, body):
+            seen.append(body["method"])
+            return {"result": {"value": {"data": [self._mint(6), "base64"]}}}
+
+        r = TD.OnChainDecimals(rpc_url="http://evm", solana_rpc="http://sol",
+                               transport=transport, table={})
+        self.assertEqual(r.lookup("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"), 6)
+        self.assertEqual(seen, ["getAccountInfo"])
+
+    def test_base58_case_is_preserved(self):
+        # kills: lowercasing the mint before the call -- base58 is case-SENSITIVE
+        # and a lowercased mint is a different (nonexistent) account
+        sent = []
+
+        def transport(url, body):
+            sent.append(body["params"][0])
+            return {"result": {"value": {"data": [self._mint(6), "base64"]}}}
+
+        r = TD.OnChainDecimals(solana_rpc="http://sol", transport=transport, table={})
+        mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+        r.lookup(mint)
+        self.assertEqual(sent, [mint])
+
+    def test_no_solana_rpc_means_unknown(self):
+        # kills: attempting a Solana lookup with nowhere to ask
+        r = TD.OnChainDecimals(rpc_url="http://evm", transport=lambda u, b: {}, table={})
+        self.assertIsNone(r.lookup("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"))
+
+
+class TestZeroDecimalsVerification(unittest.TestCase):
+    """A contract with a catch-all fallback returning zeros is indistinguishable
+    from a genuine 0-decimal token, and reading 0 for an 18-decimal asset
+    mis-scales by 10^18."""
+
+    def _resolver(self, supply_result):
+        calls = []
+
+        def transport(url, body):
+            sel = body["params"][0]["data"]
+            calls.append(sel)
+            if sel == TD.DECIMALS_SELECTOR:
+                return {"result": "0x" + "0" * 64}
+            return {"result": supply_result}
+
+        return TD.OnChainDecimals(rpc_url="http://n", transport=transport,
+                                  table={}), calls
+
+    def test_zero_confirmed_by_total_supply(self):
+        # kills: rejecting every 0-decimal token, which are legitimate
+        r, calls = self._resolver("0x" + "0" * 63 + "1")
+        self.assertEqual(r.lookup("0x" + "a" * 40), 0)
+        self.assertIn(TD.TOTAL_SUPPLY_SELECTOR, calls)
+
+    def test_zero_rejected_when_not_a_token(self):
+        # kills: accepting 0 from a contract that merely returns zeros --
+        # scaling an 18-decimal amount by 10^0 is a 10^18 error
+        r, _ = self._resolver("0x")
+        self.assertIsNone(r.lookup("0x" + "a" * 40))
+
+    def test_non_zero_needs_no_second_call(self):
+        # kills: paying for an extra round trip on the common path
+        calls = []
+
+        def transport(url, body):
+            calls.append(body["params"][0]["data"])
+            return {"result": "0x" + "0" * 62 + "12"}
+
+        r = TD.OnChainDecimals(rpc_url="http://n", transport=transport, table={})
+        self.assertEqual(r.lookup("0x" + "a" * 40), 18)
+        self.assertEqual(calls, [TD.DECIMALS_SELECTOR])

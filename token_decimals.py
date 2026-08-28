@@ -39,9 +39,15 @@ import os
 import threading
 
 DECIMALS_SELECTOR = "0x313ce567"          # keccak("decimals()")[:4]
+TOTAL_SUPPLY_SELECTOR = "0x18160ddd"      # keccak("totalSupply()")[:4]
+# SPL mint accounts are a fixed 82-byte layout; `decimals` is the single byte at
+# offset 44. Verified live against USDC on mainnet-beta (returns 6).
+SPL_MINT_LEN = 82
+SPL_DECIMALS_OFFSET = 44
 MAX_PLAUSIBLE_DECIMALS = 36
 ENV_FLAG = "BLACKWALL_TOKEN_DECIMALS"
 ENV_RPC = "BLACKWALL_TOKEN_DECIMALS_RPC"
+ENV_SOLANA_RPC = "BLACKWALL_TOKEN_DECIMALS_SOLANA_RPC"
 
 
 def decode_decimals(result):
@@ -66,6 +72,27 @@ def decode_decimals(result):
     return None
 
 
+def decode_spl_decimals(data):
+    """Decimals from a base64 SPL mint account, or None.
+
+    `data` is the `value.data[0]` string from `getAccountInfo` with base64
+    encoding. Length is checked because a token ACCOUNT (165 bytes) and a mint
+    (82) are both valid accounts; reading offset 44 of the wrong one returns a
+    byte of somebody's balance.
+    """
+    import base64 as _b64
+    if not isinstance(data, str) or not data:
+        return None
+    try:
+        raw = _b64.b64decode(data)
+    except Exception:
+        return None
+    if len(raw) < SPL_MINT_LEN:
+        return None
+    value = raw[SPL_DECIMALS_OFFSET]
+    return value if 0 <= value <= MAX_PLAUSIBLE_DECIMALS else None
+
+
 def enabled(env=None):
     """True when the on-chain lookup is explicitly switched on."""
     env = env if env is not None else os.environ
@@ -83,8 +110,10 @@ class OnChainDecimals:
     token are coalesced into one upstream call.
     """
 
-    def __init__(self, rpc_url=None, transport=None, timeout=8.0, table=None):
+    def __init__(self, rpc_url=None, transport=None, timeout=8.0, table=None,
+                 solana_rpc=None):
         self.rpc_url = rpc_url or os.environ.get(ENV_RPC)
+        self.solana_rpc = solana_rpc or os.environ.get(ENV_SOLANA_RPC)
         self.timeout = timeout
         self._transport = transport
         self._cache = {}                  # token -> int | None (None = asked, unknown)
@@ -100,9 +129,9 @@ class OnChainDecimals:
         self.table = table
 
     # -- internals ---------------------------------------------------------
-    def _send(self, token):
+    def _send(self, token, selector=DECIMALS_SELECTOR):
         body = {"jsonrpc": "2.0", "id": 1, "method": "eth_call",
-                "params": [{"to": token, "data": DECIMALS_SELECTOR}, "latest"]}
+                "params": [{"to": token, "data": selector}, "latest"]}
         if self._transport is not None:
             return self._transport(self.rpc_url, body)
         from rpc_node import forward_upstream
@@ -115,7 +144,39 @@ class OnChainDecimals:
             return None
         if not isinstance(resp, dict) or resp.get("error"):
             return None
-        return decode_decimals(resp.get("result"))
+        value = decode_decimals(resp.get("result"))
+        if value != 0:
+            return value
+        # A contract with a catch-all fallback returning zeros is
+        # indistinguishable from a genuine 0-decimal token, and reading 0 for an
+        # 18-decimal asset mis-scales by 10^18. Zero-decimal tokens are rare, so
+        # confirm with ONE extra call in that case only: a real ERC-20 also
+        # implements totalSupply().
+        try:
+            probe = self._send(token, TOTAL_SUPPLY_SELECTOR)
+        except Exception:
+            return None
+        if not isinstance(probe, dict) or probe.get("error"):
+            return None
+        result = probe.get("result")
+        return 0 if isinstance(result, str) and len(result) > 2 else None
+
+    def _fetch_solana(self, mint):
+        body = {"jsonrpc": "2.0", "id": 1, "method": "getAccountInfo",
+                "params": [mint, {"encoding": "base64"}]}
+        try:
+            if self._transport is not None:
+                resp = self._transport(self.solana_rpc, body)
+            else:
+                from rpc_node import forward_upstream
+                resp = forward_upstream(self.solana_rpc, body, timeout=self.timeout)
+        except Exception:
+            return None
+        if not isinstance(resp, dict) or resp.get("error"):
+            return None
+        value = (resp.get("result") or {}).get("value") or {}
+        data = value.get("data")
+        return decode_spl_decimals(data[0] if isinstance(data, list) and data else data)
 
     # -- api ---------------------------------------------------------------
     def lookup(self, asset):
@@ -128,11 +189,12 @@ class OnChainDecimals:
         known = self.table.get(key)
         if known is not None:
             return known
-        if not key.startswith("0x"):
-            # Non-EVM (e.g. a Solana mint) -- eth_call cannot answer, and asking
-            # would leak the query for nothing.
+        # Non-EVM (a Solana mint is base58, not 0x) needs getAccountInfo, not
+        # eth_call. Handled when a Solana RPC is configured; otherwise unknown.
+        is_evm = key.startswith("0x")
+        if is_evm and not self.rpc_url:
             return None
-        if not self.rpc_url:
+        if not is_evm and not self.solana_rpc:
             return None
 
         with self._lock:
@@ -150,7 +212,8 @@ class OnChainDecimals:
             with self._lock:
                 return self._cache.get(key)
 
-        value = self._fetch(key)
+        # Solana mints are case-SENSITIVE base58, so use the original string.
+        value = self._fetch(key) if is_evm else self._fetch_solana(asset.strip())
         self.upstream_calls += 1
         with self._lock:
             # Cached FOREVER, including a None: decimals() is immutable, so a
@@ -161,11 +224,13 @@ class OnChainDecimals:
         return value
 
 
-def resolver(rpc_url=None, transport=None, env=None):
+def resolver(rpc_url=None, transport=None, env=None, solana_rpc=None):
     """An `OnChainDecimals` when enabled and configured, else None (fail-open)."""
     if not enabled(env):
         return None
-    url = rpc_url or (env or os.environ).get(ENV_RPC)
-    if not url and transport is None:
+    src = env or os.environ
+    url = rpc_url or src.get(ENV_RPC)
+    sol = solana_rpc or src.get(ENV_SOLANA_RPC)
+    if not url and not sol and transport is None:
         return None
-    return OnChainDecimals(rpc_url=url, transport=transport)
+    return OnChainDecimals(rpc_url=url, transport=transport, solana_rpc=sol)

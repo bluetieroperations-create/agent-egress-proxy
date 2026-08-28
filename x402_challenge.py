@@ -145,6 +145,24 @@ def to_accepts(header):
     }
 
 
+def www_authenticate_values(headers):
+    """EVERY WWW-Authenticate value in a header mapping.
+
+    HTTP permits the header to repeat, and `dict(resp.headers.items())` keeps
+    only the last occurrence -- so a server sending a Bearer challenge followed
+    by a Payment one (or the reverse) loses whichever came first. Accepts a
+    mapping, a list of (name, value) pairs, or an email.Message-style object with
+    `get_all`, which is what http.client actually hands back.
+    """
+    if headers is None:
+        return []
+    getter = getattr(headers, "get_all", None)
+    if callable(getter):
+        return [str(v) for v in (getter("WWW-Authenticate") or [])]
+    items = headers.items() if hasattr(headers, "items") else headers
+    return [str(v) for k, v in items if str(k).lower() == "www-authenticate"]
+
+
 def accepts_from_response(body_doc, header):
     """Every `accepts[]` entry for a 402, from the BODY first then the HEADER.
 
@@ -158,7 +176,14 @@ def accepts_from_response(body_doc, header):
         for a in body_doc.get("accepts") or []:
             if isinstance(a, dict):
                 out.append(a)
-    hdr = to_accepts(header)
-    if hdr:
-        out.append(hdr)
+    # `header` may be a single value or a whole header mapping. Scanning every
+    # occurrence means a Bearer challenge sent alongside a Payment one cannot
+    # hide it -- with a plain dict, only the last would survive.
+    values = ([header] if isinstance(header, str)
+              else www_authenticate_values(header))
+    for value in values:
+        hdr = to_accepts(value)
+        if hdr:
+            out.append(hdr)
+            break
     return out

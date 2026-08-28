@@ -126,11 +126,13 @@ def parse_challenge(body, headers):
     if accepts:
         return accepts, BODY_ACCEPTS
 
-    for key, value in (headers or {}).items():
-        if str(key).lower() != "www-authenticate":
-            continue
-        value = str(value)
-
+    try:
+        import x402_challenge as _xc
+        _values = _xc.www_authenticate_values(headers)
+    except Exception:
+        _values = [str(v) for k, v in (headers or {}).items()
+                   if str(k).lower() == "www-authenticate"]
+    for value in _values:
         # MEASURED CORRECTION (2026-08-27): this function originally required the
         # header to start with "x402" and carry requirements="<base64>". Probing
         # all 195 surveyed hosts found 11 serving a challenge and NONE matching

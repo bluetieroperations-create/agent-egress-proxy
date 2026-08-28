@@ -123,3 +123,77 @@ resolves to unknown — which is now **safe** (reported and escalated) rather th
 wrong, but it is not *verified*. Reading `decimals()` from the token contract via
 the existing `rpc_node.py` path would close this properly, at the cost of a
 network call on the hot path.
+
+---
+
+# Closing the remaining items — 2026-08-28
+
+## #5 `settlement_sim._base_units` — fixed
+
+Now resolves decimals from the token rather than assuming 6, falling back to 6
+only as a last resort. This gate stays HOLD-only and non-gating, so a mis-scaled
+amount could never block a payment — but a simulation run at 10^12 the intended
+size is a meaningless simulation, and learning whether the transfer would revert
+is the entire point of the call.
+
+## Non-EVM assets — closed
+
+`token_decimals` now reads SPL mint accounts. The layout is 82 bytes with
+`decimals` as the single byte at **offset 44**, verified live against USDC on
+mainnet-beta (returns 6, owner `TokenkegQfeZ…`).
+
+Two traps handled: the account length is checked, because a token ACCOUNT (165
+bytes) is also a valid account and offset 44 there is part of somebody's balance;
+and the mint string is **not lowercased**, because base58 is case-sensitive and a
+lowercased mint addresses a different, nonexistent account.
+
+Live: Solana USDC -> 6, BSC CAKE -> 18, a non-token -> None.
+
+## Zero-decimals ambiguity — closed
+
+A contract with a catch-all fallback returning zeros was indistinguishable from a
+genuine 0-decimal token, and reading 0 for an 18-decimal asset mis-scales by
+10^18. Zero-decimal tokens are rare, so the resolver now confirms with **one
+extra call in that case only**: a real ERC-20 also implements `totalSupply()`. A
+non-zero answer costs no extra round trip.
+
+## Multiple `WWW-Authenticate` headers — closed
+
+HTTP permits the header to repeat, and `dict(resp.headers.items())` keeps only
+the last — so a server sending `Bearer` alongside `Payment` could hide the
+payment challenge entirely. `www_authenticate_values()` reads every occurrence
+(supporting the `email.Message` `get_all` API that `http.client` actually
+returns, plus pair lists and plain dicts) and is wired into
+`directory_liveness`, `traceipt_attest`, `clients/x402_pay` and
+`accepts_from_response`.
+
+## The 49 still-opaque 402 hosts — diagnosed, not a bug
+
+Probed all 49 that remained opaque after the v2 header fix:
+
+- **0 carry a `WWW-Authenticate` header of any kind.** No parser change can reach them.
+- 46 return valid JSON, but the bodies are error strings, hints or docs links —
+  not payment requirements. Several return literally `{}`.
+- Only 2 carry `x402Version` and 2 carry a `price` field.
+
+They return 402 as a status code without ever advertising **how** to pay. That is
+a broken or out-of-band endpoint, not a gap in our parsing. The `opaque_402`
+class is now fully accounted for: 5 were the header-format gap (fixed), 49 are
+genuinely non-advertising, and the remainder were 404/405/dead.
+
+## Final state
+
+| Item | Status |
+|---|---|
+| payload_sim STOP bypass | Fixed |
+| wallet_guard cap bypass | Fixed |
+| placeholder conflation | Fixed |
+| discovery price gate inert | Fixed |
+| settlement_sim base units | Fixed |
+| unverified tokens (EVM) | Closed — on-chain, cached forever |
+| unverified tokens (Solana) | Closed — SPL mint read |
+| zero-decimals ambiguity | Closed — totalSupply confirmation |
+| multiple auth headers | Closed |
+| 49 opaque hosts | Diagnosed — not our defect |
+
+971 root tests green, 44 in `integrations/wallets`.

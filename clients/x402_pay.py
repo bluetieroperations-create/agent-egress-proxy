@@ -336,9 +336,11 @@ def main(argv=None):
         try:
             sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             import x402_challenge
-            entry = x402_challenge.to_accepts(
-                next((v for k, v in resp_headers.items()
-                      if str(k).lower() == "www-authenticate"), None))
+            entry = None
+            for _v in x402_challenge.www_authenticate_values(resp_headers):
+                entry = x402_challenge.to_accepts(_v)
+                if entry:
+                    break
         except Exception:
             entry = None
         if entry:
