@@ -131,12 +131,43 @@ def _human(atomic, decimals=6):
         return None
 
 
+def asset_decimals(asset):
+    """Decimals for a crawled asset, or None when unknown.
+
+    MEASURED DEFECT (audit 2026-08-27): this module assumed USDC/6dp for EVERY
+    asset. 16.8% of the crawled payment options (1,792 of 10,668, across 23 of
+    198 payees) are NOT USDC, and the BSC stablecoins among them -- BSC-USD,
+    BUSD, USD1 -- are **18 decimals**, verified on-chain via decimals(). USDT is
+    6 on Ethereum and 18 on BSC, which is exactly what a single global default
+    walks into.
+
+    Effect measured: a 1.00 BSC-USD quote entered the baseline as
+    1,000,000,000,000. Peer medians absorb that up to ~30% poisoning, but a payee
+    whose OWN history is priced in an 18-decimal asset has its median inflated
+    10^12 -- so a 10x overcharge scores an anomaly ratio of 1e-11 and the
+    price-anomaly gate is SILENTLY INERT for that payee.
+    """
+    try:
+        from payload_sim import resolve_decimals
+        return resolve_decimals({"asset": asset})
+    except Exception:
+        return None
+
+
 def price_observations(resources):
     """Advertised list prices as cross-counterparty price observations (feed a
-    peer-group baseline). USDC (6dp) assumed for the human amount."""
+    peer-group baseline).
+
+    An observation is emitted ONLY when the asset's decimals are known. A missing
+    observation costs a little baseline coverage; a wrong one by 10^12 poisons the
+    median and disables the anomaly gate, so omission is the safe failure.
+    """
     out = []
     for r in resources or []:
-        amt = _human(r.get("price_atomic"))
+        decimals = asset_decimals(r.get("asset"))
+        if decimals is None:
+            continue
+        amt = _human(r.get("price_atomic"), decimals)
         if amt:
             out.append({"counterparty": r["payTo"], "resource": r.get("resource"),
                         "amount": amt, "asset": r.get("asset"),

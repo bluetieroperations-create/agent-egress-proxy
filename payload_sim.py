@@ -161,6 +161,15 @@ KNOWN_DECIMALS = {
     "0x056fd409e1d7a124bd7017459dfea2f387b6d5cd": 2,   # GUSD  Ethereum (2dp!)
     "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2": 18,  # WETH  Ethereum
     "0x4200000000000000000000000000000000000006": 18,  # WETH  Base/OP
+    # BSC stablecoins are 18 DECIMALS, not 6 -- verified on-chain via
+    # decimals() on bsc-dataseed 2026-08-27. USDT is 6 on Ethereum and 18 on
+    # BSC, which is exactly the trap a single global default walks into.
+    "0x55d398326f99059ff775485246999027b3197955": 18,  # BSC-USD (USDT on BSC)
+    "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d": 18,  # BUSD  BSC
+    "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d": 18,  # USD1  BSC
+    "0xce24439f2d9c6a2289f741120fe202248b666666": 18,  # BSC
+    # Solana USDC (base58 mint, not an 0x address)
+    "epjfwdd5aufqssqem2qn1xzybapc8g4weggkzwytdt1v": 6,
 }
 KNOWN_SYMBOL_DECIMALS = {"usdc": 6, "usdt": 6, "dai": 18, "weth": 18,
                          "eth": 18, "wbtc": 8, "gusd": 2}

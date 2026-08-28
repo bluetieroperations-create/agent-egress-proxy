@@ -175,3 +175,57 @@ class TestCrawlAndBackfill(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAssetDecimals(unittest.TestCase):
+    """Audit 2026-08-27: price_observations assumed USDC/6dp for every asset.
+    16.8% of crawled options are not USDC, and the BSC stablecoins among them are
+    18 decimals (verified on-chain)."""
+
+    BSC_USD = "0x55d398326f99059ff775485246999027b3197955"   # 18 dp
+    USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"      # 6 dp
+
+    def _res(self, asset, atomic):
+        return [{"payTo": "0x" + "a" * 40, "asset": asset, "price_atomic": atomic,
+                 "resource": "https://x.test/r", "network": "eip155:56"}]
+
+    def test_eighteen_decimal_asset_is_not_inflated(self):
+        # kills: the 6dp assumption. A 1.00 BSC-USD quote entered the baseline as
+        # 1,000,000,000,000 -- inflating that payee's median by 10^12 and making
+        # the price-anomaly gate SILENTLY INERT for it.
+        obs = D.price_observations(self._res(self.BSC_USD, 10 ** 18))
+        self.assertEqual(obs[0]["amount"], "1")
+
+    def test_usdc_unchanged(self):
+        # kills: a fix that regresses the common 6dp case
+        obs = D.price_observations(self._res(self.USDC, 10 ** 6))
+        self.assertEqual(obs[0]["amount"], "1")
+
+    def test_unknown_asset_emits_no_observation(self):
+        # kills: emitting a guessed price. A missing observation costs a little
+        # baseline coverage; one wrong by 10^12 poisons the median.
+        self.assertEqual(
+            D.price_observations(self._res("0x" + "9" * 40, 10 ** 6)), [])
+
+    def test_mixed_assets_are_comparable_after_scaling(self):
+        # kills: leaving cross-asset observations on different scales, which is
+        # what made a peer-group median meaningless
+        res = (self._res(self.BSC_USD, 10 ** 18) + self._res(self.USDC, 10 ** 6))
+        amounts = {o["amount"] for o in D.price_observations(res)}
+        self.assertEqual(amounts, {"1"})
+
+    def test_overcharge_is_detectable_again(self):
+        # kills: the whole defect end-to-end. Against a poisoned history a 10x
+        # overcharge scored 1e-11, far under the 8.0 STOP threshold; it must now
+        # score 10.0 and be caught.
+        import blackwall
+        hist = [o["amount"] for o in
+                D.price_observations(self._res(self.BSC_USD, 10 ** 18) * 6)]
+        self.assertGreater(blackwall.price_anomaly_ratio("10", hist),
+                           blackwall.STOP_ANOMALY_RATIO)
+
+    def test_asset_decimals_resolves_and_admits_ignorance(self):
+        # kills: returning a default instead of None for an unrecognised asset
+        self.assertEqual(D.asset_decimals(self.BSC_USD), 18)
+        self.assertEqual(D.asset_decimals(self.USDC), 6)
+        self.assertIsNone(D.asset_decimals("0x" + "9" * 40))

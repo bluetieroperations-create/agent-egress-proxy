@@ -10,7 +10,7 @@ which made "everything is Base USDC" worth testing rather than assuming.
 | 1 | `blackwall.forecast` → `check_payment_authorization(..., decimals=6)` | Atomic comparison mis-scales by 10^(d-6). **Bypasses the payload-sim STOP authority.** | **HIGH** | Fixed |
 | 2 | `wallet_guard.claim_from_tx(token_decimals=6)` | Amount handed to the verdict wrong by 10^(d-6), **in the signing path**. Cap bypass. | **HIGH** | Fixed |
 | 3 | `wallet_guard` placeholder `amount = "0.000001"` | Conflates "no value moved" with "amount unscalable", presenting any transfer as trivial | **HIGH** | Fixed |
-| 4 | `discovery_crawl._human(atomic, decimals=6)` | Peer price baselines wrong for non-6dp payees | MEDIUM | Documented, not fixed |
+| 4 | `discovery_crawl.price_observations` | Baselines wrong for non-6dp payees; **price-anomaly gate silently inert** for them | **HIGH** (re-graded) | Fixed |
 | 5 | `settlement_sim._base_units(decimals=6)` | Simulated transfer amount wrong; HOLD-only, never STOP | LOW | Documented, not fixed |
 | 6 | `x402.to_atomic`, `discovery.human_price` | Library defaults; correct where callers pass a value | INFO | No change |
 
@@ -72,12 +72,45 @@ scale is flagged and escalated.
 - USDC behaviour explicitly regression-tested as unchanged — it is ~all of today's
   traffic and must not move.
 
-## Not fixed, and why
+## #4 — measured separately, and re-graded from MEDIUM to HIGH
 
-**#4 `discovery_crawl._human`** feeds peer price baselines from crawl data. Its own
-docstring already says "USDC (6dp) assumed". Every crawled record carries its
-`asset`, so the fix is available; it is not done here because it changes historical
-baseline values and should be a separate, measured change.
+Measured before changing anything.
+
+**Exposure:** 1,792 of 10,668 crawled payment options are **not USDC (16.8%)**,
+across 23 of 198 payees (11.6%). Probing the affected payees live returned real
+non-USDC assets, and `decimals()` on-chain (bsc-dataseed, 2026-08-27) says:
+
+| Token | Address | Decimals |
+|---|---|---|
+| BSC-USD (USDT on BSC) | `0x55d3…7955` | **18** |
+| BUSD | `0x8ac7…580d` | **18** |
+| USD1 | `0x8d0d…8b0d` | **18** |
+| (BSC) | `0xce24…6666` | **18** |
+
+USDT is **6 on Ethereum and 18 on BSC** — precisely the trap a single global
+default walks into.
+
+**Damage, measured.** A 1.00 BSC-USD quote entered the baseline as
+**1,000,000,000,000**. Peer medians turn out to be resilient — unchanged at 17%
+and even 30% poisoning — so the cross-counterparty case was not the problem. The
+real failure is a payee whose OWN history is priced in an 18-decimal asset:
+
+| Scenario | Anomaly ratio | Caught? (STOP threshold 8.0) |
+|---|---|---|
+| 10x overcharge, before fix | **1e-11** | **No — gate silently inert** |
+| 10x overcharge, after fix | **10.0** | **Yes** |
+
+That is why this was re-graded: not noisy baselines, but a **price-anomaly gate
+that cannot fire at all** for any payee priced in an 18-decimal asset.
+
+**The fix.** `asset_decimals()` resolves per asset; `price_observations` emits an
+observation **only when the decimals are known**. Losing an observation costs a
+little baseline coverage; keeping one that is wrong by 10^12 disables a gate.
+
+6 new tests in `test_discovery_crawl.py`, including the end-to-end assertion that
+a 10x overcharge now exceeds `STOP_ANOMALY_RATIO`.
+
+## Not fixed, and why
 
 **#5 `settlement_sim._base_units`** affects a simulated transfer amount only. That
 gate is HOLD-only and never STOPs, and an underfunded result is explicitly
