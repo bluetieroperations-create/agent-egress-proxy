@@ -93,6 +93,41 @@ class TestAssessUpto(unittest.TestCase):
         self.assertEqual(r["status"], "unknown")
         self.assertFalse(r["mismatches"])
 
+    def test_an_unreadable_ceiling_says_the_ratio_check_did_not_run(self):
+        """`unknown` must not be silent.
+
+        Found by the cold-start session auditing this module against their corpus
+        work: a ceiling quoted in HUMAN units ("0.001" rather than "1000") is not
+        an integer, so it parses to None and the 100x ratio check is skipped --
+        measured, not hypothetical, since 1 of 363 live quotes is advertised that
+        way. Skipping is CORRECT (a human ceiling against an atomic allowance is
+        not a comparison), but doing it silently is the same defect shape as
+        amount_status="verified" on an unverified scale: a check that did not run,
+        reported as though nothing was wrong. The unlimited hard-STOP is
+        unaffected either way -- it fires before the ceiling is consulted.
+
+        Mutation: drop the note -> this FAILS.
+        """
+        r = U.assess_upto("upto", max_amount="0.001", allowance=10 ** 9)
+        self.assertEqual(r["status"], "unknown")
+        self.assertFalse(r["mismatches"], "must not gate on an unknown ceiling")
+        self.assertTrue(r["warnings"], "the skipped check must be visible")
+        self.assertIn("ceiling", r["warnings"][0].lower())
+
+    def test_unlimited_still_stops_with_an_unreadable_ceiling(self):
+        # kills: moving the unlimited check below the ceiling parse, which would
+        # let a human-unit quote disable the hard STOP too
+        r = U.assess_upto("upto", max_amount="0.001", allowance=(1 << 256) - 1)
+        self.assertEqual(r["status"], "unlimited")
+        self.assertTrue(r["mismatches"])
+
+    def test_no_allowance_stays_quiet(self):
+        # kills: warning when the caller simply said nothing -- that is not a
+        # skipped check, it is an absent input, and noise there is not free
+        r = U.assess_upto("upto", max_amount="1000", allowance=None)
+        self.assertEqual(r["status"], "unknown")
+        self.assertFalse(r["warnings"])
+
     def test_unreadable_ceiling_does_not_crash_or_gate(self):
         r = U.assess_upto("upto", max_amount=None, allowance=1000)
         self.assertEqual(r["status"], "unknown")

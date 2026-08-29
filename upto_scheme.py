@@ -57,6 +57,13 @@ EXCESSIVE_RATIO = 100
 SCHEME = "upto"
 
 
+
+def _show(v):
+    """Short, safe rendering for a message. Never raises, never echoes a huge blob."""
+    text = "None" if v is None else str(v)
+    return text if len(text) <= 40 else text[:37] + "..."
+
+
 def is_upto(scheme):
     """True iff this names the metered scheme. Never raises."""
     return isinstance(scheme, str) and scheme.strip().lower() == SCHEME
@@ -161,7 +168,19 @@ def assess_upto(scheme, max_amount=None, allowance=None):
         return out
 
     if ceiling is None or ceiling <= 0:
+        # The ratio check cannot run, and SAYS SO. A ceiling quoted in human units
+        # ("0.001" rather than the atomic "1000") is not an integer, so comparing
+        # it to an atomic allowance would not be a comparison at all -- skipping is
+        # right. Skipping SILENTLY is not: that is a check that did not run,
+        # reported as though nothing was wrong, which is the defect shape this
+        # codebase keeps finding. Note only when an allowance was actually stated;
+        # saying nothing is an absent input, not a skipped check.
         out["status"] = "unknown"
+        out["warnings"].append(
+            "`upto` Permit2 allowance %s could not be compared to the quoted "
+            "ceiling %s -- the ceiling is not an atomic integer, so the "
+            "proportionality check did not run (an unlimited allowance is still "
+            "refused)" % (allow, _show(max_amount)))
         return out
 
     if allow > ceiling * EXCESSIVE_RATIO:
