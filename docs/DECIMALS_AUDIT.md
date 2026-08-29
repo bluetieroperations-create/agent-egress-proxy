@@ -197,3 +197,121 @@ genuinely non-advertising, and the remainder were 404/405/dead.
 | 49 opaque hosts | Diagnosed — not our defect |
 
 971 root tests green, 44 in `integrations/wallets`.
+
+---
+
+# Resolving the corpus, not just the mechanism — 2026-08-29
+
+The work above made an unknown asset **safe** (reported as `unverified_decimals`
+rather than silently assumed to be 6). It did not make it **known**. This pass
+closes that: every asset the live x402 corpus actually advertises was read
+on-chain once and committed.
+
+## Method
+
+Re-probed all 195 hosts in `data/liveness.json` through `x402_challenge.parse_challenge`
+(so all three carriers are read, not just the JSON body) and collected every
+`accepts[].asset` with its network. That yields **41 distinct (network, asset)
+pairs**, of which 17 already resolved and **24 did not** — 12% of live options
+priced in an asset whose scale we could not verify.
+
+Each unresolved pair was then resolved at its own source:
+
+| Family | How | Result |
+|---|---|---|
+| EVM (16) | `decimals()` via `token_decimals.py`, routed per chain | all 16 read |
+| Solana (2) | SPL mint account, decimals byte at offset 44 | both 6 |
+| Algorand (1) | asset params from algod | 6 |
+| Stellar (2) | protocol constant (stroops), confirmed via Horizon | 7 |
+| Hyperliquid (1) | canonical `spotMeta` `weiDecimals` | 8 |
+
+**Cross-checked, not taken on trust.** Each EVM value was re-read from every
+public RPC the chain lists, up to five. 12 of the 16 agreed across **two or more
+independent providers**; the other 4 (Monad, Sei, Celo, SKALE) have only one
+public endpoint and are marked `1 rpc` in the table. **Zero disagreements.**
+The Stellar value is the one entry that is not a contract read, so it carries two
+independent corroborations: Horizon reports that asset's balances as
+`"0.0000000"` — exactly 7 fraction digits — and two unrelated hosts advertise
+their Stellar leg at exactly 10x their 6-decimal legs. Horizon also confirms the
+`contract_id` of the classic asset is the same SAC the corpus advertises.
+
+## What the corpus turned out to contain
+
+**Two of the 41 pairs are not 6 decimals, and one is not even dollars.**
+
+* **JPYC on Polygon (`0x431D…7BDB`) is 18 decimals — and denominated in yen.**
+  A live seller (`api.anchor-x402.com`) advertises `amount=1000000000000000000`
+  on that leg, i.e. **1.0 JPYC**, alongside a 6-decimal Solana leg priced at
+  `5000` ($0.005). Read at the corpus-default 6 that quote is 1,000,000,000,000
+  — a trillion — which is exactly the mis-scaling this gate exists to prevent.
+* **Stellar is 7, Hyperliquid is 8.** Neither is exotic; both are simply not 6.
+
+Knowing the scale is **not** knowing the price. JPYC is yen and EURC is euro, so
+even correctly scaled they are not comparable to a USDC quote. The price gates
+continue to observe **only** known 6-decimal USDC (`_is_usdc6`), which stays
+correct — a currency conversion is a separate problem and is not attempted here.
+
+## Why a second, chain-keyed table
+
+`KNOWN_DECIMALS` is keyed by **address alone**. That is sound only while every
+entry agrees across chains, which held while the table was all USDC. It stops
+holding the moment an entry is 18: the same 20 bytes are a different contract on
+a different chain, and nothing prevents an address collision between a 6-decimal
+token and an 18-decimal one. So the 22 new values live in
+`KNOWN_DECIMALS_BY_CHAIN`, keyed by `(network, asset)`, consulted **before** the
+flat table, and are deliberately **not** added to it. `chain` is a required
+request field, so this covers every real request; a claim with no chain resolves
+to unknown, which is the module's existing safe answer.
+
+## Audit finding — HIGH: a correct payment was hard-STOPPED
+
+Found while exercising the new coverage on the real HTTP path, and **independent
+of this change** — it simply could not be seen before, because every asset we
+could test with was on Base.
+
+`x402._CAIP2` mapped only Base and Ethereum, and `to_caip2` returns an unknown
+name unchanged. The payload-sim network check compares
+`to_caip2(payment.network)` against `to_caip2(claim.chain)` — so an agent that
+spelled its chain the ordinary human way, `"polygon"`, against a correct payment
+on `eip155:137`, compared `"polygon"` to `"eip155:137"`, called it a network
+mismatch, and returned **`STOP`, `hard_stop: true`** on a payment that was
+entirely correct:
+
+```
+signed payment network eip155:137 != the scored chain polygon
+```
+
+This is the worst error class for this product — refusing a legitimate payment —
+and it applied to **every non-Base chain**, which is most of the corpus (Polygon,
+Arbitrum, BSC, Avalanche, Celo, Sei, Monad, X Layer, World Chain, and more).
+Sellers write bare names too: 15 corpus entries advertise `"base"` and 3
+advertise `"solana"`.
+
+**Fixed** by extending `_CAIP2` with the corpus's chains. Every added mapping is
+**unambiguous** — a truthful name for exactly one chain — so making them compare
+equal cannot let a payment on one chain pass as a payment on another; it only
+stops us calling one chain two different things. Ambiguous names are deliberately
+**absent**: bare `"solana"` names neither mainnet nor devnet, and guessing there
+*would* be a real loosening. Verified live end-to-end: the correct payment now
+scores clean, a payment genuinely on Base against a Polygon claim still hard-STOPs.
+
+## Verification
+
+| Check | Result |
+|---|---|
+| Full root suite | **1,722 tests green** |
+| Adversarial scorecard (`redteam.py`) | 25 caught, 2 known gaps, **0 false positives**, 0 misses |
+| Live HTTP path | correct JPYC payment → clean; 10⁻¹² underpayment → STOP; contradicting caller decimals → STOP; wrong-chain payment → STOP |
+| Table self-consistency | no flat/chain contradictions; no address carrying two different values |
+
+## Not fixed, and why
+
+* **`clients/x402_pay.py` has its own `_CAIP2` with the same gap.** Its
+  consequence there is a printed warning, not a refusal, and the client's
+  `CHAIN_IDS`/`DEFAULT_RPC` support Base only — extending the alias map alone
+  would be cosmetic. It is a test-only dry-run client.
+* **Non-USD assets are still excluded from price baselines.** Correct for now:
+  scaling JPYC properly does not make a yen quote comparable to a dollar one.
+* **Coverage is a snapshot.** The table covers what the corpus advertised on
+  2026-08-29. New assets still resolve to unknown — safely — until either the
+  on-chain resolver is enabled or the table is refreshed.
