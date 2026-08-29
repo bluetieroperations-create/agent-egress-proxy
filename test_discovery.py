@@ -282,7 +282,9 @@ class TestDiscoveryEndpoint(unittest.TestCase):
         """
         spec = self._get("/openapi.json")[1]["paths"]
         # /v1/session is billing-only and correctly absent when billing is off.
-        billing_only = set(D.BILLING_POST_ROUTES)
+        # /stats and anything else in UNADVERTISED_ROUTES is served on purpose
+        # without being catalogued -- see test_unadvertised_routes_*.
+        billing_only = set(D.BILLING_POST_ROUTES) | set(D.UNADVERTISED_ROUTES)
         for path in sorted(self._dispatched_paths("do_GET") - billing_only):
             self.assertIn(path, spec,
                           "do_GET serves %s but openapi.json omits it" % path)
@@ -403,6 +405,56 @@ class TestDiscoveryEndpoint(unittest.TestCase):
         self.assertEqual(self._raw_status("///healthz"), 200)
         self.assertEqual(self._raw_status("//nope"), 404)
 
+    def test_get_handler_failure_returns_503_not_a_dropped_connection(self):
+        """A raising GET handler must answer cleanly, like do_POST already does.
+
+        do_POST wraps its dispatch and returns 503 ("fail CLOSED + gracefully").
+        do_GET had NO try/except at all, so an exception dropped the connection
+        mid-response: the client saw RemoteDisconnected rather than any status
+        code, and the traceback went to stderr. Reproduced with a receipt_signer
+        whose jwks() raises -- a plausible misconfiguration, and /jwks.json is
+        now advertised in openapi.json so crawlers reach it.
+
+        Mutation: remove the try/except from do_GET -> this FAILS with a
+        connection error instead of 503.
+        """
+        class BoomSigner:
+            def jwks(self):
+                raise RuntimeError("signer exploded")
+        srv = BlackwallServer(port=0, receipt_signer=BoomSigner())
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start(); time.sleep(0.3)
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                urllib.request.urlopen(
+                    "http://127.0.0.1:%d/jwks.json" % srv.port, timeout=4)
+            self.assertEqual(cm.exception.code, 503)
+        finally:
+            srv.shutdown()
+
+    def test_get_handler_failure_does_not_leak_internals(self):
+        """The 503 body must not carry the exception message or a traceback --
+        a GET route is unauthenticated. Mutation: put str(e) in the body ->
+        this FAILS."""
+        class BoomSigner:
+            def jwks(self):
+                raise RuntimeError("secret-internal-detail-9f3a")
+        srv = BlackwallServer(port=0, receipt_signer=BoomSigner())
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start(); time.sleep(0.3)
+        try:
+            try:
+                urllib.request.urlopen(
+                    "http://127.0.0.1:%d/jwks.json" % srv.port, timeout=4)
+                self.fail("expected an error status")
+            except urllib.error.HTTPError as e:
+                body = e.read().decode("utf-8", "replace")
+            self.assertNotIn("secret-internal-detail-9f3a", body)
+            self.assertNotIn("Traceback", body)
+            self.assertNotIn("RuntimeError", body)
+        finally:
+            srv.shutdown()
+
     def test_post_routes_stay_strictly_matched(self):
         """POST is deliberately NOT normalized: those routes carry payments,
         self.path feeds the x402 billing RESOURCE key, and 404ing before any
@@ -422,12 +474,43 @@ class TestDiscoveryEndpoint(unittest.TestCase):
         self.assertEqual(self._dispatched_paths("do_GET"),
                          set(D.PUBLIC_GET_ROUTES))
 
+    def test_unadvertised_routes_serve_but_stay_out_of_the_spec(self):
+        """/stats is served and HEAD-able, but deliberately NOT advertised.
+
+        It exposes only aggregate counters -- no addresses, no PII -- but it does
+        publish traffic volume and the GO/HOLD/STOP mix, and openapi.json is
+        indexed by x402scan and other crawlers. Being served is not the same as
+        being catalogued, and that is an operator decision, not a routing one.
+
+        It stays in PUBLIC_GET_ROUTES because that table also drives do_HEAD and
+        the dispatch-parity check: dropping it there would 404 HEAD /stats and
+        reintroduce exactly the GET/HEAD drift this table was built to kill.
+
+        Mutation: remove /stats from UNADVERTISED_ROUTES -> this FAILS.
+        Mutation: drop it from PUBLIC_GET_ROUTES instead -> the HEAD-parity and
+        dispatch tests FAIL.
+        """
+        spec = self._get("/openapi.json")[1]["paths"]
+        self.assertTrue(D.UNADVERTISED_ROUTES, "nothing marked unadvertised")
+        for path in D.UNADVERTISED_ROUTES:
+            self.assertIn(path, D.PUBLIC_GET_ROUTES,
+                          "%s must stay a known route" % path)
+            self.assertEqual(self._get(path)[0], 200,
+                             "%s must still serve" % path)
+            req = urllib.request.Request(self.base + path, method="HEAD")
+            with urllib.request.urlopen(req, timeout=3) as r:
+                self.assertEqual(r.status, 200, "HEAD %s must still serve" % path)
+            self.assertNotIn(path, spec,
+                             "%s must not be advertised in openapi.json" % path)
+
     def test_every_advertised_route_actually_serves(self):
         """The converse: nothing in the spec may 404. An advertised-but-absent
         route is the same defect pointed the other way -- it sends a caller to a
         dead path. Mutation: advertise /v1/nope -> this FAILS."""
         for path in D.PUBLIC_GET_ROUTES:
             self.assertEqual(self._get(path)[0], 200, "GET %s 404s" % path)
+            if path not in D.UNADVERTISED_ROUTES:
+                self.assertIn(path, self._get("/openapi.json")[1]["paths"])
 
     def test_head_matches_get_on_every_public_route(self):
         """HEAD must mirror GET. do_HEAD carried its own hardcoded list and had

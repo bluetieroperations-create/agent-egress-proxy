@@ -161,6 +161,18 @@ PUBLIC_GET_ROUTES = (
     "/stats",
 )
 
+# Served, HEAD-able, and a real route -- but deliberately NOT catalogued in
+# openapi.json. /stats carries only aggregate counters (requests, verdict_*,
+# errors, rate_limited): no addresses, no PII. It does however publish traffic
+# VOLUME and the GO/HOLD/STOP mix, and openapi.json is indexed by x402scan and
+# other crawlers, so being served is not the same as being advertised -- that is
+# an operator decision, not a routing one.
+#
+# It stays in PUBLIC_GET_ROUTES on purpose. That tuple also drives do_HEAD and
+# the dispatch-parity test; removing it there would 404 HEAD /stats and
+# reintroduce exactly the GET/HEAD drift this table was built to kill.
+UNADVERTISED_ROUTES = frozenset({"/stats"})
+
 PUBLIC_POST_ROUTES = (
     "/v1/forecast-payment",
     "/v1/verify-signer",
@@ -348,6 +360,8 @@ def build_openapi(server_url=None, min_fee="0.001", max_fee="0.10",
     # shared route table above rather than a hand-written literal -- see THE
     # ROUTE TABLE for the four-way drift that motivated it.
     for path in PUBLIC_GET_ROUTES:
+        if path in UNADVERTISED_ROUTES:
+            continue   # served, but deliberately not catalogued
         paths.setdefault(path, {})["get"] = _free_op(path)
     for path in PUBLIC_POST_ROUTES:
         if path == "/v1/forecast-payment":
