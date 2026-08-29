@@ -269,3 +269,81 @@ class TestTimeValidityAdvisory(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDecimalsAudit(unittest.TestCase):
+    """Audit 2026-08-27: decimals were hardcoded to 6 everywhere, so the atomic
+    comparison mis-scaled by 10^(d-6) for any non-6-decimal asset."""
+
+    DAI = "0x6B175474E89094C44Da98b954EedeAC495271d0F"     # 18
+    USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"    # 6
+    PAYER = "0x" + "1" * 40
+    PAYEE = "0x" + "2" * 40
+
+    def _xpay(self, atomic, asset):
+        import base64, json
+        return base64.b64encode(json.dumps({
+            "x402Version": 1, "scheme": "exact", "network": "eip155:1",
+            "payload": {"authorization": {
+                "from": self.PAYER, "to": self.PAYEE, "value": str(atomic),
+                "validAfter": "0", "validBefore": "99999999999",
+                "nonce": "0x" + "0" * 64},
+                "signature": "0x" + "0" * 130, "asset": asset}}).encode()).decode()
+
+    def _claim(self, asset, amount="1.0"):
+        return {"counterparty": self.PAYEE, "amount": amount,
+                "asset": asset, "chain": "eip155:1"}
+
+    def test_underpayment_bypass_is_caught(self):
+        # kills: the hardcoded 6. A signed 10^6 atomic DAI (0.000000000001 DAI)
+        # MATCHED a claim of 1.0 DAI -- the STOP authority's guarantee, void.
+        r = PS.check_payment_authorization(
+            self._claim(self.DAI), self._xpay(10 ** 6, self.DAI), verify_signer=False)
+        self.assertFalse(r["matches"])
+        self.assertTrue(r["mismatches"])
+
+    def test_valid_18_decimal_payment_is_not_false_stopped(self):
+        # kills: the mirror failure -- a correct 1.0 DAI payment reported as a
+        # mismatch and hard-STOPped, blocking legitimate business
+        r = PS.check_payment_authorization(
+            self._claim(self.DAI), self._xpay(10 ** 18, self.DAI), verify_signer=False)
+        self.assertTrue(r["matches"])
+        self.assertEqual(r["amount_status"], "verified")
+
+    def test_usdc_behaviour_unchanged(self):
+        # kills: a fix that regresses the overwhelmingly common 6-decimal case
+        r = PS.check_payment_authorization(
+            self._claim(self.USDC), self._xpay(10 ** 6, self.USDC), verify_signer=False)
+        self.assertTrue(r["matches"])
+        self.assertEqual(r["amount_status"], "verified")
+
+    def test_unknown_asset_is_reported_not_assumed(self):
+        # kills: silently assuming 6 for an unrecognised asset, which is exactly
+        # how the bypass arose. The caller must be able to see it was unchecked.
+        r = PS.check_payment_authorization(
+            self._claim("0x" + "9" * 40), self._xpay(10 ** 6, "0x" + "9" * 40),
+            verify_signer=False)
+        self.assertEqual(r["amount_status"], "unverified_decimals")
+        self.assertTrue(any("NOT verified" in w for w in r["warnings"]))
+
+    def test_explicit_decimals_wins_over_the_table(self):
+        # kills: ignoring a caller-supplied value, e.g. from the v2 challenge's
+        # methodDetails.decimals
+        r = PS.check_payment_authorization(
+            self._claim(self.USDC), self._xpay(10 ** 18, self.USDC),
+            decimals=18, verify_signer=False)
+        self.assertTrue(r["matches"])
+
+    def test_symbol_claims_still_resolve(self):
+        # kills: requiring a contract address, breaking callers that pass "USDC"
+        r = PS.check_payment_authorization(
+            self._claim("USDC"), self._xpay(10 ** 6, self.USDC), verify_signer=False)
+        self.assertEqual(r["amount_status"], "verified")
+
+    def test_nonsense_decimals_is_treated_as_unknown(self):
+        # kills: trusting a hostile/garbage decimals value into the scaling math
+        for bad in ("abc", -1, 999, None if False else 10 ** 9):
+            r = PS.check_payment_authorization(
+                self._claim("0x" + "9" * 40), self._xpay(1, "0x" + "9" * 40),
+                decimals=bad, verify_signer=False)
+            self.assertEqual(r["amount_status"], "unverified_decimals")

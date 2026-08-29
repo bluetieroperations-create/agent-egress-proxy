@@ -1,6 +1,6 @@
 """
-Tests for wallet_guard.py -- the provider-agnostic signing gate. Stdlib only.
-Run from this directory:  python -m unittest test_wallet_guard.py
+Tests for W.py -- the provider-agnostic signing gate. Stdlib only.
+Run from this directory:  python -m unittest test_W.py
 """
 import unittest
 
@@ -240,3 +240,69 @@ class TestInProcessEndToEnd(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDecimalsAudit(unittest.TestCase):
+    """Audit 2026-08-27: claim_from_tx assumed 6 decimals for EVERY token."""
+
+    RECIP = "0x" + "2" * 40
+    GUSD = "0x056Fd409E1d7A124BD7017459dFEa2F387b6d5Cd"   # 2 decimals
+    DAI = "0x6B175474E89094C44Da98b954EedeAC495271d0F"    # 18 decimals
+    USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"   # 6 decimals
+
+    def _tx(self, token, atomic):
+        return {"to": token, "value": 0,
+                "data": "0xa9059cbb" + self.RECIP[2:].rjust(64, "0")
+                        + hex(atomic)[2:].rjust(64, "0")}
+
+    def test_sub_six_decimal_transfer_is_not_shrunk(self):
+        # kills: the 6-decimal assumption. A 50,000 GUSD transfer (2dp) was
+        # reported as "5" and sailed under a hold_above=100 spending cap --
+        # a cap bypass in the SIGNING path.
+        c = W.claim_from_tx(self._tx(self.GUSD, 50000 * 10 ** 2))
+        self.assertEqual(c["amount"], "50000")
+
+    def test_eighteen_decimal_transfer_is_not_inflated(self):
+        # kills: the mirror failure -- 1,000 DAI reported as 10^15, an absurd
+        # amount that false-STOPs a legitimate payment
+        c = W.claim_from_tx(self._tx(self.DAI, 1000 * 10 ** 18))
+        self.assertEqual(c["amount"], "1000")
+
+    def test_usdc_unchanged(self):
+        # kills: a fix that regresses the common case
+        c = W.claim_from_tx(self._tx(self.USDC, 25 * 10 ** 6))
+        self.assertEqual(c["amount"], "25")
+
+    def test_unknown_token_transfer_is_flagged(self):
+        # kills: reusing the "no value moved" placeholder for a REAL transfer we
+        # could not scale -- that presents any size transfer as 0.000001
+        c = W.claim_from_tx(self._tx("0x" + "9" * 40, 10 ** 18))
+        self.assertTrue(c["amount_unverified"])
+
+    def test_approve_is_not_flagged(self):
+        # kills: flagging every non-value call, which would force a human confirm
+        # on approvals and make the guard unusable
+        appr = {"to": "0x" + "9" * 40, "value": 0,
+                "data": "0x095ea7b3" + self.RECIP[2:].rjust(64, "0") + "f" * 64}
+        self.assertNotIn("amount_unverified", W.claim_from_tx(appr))
+
+    def test_go_on_unverified_amount_forces_confirm(self):
+        # kills: allowing a GO earned on a placeholder amount -- the spending-cap
+        # and price gates never saw the real sum
+        g = W.WalletGuard(lambda p: {"verdict": "GO", "reasons": []},
+                                     mode=W.ENFORCE)
+        c = W.claim_from_tx(self._tx("0x" + "9" * 40, 10 ** 18))
+        self.assertEqual(g.check(c).action, W.CONFIRM)
+
+    def test_signature_is_withheld_without_confirmation(self):
+        # kills: the flag being advisory only -- it must actually stop the signing
+        g = W.WalletGuard(lambda p: {"verdict": "GO", "reasons": []},
+                                     mode=W.ENFORCE)
+        c = W.claim_from_tx(self._tx("0x" + "9" * 40, 10 ** 18))
+        self.assertFalse(g.guard_sign(c, lambda: "0xSIG").signed)
+
+    def test_normal_go_still_allows(self):
+        # kills: forcing confirm on everything, which would break the happy path
+        g = W.WalletGuard(lambda p: {"verdict": "GO", "reasons": []},
+                                     mode=W.ENFORCE)
+        self.assertEqual(g.check({"amount": "1"}).action, W.ALLOW)

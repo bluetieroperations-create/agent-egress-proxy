@@ -146,7 +146,88 @@ def _recover_signer(payment, auth, domain):
         return None
 
 
-def check_payment_authorization(claim, x_payment, *, decimals=6, now=None,
+# Assets whose decimals we KNOW. Canonical USDC deployments (all 6) plus the
+# common 18-decimal stablecoins, so the overwhelmingly-common case resolves
+# without the caller supplying anything.
+KNOWN_DECIMALS = {
+    "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": 6,   # USDC  Base
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": 6,   # USDC  Ethereum
+    "0xaf88d065e77c8cc2239327c5edb3a432268e5831": 6,   # USDC  Arbitrum
+    "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359": 6,   # USDC  Polygon
+    "0x0b2c639c533813f4aa9d7837caf62653d097ff85": 6,   # USDC  Optimism
+    "0xdac17f958d2ee523a2206206994597c13d831ec7": 6,   # USDT  Ethereum
+    "0x6b175474e89094c44da98b954eedeac495271d0f": 18,  # DAI   Ethereum
+    "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599": 8,   # WBTC  Ethereum
+    "0x056fd409e1d7a124bd7017459dfea2f387b6d5cd": 2,   # GUSD  Ethereum (2dp!)
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2": 18,  # WETH  Ethereum
+    "0x4200000000000000000000000000000000000006": 18,  # WETH  Base/OP
+    # BSC stablecoins are 18 DECIMALS, not 6 -- verified on-chain via
+    # decimals() on bsc-dataseed 2026-08-27. USDT is 6 on Ethereum and 18 on
+    # BSC, which is exactly the trap a single global default walks into.
+    "0x55d398326f99059ff775485246999027b3197955": 18,  # BSC-USD (USDT on BSC)
+    "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d": 18,  # BUSD  BSC
+    "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d": 18,  # USD1  BSC
+    "0xce24439f2d9c6a2289f741120fe202248b666666": 18,  # BSC
+    # Solana USDC (base58 mint, not an 0x address)
+    "epjfwdd5aufqssqem2qn1xzybapc8g4weggkzwytdt1v": 6,
+}
+KNOWN_SYMBOL_DECIMALS = {"usdc": 6, "usdt": 6, "dai": 18, "weth": 18,
+                         "eth": 18, "wbtc": 8, "gusd": 2}
+
+
+# Optional on-chain resolver, installed by the caller at startup (see
+# token_decimals.resolver). Left None by default so nothing here ever touches the
+# network unless the operator opted in.
+_ONCHAIN = None
+
+
+def set_onchain_resolver(resolver):
+    """Install (or clear) the on-chain `decimals()` reader used as a LAST resort."""
+    global _ONCHAIN
+    _ONCHAIN = resolver
+
+
+def resolve_decimals(claim, decimals=None):
+    """The asset's decimals, or None when genuinely unknown.
+
+    MEASURED DEFECT (audit 2026-08-27): this module previously defaulted to
+    `decimals=6` and `blackwall.forecast` passed 6 unconditionally, so the atomic
+    comparison mis-scaled by 10^(d-6) for ANY asset that is not 6-decimal. Two
+    consequences, both demonstrated:
+
+      * a VALID 1.0 DAI payment (10^18 atomic) was reported as a mismatch and
+        became a hard STOP -- blocking a correct payment;
+      * a payment of 10^6 atomic DAI (0.000000000001 DAI) MATCHED a claim of
+        "1.0 DAI" -- the gate's whole guarantee, void.
+
+    So an unknown asset must be reported as UNVERIFIED rather than silently
+    assumed. Explicit caller value wins, then the address table, then the symbol.
+    """
+    if decimals is not None:
+        try:
+            d = int(decimals)
+        except (TypeError, ValueError):
+            return None
+        return d if 0 <= d <= 36 else None
+    asset = (claim or {}).get("asset")
+    if isinstance(asset, str):
+        key = asset.strip().lower()
+        if key in KNOWN_DECIMALS:
+            return KNOWN_DECIMALS[key]
+        if not key.startswith("0x") and key in KNOWN_SYMBOL_DECIMALS:
+            return KNOWN_SYMBOL_DECIMALS[key]
+        # Last resort: read decimals() on-chain. Opt-in, cached forever (the value
+        # is immutable), and fail-open -- an unreachable node returns None, which
+        # is exactly the safe behaviour the static table already produces.
+        if _ONCHAIN is not None:
+            try:
+                return _ONCHAIN.lookup(asset)
+            except Exception:
+                return None
+    return None
+
+
+def check_payment_authorization(claim, x_payment, *, decimals=None, now=None,
                                 verify_signer=True, decode=None):
     """Cross-check a signed x402 payment against the CLAIMED payment being scored.
 
@@ -187,12 +268,28 @@ def check_payment_authorization(claim, x_payment, *, decimals=6, now=None,
             % (_show(to), _show(cp)))
 
     # --- amount: same sum (compared in atomic units, reported in human units)? ---
-    want = to_atomic(claim.get("amount"), decimals)
+    resolved = resolve_decimals(claim, decimals)
     got = _int_or_none(auth.get("value"))
-    if want is None or got is None or want != got:
-        mismatches.append(
-            "signed payment value is %s but you asked me to score %s"
-            % (_atomic_human(auth.get("value"), decimals), _show(claim.get("amount"))))
+    if resolved is None:
+        # Decimals unknown -> the atomic comparison is MEANINGLESS. Say so rather
+        # than assuming 6, which previously let a 10^12 underpayment pass as a
+        # match. Surfaced like `signer_status`: a GO must never be mistaken for
+        # amount-verified.
+        amount_status = "unverified_decimals"
+        warnings.append(
+            "amount NOT verified: the asset's decimals are unknown (%s), so the "
+            "signed value %s cannot be compared to the claimed %s -- supply "
+            "`decimals` to enable this check"
+            % (_show(claim.get("asset")), _show(auth.get("value")),
+               _show(claim.get("amount"))))
+    else:
+        amount_status = "verified"
+        want = to_atomic(claim.get("amount"), resolved)
+        if want is None or got is None or want != got:
+            mismatches.append(
+                "signed payment value is %s but you asked me to score %s"
+                % (_atomic_human(auth.get("value"), resolved),
+                   _show(claim.get("amount"))))
 
     # --- asset: same token? (only when the claim names a contract address; a
     #     symbol like "USDC" can't be checked against a contract address) ---
@@ -269,4 +366,5 @@ def check_payment_authorization(claim, x_payment, *, decimals=6, now=None,
 
     return {"checked": True, "matches": not mismatches,
             "mismatches": mismatches, "warnings": warnings,
-            "signer_status": signer_status}
+            "signer_status": signer_status,
+            "amount_status": amount_status}

@@ -165,18 +165,34 @@ class SettlementSimSource:
         if not token or sim is None:
             return None
         try:
-            amount = _base_units(claim.get("amount"))
+            amount = _base_units(claim.get("amount"), token=token)
             att = sim.assess(token, payer, payee, amount)
         except Exception:
             return None
         return assess_settlement(att)
 
 
-def _base_units(amount, decimals=6):
-    """USDC display amount -> integer base units. Defensive; falls back to 1 unit."""
+def _base_units(amount, decimals=None, token=None):
+    """Display amount -> integer base units. Defensive; falls back to 1 unit.
+
+    Decimals are resolved from the TOKEN rather than assumed. This gate is
+    HOLD-only and never STOPs, and an underfunded result is explicitly
+    non-gating, so a mis-scaled amount here cannot block a payment -- but a
+    simulation run at 10^12 the intended size is a meaningless simulation, and
+    the whole point of the call is to learn whether the transfer would revert.
+    See docs/DECIMALS_AUDIT.md.
+    """
     try:
         from decimal import Decimal
         from transfer_sim import clamp_amount
+        if decimals is None:
+            try:
+                from payload_sim import resolve_decimals
+                decimals = resolve_decimals({"asset": token})
+            except Exception:
+                decimals = None
+        if decimals is None:
+            decimals = 6      # last resort: the overwhelmingly common case
         return clamp_amount(int(Decimal(str(amount)) * (10 ** decimals)))
     except Exception:
         return 1
