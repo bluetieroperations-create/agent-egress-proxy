@@ -291,3 +291,66 @@ class TestZeroDecimalsVerification(unittest.TestCase):
         r = TD.OnChainDecimals(rpc_url="http://n", transport=transport, table={})
         self.assertEqual(r.lookup("0x" + "a" * 40), 18)
         self.assertEqual(calls, [TD.DECIMALS_SELECTOR])
+
+
+class TestCrossAssetPricingCapability(unittest.TestCase):
+    """The capability the decimals work actually buys, pinned so it cannot
+    silently regress.
+
+    MEASURED 2026-08-29: x402 never transmits `decimals` (0 of 298 live accepts
+    entries), so every client must assume one. The ecosystem assumes 6. But 33%
+    of live entries use a non-6dp asset -- including Nansen and CoinMarketCap,
+    both charging $0.01 in an 18-decimal BSC stablecoin. Read at 6dp that is
+    $10,000,000,000, and any spending cap or price gate rejects a one-cent API
+    call.
+    """
+
+    USD1 = "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d"   # 18dp, verified on-chain
+    USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"   # 6dp
+
+    def test_eighteen_decimal_asset_resolves(self):
+        # kills: dropping the BSC entries from the table, which silently returns
+        # the whole class of assets to "unknown"
+        self.assertEqual(PS.resolve_decimals({"asset": self.USD1}), 18)
+
+    def test_naive_and_correct_reads_differ_by_ten_to_the_twelve(self):
+        # kills: any change that makes the 6dp assumption look harmless. This is
+        # the exact magnitude that turns $0.01 into $10,000,000,000.
+        atomic = 10 ** 10  # 0.01 USD1 in atomic units
+        naive = atomic / 10 ** 6
+        real = atomic / 10 ** PS.resolve_decimals({"asset": self.USD1})
+        self.assertEqual(naive / real, 10 ** 12)
+
+    def test_a_real_one_cent_payment_is_not_blocked(self):
+        # kills: the capability itself. A correctly-scaled 0.01 payment against a
+        # payee whose median is 0.01 must clear; under the naive read the price
+        # gate sees 10^12x the median and STOPs a legitimate API call.
+        import blackwall
+
+        class Rep:
+            def lookup(self, addr):
+                return {"settlement_count": 40, "distinct_payers": 12,
+                        "dispute_rate": 0.0,
+                        "price_history": ["0.01", "0.01", "0.012", "0.009"]}
+
+        body = {"amount": "0.01", "asset": self.USD1, "chain": "eip155:56",
+                "counterparty": "0x" + "a" * 40}
+        resp, err = blackwall.forecast(body, reputation_source=Rep(), hold_above=100)
+        self.assertIsNone(err)
+        self.assertEqual(resp["verdict"], "GO")
+
+    def test_the_naive_read_would_have_been_stopped(self):
+        # kills: a change that makes both reads agree, which would mean the
+        # decimals resolution had stopped mattering
+        import blackwall
+
+        class Rep:
+            def lookup(self, addr):
+                return {"settlement_count": 40, "distinct_payers": 12,
+                        "dispute_rate": 0.0,
+                        "price_history": ["0.01", "0.01", "0.012", "0.009"]}
+
+        body = {"amount": "10000000000", "asset": self.USD1, "chain": "eip155:56",
+                "counterparty": "0x" + "a" * 40}
+        resp, err = blackwall.forecast(body, reputation_source=Rep(), hold_above=100)
+        self.assertEqual(resp["verdict"], "STOP")

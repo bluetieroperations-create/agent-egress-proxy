@@ -62,6 +62,31 @@ That is exactly what `payload_sim.resolve_decimals` and `token_decimals.py` do,
 and why the three bypasses in `docs/DECIMALS_AUDIT.md` existed in our own code
 until they were fixed. We were making the same assumption as everyone else.
 
+## What we do with this — kept, not published
+
+This is an information advantage and is treated as one. The finding is not the
+deliverable; the capability is.
+
+**Blackwall can transact with the third of the ecosystem everyone else
+mis-reads.** Measured on live entries, correct decimals resolution changes the
+verdict on real payments to real companies:
+
+| Payee | Charges | Naive 6dp read | Verdict |
+|---|---|---|---|
+| `pro-api.coinmarketcap.com` | **$0.01** | $10,000,000,000 | **STOP** |
+| `api.nansen.ai` | **$0.01** | $10,000,000,000 | **STOP** |
+
+Same payment, correctly scaled: **GO**, "within 1.00x of the counterparty's
+median". Both are 18-decimal BSC stablecoins.
+
+That is the whole advantage in one line: **a client assuming 6 decimals refuses a
+one-cent API call from CoinMarketCap.** Blackwall pays it, and still catches a
+genuine overcharge, because it resolves the decimals first.
+
+Pinned by `test_token_decimals.TestCrossAssetPricingCapability`, which asserts
+both directions -- the correct read clears and the naive read STOPs -- so the
+capability cannot regress into agreement without a test failing.
+
 ## The honest limits
 
 - **Sampled from the payee directory**, not a census of all x402 traffic.
