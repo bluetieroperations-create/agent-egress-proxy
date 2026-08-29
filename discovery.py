@@ -217,6 +217,35 @@ _ROUTE_RESPONSES = {
 }
 
 
+def route_path(raw):
+    """Raw request path -> the path used for GET/HEAD ROUTE MATCHING.
+
+    `self.path` carries the query string and matching is exact, so a probe with
+    a cache-buster (`/openapi.json?v=2`, `/healthz?cb=1`) matched nothing and
+    answered 404 -- a monitor or discovery crawler scores our discovery
+    documents DEAD. Measured live 2026-08-29: every GET route 404'd with any
+    query string attached.
+
+    SCOPE, deliberately narrow:
+      - GET/HEAD only. POST routes stay STRICTLY matched: they carry payments,
+        `self.path` feeds the x402 billing RESOURCE key, and a query-string
+        request 404ing before it reaches a handler is fail-closed and correct.
+      - The query string is dropped, not parsed. No route here takes a
+        parameter, so it cannot be part of this server's route identity.
+        NOTE this is NOT a general x402 rule: 27 of 3,827 URLs in our crawled
+        directory carry a query string, and for that seller `?method=GET` and
+        `?method=POST` are DIFFERENT priced resources. Stripping is safe for
+        OUR routing, and would be wrong applied to a resource key.
+      - A trailing slash is left alone. `/healthz/` is a separate question with
+        its own blast radius; widening routing was not the job.
+
+    Pure, total, never raises: a non-string yields "" (which matches no route).
+    """
+    if not isinstance(raw, str):
+        return ""
+    return raw.split("?", 1)[0]
+
+
 def _operation_id(path):
     """/v1/price-index -> priceIndex. Stable, unique, and derived so a new route
     cannot ship without one."""

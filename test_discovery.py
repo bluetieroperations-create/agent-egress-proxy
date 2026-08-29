@@ -57,6 +57,46 @@ class TestBuildDescriptor(unittest.TestCase):
         self.assertNotIn("endpoint-readiness", off["signals"])
 
 
+class TestRoutePath(unittest.TestCase):
+    """Query-string normalization for GET/HEAD route matching.
+
+    self.path carries the query string, and matching is exact, so a probe with a
+    cache-buster (/openapi.json?v=2) read as 404 -- a monitor or discovery
+    crawler would score our discovery documents DEAD. This repo has already been
+    burned by the same rigidity pointed outward: directory_liveness counted 405s
+    as dead endpoints and undercounted live hosts by 14.
+
+    Mutation notes:
+      - return the raw path unchanged -> test_strips_query FAILS.
+      - split on the LAST '?' -> test_strips_query_with_embedded_marker FAILS.
+      - strip a trailing slash too -> test_does_not_touch_trailing_slash FAILS.
+    """
+    def test_bare_path_unchanged(self):
+        self.assertEqual(D.route_path("/healthz"), "/healthz")
+
+    def test_strips_query(self):
+        self.assertEqual(D.route_path("/openapi.json?v=2"), "/openapi.json")
+        self.assertEqual(D.route_path("/v1/price-index?a=1&b=2"), "/v1/price-index")
+
+    def test_strips_bare_marker(self):
+        self.assertEqual(D.route_path("/healthz?"), "/healthz")
+
+    def test_strips_query_with_embedded_marker(self):
+        # split on the FIRST '?': everything after it is the query, even another '?'
+        self.assertEqual(D.route_path("/healthz?a=1?b=2"), "/healthz")
+
+    def test_does_not_touch_trailing_slash(self):
+        # deliberately out of scope -- /healthz/ is a different question with its
+        # own blast radius, and widening routing was not the job.
+        self.assertEqual(D.route_path("/healthz/"), "/healthz/")
+
+    def test_query_only_and_junk(self):
+        self.assertEqual(D.route_path("?x=1"), "")
+        self.assertEqual(D.route_path(""), "")
+        self.assertEqual(D.route_path(None), "")
+        self.assertEqual(D.route_path(123), "")
+
+
 class TestBuildOpenAPI(unittest.TestCase):
     """The GET /openapi.json discovery document (x402scan contract).
 
@@ -210,7 +250,14 @@ class TestDiscoveryEndpoint(unittest.TestCase):
             if not isinstance(node, ast.Compare):
                 continue
             tgt = node.left
-            if not (isinstance(tgt, ast.Attribute) and tgt.attr == "path"):
+            # do_GET/do_HEAD route on a normalized LOCAL (`path = route_path(
+            # self.path)`, query string stripped); do_POST still compares
+            # `self.path` directly. Accept both spellings, and ONLY those two --
+            # matching any name would let an unrelated comparison masquerade as
+            # a route and quietly weaken every assertion built on this.
+            is_self_path = isinstance(tgt, ast.Attribute) and tgt.attr == "path"
+            is_local_path = isinstance(tgt, ast.Name) and tgt.id == "path"
+            if not (is_self_path or is_local_path):
                 continue
             for comp in node.comparators:
                 if isinstance(comp, ast.Constant) and isinstance(comp.value, str):
@@ -286,6 +333,87 @@ class TestDiscoveryEndpoint(unittest.TestCase):
                 srv.shutdown()
             self.assertIn(429, codes,
                           "POST %s never rate-limited: %s" % (path, codes))
+
+    def test_get_and_head_tolerate_a_query_string(self):
+        """A cache-buster must not read as a dead endpoint. Measured live before
+        the fix: every GET route 404'd with any query string attached, so a
+        monitor or discovery crawler probing /openapi.json?v=2 scored our
+        discovery documents dead. Mutation: route on the raw self.path -> FAILS."""
+        for path in D.PUBLIC_GET_ROUTES:
+            for q in ("?v=2", "?cb=123&x=1", "?"):
+                self.assertEqual(self._get(path + q)[0], 200,
+                                 "GET %s%s should serve" % (path, q))
+                req = urllib.request.Request(self.base + path + q, method="HEAD")
+                with urllib.request.urlopen(req, timeout=3) as r:
+                    self.assertEqual(r.status, 200,
+                                     "HEAD %s%s should serve" % (path, q))
+
+    def test_query_string_does_not_invent_routes(self):
+        """Stripping the query must not make unknown paths resolve. Mutation:
+        return "" or a prefix from route_path -> this FAILS with 200s."""
+        for bad in ("/v1/nope?x=1", "/nope", "/healthz-not-really?cb=1",
+                    "/?x=1", "/v1/price-index-extra?a=1"):
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                self._get(bad)
+            self.assertEqual(cm.exception.code, 404, "%s should 404" % bad)
+
+    def _raw_status(self, request_target):
+        """Send a request line VERBATIM over a socket. urllib normalizes the URL
+        client-side (it strips fragments and trailing spaces), so a test that
+        goes through urllib measures urllib, not our routing."""
+        import socket
+        s = socket.create_connection(("127.0.0.1", self.srv.port), 3)
+        try:
+            s.sendall(("GET %s HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+                       % request_target).encode())
+            buf = b""
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+        finally:
+            s.close()
+        return int(buf.split(b"\r\n")[0].split()[1])
+
+    def test_path_matching_stays_exact_beyond_the_query_string(self):
+        """Stripping the query must not widen routing in any OTHER direction.
+
+        Checked over a raw socket because urllib rewrites the URL before it is
+        sent. Mutation: casefold the path, or rstrip('/'), or split on '#' in
+        route_path -> the corresponding case FAILS.
+        """
+        self.assertEqual(self._raw_status("/healthz"), 200)      # control
+        self.assertEqual(self._raw_status("/HEALTHZ"), 404)      # not case-insensitive
+        self.assertEqual(self._raw_status("/healthz/"), 404)     # no trailing-slash widening
+        self.assertEqual(self._raw_status("/healthz#frag"), 404)  # '#' is not a delimiter here
+        self.assertEqual(self._raw_status("/healthz-not-really"), 404)
+
+    def test_leading_double_slash_is_collapsed_by_the_stdlib(self):
+        """`//healthz` serves 200, and that is NOT our code.
+
+        http.server's parse_request collapses a leading '//' to '/' before any
+        handler runs, because HTTP clients read `//path` as a scheme-relative
+        URI. Pinned deliberately: it surprised us during the audit, and it is
+        path-normalization behavior worth noticing if a future Python changes
+        it. It normalizes TOWARD the canonical path, so it cannot reach a route
+        that is absent from the table -- `//nope` still 404s.
+        """
+        self.assertEqual(self._raw_status("//healthz"), 200)
+        self.assertEqual(self._raw_status("///healthz"), 200)
+        self.assertEqual(self._raw_status("//nope"), 404)
+
+    def test_post_routes_stay_strictly_matched(self):
+        """POST is deliberately NOT normalized: those routes carry payments,
+        self.path feeds the x402 billing RESOURCE key, and 404ing before any
+        handler runs is fail-closed. Mutation: normalize in do_POST too -> this
+        FAILS, and that change needs its own audit, not a tack-on."""
+        req = urllib.request.Request(
+            self.base + "/v1/forecast-payment?x=1", data=b"{}", method="POST",
+            headers={"Content-Type": "application/json"})
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(req, timeout=3)
+        self.assertEqual(cm.exception.code, 404)
 
     def test_route_table_matches_the_get_dispatch(self):
         """PUBLIC_GET_ROUTES must equal what do_GET dispatches on -- the table now
