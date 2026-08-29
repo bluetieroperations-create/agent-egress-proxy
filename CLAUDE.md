@@ -112,6 +112,25 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   not FIPS SHA3), `secp256k1.py` (pure-Python secp256k1 ECDSA public-key recovery),
   `eip712.py` (EIP-712 typed-data hashing for transferWithAuthorization + address
   derivation) -- the stdlib crypto behind payload-sim Phase 2,
+  `upto_scheme.py` (the x402 `upto` (metered) scheme and the Permit2 allowance it
+  requires. `exact` moves a fixed amount via EIP-3009 and the signed authorization IS
+  the exposure; `upto` quotes a CEILING, meters below it, and settles through Permit2
+  `transferFrom` -- so the wallet must first grant an ERC-20 allowance, a SEPARATE and
+  LONGER-LIVED exposure that no spending control in this market can see. AWS Bedrock
+  AgentCore Payments (GA, x402+MPP) enforces `limits.maxSpendAmount` plus an expiry and
+  NOTHING else -- no payee allowlist, no counterparty check -- and an allowance is not a
+  spend, so a $1 session budget coexists with an approval over the whole balance. Its own
+  docs offer granting an UNLIMITED allowance as a normal option and note `approve` SETS
+  rather than adds. That is the drainer pattern `calldata.py` already hard-STOPs as
+  calldata, so this recognizes it arriving as a payment INTENT instead. UNLIMITED -> hard
+  STOP (reuses calldata's `UNLIMITED_MIN` so the two cannot drift on what "unlimited"
+  means); >100x the ceiling -> HOLD only (approving once and metering many calls under it
+  is normal use); absent/unreadable -> no gate, FAIL-OPEN. Reads the AgentCore spelling
+  `permit2AllowanceLimit` (nested or top-level) as well as our own. Also FIXED a dormant
+  inversion in `x402.payment_satisfies`: the non-`exact` branch demanded `value >=
+  required`, exactly backwards for a ceiling. Unreachable because we only ever issue
+  `exact` ourselves -- which is why it survived. Pure+stdlib; imported lazily by x402 to
+  break the upto->calldata->x402 cycle. Tests: `test_upto_scheme.py`),
   `calldata.py` (payload-sim Phase 3: decode a contract-call payment's calldata and
   flag drainer patterns -- unlimited approval / setApprovalForAll / transfer to the
   wrong recipient/amount -- as a hard STOP; from the request-body `transaction`),
@@ -550,7 +569,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py
+ test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop
@@ -571,7 +590,7 @@ underfunded payer does not gate, and an unreachable RPC fails OPEN. `test_redtea
 guards it -- the caught set may not shrink, no control may become a false positive, and
 any attack that gets GO must be an EXPLICIT `known_gap`. MUTATION-VERIFIED: disabling the
 settlement escalation, the auth replay gate, or the control-attribution each makes the
-suite fail by name. Current: 24 attacks caught, 2 documented gaps, 0 false positives.
+suite fail by name. Current: 26 attacks caught, 2 documented gaps, 0 false positives.
 
 ## Standing working practice: ALWAYS deep audit → eval → verify
 

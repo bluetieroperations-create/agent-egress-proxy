@@ -259,6 +259,15 @@ def _signed(auth_over=None):
 # (name, category, expect, known_gap, payload, forecast-source kwargs)
 SIM_SCENARIOS = [
     # --- attacks the simulation gates MUST catch ---
+    # `upto` settles via Permit2 `transferFrom`, so it needs an ERC-20 allowance.
+    # AWS AgentCore's own docs offer granting an UNLIMITED one as a normal option,
+    # and no spending cap can restrain it -- an allowance is not a spend. Same
+    # exposure calldata.py hard-STOPs as raw calldata, arriving as a payment intent.
+    ("upto grants unlimited Permit2 allowance", "upto-scheme", "block", False,
+     _payload(scheme="upto",
+              permit2AllowanceLimit=str((1 << 256) - 1),
+              accepts=[{"scheme": "upto", "maxAmountRequired": "1000"}]),
+     lambda: {}),
     ("blacklisted PAYEE (USDC)", "settlement-sim", "block", False, _payload(),
      lambda: {"settlement_sim_source": _settlement_source(_revert(BLACKLIST_REVERT))}),
     ("blacklisted PAYER (USDC)", "settlement-sim", "block", False, _payload(),
@@ -280,6 +289,10 @@ SIM_SCENARIOS = [
      lambda: {"rwa_source": _rwa_source(_revert(KYC_REVERT))}),
 
     # --- controls: these must NOT be blocked (over-blocking is the real risk here) ---
+    ("upto with a sane allowance", "control", "allow", True,
+     _payload(scheme="upto", permit2AllowanceLimit="1000",
+              accepts=[{"scheme": "upto", "maxAmountRequired": "1000"}]),
+     lambda: {}),
     ("clean payment, sim ready", "control", "allow", False, _payload(),
      lambda: {"settlement_sim_source": _settlement_source(_OK)}),
     ("underfunded payer (must not gate)", "control", "allow", False, _payload(),
