@@ -290,6 +290,19 @@ def _req_amount(req):
     return req.get("maxAmountRequired")
 
 
+
+def _is_upto_scheme(scheme):
+    """`upto` test, imported lazily.
+
+    upto_scheme -> calldata -> x402 is a cycle, and x402 is the module the other
+    two are built on, so the dependency has to be deferred to call time rather
+    than taken at import. Matches the function-level import style used across
+    blackwall.py for the same reason.
+    """
+    from upto_scheme import is_upto
+    return is_upto(scheme)
+
+
 def payment_satisfies(payment, req):
     """
     PURE: does this decoded v2 payment satisfy the requirements *at the protocol
@@ -336,6 +349,16 @@ def payment_satisfies(payment, req):
     if req.get("scheme") == "exact":
         if value != required:
             return False, "underpaid" if value < required else "overpaid"
+    elif _is_upto_scheme(req.get("scheme")):
+        # `upto` (metered): maxAmountRequired is a CEILING and the payer meters
+        # BELOW it, so anything up to and including the quote is valid and only an
+        # overpay is wrong. This branch previously demanded `value >= required` --
+        # inverted, and exactly backwards for the scheme it was standing in for.
+        # Unreachable in practice because we only ever issue `exact` requirements
+        # ourselves, which is why it survived; fixed now that CDP settles `upto` on
+        # six EVM networks and AWS AgentCore documents it end to end.
+        if value > required:
+            return False, "exceeds the quoted ceiling"
     elif value < required:
         return False, "underpaid"
 

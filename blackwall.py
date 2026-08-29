@@ -1195,6 +1195,26 @@ def default_billing_asset(network, explicit, base_usdc, sepolia_usdc):
     return sepolia_usdc if normalize_network(network) == "base-sepolia" else base_usdc
 
 
+
+def _upto_ceiling(payload, clean):
+    """The atomic ceiling an `upto` quote advertises.
+
+    Prefers the 402 challenge's own `accepts[].maxAmountRequired`, which is
+    already atomic and is what the payer's wallet approves against. Falls back to
+    the request's `max_amount_required` if the caller states it directly. Returns
+    None rather than guessing from the human `amount`, because that would need
+    decimals we may not have -- and an unknown ceiling only ever means "no ratio
+    check", never a gate.
+    """
+    body = payload if isinstance(payload, dict) else {}
+    accepts = body.get("accepts")
+    if isinstance(accepts, list) and accepts and isinstance(accepts[0], dict):
+        v = accepts[0].get("maxAmountRequired")
+        if v is not None:
+            return v
+    return body.get("max_amount_required")
+
+
 def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              hold_above=None, peer_index=None, seller_registry=None, now=None,
              graph_source=None, velocity_source=None, category_index=None,
@@ -1258,8 +1278,25 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         sim_claim, clean.get("payment_authorization"), decimals=_decimals,
         now=_now, verify_signer=verify_signer)
     tx_check = screen_transaction(sim_claim, clean.get("transaction"))
-    sim_mismatches = pay_check["mismatches"] + tx_check["mismatches"]
-    sim_warnings = pay_check["warnings"] + tx_check["warnings"]
+    # `upto` (metered) settles through Permit2 `transferFrom`, so it needs an
+    # ERC-20 allowance -- a separate, longer-lived exposure than the payment, and
+    # one no spending cap can restrain: AWS AgentCore enforces maxSpendAmount plus
+    # an expiry and nothing else, and an allowance is not a spend. Its own docs
+    # offer granting an UNLIMITED allowance as a normal option, which is the
+    # drainer pattern calldata.py already hard-STOPs when it arrives as calldata.
+    # Screened here so following the platform's documentation cannot walk past the
+    # gate built to catch it. Reads the request's own field, including the
+    # AgentCore spelling. See upto_scheme.py.
+    import upto_scheme as _upto
+    upto_check = _upto.assess_upto(
+        _upto.scheme_from_request(payload),
+        max_amount=(_upto.scheme_from_request(payload) and
+                    _upto_ceiling(payload, clean)),
+        allowance=_upto.allowance_from_request(payload))
+    sim_mismatches = (pay_check["mismatches"] + tx_check["mismatches"]
+                      + upto_check["mismatches"])
+    sim_warnings = (pay_check["warnings"] + tx_check["warnings"]
+                    + upto_check["warnings"])
     signer_status = pay_check.get("signer_status", "not_applicable")
 
     # Seller-audit tier: if the counterparty holds a VALID Blackwall "verified
