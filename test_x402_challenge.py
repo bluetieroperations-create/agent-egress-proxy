@@ -443,3 +443,163 @@ class _FakeStream:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# The `Payment` and `MPP` carriers.
+#
+# MEASURED 2026-08-29: 12 live hosts serve `Payment` and 1 serves `MPP`, but
+# every one also sends `payment-required`, so hosts readable ONLY via these
+# carriers is 0 of 133. They are insurance against a server dropping the
+# duplicate, not a fix for anything currently broken. These tests exist to keep
+# that insurance honest -- above all that it can never shadow an older carrier.
+# ---------------------------------------------------------------------------
+
+class _Msg:
+    """Minimal email.Message stand-in that repeats header names, as urllib does."""
+
+    def __init__(self, pairs):
+        self.pairs = list(pairs)
+
+    def items(self):
+        return list(self.pairs)
+
+
+def _b64u(doc):
+    import base64, json as _j
+    return base64.urlsafe_b64encode(_j.dumps(doc).encode()).decode().rstrip("=")
+
+
+def _b64(doc):
+    import base64, json as _j
+    return base64.b64encode(_j.dumps(doc).encode()).decode()
+
+
+PAY_HDR = ('Payment id="s-Gn", realm="r", method="evm", intent="charge", request="%s"'
+           % _b64u({"amount": "10000",
+                    "currency": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                    "methodDetails": {"chainId": 8453, "decimals": 6},
+                    "recipient": "0xdd5fcEa81CA6f1EB39FEd5B973DE794293B81ba6"}))
+MPP_HDR = "MPP " + _b64({"x402Version": 2, "accepts": [
+    {"payTo": "0xc91cE6291eDC0713ec753BAFBA002506ffb2b95c", "scheme": "exact"}]})
+
+
+class TestPaymentScheme(unittest.TestCase):
+    def test_reads_a_real_payment_challenge(self):
+        accepts, carrier = xc.parse_challenge("", _Msg([("WWW-Authenticate", PAY_HDR)]))
+        self.assertEqual(carrier, xc.PAYMENT_SCHEME)
+        self.assertEqual(accepts[0]["payTo"], "0xdd5fcEa81CA6f1EB39FEd5B973DE794293B81ba6")
+        self.assertEqual(accepts[0]["network"], "eip155:8453")
+        self.assertEqual(accepts[0]["decimals"], 6)
+
+    def test_base64url_payload(self):
+        # kills: a standard b64decode, which RAISES on '-'/'_' rather than
+        # returning junk -- so a url-safe challenge is silently dropped
+        self.assertIsNotNone(xc._b64_any("eyJhIjoxfQ"))
+
+    def test_x402_scheme_is_not_matched_as_payment(self):
+        # kills: a prefix match that reads the older scheme through the new decoder
+        self.assertIsNone(xc.decode_payment_scheme('X402 requirements="e30"'))
+
+    def test_missing_request_parameter(self):
+        self.assertIsNone(xc.decode_payment_scheme('Payment id="a", realm="b"'))
+
+    def test_absent_decimals_is_none_not_six(self):
+        # kills: defaulting decimals -- guessing mis-scales the amount by 10^n
+        hdr = 'Payment request="%s"' % _b64u(
+            {"amount": "1", "recipient": "0x" + "a" * 40, "methodDetails": {"chainId": 8453}})
+        self.assertIsNone(xc.decode_payment_scheme(hdr)[0]["decimals"])
+
+    def test_symbol_in_currency_does_not_become_the_address(self):
+        # kills: reading `currency` blindly. A live host sends currency="USDC"
+        # with the address in `asset`; a symbol in the address slot makes every
+        # downstream address comparison fail silently.
+        hdr = 'Payment request="%s"' % _b64u(
+            {"amount": "1", "recipient": "0x" + "a" * 40, "currency": "USDC",
+             "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"})
+        self.assertEqual(xc.decode_payment_scheme(hdr)[0]["asset"],
+                         "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913")
+
+    def test_untrusted_field_types_are_rejected(self):
+        # kills: propagating a dict/junk recipient into the payTo slot. The
+        # challenge is written by the seller; every field is attacker-controlled.
+        for bad in ({"evil": 1}, ["0x" + "a" * 40], "NOT_AN_ADDRESS", 123, None, True,
+                    "0x" + "z" * 40, "0x" + "a" * 39):
+            hdr = 'Payment request="%s"' % _b64u({"amount": "1", "recipient": bad})
+            self.assertIsNone(xc.decode_payment_scheme(hdr), repr(bad))
+
+    def test_non_scalar_amount_rejected(self):
+        for bad in ({"a": 1}, [1], None, True):
+            hdr = 'Payment request="%s"' % _b64u({"amount": bad, "recipient": "0x" + "a" * 40})
+            self.assertIsNone(xc.decode_payment_scheme(hdr), repr(bad))
+
+    def test_hostile_chain_id_cannot_forge_a_network(self):
+        # kills: string-formatting an attacker value into "eip155:<anything>"
+        hdr = 'Payment request="%s"' % _b64u(
+            {"amount": "1", "recipient": "0x" + "a" * 40,
+             "methodDetails": {"chainId": "8453; DROP"}})
+        self.assertIsNone(xc.decode_payment_scheme(hdr)[0]["network"])
+
+    def test_oversize_value_refused_before_decoding(self):
+        # kills: removing the cap on the new carrier -- main measured a 19.2 MB
+        # header decoding to 200k accepts at 85 MB peak
+        self.assertIsNone(xc.decode_payment_scheme(
+            'Payment request="%s"' % ("A" * (xc.MAX_CHALLENGE_BYTES + 1))))
+
+
+class TestMppScheme(unittest.TestCase):
+    def test_reads_an_mpp_challenge(self):
+        accepts, carrier = xc.parse_challenge("", _Msg([("WWW-Authenticate", MPP_HDR)]))
+        self.assertEqual(carrier, xc.MPP_ACCEPTS)
+        self.assertEqual(accepts[0]["payTo"], "0xc91cE6291eDC0713ec753BAFBA002506ffb2b95c")
+
+    def test_other_schemes_are_not_mpp(self):
+        # kills: a loose match reading Bearer/X402 through the MPP decoder
+        for other in ('Bearer realm="a"', 'X402 requirements="e30"', PAY_HDR):
+            self.assertIsNone(xc.decode_mpp(other))
+
+    def test_mpp_token_is_case_sensitive(self):
+        # kills: matching "mpp" loosely; the one observed host sends it uppercase
+        # and an unrelated "Mpp-Something" scheme must not be read as payment
+        self.assertIsNone(xc.decode_mpp("Mppish " + _b64({"accepts": [{"a": 1}]})))
+
+    def test_oversize_value_refused(self):
+        self.assertIsNone(xc.decode_mpp("MPP " + "A" * (xc.MAX_CHALLENGE_BYTES + 1)))
+
+
+class TestNewCarriersNeverShadowOlderOnes(unittest.TestCase):
+    """The load-bearing property: adding a carrier must never change what an
+    endpoint that already resolved resolves to."""
+
+    def test_body_wins_over_payment(self):
+        _, c = xc.parse_challenge('{"accepts":[{"payTo":"0xbody"}]}',
+                                              _Msg([("WWW-Authenticate", PAY_HDR)]))
+        self.assertEqual(c, xc.BODY_ACCEPTS)
+
+    def test_x402_wins_over_payment(self):
+        x402 = 'X402 requirements="%s"' % _b64({"accepts": [{"payTo": "0x" + "a" * 40}]})
+        _, c = xc.parse_challenge("", _Msg([("WWW-Authenticate", PAY_HDR),
+                                                        ("WWW-Authenticate", x402)]))
+        self.assertEqual(c, xc.HDR_ACCEPTS)
+
+    def test_payment_required_wins_over_payment(self):
+        # This is the REAL case: all 12 live `Payment` hosts also send
+        # payment-required, and they must keep resolving as they did before.
+        prh = _b64({"x402Version": 2, "accepts": [{"payTo": "0x" + "b" * 40}]})
+        _, c = xc.parse_challenge("", _Msg([("WWW-Authenticate", PAY_HDR),
+                                                        ("payment-required", prh)]))
+        self.assertEqual(c, xc.PAYMENT_REQUIRED)
+
+    def test_payment_wins_over_mpp(self):
+        _, c = xc.parse_challenge("", _Msg([("WWW-Authenticate", MPP_HDR),
+                                                        ("WWW-Authenticate", PAY_HDR)]))
+        self.assertEqual(c, xc.PAYMENT_SCHEME)
+
+    def test_repeated_headers_are_all_considered(self):
+        # kills: reading only one WWW-Authenticate. A live host sends three.
+        _, c = xc.parse_challenge("", _Msg([("WWW-Authenticate", 'Bearer realm="a"'),
+                                                        ("WWW-Authenticate", PAY_HDR)]))
+        self.assertEqual(c, xc.PAYMENT_SCHEME)
+
+    def test_no_carrier_still_yields_nothing(self):
+        self.assertEqual(xc.parse_challenge("", _Msg([("X", "y")])), (None, None))
