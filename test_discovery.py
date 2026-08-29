@@ -403,6 +403,56 @@ class TestDiscoveryEndpoint(unittest.TestCase):
         self.assertEqual(self._raw_status("///healthz"), 200)
         self.assertEqual(self._raw_status("//nope"), 404)
 
+    def test_get_handler_failure_returns_503_not_a_dropped_connection(self):
+        """A raising GET handler must answer cleanly, like do_POST already does.
+
+        do_POST wraps its dispatch and returns 503 ("fail CLOSED + gracefully").
+        do_GET had NO try/except at all, so an exception dropped the connection
+        mid-response: the client saw RemoteDisconnected rather than any status
+        code, and the traceback went to stderr. Reproduced with a receipt_signer
+        whose jwks() raises -- a plausible misconfiguration, and /jwks.json is
+        now advertised in openapi.json so crawlers reach it.
+
+        Mutation: remove the try/except from do_GET -> this FAILS with a
+        connection error instead of 503.
+        """
+        class BoomSigner:
+            def jwks(self):
+                raise RuntimeError("signer exploded")
+        srv = BlackwallServer(port=0, receipt_signer=BoomSigner())
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start(); time.sleep(0.3)
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                urllib.request.urlopen(
+                    "http://127.0.0.1:%d/jwks.json" % srv.port, timeout=4)
+            self.assertEqual(cm.exception.code, 503)
+        finally:
+            srv.shutdown()
+
+    def test_get_handler_failure_does_not_leak_internals(self):
+        """The 503 body must not carry the exception message or a traceback --
+        a GET route is unauthenticated. Mutation: put str(e) in the body ->
+        this FAILS."""
+        class BoomSigner:
+            def jwks(self):
+                raise RuntimeError("secret-internal-detail-9f3a")
+        srv = BlackwallServer(port=0, receipt_signer=BoomSigner())
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start(); time.sleep(0.3)
+        try:
+            try:
+                urllib.request.urlopen(
+                    "http://127.0.0.1:%d/jwks.json" % srv.port, timeout=4)
+                self.fail("expected an error status")
+            except urllib.error.HTTPError as e:
+                body = e.read().decode("utf-8", "replace")
+            self.assertNotIn("secret-internal-detail-9f3a", body)
+            self.assertNotIn("Traceback", body)
+            self.assertNotIn("RuntimeError", body)
+        finally:
+            srv.shutdown()
+
     def test_post_routes_stay_strictly_matched(self):
         """POST is deliberately NOT normalized: those routes carry payments,
         self.path feeds the x402 billing RESOURCE key, and 404ing before any

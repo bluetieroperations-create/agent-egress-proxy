@@ -1791,44 +1791,62 @@ class _Handler(BaseHTTPRequestHandler):
         # strictly matched, see discovery.route_path.
         from discovery import route_path
         path = route_path(self.path)
-        if path == "/healthz":
-            self._send_json(200, {"status": "ok"})
-        elif path in ("/.well-known/x402", "/v1/discovery"):
-            self._send_json(200, self._descriptor())
-        elif path in ("/jwks.json",
-                      "/.well-known/blackwall-receipt-key.json"):
-            # PUBLIC signing keys, so a receipt can be verified offline with no
-            # secret of ours. Both paths on purpose: /jwks.json is the standard
-            # name, and blackwall-mcp-remote already fetches the .well-known one
-            # (src/index.mjs KEY_URL) -- serving both fixes that existing broken
-            # dependency without needing a coordinated deploy.
-            signer = getattr(self, "receipt_signer", None)
-            self._send_json(200, signer.jwks() if signer else {"keys": []})
-        elif path == "/v1/price-index":
-            # PUBLIC GOOD, and the cheapest distribution asset we have: a price
-            # index for agent services computed from SETTLED on-chain reality
-            # rather than what sellers advertise. Nothing else publishes one, and
-            # being the reference for what things cost is worth more than keeping
-            # the number private. Read-only, unauthenticated, cheap (a preloaded
-            # dict), so it sits with the other GET routes outside the rate limit.
-            idx = self.category_index or {}
-            self._send_json(200, {
-                "index": idx,
-                "unit": "USDC per call (median of settled on-chain payments)",
-                "categories": len(idx),
-                "method": "per-category median of settled amounts, payees "
-                          "classified by resource URL; see docs/CATEGORY.md",
-                "source": "https://github.com/bluetieroperations-create/agent-egress-proxy",
-            })
-        elif path == "/openapi.json":
-            # x402scan probes the origin root for this discovery document.
-            self._send_json(200, self._openapi())
-        elif path == "/stats":
-            # Lightweight observability: request + verdict counters. No PII (IPs are
-            # only kept in-memory for rate-limiting, never logged here).
-            self._send_json(200, self.stats.snapshot() if self.stats else {})
-        else:
-            self._send_json(404, {"error": "not found"})
+        try:
+            if path == "/healthz":
+                self._send_json(200, {"status": "ok"})
+            elif path in ("/.well-known/x402", "/v1/discovery"):
+                self._send_json(200, self._descriptor())
+            elif path in ("/jwks.json",
+                          "/.well-known/blackwall-receipt-key.json"):
+                # PUBLIC signing keys, so a receipt can be verified offline with no
+                # secret of ours. Both paths on purpose: /jwks.json is the standard
+                # name, and blackwall-mcp-remote already fetches the .well-known one
+                # (src/index.mjs KEY_URL) -- serving both fixes that existing broken
+                # dependency without needing a coordinated deploy.
+                signer = getattr(self, "receipt_signer", None)
+                self._send_json(200, signer.jwks() if signer else {"keys": []})
+            elif path == "/v1/price-index":
+                # PUBLIC GOOD, and the cheapest distribution asset we have: a price
+                # index for agent services computed from SETTLED on-chain reality
+                # rather than what sellers advertise. Nothing else publishes one, and
+                # being the reference for what things cost is worth more than keeping
+                # the number private. Read-only, unauthenticated, cheap (a preloaded
+                # dict), so it sits with the other GET routes outside the rate limit.
+                idx = self.category_index or {}
+                self._send_json(200, {
+                    "index": idx,
+                    "unit": "USDC per call (median of settled on-chain payments)",
+                    "categories": len(idx),
+                    "method": "per-category median of settled amounts, payees "
+                              "classified by resource URL; see docs/CATEGORY.md",
+                    "source": "https://github.com/bluetieroperations-create/agent-egress-proxy",
+                })
+            elif path == "/openapi.json":
+                # x402scan probes the origin root for this discovery document.
+                self._send_json(200, self._openapi())
+            elif path == "/stats":
+                # Lightweight observability: request + verdict counters. No PII (IPs are
+                # only kept in-memory for rate-limiting, never logged here).
+                self._send_json(200, self.stats.snapshot() if self.stats else {})
+            else:
+                self._send_json(404, {"error": "not found"})
+        except Exception as e:
+            # Mirrors do_POST: a raising handler must answer cleanly rather than
+            # drop the connection mid-response. Without this, a GET route that
+            # threw (e.g. a misconfigured receipt_signer whose jwks() raises)
+            # gave the client RemoteDisconnected and no status code at all, and
+            # /jwks.json + /stats are now advertised in openapi.json so crawlers
+            # reach them. The message is NEVER echoed -- these routes are
+            # unauthenticated; the operator sees it in stderr + /stats.
+            if self.stats is not None:
+                self.stats.incr("errors")
+            sys.stderr.write("blackwall: 503 unhandled %s on %s: %s\n"
+                             % (type(e).__name__, self.path, e))
+            sys.stderr.flush()
+            try:
+                self._send_json(503, {"error": "temporarily unavailable"})
+            except Exception:
+                pass   # response may already be partly written; don't cascade
 
     def do_HEAD(self):
         # Health checkers/crawlers (UptimeRobot, etc.) often probe with HEAD;
