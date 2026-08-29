@@ -131,6 +131,156 @@ def build_descriptor(pay_to=None, price=None, asset="USDC", network="base",
 CONTACT_EMAIL = "bluetier.operations@gmail.com"
 
 
+# --------------------------------------------------------------------------
+# THE ROUTE TABLE -- one source of truth.
+#
+# There used to be FOUR hand-maintained copies of this list (blackwall.py's
+# do_GET, do_HEAD and the do_POST rate-limit guard, plus build_openapi's `paths`
+# literal) which had to agree and did not. Measured in production 2026-08-29:
+#   - openapi.json advertised 4 of 13 served routes;
+#   - HEAD 404'd on /jwks.json, /.well-known/blackwall-receipt-key.json and
+#     /stats while GET returned 200 for all three;
+#   - /v1/verify-signer was omitted from the rate-limit guard despite its own
+#     docstring claiming otherwise -- and it is the most expensive route served.
+# Adding a route meant remembering four places; nobody did.
+#
+# These tuples are the ROUTE INVENTORY, not a pricing statement: they also drive
+# do_HEAD and the do_POST rate-limit guard. /v1/forecast-payment appears in
+# PUBLIC_POST_ROUTES for those purposes but is the one route that can be PAID --
+# build_openapi builds its operation separately so it carries the x-payment-info
+# band, and skips it in the free loop. Every other route is free and
+# unauthenticated (security: [] so x402scan probers exclude it).
+PUBLIC_GET_ROUTES = (
+    "/healthz",
+    "/.well-known/x402",
+    "/v1/discovery",
+    "/jwks.json",
+    "/.well-known/blackwall-receipt-key.json",
+    "/v1/price-index",
+    "/openapi.json",
+    "/stats",
+)
+
+# Served, HEAD-able, and a real route -- but deliberately NOT catalogued in
+# openapi.json. /stats carries only aggregate counters (requests, verdict_*,
+# errors, rate_limited): no addresses, no PII. It does however publish traffic
+# VOLUME and the GO/HOLD/STOP mix, and openapi.json is indexed by x402scan and
+# other crawlers, so being served is not the same as being advertised -- that is
+# an operator decision, not a routing one.
+#
+# It stays in PUBLIC_GET_ROUTES on purpose. That tuple also drives do_HEAD and
+# the dispatch-parity test; removing it there would 404 HEAD /stats and
+# reintroduce exactly the GET/HEAD drift this table was built to kill.
+UNADVERTISED_ROUTES = frozenset({"/stats"})
+
+PUBLIC_POST_ROUTES = (
+    "/v1/forecast-payment",
+    "/v1/verify-signer",
+    "/v1/report-outcome",
+    "/v1/screen-payer",
+)
+
+# Served ONLY when x402 billing is configured; the handler answers 404
+# "billing not enabled" otherwise, so it is advertised only when priced.
+BILLING_POST_ROUTES = ("/v1/session",)
+
+_ROUTE_SUMMARY = {
+    "/healthz": "Liveness probe.",
+    "/.well-known/x402": "x402 service descriptor (discovery).",
+    "/v1/discovery": "x402 service descriptor (alias of /.well-known/x402).",
+    "/jwks.json": "Public Ed25519 receipt-signing keys, so a signed verdict "
+                  "receipt can be verified offline with no secret of ours. "
+                  "Retired keys stay published so receipts survive rotation.",
+    "/.well-known/blackwall-receipt-key.json":
+        "Alias of /jwks.json at the well-known name blackwall-mcp-remote fetches.",
+    "/v1/price-index": "Per-category median price for agent services, computed "
+                       "from SETTLED on-chain payments rather than advertised "
+                       "prices. Read-only reference data.",
+    "/openapi.json": "This document.",
+    "/stats": "Request and verdict counters. No PII.",
+    "/v1/verify-signer": "Stage-2 EIP-3009 signer recovery for a request that "
+                         "got a fast deferred verdict. ok:false means the signer "
+                         "is forged or mismatched -- do NOT submit the payment.",
+    "/v1/report-outcome": "Report the realized outcome for a prior receipt "
+                          "(closes the moat-flywheel loop). Requires a report_token.",
+    # The BUYER side of the graph. Everything else here scores the payee; this
+    # answers the mirror question a facilitator/wallet asks before it settles an
+    # inbound payment. Free + unauthenticated: an unknown payer is NEUTRAL
+    # cold-start, so there is nothing here worth gating behind a fee.
+    "/v1/screen-payer": "Screen a PAYER wallet: tier (established / emerging / "
+                        "unknown), anchors paid, and breadth. Informational -- "
+                        "an unknown payer is neutral, never a block.",
+    "/v1/session": "Open a reusable x402 session token (fund once, many checks).",
+}
+
+_ROUTE_RESPONSES = {
+    "/v1/screen-payer": {"200": {"description": "Payer profile."},
+                         "400": {"description": "Invalid payer address."},
+                         "503": {"description": "No payer-reputation source "
+                                                "configured."}},
+    "/v1/report-outcome": {"202": {"description": "Outcome recorded."},
+                           "403": {"description": "Invalid or missing report_token."}},
+    "/healthz": {"200": {"description": "Service healthy."}},
+    "/v1/verify-signer": {"200": {"description": "Signer verification result."},
+                          "400": {"description": "Invalid request body."}},
+    "/v1/session": {"200": {"description": "Session token."},
+                    "402": {"description": "Payment required to open a session."},
+                    "404": {"description": "Billing not enabled on this deployment."}},
+}
+
+
+def route_path(raw):
+    """Raw request path -> the path used for GET/HEAD ROUTE MATCHING.
+
+    `self.path` carries the query string and matching is exact, so a probe with
+    a cache-buster (`/openapi.json?v=2`, `/healthz?cb=1`) matched nothing and
+    answered 404 -- a monitor or discovery crawler scores our discovery
+    documents DEAD. Measured live 2026-08-29: every GET route 404'd with any
+    query string attached.
+
+    SCOPE, deliberately narrow:
+      - GET/HEAD only. POST routes stay STRICTLY matched: they carry payments,
+        `self.path` feeds the x402 billing RESOURCE key, and a query-string
+        request 404ing before it reaches a handler is fail-closed and correct.
+      - The query string is dropped, not parsed. No route here takes a
+        parameter, so it cannot be part of this server's route identity.
+        NOTE this is NOT a general x402 rule: 27 of 3,827 URLs in our crawled
+        directory carry a query string, and for that seller `?method=GET` and
+        `?method=POST` are DIFFERENT priced resources. Stripping is safe for
+        OUR routing, and would be wrong applied to a resource key.
+      - A trailing slash is left alone. `/healthz/` is a separate question with
+        its own blast radius; widening routing was not the job.
+
+    Pure, total, never raises: a non-string yields "" (which matches no route).
+    """
+    if not isinstance(raw, str):
+        return ""
+    return raw.split("?", 1)[0]
+
+
+def _operation_id(path):
+    """/v1/price-index -> priceIndex. Stable, unique, and derived so a new route
+    cannot ship without one."""
+    parts = [p for p in path.replace(".", "-").replace("_", "-").split("/") if p]
+    if parts and parts[0] == "v1":
+        parts = parts[1:]
+    words = [w for part in parts for w in part.split("-") if w]
+    if not words:
+        return "root"
+    return words[0] + "".join(w.capitalize() for w in words[1:])
+
+
+def _free_op(path):
+    """OpenAPI operation for a free, unauthenticated route."""
+    return {
+        "operationId": _operation_id(path),
+        "summary": _ROUTE_SUMMARY.get(path, path),
+        "security": [],
+        "responses": _ROUTE_RESPONSES.get(
+            path, {"200": {"description": "OK."}}),
+    }
+
+
 def build_openapi(server_url=None, min_fee="0.001", max_fee="0.10",
                   currency="USD", ownership_proofs=None, priced=True):
     """Return the x402scan-shaped OpenAPI discovery document (pure: config->dict).
@@ -205,24 +355,24 @@ def build_openapi(server_url=None, min_fee="0.001", max_fee="0.10",
     else:
         forecast_op["security"] = []  # free oracle -- do not advertise as paid
 
-    paths = {
-        "/v1/forecast-payment": {"post": forecast_op},
-        # FREE endpoints: security [] so probers exclude them.
-        "/healthz": {"get": {
-            "operationId": "healthz",
-            "summary": "Liveness probe.",
-            "security": [],
-            "responses": {"200": {"description": "Service healthy."}},
-        }},
-        "/v1/report-outcome": {"post": {
-            "operationId": "reportOutcome",
-            "summary": "Report the realized outcome for a prior receipt "
-                       "(closes the moat-flywheel loop). Requires a report_token.",
-            "security": [],
-            "responses": {"202": {"description": "Outcome recorded."},
-                          "403": {"description": "Invalid or missing report_token."}},
-        }},
-    }
+    paths = {"/v1/forecast-payment": {"post": forecast_op}}
+    # Everything else is FREE: security [] so probers exclude it. Built from the
+    # shared route table above rather than a hand-written literal -- see THE
+    # ROUTE TABLE for the four-way drift that motivated it.
+    for path in PUBLIC_GET_ROUTES:
+        if path in UNADVERTISED_ROUTES:
+            continue   # served, but deliberately not catalogued
+        paths.setdefault(path, {})["get"] = _free_op(path)
+    for path in PUBLIC_POST_ROUTES:
+        if path == "/v1/forecast-payment":
+            continue  # already added above, priced
+        paths.setdefault(path, {})["post"] = _free_op(path)
+    if priced:
+        # Advertised ONLY when billing is on: with billing off the handler
+        # answers 404 `billing not enabled`, and documenting a dead route is the
+        # same defect as omitting a live one.
+        for path in BILLING_POST_ROUTES:
+            paths.setdefault(path, {})["post"] = _free_op(path)
 
     doc = {
         "openapi": "3.0.3",

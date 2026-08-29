@@ -201,33 +201,87 @@ def resolve_decimals(claim, decimals=None):
         "1.0 DAI" -- the gate's whole guarantee, void.
 
     So an unknown asset must be reported as UNVERIFIED rather than silently
-    assumed. Explicit caller value wins, then the address table, then the symbol.
+    assumed.
+
+    PRECEDENCE -- what we can VERIFY beats what we are TOLD. The asset's own
+    decimals (address table, then symbol, then an optional on-chain read) win;
+    the caller-supplied value fills in ONLY when the asset is genuinely unknown.
+
+    SECOND AUDIT FINDING (2026-08-29, HIGH): this originally let the caller value
+    win unconditionally. `blackwall.forecast` sources it from the UNTRUSTED
+    request body (`payload.get("decimals")`), so a request could re-scale the very
+    comparison that gives payload-sim its STOP authority. Reproduced end to end: a
+    signed authorization for 10^12 atomic USDC (1,000,000 USDC) against a claim of
+    "1.0 USDC" is hard-STOPped honestly, and became verdict=HOLD /
+    hard_stop=False with `"decimals": 12` added to the request -- reported as
+    amount_status="verified". That is the ORIGINAL defect relocated from a
+    hardcoded 6 to attacker control, which is strictly worse because it is
+    steerable. `decimals_conflict` reports a caller who contradicts a known asset.
     """
-    if decimals is not None:
+    known = known_decimals(claim)
+    if known is not None:
+        return known
+    if decimals is not None and not isinstance(decimals, bool):
+        # bool is an int subclass, so `"decimals": true` would otherwise become 1.
         try:
             d = int(decimals)
         except (TypeError, ValueError):
             return None
         return d if 0 <= d <= 36 else None
-    asset = (claim or {}).get("asset")
-    if isinstance(asset, str):
-        key = asset.strip().lower()
-        if key in KNOWN_DECIMALS:
-            return KNOWN_DECIMALS[key]
-        if not key.startswith("0x") and key in KNOWN_SYMBOL_DECIMALS:
-            return KNOWN_SYMBOL_DECIMALS[key]
-        # Last resort: read decimals() on-chain. Opt-in, cached forever (the value
-        # is immutable), and fail-open -- an unreachable node returns None, which
-        # is exactly the safe behaviour the static table already produces.
-        if _ONCHAIN is not None:
-            try:
-                # The asset's CHAIN matters: the same address is a different
-                # token on a different chain, and the resolver caches forever.
-                return _ONCHAIN.lookup(asset, (claim or {}).get("chain")
-                                       or (claim or {}).get("network"))
-            except Exception:
-                return None
     return None
+
+
+def known_decimals(claim):
+    """The asset's decimals as WE can establish them, ignoring anything the caller
+    asserted: address table, then symbol, then the optional on-chain read. None
+    when we genuinely cannot tell."""
+    asset = (claim or {}).get("asset")
+    if not isinstance(asset, str):
+        return None
+    key = asset.strip().lower()
+    if key in KNOWN_DECIMALS:
+        return KNOWN_DECIMALS[key]
+    if not key.startswith("0x") and key in KNOWN_SYMBOL_DECIMALS:
+        return KNOWN_SYMBOL_DECIMALS[key]
+    # Last resort: read decimals() on-chain. Opt-in, cached forever (the value
+    # is immutable), and fail-open -- an unreachable node returns None, which
+    # is exactly the safe behaviour the static table already produces.
+    if _ONCHAIN is not None:
+        try:
+            # Pass the CHAIN: the same address is a different token on a
+            # different network, and a resolver that routes by chain silently
+            # falls back to its default without it. `lookup` takes network=None,
+            # so omitting it does not error -- it just quietly asks the wrong node
+            # and caches the answer forever.
+            # NORMALISED to CAIP-2. The resolver routes on `chain_of()`, which
+            # takes "eip155:8453" or a bare id and returns None for a human name
+            # -- and every claim here carries "base"/"ethereum". Passing the raw
+            # value left the routing INERT on every real request while looking
+            # wired up: lookup takes network=None, so it does not error, it just
+            # asks whatever node is default and caches that answer forever.
+            _net = (claim or {}).get("chain") or (claim or {}).get("network")
+            return _ONCHAIN.lookup(asset, to_caip2(_net) if _net else None)
+        except Exception:
+            return None
+    return None
+
+
+def decimals_conflict(claim, decimals):
+    """True when the caller asserted decimals that CONTRADICT an asset we know.
+
+    Not merely ignorable: an x402 v2 challenge carries the real decimals, so a
+    value disagreeing with a token we can identify is an attack indicator, and
+    the whole point of the atomic comparison is that it cannot be re-scaled by
+    the party being checked."""
+    if decimals is None:
+        return False
+    known = known_decimals(claim)
+    if known is None:
+        return False
+    try:
+        return int(decimals) != known
+    except (TypeError, ValueError):
+        return False
 
 
 def check_payment_authorization(claim, x_payment, *, decimals=None, now=None,
@@ -271,6 +325,11 @@ def check_payment_authorization(claim, x_payment, *, decimals=None, now=None,
             % (_show(to), _show(cp)))
 
     # --- amount: same sum (compared in atomic units, reported in human units)? ---
+    if decimals_conflict(claim, decimals):
+        mismatches.append(
+            "supplied decimals %s contradict the known decimals %s for asset %s "
+            "-- refusing to re-scale the amount check"
+            % (_show(decimals), _show(known_decimals(claim)), _show(claim.get("asset"))))
     resolved = resolve_decimals(claim, decimals)
     got = _int_or_none(auth.get("value"))
     if resolved is None:
@@ -286,7 +345,21 @@ def check_payment_authorization(claim, x_payment, *, decimals=None, now=None,
             % (_show(claim.get("asset")), _show(auth.get("value")),
                _show(claim.get("amount"))))
     else:
-        amount_status = "verified"
+        # WHERE the scale came from decides what we may call this. Ground truth
+        # (table / symbol / on-chain) -> verified. An asset we cannot identify
+        # leaves the caller as the only source -- and in `forecast` that caller is
+        # the request body, i.e. the party being screened. The arithmetic is still
+        # done, but calling it "verified" would assert a check we did not perform,
+        # which is the same category error as the original decimals bug.
+        if known_decimals(claim) is None:
+            amount_status = "asserted_decimals"
+            warnings.append(
+                "amount checked at CALLER-ASSERTED decimals (%s) -- the asset %s "
+                "is not one we can identify, so the scale is unverified and this "
+                "is not proof the amounts agree"
+                % (_show(decimals), _show(claim.get("asset"))))
+        else:
+            amount_status = "verified"
         want = to_atomic(claim.get("amount"), resolved)
         if want is None or got is None or want != got:
             mismatches.append(

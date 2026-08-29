@@ -2,19 +2,25 @@
 """
 mcp_server.py -- Blackwall as an MCP server (spec step 4).
 
-Wraps the verdict engine as a Model Context Protocol server over stdio, so any
-MCP-capable agent can discover and call Blackwall self-serve. It is a THIN
-transport wrapper: the tools delegate straight to blackwall.forecast() /
-ledger.record_outcome() -- no decision logic lives here.
+Wraps the verdict engine as a Model Context Protocol server, so any MCP-capable
+agent can discover and call Blackwall self-serve. It is a THIN transport wrapper:
+the tools delegate straight to blackwall.forecast() / ledger.record_outcome() --
+no decision logic lives here.
 
-stdlib-only (no `mcp` pip SDK): a minimal JSON-RPC 2.0 loop over newline-
-delimited stdio, implementing the MCP methods an agent needs (initialize,
-tools/list, tools/call, ping). The dispatch core `handle()` is PURE (dict in ->
-dict|None out) and unit-tested without any stdio.
+stdlib-only (no `mcp` pip SDK): a minimal JSON-RPC 2.0 core implementing the MCP
+methods an agent needs (initialize, tools/list, tools/call, ping). The dispatch
+core `handle()` is PURE (dict in -> dict|None out) and unit-tested without any I/O.
 
-NOTE on transport vs billing: MCP stdio is the LOCAL self-serve interface and is
-unbilled here; monetized/remote access is the x402 HTTP endpoints (x402.py).
-All chatter stays on stdout as JSON-RPC; logs go to STDERR (stdout must be clean).
+TWO transports over the same `handle()`:
+  * `serve_stdio()` -- the LOCAL self-serve interface (default; unbilled). stdout is
+    JSON-RPC only, logs go to STDERR (stdout must stay clean).
+  * `serve_http()` -- the REMOTE, `mcp add`-able interface: MCP Streamable HTTP, a
+    single POST /mcp endpoint returning `application/json`. STATELESS (no session id),
+    notifications get 202, no server-initiated SSE (GET -> 405), with a body cap and an
+    optional Origin allowlist (DNS-rebinding guard). This is what lets hosted-MCP
+    platforms (Sapiom, Claude Code/Cursor/ChatGPT over HTTP) and the MCP registries
+    (Smithery/Glama) reach Blackwall. Monetized access still rides the x402 HTTP
+    endpoints (x402.py); this transport is the free self-serve verdict tool.
 """
 from __future__ import annotations
 
@@ -32,6 +38,8 @@ INVALID_REQUEST = -32600
 METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
+
+MAX_MCP_BODY = 256 * 1024   # request-body cap for the HTTP transport (oversize guard)
 
 _FORECAST_SCHEMA = {
     "type": "object",
@@ -271,6 +279,129 @@ class BlackwallMCP:
         stdout.write(json.dumps(obj, separators=(",", ":")) + "\n")
         stdout.flush()
 
+    # ---- Streamable-HTTP transport (remote / `mcp add`-able) ----
+    def http_handler_class(self, *, allowed_origins=None, path="/mcp",
+                           max_body=MAX_MCP_BODY):
+        """A BaseHTTPRequestHandler subclass bound to this MCP instance, implementing
+        the MCP Streamable-HTTP transport: a single POST endpoint (`path`) that takes a
+        JSON-RPC message and returns the JSON-RPC response as `application/json`.
+
+        STATELESS (each request is independent -- no session id needed; every tool call
+        is self-contained), so it scales horizontally behind a load balancer. Notifications
+        (no `id`) get HTTP 202 with no body, per spec. No server-initiated SSE, so GET on
+        the MCP path returns 405. `allowed_origins` (set/None) is the DNS-rebinding guard
+        the MCP security guidance calls for: when set, a foreign `Origin` is rejected 403.
+
+        Exposed (rather than inlined in serve_http) so a test or an existing server can
+        mount the same handler on its own ThreadingHTTPServer.
+
+        DEPLOY HARDENING (not done here -- do it at the edge): this transport is
+        unauthenticated (the free self-serve verdict tool) and has NO rate limit, only a
+        body cap. `forecast_payment` with a `payment_authorization` runs the ~30ms signer
+        recovery (see BENCHMARKS.md), so a public deployment should sit behind a
+        rate-limiter / gateway (e.g. the same posture as blackwall.py's HTTP server) and
+        set `allowed_origins` if browsers will reach it."""
+        from http.server import BaseHTTPRequestHandler
+        mcp = self
+
+        class _MCPHTTPHandler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+            # Socket timeout: a stalled/partial body (slowloris) must not pin a thread
+            # forever, and an idle keep-alive connection is reclaimed. This is a backstop
+            # -- a public deploy still wants a real rate-limiter/gateway in front.
+            timeout = 30
+
+            def log_message(self, fmt, *a):   # keep stdout clean; quiet logs to stderr
+                sys.stderr.write("mcp-http: " + (fmt % a) + "\n")
+
+            def _send(self, code, obj=None, close=False):
+                # `close`: for early rejects (wrong path / bad origin / oversize) we
+                # respond WITHOUT draining the request body, so on a keep-alive
+                # connection the server would parse the leftover body as the next
+                # request. Signal Connection: close so it doesn't.
+                body = b"" if obj is None else json.dumps(
+                    obj, separators=(",", ":")).encode()
+                self.send_response(code)
+                if body:
+                    self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                if close:
+                    self.send_header("Connection", "close")
+                    self.close_connection = True
+                self.end_headers()
+                if body:
+                    self.wfile.write(body)
+
+            def do_GET(self):
+                if self.path.split("?", 1)[0] == "/healthz":
+                    self._send(200, {"status": "ok", "server": SERVER_INFO,
+                                     "protocolVersion": PROTOCOL_VERSION})
+                else:   # no server-initiated stream on this transport
+                    self.send_response(405)
+                    self.send_header("Allow", "POST")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+
+            def do_POST(self):
+                if self.path.split("?", 1)[0] != path:
+                    self._send(404, _err(None, INVALID_REQUEST, "not found"), close=True)
+                    return
+                if allowed_origins is not None:
+                    origin = self.headers.get("Origin")
+                    if origin is not None and origin not in allowed_origins:
+                        self._send(403, _err(None, INVALID_REQUEST, "origin not allowed"),
+                                   close=True)
+                        return
+                # We require Content-Length (no streaming body). A chunked body would
+                # otherwise be read as empty AND leave undrained bytes that pollute the
+                # keep-alive connection -- so reject it cleanly and close.
+                if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
+                    self._send(411, _err(None, INVALID_REQUEST,
+                                         "Content-Length required (chunked bodies "
+                                         "unsupported)"), close=True)
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    length = 0
+                if length > max_body:
+                    self._send(413, _err(None, INVALID_REQUEST, "request too large"),
+                               close=True)
+                    return
+                raw = self.rfile.read(length) if length else b""
+                try:
+                    msg = json.loads(raw or b"null")
+                except ValueError:
+                    self._send(400, _err(None, PARSE_ERROR, "parse error"))
+                    return
+                # A batch (array) returns an array of the non-notification responses;
+                # a single message returns its response, or 202 if it was a notification.
+                if isinstance(msg, list):
+                    out = [r for r in (mcp.handle(m) for m in msg) if r is not None]
+                    self._send(202) if not out else self._send(200, out)
+                    return
+                resp = mcp.handle(msg)
+                self._send(202) if resp is None else self._send(200, resp)
+
+        return _MCPHTTPHandler
+
+    def serve_http(self, host="127.0.0.1", port=8403, *, allowed_origins=None,
+                   path="/mcp"):
+        """Serve the MCP Streamable-HTTP transport forever. Returns the httpd (for tests
+        it's easier to mount `http_handler_class()` on your own server)."""
+        from http.server import ThreadingHTTPServer
+        httpd = ThreadingHTTPServer(
+            (host, port), self.http_handler_class(allowed_origins=allowed_origins,
+                                                  path=path))
+        sys.stderr.write("blackwall MCP over HTTP on %s:%d (POST %s)\n"
+                         % (host, httpd.server_address[1], path))
+        sys.stderr.flush()
+        try:
+            httpd.serve_forever()
+        finally:
+            httpd.server_close()
+        return httpd
+
 
 def main(argv=None):
     import argparse
@@ -284,6 +415,13 @@ def main(argv=None):
     p.add_argument("--ingest", action="store_true",
                    default=_env_flag("BLACKWALL_INGEST"),
                    help="with --store, self-populate from chain on first sight")
+    p.add_argument("--http", metavar="[HOST:]PORT",
+                   default=os.environ.get("BLACKWALL_MCP_HTTP"),
+                   help="serve MCP over HTTP (Streamable HTTP, `mcp add`-able) at "
+                        "[HOST:]PORT instead of stdio, e.g. 0.0.0.0:8403")
+    p.add_argument("--allow-origin", action="append", default=None,
+                   help="restrict HTTP POST to these Origin headers (repeatable; "
+                        "DNS-rebinding guard). Omit to allow any origin.")
     args = p.parse_args(argv)
 
     ledger = None
@@ -317,17 +455,29 @@ def main(argv=None):
     if _div_err:
         sys.stderr.write("mcp: divergence index unusable (%s) -- signal OFF\n" % _div_err)
 
-    sys.stderr.write("blackwall MCP server on stdio (reputation: %s, ledger: %s, "
+    transport = ("HTTP " + args.http) if args.http else "stdio"
+    sys.stderr.write("blackwall MCP server on %s (reputation: %s, ledger: %s, "
                      "graph: %s, temporal: %s)\n"
-                     % ("MOCK" if source is None else type(source).__name__,
+                     % (transport, "MOCK" if source is None else type(source).__name__,
                         "on" if ledger else "off", "on" if graph_source else "off",
                         "on" if velocity_source else "off"))
     sys.stderr.flush()
-    BlackwallMCP(reputation_source=source, ledger=ledger,
-                 graph_source=graph_source,
-                 velocity_source=velocity_source,
-                 category_index=category_index,
-                 divergence_index=divergence_index).serve_stdio()
+    mcp = BlackwallMCP(reputation_source=source, ledger=ledger,
+                       graph_source=graph_source,
+                       velocity_source=velocity_source,
+                       category_index=category_index,
+                       divergence_index=divergence_index)
+    if args.http:
+        host, sep, port = args.http.rpartition(":")
+        host = host if (sep and host) else "127.0.0.1"
+        try:
+            port_n = int(port)
+        except ValueError:
+            p.error("--http expects [HOST:]PORT, got %r" % args.http)
+        allowed = set(args.allow_origin) if args.allow_origin else None
+        mcp.serve_http(host, port_n, allowed_origins=allowed)
+    else:
+        mcp.serve_stdio()
     return 0
 
 

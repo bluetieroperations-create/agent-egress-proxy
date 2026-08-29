@@ -28,6 +28,7 @@ import sys
 from decimal import Decimal
 
 import http_util
+import x402_challenge
 from addresses import is_evm_address
 
 _MAX_DEPTH = 6
@@ -62,15 +63,7 @@ def _accept_record(accept, parent_resource):
             "price_atomic": _price_atomic(accept)}
 
 
-def _www_authenticate(headers):
-    """The WWW-Authenticate value from a header mapping, case-insensitively."""
-    for k, v in (headers or {}).items():
-        if str(k).lower() == "www-authenticate":
-            return str(v)
-    return None
-
-
-def extract_resources(doc, _depth=0, _headers=None):
+def extract_resources(doc, _depth=0):
     """Recursively pull x402 resource records from a discovery doc / 402 body /
     resource list -> [{resource, payTo, asset, network, price_atomic}]. Bounded
     depth; never raises."""
@@ -92,19 +85,6 @@ def extract_resources(doc, _depth=0, _headers=None):
             rec = _accept_record(a, parent_resource)
             if rec:
                 out.append(rec)
-    # v2 header-style challenge: the requirements live in `WWW-Authenticate`, not
-    # the body, so a body-only crawl records these payees as if they did not exist.
-    # Additive -- appended after body entries, never replacing them.
-    if _headers and _depth == 0:
-        try:
-            import x402_challenge
-            entry = x402_challenge.to_accepts(_www_authenticate(_headers))
-        except Exception:
-            entry = None
-        if entry:
-            rec = _accept_record(entry, parent_resource)
-            if rec:
-                out.append(rec)
     for key in _NESTED_KEYS:
         v = doc.get(key)
         if isinstance(v, list):
@@ -123,6 +103,34 @@ def payees(resources):
     return out
 
 
+#: Canonical native USDC (Circle), 6 decimals, keyed by contract. A price is only
+#: comparable in USD when we KNOW its decimals: an 18-dp token divided by 10^6
+#: reads as ~10^12x too large, and that decimals mismatch -- not a real "$10T
+#: price" -- is what an agent must not act on.
+#:
+#: Lives HERE, the lower layer, and is imported by ecosystem_scan so there is one
+#: table rather than two that can drift. AUDIT_ZEROCUSTOMER filed this defect as
+#: H2 and it was fixed in ecosystem_scan's price layer only; price_observations
+#: kept the bad assumption ("USDC (6dp) assumed") until 2026-08-28. Found on the
+#: live catalog: CoinMarketCap advertises Base USDC AND BSC 18-dp options for the
+#: same resource, and the 18-dp ones were reported as 10,000,000,000 USDC.
+USDC_6DP = frozenset({
+    "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",  # Base
+    "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",  # Polygon PoS
+    "0xaf88d065e77c8cc2239327c5edb3a432268e5831",  # Arbitrum
+    "0x0b2c639c533813f4aa9d7837caf62653d097ff85",  # Optimism
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",  # Ethereum
+    "0xb97ad0e74fa7d920791e90258a6e2085088b4320",  # Avalanche
+    "0x036cbd53842c5426634e7929541ec2318f3dcf7e",  # Base Sepolia (test)
+    "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238",  # Sepolia (test)
+})
+
+
+def is_usdc6(asset):
+    """True when `asset` is a contract whose decimals we KNOW to be 6."""
+    return isinstance(asset, str) and asset.lower() in USDC_6DP
+
+
 def _human(atomic, decimals=6):
     try:
         d = Decimal(int(atomic)) / (Decimal(10) ** decimals)
@@ -131,43 +139,20 @@ def _human(atomic, decimals=6):
         return None
 
 
-def asset_decimals(asset):
-    """Decimals for a crawled asset, or None when unknown.
-
-    MEASURED DEFECT (audit 2026-08-27): this module assumed USDC/6dp for EVERY
-    asset. 16.8% of the crawled payment options (1,792 of 10,668, across 23 of
-    198 payees) are NOT USDC, and the BSC stablecoins among them -- BSC-USD,
-    BUSD, USD1 -- are **18 decimals**, verified on-chain via decimals(). USDT is
-    6 on Ethereum and 18 on BSC, which is exactly what a single global default
-    walks into.
-
-    Effect measured: a 1.00 BSC-USD quote entered the baseline as
-    1,000,000,000,000. Peer medians absorb that up to ~30% poisoning, but a payee
-    whose OWN history is priced in an 18-decimal asset has its median inflated
-    10^12 -- so a 10x overcharge scores an anomaly ratio of 1e-11 and the
-    price-anomaly gate is SILENTLY INERT for that payee.
-    """
-    try:
-        from payload_sim import resolve_decimals
-        return resolve_decimals({"asset": asset})
-    except Exception:
-        return None
-
-
 def price_observations(resources):
     """Advertised list prices as cross-counterparty price observations (feed a
     peer-group baseline).
 
-    An observation is emitted ONLY when the asset's decimals are known. A missing
-    observation costs a little baseline coverage; a wrong one by 10^12 poisons the
-    median and disables the anomaly gate, so omission is the safe failure.
+    ONLY known 6-decimal USDC contributes a USD amount. An asset whose decimals we
+    do not know is EXCLUDED rather than guessed: dividing an 18-dp token by 10^6
+    yields a number ~10^12x too large, and a peer baseline is exactly the place
+    where one such outlier does the most damage.
     """
     out = []
     for r in resources or []:
-        decimals = asset_decimals(r.get("asset"))
-        if decimals is None:
+        if not is_usdc6(r.get("asset")):
             continue
-        amt = _human(r.get("price_atomic"), decimals)
+        amt = _human(r.get("price_atomic"))
         if amt:
             out.append({"counterparty": r["payTo"], "resource": r.get("resource"),
                         "amount": amt, "asset": r.get("asset"),
@@ -177,14 +162,30 @@ def price_observations(resources):
 
 def crawl(sources, *, fetch=None):
     """Fetch each discovery source and aggregate its resource records. A source
-    that errors or returns junk is skipped, not fatal."""
+    that errors or returns junk is skipped, not fatal.
+
+    A source that answers **402** is not an error -- it is an endpoint quoting
+    its price, which is exactly what we came for. Its requirements may sit in
+    the body OR in `WWW-Authenticate: X402 requirements="<b64>"`; the header
+    form used to be dropped on the floor here, because get_json raises on 402
+    and the bare `except` swallowed it. The liveness survey measured the cost:
+    86 of 195 hosts served a challenge no consumer in this repo could read.
+    """
     getj = fetch or _urllib_get_json
     resources = []
     for s in sources or []:
         try:
             doc = getj(s)
-        except Exception:
-            continue
+        except Exception as exc:
+            accepts, _carrier = x402_challenge.accepts_from_http_error(exc)
+            if not accepts:
+                continue
+            # Carry the SOURCE URL as the parent resource. A header-carried
+            # challenge has no `resource` of its own, and without it every
+            # record lands with resource=None -- which costs the category
+            # classifier its input and price observations their per-resource
+            # key. An accept's own `resource` still wins (see _accept_record).
+            doc = {"resource": s, "accepts": accepts}
         resources.extend(extract_resources(doc))
     return resources
 

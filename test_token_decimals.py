@@ -168,12 +168,22 @@ class TestPayloadSimIntegration(unittest.TestCase):
         # kills: the resolver becoming active without being installed
         self.assertIsNone(PS.resolve_decimals({"asset": "0x" + "9" * 40}))
 
-    def test_explicit_caller_value_still_wins(self):
-        # kills: the network overriding a value the caller already knows, e.g.
-        # methodDetails.decimals from the v2 challenge
+    def test_the_chain_beats_a_caller_assertion(self):
+        # kills: a caller-supplied value overriding what the TOKEN ITSELF reports.
+        #
+        # REVISED (audit 2026-08-29): this asserted the opposite -- that the caller
+        # wins over the on-chain read -- framed as "a value the caller already
+        # knows". But `methodDetails.decimals` comes from the 402 CHALLENGE, which
+        # is authored by the PAYEE: the party this gate exists to screen. A
+        # `decimals()` read is the token contract's own answer. For a check whose
+        # whole guarantee is that the screened party cannot re-scale it, ground
+        # truth must beat an assertion. The same inversion let a request downgrade
+        # a hard STOP to HOLD -- see
+        # TestRequestSuppliedDecimalsCannotOverrideKnownAsset in test_payload_sim.
         PS.set_onchain_resolver(TD.OnChainDecimals(
             rpc_url="http://node", table={}, transport=lambda u, b: {"result": word(8)}))
-        self.assertEqual(PS.resolve_decimals({"asset": "0x" + "9" * 40}, 18), 18)
+        self.assertEqual(PS.resolve_decimals({"asset": "0x" + "9" * 40}, 18), 8)
+        self.assertTrue(PS.decimals_conflict({"asset": "0x" + "9" * 40}, 18))
 
     def test_a_resolver_that_raises_fails_open(self):
         # kills: a broken resolver crashing the verdict path

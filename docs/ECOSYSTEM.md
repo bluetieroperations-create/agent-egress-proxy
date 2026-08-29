@@ -19,7 +19,7 @@ main README still documents `egress_proxy.py`).
 - **What:** GO / HOLD / STOP pre-signature payment verdict from behavioral
   reputation + price-anomaly (per-class + peer-group) + OFAC screening + x402
   billing + configurable auto-release threshold + AP payout gate.
-- **Deploy:** Render (`agent-egress-proxy.onrender.com`), Base mainnet, OFAC on,
+- **Deploy:** Render (`blackwall-free.onrender.com`), Base mainnet, OFAC on,
   373 tests. MCP: `forecast_payment` (stdio).
 - **Response schema:** `{verdict, hard_stop, score, reasons, signals, receipt_id, report_token}`.
 - **Role (per RECONCILIATION.md):** the **canonical PAYMENT engine**.

@@ -2,7 +2,10 @@
 Tests for discovery_crawl.py -- parse x402 discovery, extract payees/prices,
 auto-feed the backfill. Fake fetch; each test states its mutation.
 """
+import base64
+import json
 import tempfile
+import urllib.error
 import unittest
 
 import discovery_crawl as D
@@ -173,59 +176,157 @@ class TestCrawlAndBackfill(unittest.TestCase):
         self.assertGreaterEqual(store.lookup(P1).get("settlement_count", 0), 1)
 
 
+
+class PriceObservationsRespectDecimals(unittest.TestCase):
+    """price_observations divided EVERY asset by 10^6 ("USDC (6dp) assumed").
+
+    A payee that offers several chains -- CoinMarketCap advertises Base USDC and
+    BSC 18-decimal options for the same resource -- had its 18-dp options read as
+    10^12 times too large. Measured on the live catalog: 0.01 became 10,000,000,000.
+
+    This is the same defect AUDIT_ZEROCUSTOMER filed as H2 and fixed in
+    ecosystem_scan's price layer; it was never fixed here. Not on the verdict path
+    (reputation_store's price_observations come from the settlements table), but
+    this function exists to feed peer-group price baselines, and a 10^12 outlier
+    poisons any baseline built from it.
+    """
+
+    BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+    BSC_18DP = "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d"
+
+    def _rec(self, asset, atomic):
+        return {"payTo": "0x" + "ab" * 20, "resource": "https://s/api",
+                "asset": asset, "network": "eip155:8453", "price_atomic": atomic}
+
+    def test_known_6dp_usdc_is_converted(self):
+        obs = D.price_observations([self._rec(self.BASE_USDC, 10000)])
+        self.assertEqual([o["amount"] for o in obs], ["0.01"])
+
+    def test_unknown_decimals_asset_is_excluded(self):
+        # Mutation: converting every asset at 6dp. 0.01 of an 18-dp token would
+        # be reported as 10000000000.000000 -- a 10^12 error presented as a price.
+        obs = D.price_observations([self._rec(self.BSC_18DP, 10000000000000000)])
+        self.assertEqual(obs, [], "unknown-decimals asset must not yield a USD price")
+
+    def test_a_multi_chain_payee_keeps_only_its_comparable_option(self):
+        # The real shape: one resource, several accepts, different chains.
+        obs = D.price_observations([self._rec(self.BASE_USDC, 10000),
+                                    self._rec(self.BSC_18DP, 10000000000000000)])
+        self.assertEqual([o["amount"] for o in obs], ["0.01"])
+
+    def test_asset_match_is_case_insensitive(self):
+        # Mutation: comparing the checksummed address without .lower().
+        obs = D.price_observations([self._rec(self.BASE_USDC.lower(), 10000)])
+        self.assertEqual(len(obs), 1)
+
+    def test_missing_or_non_positive_amounts_are_dropped(self):
+        for atomic in (None, 0, -1, "junk"):
+            self.assertEqual(D.price_observations([self._rec(self.BASE_USDC, atomic)]),
+                             [], repr(atomic))
+
+    def test_missing_asset_is_excluded(self):
+        # Mutation: treating an absent asset as USDC. Decimals unknown means the
+        # number is not comparable, and guessing is how the 10^12 error happened.
+        self.assertEqual(D.price_observations([self._rec(None, 10000)]), [])
+
+
+class CrawlReadsHeaderCarriedChallenges(unittest.TestCase):
+    """A 402 is a price quote, not a failure -- and its requirements may sit in
+    the WWW-Authenticate header rather than the body."""
+
+    ACCEPTS = [{"payTo": "0x" + "ab" * 20, "maxAmountRequired": "25000",
+                "asset": "0x" + "cd" * 20, "network": "base",
+                "resource": "https://seller/api"}]
+
+    @staticmethod
+    def _http_error(code=402, headers=None, body=b""):
+        class _Stream:
+            def read(self, *a):
+                return body
+
+            def close(self):
+                pass
+
+        return urllib.error.HTTPError("http://seller/", code, "why",
+                                      headers or {}, _Stream())
+
+    @classmethod
+    def _hdr(cls, accepts):
+        blob = base64.b64encode(json.dumps({"accepts": accepts}).encode()).decode()
+        return {"WWW-Authenticate": 'X402 requirements="%s"' % blob}
+
+    def test_harvests_a_header_carried_402(self):
+        # Mutation: reverting crawl() to a bare `except Exception: continue`.
+        # Such a seller was previously invisible, so neither its payee nor its
+        # advertised price ever reached reputation.
+        def fetch(url):
+            raise self._http_error(headers=self._hdr(self.ACCEPTS))
+
+        got = D.crawl(["https://seller/api"], fetch=fetch)
+        self.assertEqual([r["payTo"] for r in got], [self.ACCEPTS[0]["payTo"]])
+
+    def test_harvests_a_body_carried_402(self):
+        # Mutation: handling only the header carrier. get_json raises on ANY
+        # 402, so a body-carried challenge from a raising transport was lost too.
+        def fetch(url):
+            raise self._http_error(body=json.dumps({"accepts": self.ACCEPTS}).encode())
+
+        got = D.crawl(["https://seller/api"], fetch=fetch)
+        self.assertEqual([r["payTo"] for r in got], [self.ACCEPTS[0]["payTo"]])
+
+    def test_carries_the_source_url_as_the_resource(self):
+        # Mutation: building doc = {"accepts": accepts} without the URL. A
+        # header-carried challenge has no `resource` of its own, so the record
+        # lands with resource=None -- silently costing the category classifier
+        # its only input and price observations their per-resource key. Caught
+        # by running the real crawl against blockrun.ai, not by a unit test.
+        url = "https://seller/api/v1/quote"
+        # A header-carried challenge typically names no resource of its own --
+        # that is exactly why the source URL has to supply it.
+        bare = [{k: v for k, v in self.ACCEPTS[0].items() if k != "resource"}]
+
+        def fetch(_):
+            raise self._http_error(headers=self._hdr(bare))
+
+        got = D.crawl([url], fetch=fetch)
+        self.assertEqual([r["resource"] for r in got], [url])
+
+    def test_an_accepts_own_resource_still_wins(self):
+        # Mutation: overwriting the accept's resource with the source URL.
+        # A challenge that names its own resource is authoritative.
+        own = "https://seller/real-resource"
+        accepts = [dict(self.ACCEPTS[0], resource=own)]
+
+        def fetch(_):
+            raise self._http_error(headers=self._hdr(accepts))
+
+        got = D.crawl(["https://seller/probed-here"], fetch=fetch)
+        self.assertEqual([r["resource"] for r in got], [own])
+
+    def test_a_real_failure_is_still_skipped_not_fatal(self):
+        # Mutation: letting the new branch re-raise. A dead host, a 500, and a
+        # 402 with nothing readable must all stay non-fatal for the crawl.
+        def dead(url):
+            raise OSError("connection refused")
+
+        def five_hundred(url):
+            raise self._http_error(code=500)
+
+        def opaque(url):
+            raise self._http_error(body=b"<html>402</html>")
+
+        for bad in (dead, five_hundred, opaque):
+            self.assertEqual(D.crawl(["https://x/"], fetch=bad), [], bad.__name__)
+
+    def test_one_bad_source_does_not_truncate_the_crawl(self):
+        # Mutation: `continue` becoming `break`.
+        def mixed(url):
+            if url.endswith("bad"):
+                raise OSError("nope")
+            raise self._http_error(headers=self._hdr(self.ACCEPTS))
+
+        got = D.crawl(["https://x/bad", "https://x/good"], fetch=mixed)
+        self.assertEqual(len(got), 1)
+
 if __name__ == "__main__":
     unittest.main()
-
-
-class TestAssetDecimals(unittest.TestCase):
-    """Audit 2026-08-27: price_observations assumed USDC/6dp for every asset.
-    16.8% of crawled options are not USDC, and the BSC stablecoins among them are
-    18 decimals (verified on-chain)."""
-
-    BSC_USD = "0x55d398326f99059ff775485246999027b3197955"   # 18 dp
-    USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"      # 6 dp
-
-    def _res(self, asset, atomic):
-        return [{"payTo": "0x" + "a" * 40, "asset": asset, "price_atomic": atomic,
-                 "resource": "https://x.test/r", "network": "eip155:56"}]
-
-    def test_eighteen_decimal_asset_is_not_inflated(self):
-        # kills: the 6dp assumption. A 1.00 BSC-USD quote entered the baseline as
-        # 1,000,000,000,000 -- inflating that payee's median by 10^12 and making
-        # the price-anomaly gate SILENTLY INERT for it.
-        obs = D.price_observations(self._res(self.BSC_USD, 10 ** 18))
-        self.assertEqual(obs[0]["amount"], "1")
-
-    def test_usdc_unchanged(self):
-        # kills: a fix that regresses the common 6dp case
-        obs = D.price_observations(self._res(self.USDC, 10 ** 6))
-        self.assertEqual(obs[0]["amount"], "1")
-
-    def test_unknown_asset_emits_no_observation(self):
-        # kills: emitting a guessed price. A missing observation costs a little
-        # baseline coverage; one wrong by 10^12 poisons the median.
-        self.assertEqual(
-            D.price_observations(self._res("0x" + "9" * 40, 10 ** 6)), [])
-
-    def test_mixed_assets_are_comparable_after_scaling(self):
-        # kills: leaving cross-asset observations on different scales, which is
-        # what made a peer-group median meaningless
-        res = (self._res(self.BSC_USD, 10 ** 18) + self._res(self.USDC, 10 ** 6))
-        amounts = {o["amount"] for o in D.price_observations(res)}
-        self.assertEqual(amounts, {"1"})
-
-    def test_overcharge_is_detectable_again(self):
-        # kills: the whole defect end-to-end. Against a poisoned history a 10x
-        # overcharge scored 1e-11, far under the 8.0 STOP threshold; it must now
-        # score 10.0 and be caught.
-        import blackwall
-        hist = [o["amount"] for o in
-                D.price_observations(self._res(self.BSC_USD, 10 ** 18) * 6)]
-        self.assertGreater(blackwall.price_anomaly_ratio("10", hist),
-                           blackwall.STOP_ANOMALY_RATIO)
-
-    def test_asset_decimals_resolves_and_admits_ignorance(self):
-        # kills: returning a default instead of None for an unrecognised asset
-        self.assertEqual(D.asset_decimals(self.BSC_USD), 18)
-        self.assertEqual(D.asset_decimals(self.USDC), 6)
-        self.assertIsNone(D.asset_decimals("0x" + "9" * 40))

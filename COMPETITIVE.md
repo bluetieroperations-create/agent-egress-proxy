@@ -1,48 +1,138 @@
 # Blackwall — competitive landscape
 
-**Snapshot date: 2026-06-29.** The x402 ecosystem is months-young and moving
-weekly; treat this as a point-in-time map, not a standing fact. Each row carries
-a confidence level and a source. Re-verify before betting positioning on it.
+**Re-verified 2026-08-25** (previous snapshot 2026-06-29). Each row carries a
+confidence level and how it was checked. The x402 trust layer moves weekly —
+re-verify before betting positioning on it, and check the LIVE service, not a
+README blurb. That mistake is recorded twice in this file now.
 
-## TL;DR
+## TL;DR — what changed since June
 
-A trust/reputation layer for x402 **has formed** and is contested — but **no one
-verified here does Blackwall's actual job**: a *pre-signature verdict driven by
-**behavioral counterparty reputation + price-anomaly + sanctions**, for the
-paying agent*. The nearest neighbor (Ontario Protocol) **does** make a
-pre-payment allow/deny decision (`/api/agent/can-pay`, free) — but it decides on
-**endpoint readiness + the agent's own budget cap + report integrity**, not on
-the counterparty's settlement/dispute history, price-fairness, or sanctions
-status. Those signals are Blackwall's wedge.
+The June claim that **"no one verified here does Blackwall's actual job"** no
+longer holds as written, but it is closer to true than a README-level scan
+suggests. Three would-be competitors were named in an ecosystem sweep; probing
+them directly split them three ways:
 
-> **Correction (2026-06-29, byte-verified).** An earlier draft said Ontario
-> "does not make a pay/deny decision" and "defers financial risk downstream."
-> That was wrong — surfaced by re-pulling the **raw** `openapi.json` (the earlier
-> read trusted a model-generated page summary that omitted `/api/agent/can-pay`).
-> Ontario *does* return allow/review/deny pre-payment. What it does **not** do —
-> confirmed by scanning the full spec, where `dispute`, `price-anomaly`, `ofac`,
-> `sanction`, `counterparty`, `median` are all **absent** — is judge the
-> counterparty's financial behavior. The differentiation is signal depth, not
-> presence/absence of a verdict.
+| named | probed 2026-08-25 | verdict |
+|---|---|---|
+| **AgentRank** — "settlement-grounded reputation … sybil-resistant … verify any counterparty free" | `agentrank.info` → **500**, `api.agentrank.info` → **connection reset** | **NOT REACHABLE.** Do not cite as a competitor until it resolves. |
+| **Aegis** (Boris Inc) | registry live, **4,862 services** (its own README says 2,463 — stale) | **REAL, and the closest thing to a data-moat rival.** |
+| **Warden** (warden402.xyz) | descriptor live; `approval`/`honeypot`/`calldata` present, `ofac`/`reputation`/`counterparty`/`settlement`/`median`/`sybil` **absent** | **NOT a competitor on counterparty risk** — it is transaction-safety, the Blockaid/GPT55 category. |
 
-**Positioning:** Blackwall is the **financial counterparty-risk layer**. The
-nearest competitor (Ontario's free `can-pay`) decides on **endpoint readiness +
-budget policy**; Blackwall decides on **counterparty payment behavior + price
-fairness + sanctions**. Others are buyer-scoring gates for sellers (MolTrust /
-Larkinsh / Crest), transaction-malice decoders (GPT55 / Blockaid), or enterprise
-KYT (Chainalysis / AnChain). Blackwall is **complementary** to most. For endpoint
-readiness it **replicates the commodity signal itself** rather than depending on a
-competitor: `readiness.py`'s `LocalReadinessSource` scores the same observable
-signals (402 implemented, manifest, https, openapi, ...) from public data we fetch
-ourselves — no per-request call to Ontario, and no leaking our query stream to a
-competitor. (An optional `OntarioReadinessSource` can consume their free `can-pay`
-directly, but it is *not* the default precisely because of that dependency and
-leak.) Either way the grade folds through the same conservative `apply_readiness`,
-so Blackwall is *endpoint-readiness **plus** the financial layer*. On the core
-pre-payment verdict it has a **direct, free competitor**, so the pitch is **signal
-depth and the data moat**, not "the only one doing this."
+**CORRECTION (2026-08-25).** An earlier pass in this session told the operator
+"AgentRank does settlement-grounded Sybil-resistant counterparty reputation for
+free" and advised not to pitch from this doc because of it. That came from the
+awesome-x402 blurb, not from the service. The service does not currently answer.
+Same failure mode as the June correction below: trusting a summary instead of the
+bytes. **The claim was overstated.**
 
-## The map
+**Where that leaves positioning.** The live, verified competitive set for the
+*payment-counterparty verdict* is:
+
+- **Ontario Protocol** — still the nearest neighbour on the SURFACE (free
+  `/api/agent/can-pay` → allow/review/deny, pre-payment). Re-verified against the
+  raw `openapi.json` on 2026-08-25: 21 paths, and `dispute`, `anomaly`, `ofac`,
+  `sanction`, `median`, `sybil`, `kyt`, `velocity` are **all still absent**. It
+  decides on endpoint readiness + the agent's own budget cap + report integrity.
+  Its `counterparty` hits are a tag on an *agent-id* reputation lookup and inputs
+  to a free self-declared claim calculator that explicitly "never applies a
+  provider verdict" — not on-chain counterparty risk.
+- **TollWarden** (was PaySafe) — same job, now a real published API, and
+  materially more serious than the June entry said.
+- **Aegis** — different job (service-quality registry + router) but the only one
+  with a comparable data asset.
+
+**Positioning, unchanged in substance:** Blackwall is the financial
+counterparty-risk layer — settled on-chain behaviour, price corroboration,
+Sybil/wash resistance, and OFAC as a hard-STOP authority. What is genuinely
+contested now is *reputation as a category*, not the specific verdict.
+
+## Verified competitors — 2026-08-25
+
+### TollWarden (formerly PaySafe) — the closest functional competitor
+
+Rebranded and shipped a real API since June. Pulled the raw `openapi.json`
+(29 KB, 14 paths, `"title": "TollWarden", "version": "1.5.0"`).
+
+| | TollWarden | Blackwall |
+|---|---|---|
+| verdict surface | `POST /v1/scan/outgoing` → `allow` / `flag` / `block` | `POST /v1/forecast-payment` → GO / HOLD / STOP |
+| reputation | `GET /v1/reputation/{address}` — *"Has anyone **reported** this address?"* | derived from **settled on-chain history** (281 payees, 37,943 settlements, 2,028 payers) |
+| outcome loop | `/v1/reputation/dispute`, `/v1/reputation/report`, `/v1/outcomes` | ledger.py verdict→outcome flywheel |
+| velocity limits | yes (`velocity` ×5 in spec) | no (out of scope — that is a spend-policy layer) |
+| sanctions / OFAC | **absent from the spec** | hard-STOP authority (`sanctions.py`) |
+| price anomaly | `median` ×3 — some baseline | per-class + peer + category + advertised-vs-settled divergence |
+| simulation | `simulate` **absent** | transfer/settlement/EIP-3009 auth simulation with control attribution |
+| commercial | API keys, `/v1/plans`, subscriptions | x402-native, value-priced, free under $10 at risk |
+
+**The real differentiation is the source of reputation, not its presence.**
+Theirs is crowd-**reported** ("has anyone reported this address"); ours is
+**on-chain settled behaviour**. Reports are cheap to fabricate and sparse;
+settlements are hard to fake and dense but only cover what actually settled.
+Those are genuinely different instruments — worth saying that way rather than
+claiming they lack reputation.
+
+Still ours alone against them: **OFAC as a STOP authority**, **pre-signature
+simulation**, and **payload/secret scanning**.
+
+*Confidence: HIGH — raw openapi.json, 2026-08-25.*
+
+### Aegis (Boris Inc) — different job, comparable data asset
+
+`GET /registry.json` returns `total_in_registry: 4862` with a free top-100
+preview carrying `trust_score`, `tier`, `category`, `price_usd`; the full
+"verified dataset with trust signals + probe history" is behind `GET /feed`
+($0.05). It scores services on **measured behaviour** — liveness, well-formed 402,
+on-wire-vs-registered **price honesty**, paid-delivery spot checks — and then
+`/route` acts on the score, reselling with trust-ranked failover.
+
+**Why it matters even though it is a different product:** price honesty overlaps
+our advertised-vs-settled divergence gate, and their corpus is **4,862 services**
+against our **281 payees**. On breadth of *service* data they are far ahead. On
+depth of *settlement* data — who actually paid whom, how often, from how many
+distinct payers — we have something they do not appear to publish.
+
+**They also ship Ed25519-signed receipts and a daily hash-chain anchored on Base.**
+That is the same axis Blackwall just shipped (see `docs/RECEIPT_SIGNING_SCOPE.md`).
+Receipt verifiability is table stakes in this category, not a differentiator.
+
+*Confidence: HIGH — live registry.json, 2026-08-25.*
+
+### Warden — NOT a competitor on this axis
+
+`warden402.xyz/.well-known/x402` is live. Term scan of its descriptor:
+
+```
+approval  present     ofac          ABSENT
+honeypot  present     reputation    ABSENT
+calldata  present     counterparty  ABSENT
+price     present     settlement    ABSENT
+sanction  present     median        ABSENT
+                      sybil         ABSENT
+```
+
+Token/address/transaction risk with calldata decoding — the Blockaid / GPT55 /
+`calldata.py` category. It answers "is this transaction dangerous", not "is this
+counterparty financially trustworthy". Complementary; do not position against it.
+
+*Confidence: HIGH — live descriptor, 2026-08-25.*
+
+### AgentRank — unreachable, do not cite
+
+The awesome-x402 entry describes exactly our thesis: *"settlement-grounded
+reputation … 0-1000 score derived from real on-chain USDC settlement, weighted by
+payer standing and sybil-resistant … verify any counterparty free before paying."*
+
+Probed 2026-08-25: `agentrank.info` → **HTTP 500**; `api.agentrank.info` →
+**connection reset**. Nothing answers.
+
+If it comes back it is the most direct competitor in the list, because that
+description is our moat restated and offered free. Re-probe before any pitch that
+leans on "nobody else does settlement-grounded reputation". **Until then it is a
+README, not a product.**
+
+*Confidence: HIGH that it does not currently respond; UNKNOWN what it does when up.*
+
+## The map (June snapshot — rows below NOT re-verified in August unless they appear above)
 
 | Project | What it does | Subject scored | Pre-sign? | Custody | Does it judge payee payment-risk + price? | Confidence / source |
 |---|---|---|---|---|---|---|

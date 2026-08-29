@@ -59,20 +59,24 @@ unit-tested; the network half is injected.
 
 from __future__ import annotations
 
-import base64
 import concurrent.futures as cf
 import json
-import re
 import socket
 import ssl
 import urllib.error
 import urllib.request
 
+import x402_challenge
+
 TIMEOUT = 12
 USER_AGENT = "blackwall-liveness/1.0 (+x402 directory check)"
 
-BODY_ACCEPTS = "body_accepts"
-HDR_ACCEPTS = "hdr_accepts"
+#: Re-exported from x402_challenge so this module keeps its public names while
+#: there is exactly ONE parser in the repo -- the survey, the crawler and the
+#: paying client must agree on what "readable requirements" means.
+BODY_ACCEPTS = x402_challenge.BODY_ACCEPTS
+HDR_ACCEPTS = x402_challenge.HDR_ACCEPTS
+PAYMENT_REQUIRED = x402_challenge.PAYMENT_REQUIRED
 WELLKNOWN = "wellknown"
 OPAQUE_402 = "opaque_402"
 OTHER = "other"
@@ -80,7 +84,7 @@ DEAD = "dead"
 BLOCKED = "blocked"
 
 #: Classes whose payment requirements Blackwall can actually read and score.
-SCOREABLE = (BODY_ACCEPTS, HDR_ACCEPTS)
+SCOREABLE = (BODY_ACCEPTS, HDR_ACCEPTS, PAYMENT_REQUIRED)
 
 #: Free hosting subdomains. A payee on one of these is far more likely to be a
 #: weekend demo than a business, so `rank_leads` filters them out of a BD list.
@@ -91,80 +95,19 @@ MANAGED_HOST_MARKERS = (
     "lambda-url", "on.aws", "hstgr.cloud", "fly.dev", "herokuapp.com",
 )
 
-_REQUIREMENTS_RE = re.compile(r'requirements="([^"]+)"')
-
-
 def _accepts_of(doc):
-    """Return a non-empty accepts[] from an x402 challenge document, else None."""
-    if isinstance(doc, dict):
-        accepts = doc.get("accepts")
-        if isinstance(accepts, list) and accepts:
-            return accepts
-    return None
+    """Deprecated alias -- see x402_challenge.accepts_of."""
+    return x402_challenge.accepts_of(doc)
 
 
 def parse_challenge(body, headers):
     """Extract accepts[] from a 402 response, from EITHER carrier.
 
-    Returns (accepts, carrier) where carrier is BODY_ACCEPTS / HDR_ACCEPTS, or
-    (None, None). Body wins when both are present -- it is the v1 style and the
-    one every current consumer already reads, so preferring it keeps this survey
-    honest about what works TODAY without a code change.
-
-    Tolerant by design: a malformed header must not mask a good body, and neither
-    must raise. This runs against arbitrary third-party servers.
+    Delegates to x402_challenge, which is the single implementation shared with
+    discovery_crawl and clients/x402_pay. Kept here as a name because the survey
+    and its tests were written against it.
     """
-    if isinstance(body, bytes):
-        try:
-            body = body.decode("utf-8", "replace")
-        except Exception:
-            body = ""
-    try:
-        accepts = _accepts_of(json.loads(body or ""))
-    except Exception:
-        accepts = None
-    if accepts:
-        return accepts, BODY_ACCEPTS
-
-    try:
-        import x402_challenge as _xc
-        _values = _xc.www_authenticate_values(headers)
-    except Exception:
-        _values = [str(v) for k, v in (headers or {}).items()
-                   if str(k).lower() == "www-authenticate"]
-    for value in _values:
-        # MEASURED CORRECTION (2026-08-27): this function originally required the
-        # header to start with "x402" and carry requirements="<base64>". Probing
-        # all 195 surveyed hosts found 11 serving a challenge and NONE matching
-        # that shape -- the real scheme token is `Payment`, the parameter is
-        # `request`, and the encoding is base64URL and unpadded. Every one of
-        # those hosts was being recorded as `opaque_402`, i.e. indistinguishable
-        # from broken. See x402_challenge.py and docs/TECHNICAL_FINDINGS.md.
-        try:
-            import x402_challenge
-            entry = x402_challenge.to_accepts(value)
-        except Exception:
-            entry = None
-        if entry:
-            return [entry], HDR_ACCEPTS
-
-        # Retain the originally-assumed shape as a fallback: it costs nothing and
-        # a server somewhere may yet use it.
-        if not value.lower().startswith("x402"):
-            continue
-        match = _REQUIREMENTS_RE.search(value)
-        if not match:
-            continue
-        blob = match.group(1)
-        try:
-            # Tolerate missing base64 padding -- servers strip it.
-            raw = base64.b64decode(blob + "==").decode("utf-8", "replace")
-            accepts = _accepts_of(json.loads(raw))
-        except Exception:
-            accepts = None
-        if accepts:
-            return accepts, HDR_ACCEPTS
-    return None, None
+    return x402_challenge.parse_challenge(body, headers)
 
 
 def is_managed_host(host):

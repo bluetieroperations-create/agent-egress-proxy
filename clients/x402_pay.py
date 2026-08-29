@@ -43,6 +43,10 @@ import sys
 import time
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import x402_challenge          # noqa: E402
+
 try:
     from eth_account import Account
     from eth_account.messages import encode_typed_data
@@ -91,25 +95,25 @@ def _to_0x_hex(b):
 def _http_json(url, body=None, headers=None, timeout=30):
     """POST (or GET) JSON; return (status, parsed-or-raw, raw_bytes, resp_headers).
 
-    Response headers are returned because the v2 x402 style carries the payment
-    requirements in `WWW-Authenticate`, not the body -- a body-only read makes
-    those endpoints look unpayable. See x402_challenge.py.
+    The response HEADERS are returned, not discarded: an x402 v2 server carries
+    its payment requirements in `WWW-Authenticate: X402 requirements="<b64>"`
+    rather than the body, and a client that only reads the body cannot find an
+    `accepts` entry to sign against -- it sees a 402 with nothing in it.
     """
     data = json.dumps(body).encode() if body is not None else None
     hdrs = {"content-type": "application/json", "accept": "application/json"}
     hdrs.update(headers or {})
     req = urllib.request.Request(url, data=data, headers=hdrs,
                                  method="POST" if data is not None else "GET")
-    resp_headers = {}
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             raw = r.read()
             status = r.status
-            resp_headers = dict(r.headers.items())
+            resp_headers = r.headers
     except urllib.error.HTTPError as e:        # 402 lands here
         raw = e.read()
         status = e.code
-        resp_headers = dict(e.headers.items()) if e.headers else {}
+        resp_headers = e.headers
     try:
         return status, json.loads(raw), raw, resp_headers
     except ValueError:
@@ -329,27 +333,13 @@ def main(argv=None):
         sys.stdout.write("expected 402, got %s:\n%s\n"
                          % (status, raw.decode("utf-8", "replace")))
         return 1
-    accepts = (parsed or {}).get("accepts") or []
+    accepts, carrier = x402_challenge.parse_challenge(raw, resp_headers)
     if not accepts:
-        # v2 style: requirements ride in WWW-Authenticate, not the body. Without
-        # this the endpoint reads as unpayable even though the engine scores it.
-        try:
-            sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            import x402_challenge
-            entry = None
-            for _v in x402_challenge.www_authenticate_values(resp_headers):
-                entry = x402_challenge.to_accepts(_v)
-                if entry:
-                    break
-        except Exception:
-            entry = None
-        if entry:
-            accepts = [entry]
-            sys.stdout.write("402 requirements came from WWW-Authenticate (v2 header style)\n")
-    if not accepts:
-        sys.stdout.write("402 had no `accepts` array and no parseable "
-                         "WWW-Authenticate challenge:\n%s\n" % raw.decode())
+        sys.stdout.write("402 carried no payment requirements in the body or in "
+                         "WWW-Authenticate:\n%s\n" % raw.decode("utf-8", "replace"))
         return 1
+    if carrier == x402_challenge.HDR_ACCEPTS:
+        sys.stdout.write("(requirements came from WWW-Authenticate, not the body)\n")
     req = accepts[0]
     # v2 uses `amount`; keep the v1 `maxAmountRequired` fallback for display.
     adv_amount = req.get("amount", req.get("maxAmountRequired"))

@@ -29,7 +29,8 @@ SECRET = os.environ.get("CDP_API_KEY_SECRET")
 # What identifies OUR endpoint in the catalog (host, and the resource slugs the
 # first-call scripts use). Case-insensitive substring match on each entry's JSON.
 NEEDLES = [n.lower() for n in (
-    "agent-egress-proxy.onrender.com",
+    "blackwall-free.onrender.com",
+    "agent-egress-proxy.onrender.com",  # legacy host: a stale entry still counts as listed
     "bazaar-first-settled-call",
     "blackwall",
 )]
@@ -61,7 +62,7 @@ def main():
     # answers, it's definitive and cheap; otherwise fall back to paginating the
     # whole catalog below.
     from urllib.parse import quote
-    s_status, s_body = _get("/discovery/search?q=%s" % quote("agent-egress-proxy.onrender.com"))
+    s_status, s_body = _get("/discovery/search?q=%s" % quote("blackwall-free.onrender.com"))
     if s_status == 200 and isinstance(s_body, dict):
         hits = s_body.get("items") or s_body.get("resources") or s_body.get("data") or []
         matched = [h for h in hits if any(n in json.dumps(h).lower() for n in NEEDLES)]

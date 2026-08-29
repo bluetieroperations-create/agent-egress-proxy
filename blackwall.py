@@ -1199,7 +1199,6 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              hold_above=None, peer_index=None, seller_registry=None, now=None,
              graph_source=None, velocity_source=None, category_index=None,
              divergence_index=None, enrichment_source=None, verify_signer=True,
-             mcp_source=None,
              rwa_source=None, stock_registry=None, pyth_source=None, rwa_ledger=None,
              balance_reader=None, backing_index=None, dex_source=None,
              holder_source=None, aave_source=None, issuer_trust_source=None,
@@ -1240,11 +1239,11 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     # Any mismatch is a hard STOP; warnings are advisory.
     sim_claim = {"counterparty": clean["counterparty"], "amount": clean["amount"],
                  "asset": clean["asset"], "chain": clean["chain"]}
-    # Asset decimals: taken from the request when the caller knows them (the
-    # x402 v2 challenge carries them in methodDetails -- see x402_challenge.py),
-    # otherwise resolved from the asset itself. NEVER assumed to be 6: an audit
-    # showed a hardcoded 6 both false-STOPped a valid 18-decimal payment and let
-    # a 10^12 underpayment pass as a match. See docs/DECIMALS_AUDIT.md.
+    # Asset decimals: taken from the request when the caller knows them (the x402
+    # v2 challenge carries them in methodDetails), otherwise resolved from the
+    # asset itself. NEVER assumed to be 6 -- an audit showed a hardcoded 6 both
+    # false-STOPped a valid 18-decimal payment and let a 10^12 underpayment pass
+    # as a match. See docs/DECIMALS_AUDIT.md.
     _decimals = payload.get("decimals") if isinstance(payload, dict) else None
     from payload_sim import check_payment_authorization
     from calldata import screen_transaction
@@ -1342,18 +1341,6 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         enrichment=enrichment,
         secret_findings=secret_findings,
     )
-    # MCP capability mismatch (mcp_trust.py): does this payee's MCP endpoint actually
-    # serve what it advertises? HOLD-only, never STOP (intent is not established for
-    # any publisher), fail-open, and read from the COMMITTED reading -- never the
-    # request -- so a payload cannot inject a trust claim.
-    if mcp_source is not None:
-        try:
-            import mcp_trust
-            _mcp = mcp_source.signal(clean.get("resource") or clean.get("counterparty"))
-            verdict = mcp_trust.apply_mcp_trust(verdict, _mcp)
-        except Exception:
-            pass
-
     # Surface advisory (non-blocking) simulation warnings, e.g. an expired auth or
     # a bounded approval.
     if sim_warnings:
@@ -1759,10 +1746,43 @@ class _Handler(BaseHTTPRequestHandler):
                             extra_headers={"Retry-After": str(int(retry) + 1)})
         return allowed
 
+    # CORS: the verdict endpoint is a PUBLIC API, so allow browser clients (the
+    # check.blackwalltier.com demo page, a Farcaster mini-app) to call it
+    # cross-origin. Responses carry only a verdict + a public-key-verifiable
+    # receipt -- no secrets -- so `*` WITHOUT credentials exposes nothing the
+    # endpoint does not already serve to any caller.
+    _CORS = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        # The x402 REQUEST headers the service actually reads: X-PAYMENT
+        # (single-shot / v1-CDP), PAYMENT-SIGNATURE (v2 canonical) and
+        # X-PAYMENT-SESSION (session reuse), plus Authorization for token-gated
+        # routes. A browser STRIPS any request header not listed here at the
+        # preflight, so an omission silently breaks that paid flow rather than
+        # failing loudly.
+        "Access-Control-Allow-Headers": (
+            "Content-Type, X-PAYMENT, PAYMENT-SIGNATURE, X-PAYMENT-SESSION, "
+            "Authorization"),
+        "Access-Control-Max-Age": "86400",
+    }
+
+    def do_OPTIONS(self):
+        # CORS preflight: a browser sends OPTIONS before any cross-origin POST
+        # carrying a JSON body or an X-PAYMENT header. Answer 204 with the CORS
+        # headers so the real request is allowed to proceed.
+        self.send_response(204)
+        for k, v in self._CORS.items():
+            self.send_header(k, v)
+        self.send_header("Content-Length", "0")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
     def _send_json(self, code, obj, extra_headers=None):
         body = json.dumps(obj, separators=(",", ":")).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
+        for k, v in self._CORS.items():
+            self.send_header(k, v)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Connection", "close")
         for k, v in (extra_headers or {}).items():
@@ -1771,35 +1791,80 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path == "/healthz":
-            self._send_json(200, {"status": "ok"})
-        elif self.path in ("/.well-known/x402", "/v1/discovery"):
-            self._send_json(200, self._descriptor())
-        elif self.path in ("/jwks.json",
-                           "/.well-known/blackwall-receipt-key.json"):
-            # PUBLIC signing keys, so a receipt can be verified offline with no
-            # secret of ours. Both paths on purpose: /jwks.json is the standard
-            # name, and blackwall-mcp-remote already fetches the .well-known one
-            # (src/index.mjs KEY_URL) -- serving both fixes that existing broken
-            # dependency without needing a coordinated deploy.
-            signer = getattr(self, "receipt_signer", None)
-            self._send_json(200, signer.jwks() if signer else {"keys": []})
-        elif self.path == "/openapi.json":
-            # x402scan probes the origin root for this discovery document.
-            self._send_json(200, self._openapi())
-        elif self.path == "/stats":
-            # Lightweight observability: request + verdict counters. No PII (IPs are
-            # only kept in-memory for rate-limiting, never logged here).
-            self._send_json(200, self.stats.snapshot() if self.stats else {})
-        else:
-            self._send_json(404, {"error": "not found"})
+        # Route on the path WITHOUT its query string: a probe with a cache-buster
+        # (/openapi.json?v=2) used to 404, so a monitor or discovery crawler
+        # scored our discovery documents dead. GET/HEAD only -- do_POST stays
+        # strictly matched, see discovery.route_path.
+        from discovery import route_path
+        path = route_path(self.path)
+        try:
+            if path == "/healthz":
+                self._send_json(200, {"status": "ok"})
+            elif path in ("/.well-known/x402", "/v1/discovery"):
+                self._send_json(200, self._descriptor())
+            elif path in ("/jwks.json",
+                          "/.well-known/blackwall-receipt-key.json"):
+                # PUBLIC signing keys, so a receipt can be verified offline with no
+                # secret of ours. Both paths on purpose: /jwks.json is the standard
+                # name, and blackwall-mcp-remote already fetches the .well-known one
+                # (src/index.mjs KEY_URL) -- serving both fixes that existing broken
+                # dependency without needing a coordinated deploy.
+                signer = getattr(self, "receipt_signer", None)
+                self._send_json(200, signer.jwks() if signer else {"keys": []})
+            elif path == "/v1/price-index":
+                # PUBLIC GOOD, and the cheapest distribution asset we have: a price
+                # index for agent services computed from SETTLED on-chain reality
+                # rather than what sellers advertise. Nothing else publishes one, and
+                # being the reference for what things cost is worth more than keeping
+                # the number private. Read-only, unauthenticated, cheap (a preloaded
+                # dict), so it sits with the other GET routes outside the rate limit.
+                idx = self.category_index or {}
+                self._send_json(200, {
+                    "index": idx,
+                    "unit": "USDC per call (median of settled on-chain payments)",
+                    "categories": len(idx),
+                    "method": "per-category median of settled amounts, payees "
+                              "classified by resource URL; see docs/CATEGORY.md",
+                    "source": "https://github.com/bluetieroperations-create/agent-egress-proxy",
+                })
+            elif path == "/openapi.json":
+                # x402scan probes the origin root for this discovery document.
+                self._send_json(200, self._openapi())
+            elif path == "/stats":
+                # Lightweight observability: request + verdict counters. No PII (IPs are
+                # only kept in-memory for rate-limiting, never logged here).
+                self._send_json(200, self.stats.snapshot() if self.stats else {})
+            else:
+                self._send_json(404, {"error": "not found"})
+        except Exception as e:
+            # Mirrors do_POST: a raising handler must answer cleanly rather than
+            # drop the connection mid-response. Without this, a GET route that
+            # threw (e.g. a misconfigured receipt_signer whose jwks() raises)
+            # gave the client RemoteDisconnected and no status code at all, and
+            # /jwks.json + /stats are now advertised in openapi.json so crawlers
+            # reach them. The message is NEVER echoed -- these routes are
+            # unauthenticated; the operator sees it in stderr + /stats.
+            if self.stats is not None:
+                self.stats.incr("errors")
+            sys.stderr.write("blackwall: 503 unhandled %s on %s: %s\n"
+                             % (type(e).__name__, self.path, e))
+            sys.stderr.flush()
+            try:
+                self._send_json(503, {"error": "temporarily unavailable"})
+            except Exception:
+                pass   # response may already be partly written; don't cascade
 
     def do_HEAD(self):
         # Health checkers/crawlers (UptimeRobot, etc.) often probe with HEAD;
         # the stdlib default returns 501, which reads as "service down". Mirror
         # do_GET's routing but send headers only, no body.
-        code = 200 if self.path in ("/healthz", "/.well-known/x402",
-                                    "/v1/discovery", "/openapi.json") else 404
+        # Derived from the SHARED route table, never a second hardcoded list:
+        # this copy had drifted and returned 404 for /jwks.json,
+        # /.well-known/blackwall-receipt-key.json and /stats while do_GET served
+        # all three, breaking any client that preflights with HEAD.
+        from discovery import PUBLIC_GET_ROUTES
+        from discovery import route_path
+        code = 200 if route_path(self.path) in PUBLIC_GET_ROUTES else 404
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", "0")
@@ -1884,7 +1949,14 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         # Per-client rate limit on the (expensive) POST paths only -- GET health/
         # discovery are cheap and must stay unthrottled for health checkers.
-        if self.path in ("/v1/forecast-payment", "/v1/report-outcome", "/v1/session"):
+        # EVERY POST route, derived from the shared table. This list was hand-
+        # maintained and had drifted: /v1/verify-signer was the one POST omitted,
+        # even though its own docstring claimed it was "rate-limited via do_POST
+        # like every other route" -- and it is the MOST expensive route we serve
+        # (measured 22.7ms of pure-Python secp256k1 recovery vs ~90us for a
+        # forecast), so it was the single best amplification target on the box.
+        from discovery import PUBLIC_POST_ROUTES, BILLING_POST_ROUTES
+        if self.path in PUBLIC_POST_ROUTES or self.path in BILLING_POST_ROUTES:
             if self.stats is not None:
                 self.stats.incr("requests")
             if not self._rate_ok():
@@ -1898,6 +1970,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._do_report_outcome()
             elif self.path == "/v1/session":
                 self._do_session()
+            elif self.path == "/v1/screen-payer":
+                self._do_screen_payer()
             else:
                 self._send_json(404, {"error": "not found"})
         except Exception as e:
@@ -1914,6 +1988,38 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(503, {"error": "verdict engine temporarily unavailable"})
             except Exception:
                 pass   # response may already be partly written; don't cascade
+
+    def _do_screen_payer(self):
+        """Screen a PAYER over HTTP -- the buyer side of the graph.
+
+        Everything in this repo scores the payee. This answers the mirror question a
+        facilitator or wallet asks before it settles an inbound payment: what does the
+        ecosystem know about the wallet that is paying? It delegates to the SAME
+        `graph_source.screen()` the `screen_payer` MCP tool calls, so the two
+        transports cannot drift -- MCP is the agent-facing surface, but the integrator
+        for this signal is a server, and servers speak HTTP.
+
+        POSTURE: an unknown payer is NEUTRAL cold-start, never a block. Most genuine
+        end-users are unknown the first time they pay; a screen that treated that as
+        negative would reject exactly the customers a seller wants. This endpoint
+        therefore returns a tier and evidence, never a verdict.
+        """
+        source = self.graph_source
+        if source is None or not hasattr(source, "screen"):
+            # Not configured is a SERVICE fact, not a client error, and it must not
+            # be mistaken for "we screened this payer and found nothing".
+            self._send_json(503, {"error": "payer screening unavailable: "
+                                           "no payer-reputation source configured"})
+            return
+        body, err = self._read_json_body()
+        if err:
+            self._send_json(400, {"error": err})
+            return
+        payer = (body or {}).get("payer")
+        if not isinstance(payer, str) or not is_evm_address(payer):
+            self._send_json(400, {"error": "payer must be a valid EVM address"})
+            return
+        self._send_json(200, source.screen(payer))
 
     def _do_verify_signer(self):
         """Stage-2 signer verification for a request that got a fast (deferred) verdict.

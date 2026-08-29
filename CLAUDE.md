@@ -2,14 +2,17 @@
 
 Guidance for working in this repo.
 
-> ⚠️ **Multiple sessions? Read `docs/HANDOFF.md` FIRST.** Two separate projects live
-> in this repo as two branches — **Blackwall** (payment-verdict engine, repo root,
-> branch `claude/blackwall-x402-integration-j3rdab`) and **Traceipt** (`traceipt/`
-> dir, branch `claude/x402-product-ideas-6adgah`). Do NOT merge them. Before pushing:
-> `git fetch` + rebase onto the remote tip, then verify `local HEAD == remote HEAD`
-> (a same-branch overwrite already happened once). Don't rebuild what the handoff's
-> inventory lists as done. The `traceipt_*.py` files are a shared seam — coordinate
-> schema changes.
+> ⚠️ **Multiple sessions?** Two separate projects live in this repo as two branches —
+> **Blackwall** (payment-verdict engine, repo root, branch
+> `claude/blackwall-x402-integration-j3rdab`) and **Traceipt** (`traceipt/` dir,
+> branch `claude/x402-product-ideas-6adgah`). **Do NOT merge them** — the Traceipt
+> branch also modifies root `render.yaml`, which is Blackwall's live Render blueprint.
+> Before pushing: `git fetch` + rebase onto the remote tip, then verify
+> `local HEAD == remote HEAD` (a same-branch overwrite already happened once). The
+> `traceipt_*.py` files are a shared seam — coordinate schema changes.
+>
+> Session handoffs are **not kept in this repo** — it is public. They are delivered
+> to the operator directly. Ask for the current one rather than looking for a file.
 
 ## Repo
 
@@ -37,6 +40,30 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `reputation_store.py` (SQLite indexed reputation store + record merging),
   `facilitator_sim.py` (reference x402 facilitator for the HttpFacilitator path),
   `discovery.py` (x402 service-discovery descriptor -- Blackwall's OWN),
+  `x402_challenge.py` (the ONE parser for a 402 challenge -- requirements arrive in
+  ANY OF THREE carriers: the JSON body, `WWW-Authenticate: X402 requirements="<b64>"`
+  (the v2 style), or a bare-base64 `payment-required:` header (by far the most common
+  -- see SCOPE below), and every consumer used to read only the body. Pure+stdlib, tolerant (never raises on
+  third-party junk), BODY WINS on disagreement since that is what other x402 clients pay.
+  `accepts_from_http_error` reads a raised 402 -- body ONCE, since HTTPError wraps a
+  stream and a second read silently downgrades a real challenge to "unreadable".
+  Consumed by `directory_liveness` (which it was factored out of), `discovery_crawl`
+  (a 402 is a price quote, not a fetch failure -- it carries the SOURCE URL in as the
+  parent resource, or the record loses its category and per-resource price key) and
+  `clients/x402_pay` (whose `_http_json` now returns response headers instead of
+  discarding them). SCOPE, measured not asserted: `hdr_accepts` (the
+  WWW-Authenticate form) is only 2 of 195 hosts. The 86 filed as `opaque_402` were
+  NOT a different problem, as first believed -- they were a THIRD carrier: probing
+  all 86 on 2026-08-28 found 80 serving a complete v2 challenge in a
+  `payment-required:` header with `{}` as the body, and the other 6 simply moved or
+  gone (400/404/405/410). Implementing that one carrier moved scoreable hosts from
+  73/195 (37.4%) to 153/195 (78.5%). These are not demos: api.ipintel.ai, one of the
+  80, has 78 distinct payers and 145 settlements -- people were paying endpoints we
+  could not read. Matched by EXACT header name; the discovery probe decoded every
+  header looking for x402, which is right for discovery and far too permissive to
+  ship. Verified live against blockrun.ai (WWW-Authenticate form) and api.ipintel.ai
+  (payment-required form), both harvested end-to-end by the crawler.
+  Tests: `test_x402_challenge.py test_token_decimals.py`, `test_x402_pay.py`),
   `discovery_crawl.py` (crawl OTHERS' x402 discovery/402 docs -> extract payees +
   advertised prices -> auto-feed chain_backfill (reputation), peer price baselines,
   and readiness targets; a self-populating map of the x402 seller ecosystem),
@@ -138,9 +165,10 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   while running the survey by hand: GET-only probing (a 405 is a POST endpoint, not a
   dead one -- the retry recovered 14 scoreable hosts) and body-only challenge parsing
   (the x402 v2 style carries requirements in `WWW-Authenticate: X402 requirements=`).
-  FINDING: nothing in this repo reads that header -- every consumer takes `accepts` from
-  the body -- so a v2 endpoint is uncrawlable and unpayable though the engine would score
-  it fine; `parse_challenge` is the reference implementation if we close it. Measured
+  FINDING (CLOSED): nothing in this repo read that header -- every consumer took `accepts`
+  from the body -- so a v2 endpoint was uncrawlable and unpayable though the engine would
+  score it fine. `parse_challenge` now lives in `x402_challenge.py` and this module
+  delegates to it, so survey, crawler and paying client agree on one parser. Measured
   2026-08-18: 73/195 hosts live+scoreable, 86 serving an opaque 402. Pure helpers +
   injected network; `rank_leads` is prioritisation only and NEVER touches a verdict.
   See `docs/DIRECTORY_LIVENESS.md`. Tests: `test_directory_liveness.py`),
@@ -202,27 +230,6 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   a shared label would let a verifier trusting both issuers' keys accept one for the
   other. Post-quantum (ML-DSA-65 hybrid) is phase 2 -- see `docs/RECEIPT_SIGNING_SCOPE.md`.
   Tests: `test_receipt_signer.py`, incl. cross-verification under Node WebCrypto),
-  `mcp_trust.py` (fold the MCP ecosystem reading into the verdict -- an MCP server that
-  charges via x402 is BOTH a tool the agent calls and a payee Blackwall scores, and
-  reading #1 found 98 hosts in both `data/mcp_snapshots/` and `data/directory.json`.
-  The signal nothing else can see: THE PAYEE DOES NOT DO WHAT IT SELLS -- 24 hosts
-  advertise substantive capability while serving only `echo`/`add`/`server_time`,
-  one of them selling "Escrow protection for agent payments". `build_index` is built
-  ONCE at startup from the COMMITTED reading -- never the request, so a payload cannot
-  inject a trust claim and no network call touches the hot path. Worst-grade-wins per
-  host. HOLD-only, NEVER STOP (intent is NOT established for any publisher; some is
-  plausibly abandoned scaffolding), never clears, fail-open on an unmeasured payee.
-  Verified end-to-end: the same payment is GO with the guard off and HOLD with it on.
-  Tests: `test_mcp_trust.py`),
-  `token_decimals.py` (read an ERC-20's `decimals()` ON-CHAIN, cached FOREVER -- closes
-  the residual left by the decimals audit, where an unlisted token failed safe but was
-  never verified. Separate from `rpc_node.py` on purpose: that node uses a short 30s TTL
-  because staleness is a safety tradeoff there, whereas `decimals()` is IMMUTABLE, so
-  this costs ONE upstream call per token EVER rather than one per payment. Table wins
-  over the network, caller value wins over both; opt-in `BLACKWALL_TOKEN_DECIMALS=1`,
-  fail-open, misses cached, concurrent lookups coalesced, implausible answers (outside
-  0..36) rejected before reaching `10**n`. Live-verified on BSC.
-  Tests: `test_token_decimals.py`),
   `confidence.py` (how much EVIDENCE backs a verdict -- `assess_confidence(record,
   signals)` -> {level high/medium/low, score 0..1, backed_by[], missing[]} across
   five weighted dimensions: history depth, payer breadth, cross-counterparty
@@ -543,8 +550,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_mcp_trust.py test_token_decimals.py \
-test_x402_challenge.py
+ test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop
