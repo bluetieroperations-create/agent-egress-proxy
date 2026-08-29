@@ -1828,9 +1828,12 @@ class _Handler(BaseHTTPRequestHandler):
         # Health checkers/crawlers (UptimeRobot, etc.) often probe with HEAD;
         # the stdlib default returns 501, which reads as "service down". Mirror
         # do_GET's routing but send headers only, no body.
-        code = 200 if self.path in ("/healthz", "/.well-known/x402",
-                                    "/v1/discovery", "/openapi.json",
-                                    "/v1/price-index") else 404
+        # Derived from the SHARED route table, never a second hardcoded list:
+        # this copy had drifted and returned 404 for /jwks.json,
+        # /.well-known/blackwall-receipt-key.json and /stats while do_GET served
+        # all three, breaking any client that preflights with HEAD.
+        from discovery import PUBLIC_GET_ROUTES
+        code = 200 if self.path in PUBLIC_GET_ROUTES else 404
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", "0")
@@ -1915,8 +1918,14 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         # Per-client rate limit on the (expensive) POST paths only -- GET health/
         # discovery are cheap and must stay unthrottled for health checkers.
-        if self.path in ("/v1/forecast-payment", "/v1/report-outcome", "/v1/session",
-                         "/v1/screen-payer"):
+        # EVERY POST route, derived from the shared table. This list was hand-
+        # maintained and had drifted: /v1/verify-signer was the one POST omitted,
+        # even though its own docstring claimed it was "rate-limited via do_POST
+        # like every other route" -- and it is the MOST expensive route we serve
+        # (measured 22.7ms of pure-Python secp256k1 recovery vs ~90us for a
+        # forecast), so it was the single best amplification target on the box.
+        from discovery import PUBLIC_POST_ROUTES, BILLING_POST_ROUTES
+        if self.path in PUBLIC_POST_ROUTES or self.path in BILLING_POST_ROUTES:
             if self.stats is not None:
                 self.stats.incr("requests")
             if not self._rate_ok():
