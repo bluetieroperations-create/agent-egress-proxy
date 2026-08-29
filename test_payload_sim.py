@@ -269,3 +269,220 @@ class TestTimeValidityAdvisory(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRequestSuppliedDecimalsCannotOverrideKnownAsset(unittest.TestCase):
+    """The request must not be able to re-scale the atomic comparison.
+
+    AUDIT FINDING (2026-08-29, HIGH). `blackwall.forecast` reads
+    `payload.get("decimals")` from the UNTRUSTED request body and
+    `resolve_decimals` let that value win unconditionally -- before the
+    known-token table was consulted. So a caller could re-scale the very
+    comparison that gives payload-sim its STOP authority.
+
+    Reproduced end-to-end through `forecast`: a signed authorization for 10^12
+    atomic USDC (1,000,000 USDC) against a claim of "1.0 USDC" is a hard STOP
+    honestly, and became verdict=HOLD / hard_stop=False with `"decimals": 12`
+    added to the request. amount_status even read "verified".
+
+    This is the ORIGINAL defect relocated: it moved from a hardcoded 6 to
+    attacker control, which is strictly worse because it is steerable.
+
+    Mutation: let the caller value win for a known asset -> these FAIL.
+    """
+    USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+
+    def _claim(self):
+        return {"counterparty": "0x" + "11" * 20, "amount": "1.0",
+                "asset": self.USDC, "chain": "base"}
+
+    def _payment(self, value):
+        return {"payload": {"authorization": {
+            "from": "0x" + "22" * 20, "to": "0x" + "11" * 20, "value": str(value),
+            "validAfter": "0", "validBefore": "99999999999",
+            "nonce": "0x" + "33" * 32}, "signature": "0x" + "44" * 65}}
+
+    def test_known_asset_ignores_request_decimals(self):
+        # USDC is 6dp in the table; the request claiming 12 must not re-scale it.
+        self.assertEqual(PS.resolve_decimals(self._claim(), 12), 6)
+
+    def test_overpayment_still_caught_with_hostile_decimals(self):
+        r = PS.check_payment_authorization(
+            self._claim(), self._payment(10 ** 12), decimals=12, now=1,
+            verify_signer=False)
+        self.assertTrue(r["mismatches"],
+                        "1,000,000 USDC vs a 1.0 USDC claim must not verify")
+
+    def test_contradicting_a_known_asset_is_itself_a_mismatch(self):
+        # Disagreeing with an asset we KNOW is an attack indicator, not a hint.
+        r = PS.check_payment_authorization(
+            self._claim(), self._payment(10 ** 6), decimals=12, now=1,
+            verify_signer=False)
+        self.assertTrue(any("decimals" in m.lower() for m in r["mismatches"]),
+                        "contradicting the known asset should be reported")
+
+    def test_caller_asserted_scale_is_not_called_verified(self):
+        """An amount checked at a scale the SCREENED PARTY supplied is not verified.
+
+        AUDIT (2026-08-29, MEDIUM). For an asset we cannot identify, the caller
+        value is legitimately the only source -- but the comparison is then only
+        as good as that assertion, and `amount_status` still read "verified" with
+        no warning. That is the same category error as the original bug: claiming
+        a check we did not perform. The module already has the right pattern for
+        this (`signer_status="deferred"`, `amount_status="unverified_decimals"`).
+
+        Mutation: report "verified" for a caller-supplied scale -> this FAILS.
+        """
+        unknown = {"counterparty": "0x" + "11" * 20, "amount": "1.0",
+                   "asset": "0x" + "ab" * 20, "chain": "base"}
+        r = PS.check_payment_authorization(
+            unknown, self._payment(10 ** 18), decimals=18, now=1,
+            verify_signer=False)
+        self.assertFalse(r["mismatches"])          # arithmetic still done
+        self.assertEqual(r["amount_status"], "asserted_decimals")
+        self.assertTrue(any("asserted" in w.lower() or "not verified" in w.lower()
+                            for w in r["warnings"]),
+                        "the unverified scale must be surfaced")
+
+    def test_known_asset_still_reports_verified(self):
+        """The good case must not be downgraded -- a scale we established
+        ourselves is genuinely verified. Mutation: report asserted_decimals for a
+        known asset -> this FAILS."""
+        r = PS.check_payment_authorization(
+            self._claim(), self._payment(10 ** 6), now=1, verify_signer=False)
+        self.assertEqual(r["amount_status"], "verified")
+
+    def test_onchain_lookup_receives_a_chain_it_can_route_on(self):
+        """The chain must reach the resolver in the form it understands.
+
+        MERGE BUG (2026-08-29). The cold-start branch routes the on-chain
+        `decimals()` read by chain -- a real fix, since the same address is a
+        different token on a different network and a wrong answer is cached
+        FOREVER. Its `chain_of()` accepts CAIP-2 ("eip155:8453") or a bare id.
+        But every claim in this codebase carries a HUMAN name ("base",
+        "ethereum"), for which chain_of returns None -- so passing
+        claim["chain"] straight through left the routing inert on every real
+        request while looking wired up. Exactly the silent-loss failure the
+        handoff warned about, arriving through a different door.
+
+        Mutation: pass claim["chain"] unnormalised -> this FAILS (network=None).
+        """
+        seen = {}
+
+        class Resolver:
+            def lookup(self, asset, network=None):
+                seen["network"] = network
+                return 18
+
+        PS.set_onchain_resolver(Resolver())
+        try:
+            PS.resolve_decimals({"asset": "0x" + "cd" * 20, "chain": "base"})
+        finally:
+            PS.set_onchain_resolver(None)
+        self.assertEqual(seen.get("network"), "eip155:8453",
+                         "the resolver must get a chain it can route on")
+
+    def test_bool_is_not_a_decimals_value(self):
+        # bool is an int subclass, so `"decimals": true` silently became 1.
+        self.assertIsNone(PS.resolve_decimals({"asset": "0x" + "ab" * 20}, True))
+        self.assertIsNone(PS.resolve_decimals({"asset": "0x" + "ab" * 20}, False))
+
+    def test_request_decimals_still_used_for_an_UNKNOWN_asset(self):
+        # The legitimate case the parameter exists for (x402 v2 methodDetails):
+        # an asset we have no table entry for.
+        unknown = {"counterparty": "0x" + "11" * 20, "amount": "1.0",
+                   "asset": "0x" + "ab" * 20, "chain": "base"}
+        self.assertEqual(PS.resolve_decimals(unknown, 18), 18)
+
+
+class TestDecimalsAudit(unittest.TestCase):
+    """Audit 2026-08-27: decimals were hardcoded to 6 everywhere, so the atomic
+    comparison mis-scaled by 10^(d-6) for any non-6-decimal asset."""
+
+    DAI = "0x6B175474E89094C44Da98b954EedeAC495271d0F"     # 18
+    USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"    # 6
+    PAYER = "0x" + "1" * 40
+    PAYEE = "0x" + "2" * 40
+
+    def _xpay(self, atomic, asset):
+        import base64, json
+        return base64.b64encode(json.dumps({
+            "x402Version": 1, "scheme": "exact", "network": "eip155:1",
+            "payload": {"authorization": {
+                "from": self.PAYER, "to": self.PAYEE, "value": str(atomic),
+                "validAfter": "0", "validBefore": "99999999999",
+                "nonce": "0x" + "0" * 64},
+                "signature": "0x" + "0" * 130, "asset": asset}}).encode()).decode()
+
+    def _claim(self, asset, amount="1.0"):
+        return {"counterparty": self.PAYEE, "amount": amount,
+                "asset": asset, "chain": "eip155:1"}
+
+    def test_underpayment_bypass_is_caught(self):
+        # kills: the hardcoded 6. A signed 10^6 atomic DAI (0.000000000001 DAI)
+        # MATCHED a claim of 1.0 DAI -- the STOP authority's guarantee, void.
+        r = PS.check_payment_authorization(
+            self._claim(self.DAI), self._xpay(10 ** 6, self.DAI), verify_signer=False)
+        self.assertFalse(r["matches"])
+        self.assertTrue(r["mismatches"])
+
+    def test_valid_18_decimal_payment_is_not_false_stopped(self):
+        # kills: the mirror failure -- a correct 1.0 DAI payment reported as a
+        # mismatch and hard-STOPped, blocking legitimate business
+        r = PS.check_payment_authorization(
+            self._claim(self.DAI), self._xpay(10 ** 18, self.DAI), verify_signer=False)
+        self.assertTrue(r["matches"])
+        self.assertEqual(r["amount_status"], "verified")
+
+    def test_usdc_behaviour_unchanged(self):
+        # kills: a fix that regresses the overwhelmingly common 6-decimal case
+        r = PS.check_payment_authorization(
+            self._claim(self.USDC), self._xpay(10 ** 6, self.USDC), verify_signer=False)
+        self.assertTrue(r["matches"])
+        self.assertEqual(r["amount_status"], "verified")
+
+    def test_unknown_asset_is_reported_not_assumed(self):
+        # kills: silently assuming 6 for an unrecognised asset, which is exactly
+        # how the bypass arose. The caller must be able to see it was unchecked.
+        r = PS.check_payment_authorization(
+            self._claim("0x" + "9" * 40), self._xpay(10 ** 6, "0x" + "9" * 40),
+            verify_signer=False)
+        self.assertEqual(r["amount_status"], "unverified_decimals")
+        self.assertTrue(any("NOT verified" in w for w in r["warnings"]))
+
+    def test_explicit_decimals_used_for_an_asset_we_cannot_identify(self):
+        # kills: ignoring a caller-supplied value, e.g. from the v2 challenge's
+        # methodDetails.decimals.
+        #
+        # REVISED (audit 2026-08-29): this asserted that a caller value wins over
+        # the table, demonstrated on USDC -- a token we KNOW is 6dp. That is the
+        # capability shown on precisely the input where honouring it is unsafe:
+        # forecast sources `decimals` from the untrusted request body, so it let a
+        # request re-scale the atomic comparison and downgrade a hard STOP to HOLD
+        # (see TestRequestSuppliedDecimalsCannotOverrideKnownAsset). The capability
+        # is real and kept -- an 18dp asset with no table entry is exactly what the
+        # parameter exists for -- so it is asserted here on an UNKNOWN asset, where
+        # the caller is the only source of truth and cannot contradict us.
+        unknown = "0x" + "ab" * 20
+        r = PS.check_payment_authorization(
+            self._claim(unknown), self._xpay(10 ** 18, unknown),
+            decimals=18, verify_signer=False)
+        self.assertTrue(r["matches"])
+        # ...but reported as ASSERTED, not verified: for an asset we cannot
+        # identify the scale comes from the caller, so the arithmetic is only as
+        # good as that claim. See test_caller_asserted_scale_is_not_called_verified.
+        self.assertEqual(r["amount_status"], "asserted_decimals")
+
+    def test_symbol_claims_still_resolve(self):
+        # kills: requiring a contract address, breaking callers that pass "USDC"
+        r = PS.check_payment_authorization(
+            self._claim("USDC"), self._xpay(10 ** 6, self.USDC), verify_signer=False)
+        self.assertEqual(r["amount_status"], "verified")
+
+    def test_nonsense_decimals_is_treated_as_unknown(self):
+        # kills: trusting a hostile/garbage decimals value into the scaling math
+        for bad in ("abc", -1, 999, None if False else 10 ** 9):
+            r = PS.check_payment_authorization(
+                self._claim("0x" + "9" * 40), self._xpay(1, "0x" + "9" * 40),
+                decimals=bad, verify_signer=False)
+            self.assertEqual(r["amount_status"], "unverified_decimals")

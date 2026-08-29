@@ -63,7 +63,7 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   header looking for x402, which is right for discovery and far too permissive to
   ship. Verified live against blockrun.ai (WWW-Authenticate form) and api.ipintel.ai
   (payment-required form), both harvested end-to-end by the crawler.
-  Tests: `test_x402_challenge.py`, `test_x402_pay.py`),
+  Tests: `test_x402_challenge.py test_token_decimals.py`, `test_x402_pay.py`),
   `discovery_crawl.py` (crawl OTHERS' x402 discovery/402 docs -> extract payees +
   advertised prices -> auto-feed chain_backfill (reputation), peer price baselines,
   and readiness targets; a self-populating map of the x402 seller ecosystem),
