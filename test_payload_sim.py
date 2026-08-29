@@ -321,6 +321,42 @@ class TestRequestSuppliedDecimalsCannotOverrideKnownAsset(unittest.TestCase):
         self.assertTrue(any("decimals" in m.lower() for m in r["mismatches"]),
                         "contradicting the known asset should be reported")
 
+    def test_caller_asserted_scale_is_not_called_verified(self):
+        """An amount checked at a scale the SCREENED PARTY supplied is not verified.
+
+        AUDIT (2026-08-29, MEDIUM). For an asset we cannot identify, the caller
+        value is legitimately the only source -- but the comparison is then only
+        as good as that assertion, and `amount_status` still read "verified" with
+        no warning. That is the same category error as the original bug: claiming
+        a check we did not perform. The module already has the right pattern for
+        this (`signer_status="deferred"`, `amount_status="unverified_decimals"`).
+
+        Mutation: report "verified" for a caller-supplied scale -> this FAILS.
+        """
+        unknown = {"counterparty": "0x" + "11" * 20, "amount": "1.0",
+                   "asset": "0x" + "ab" * 20, "chain": "base"}
+        r = PS.check_payment_authorization(
+            unknown, self._payment(10 ** 18), decimals=18, now=1,
+            verify_signer=False)
+        self.assertFalse(r["mismatches"])          # arithmetic still done
+        self.assertEqual(r["amount_status"], "asserted_decimals")
+        self.assertTrue(any("asserted" in w.lower() or "not verified" in w.lower()
+                            for w in r["warnings"]),
+                        "the unverified scale must be surfaced")
+
+    def test_known_asset_still_reports_verified(self):
+        """The good case must not be downgraded -- a scale we established
+        ourselves is genuinely verified. Mutation: report asserted_decimals for a
+        known asset -> this FAILS."""
+        r = PS.check_payment_authorization(
+            self._claim(), self._payment(10 ** 6), now=1, verify_signer=False)
+        self.assertEqual(r["amount_status"], "verified")
+
+    def test_bool_is_not_a_decimals_value(self):
+        # bool is an int subclass, so `"decimals": true` silently became 1.
+        self.assertIsNone(PS.resolve_decimals({"asset": "0x" + "ab" * 20}, True))
+        self.assertIsNone(PS.resolve_decimals({"asset": "0x" + "ab" * 20}, False))
+
     def test_request_decimals_still_used_for_an_UNKNOWN_asset(self):
         # The legitimate case the parameter exists for (x402 v2 methodDetails):
         # an asset we have no table entry for.
@@ -402,7 +438,10 @@ class TestDecimalsAudit(unittest.TestCase):
             self._claim(unknown), self._xpay(10 ** 18, unknown),
             decimals=18, verify_signer=False)
         self.assertTrue(r["matches"])
-        self.assertEqual(r["amount_status"], "verified")
+        # ...but reported as ASSERTED, not verified: for an asset we cannot
+        # identify the scale comes from the caller, so the arithmetic is only as
+        # good as that claim. See test_caller_asserted_scale_is_not_called_verified.
+        self.assertEqual(r["amount_status"], "asserted_decimals")
 
     def test_symbol_claims_still_resolve(self):
         # kills: requiring a contract address, breaking callers that pass "USDC"

@@ -221,7 +221,8 @@ def resolve_decimals(claim, decimals=None):
     known = known_decimals(claim)
     if known is not None:
         return known
-    if decimals is not None:
+    if decimals is not None and not isinstance(decimals, bool):
+        # bool is an int subclass, so `"decimals": true` would otherwise become 1.
         try:
             d = int(decimals)
         except (TypeError, ValueError):
@@ -332,7 +333,21 @@ def check_payment_authorization(claim, x_payment, *, decimals=None, now=None,
             % (_show(claim.get("asset")), _show(auth.get("value")),
                _show(claim.get("amount"))))
     else:
-        amount_status = "verified"
+        # WHERE the scale came from decides what we may call this. Ground truth
+        # (table / symbol / on-chain) -> verified. An asset we cannot identify
+        # leaves the caller as the only source -- and in `forecast` that caller is
+        # the request body, i.e. the party being screened. The arithmetic is still
+        # done, but calling it "verified" would assert a check we did not perform,
+        # which is the same category error as the original decimals bug.
+        if known_decimals(claim) is None:
+            amount_status = "asserted_decimals"
+            warnings.append(
+                "amount checked at CALLER-ASSERTED decimals (%s) -- the asset %s "
+                "is not one we can identify, so the scale is unverified and this "
+                "is not proof the amounts agree"
+                % (_show(decimals), _show(claim.get("asset"))))
+        else:
+            amount_status = "verified"
         want = to_atomic(claim.get("amount"), resolved)
         if want is None or got is None or want != got:
             mismatches.append(
