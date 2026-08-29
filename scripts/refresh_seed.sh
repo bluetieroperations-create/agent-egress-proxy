@@ -56,11 +56,20 @@ echo "refresh_seed: backfilling data/seed_payees.txt (--max-pages $PAGES) -> tem
 python3 chain_backfill.py --store "$TMP_STORE" \
     --payees-file data/seed_payees.txt --max-pages "$PAGES"
 
-echo "refresh_seed: building per-category price index -> temp ..."
-python3 category_pricing.py --store "$TMP_STORE" --out "$TMP_CAT" --max-pages 8
+# INDEX DEPTH. The guard below validates the STORE only -- payees, edges, age --
+# so a shallow index build passes it while quietly shrinking coverage. Measured
+# 2026-08-28 on the same store: 8 pages produced FOUR category baselines, 24
+# produced SEVEN, restoring `dev-tools` and surfacing `commerce` and
+# `content-media` that 8 pages never reached. A missing baseline is fail-open, so
+# the cost is a gate that silently does nothing rather than a wrong verdict --
+# which is exactly why it needs saying out loud here.
+INDEX_PAGES="${INDEX_PAGES:-24}"
+
+echo "refresh_seed: building per-category price index -> temp (--max-pages $INDEX_PAGES) ..."
+python3 category_pricing.py --store "$TMP_STORE" --out "$TMP_CAT" --max-pages "$INDEX_PAGES"
 
 echo "refresh_seed: building advertised-vs-settled divergence index -> temp ..."
-python3 price_integrity.py --store "$TMP_STORE" --out "$TMP_DIV" --max-pages 8
+python3 price_integrity.py --store "$TMP_STORE" --out "$TMP_DIV" --max-pages "$INDEX_PAGES"
 
 echo "refresh_seed: gzipping candidate store ..."
 python3 -c "import gzip,shutil,sys; shutil.copyfileobj(open(sys.argv[1],'rb'), gzip.open(sys.argv[2],'wb',9))" "$TMP_STORE" "$TMP_GZ"
