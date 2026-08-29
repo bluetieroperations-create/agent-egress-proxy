@@ -618,3 +618,75 @@ class TestHumanChainNameIsNotANetworkMismatch(unittest.TestCase):
         # that are genuinely synonyms -- assert the count, so a paste error that
         # points a new name at an existing id is visible in the diff.
         self.assertEqual(len(set(x402._CAIP2.values())), 14)
+
+
+class TestAmountThatCannotBeRepresented(unittest.TestCase):
+    """AUDIT 2026-08-29 (MEDIUM): `to_atomic` returns None for a claim amount
+    carrying more precision than the asset has, and the three reasons a
+    comparison could not be made were collapsed into one message that always
+    read as a comparison -- while `amount_status` still said "verified",
+    asserting a check that never ran.
+    """
+
+    STELLAR = "USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
+
+    def _run(self, amount, value):
+        payment = _payment(value=value, asset="stellar-token", network="stellar:pubnet")
+        return PS.check_payment_authorization(
+            {"counterparty": CP, "amount": amount, "asset": self.STELLAR,
+             "chain": "stellar:pubnet"}, _b64(payment))
+
+    def test_over_precise_amount_is_not_called_verified(self):
+        # Kills: reporting amount_status "verified" when to_atomic returned None.
+        # 8 decimal places on a 7-decimal asset: nothing was ever compared.
+        result = self._run("0.00000001", "100000")
+        self.assertEqual(result["amount_status"], "unrepresentable_amount")
+        self.assertFalse(result["matches"])
+
+    def test_the_reason_does_not_pretend_a_comparison_happened(self):
+        # Kills: restoring the "value is X but you asked me to score Y" wording
+        # for this case, which sends an operator hunting a mismatch that is
+        # really an unrepresentable amount.
+        reason = self._run("0.00000001", "100000")["mismatches"][0]
+        self.assertIn("more precision than the asset has", reason)
+        self.assertNotIn("but you asked me to score", reason)
+
+    def test_a_representable_amount_still_compares_normally(self):
+        # Kills: routing every amount down the unrepresentable branch.
+        ok = self._run("0.01", "100000")
+        self.assertEqual(ok["amount_status"], "verified")
+        self.assertEqual([m for m in ok["mismatches"] if "amount" in m or "value" in m], [])
+
+    def test_a_real_mismatch_still_reads_as_a_mismatch(self):
+        # Kills: losing the genuine comparison message.
+        bad = self._run("0.01", "999999")
+        self.assertTrue(any("but you asked me to score" in m for m in bad["mismatches"]), bad)
+
+    def test_unreadable_signed_value_is_its_own_case(self):
+        # Kills: reporting a garbage signed value as an amount disagreement.
+        payment = _payment(value="not-a-number", asset=USDC)
+        r = PS.check_payment_authorization(_claim(), _b64(payment))
+        self.assertEqual(r["amount_status"], "unreadable_payment_value")
+        self.assertTrue(any("not a readable amount" in m for m in r["mismatches"]), r)
+
+
+class TestKnownAssetOnAForeignChain(unittest.TestCase):
+    """Pinning a DELIBERATE consequence of widening the chain aliases: a claim
+    naming Base USDC but a non-Base chain can now build an EIP-712 domain (it
+    previously could not, so signer verification degraded to a warning). The
+    pair is incoherent -- that token exists on Base -- so recovery fails and it
+    hard-stops. Pinned so the change stays intentional rather than incidental.
+    """
+
+    def test_base_usdc_claimed_on_polygon_fails_signer_recovery(self):
+        # Kills: silently reverting to a warning here, which would let a claim
+        # and a signature disagree about the chain without a stop.
+        payment = _payment(value="90000", asset=USDC, network="eip155:137")
+        r = PS.check_payment_authorization(_claim(chain="polygon"), _b64(payment))
+        self.assertEqual(r["signer_status"], "mismatch")
+
+    def test_base_usdc_on_base_is_unaffected(self):
+        # Kills: breaking the ordinary path while pinning the foreign-chain one.
+        payment = _payment(value="90000", asset=USDC, network="base")
+        r = PS.check_payment_authorization(_claim(chain="base"), _b64(payment))
+        self.assertNotIn("network", " ".join(r["mismatches"]))

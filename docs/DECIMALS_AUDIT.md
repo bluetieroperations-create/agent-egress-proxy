@@ -295,12 +295,52 @@ stops us calling one chain two different things. Ambiguous names are deliberatel
 *would* be a real loosening. Verified live end-to-end: the correct payment now
 scores clean, a payment genuinely on Base against a Polygon claim still hard-STOPs.
 
+## Second pass — audit / eval / verify on the staged change
+
+Re-run adversarially against the merged tree, not just the branch.
+
+### Findings
+
+| # | Severity | Finding | Status |
+|---|---|---|---|
+| 1 | **MEDIUM** | An amount carrying more precision than the asset has (`0.00000001` on the 7-decimal Stellar asset) makes `to_atomic` return `None`. The three distinct reasons a comparison could not happen were collapsed into one message that always read as a comparison — *"signed payment value is 0.01 but you asked me to score 0.00000001"* — while `amount_status` still reported **`verified`**. That asserts a check that never ran: the same category error the surrounding code exists to prevent. Newly reachable, since 7- and 8-decimal assets are new. | **Fixed** — `unrepresentable_amount` / `unreadable_payment_value` statuses and reasons that say what actually happened. 5 tests. |
+| 2 | LOW (deliberate) | Widening the aliases means a claim naming **Base USDC on a non-Base chain** can now build an EIP-712 domain where it previously could not, so signer recovery runs and fails — a **hard STOP** where the old behaviour was a warning. The pair is incoherent (that token is a Base deployment) and the signature genuinely binds a different chainId, so the stop is correct. | **Pinned** with 2 tests so it stays intentional. |
+| 3 | None | All 25 `_CAIP2` aliases checked one by one against the chain registry — every name maps to the chain it actually denotes. | Clean |
+| 4 | None | Chainless callers (`settlement_sim`, `wallet_guard`, which call `resolve_decimals({"asset": …})`) are unchanged: the new entries need a chain and correctly answer `None` without one. | Clean |
+| 5 | None | 8 hostile/malformed claims (non-string asset, list chain, NUL bytes, a 10,000-char asset, padded whitespace, mixed case) — no raise, correct answers. | Clean |
+| 6 | None | Base58 keys are matched case-insensitively. An attacker would have to grind a keypair whose address matches a specific 44-character string up to case; and succeeding would only mis-scale their own token. | Accepted, documented |
+
+### Eval — do the resolved scales imply sane prices?
+
+A wrong decimals value does not hide: it shows up as an absurd implied price.
+Every live quote was re-priced through the table (yen and euro converted, so a
+JPYC quote is judged on value rather than face number).
+
+**363 of 363 quotes across all 41 pairs, 0 implausible, 0 unresolved.** Prices
+land between **$0.0001 and $29** — micro-payments, as expected. Three
+corroborations fell out of it:
+
+* **Stellar at 7 dp prices to `$0.002` and `$0.02`** — exactly matching the same
+  sellers' 6-decimal legs. Independent confirmation of the one value that came
+  from the protocol rather than a contract read.
+* **JPYC at 18 dp prices to `$0.0067`** — one yen. Correct.
+* The pre-existing 18-decimal **BSC** entries all price to `$0.01`, confirming
+  the older table too.
+
+The single initial outlier was an artifact of the eval, not the table: one host
+(`api.hyperextend.xyz`) advertises `amount` as a **human decimal string**
+(`0.00335`), not atomic units, so dividing by 10⁸ produced nonsense. It is the
+only non-integer quote in the corpus. Worth knowing — an atomic reader gets it
+wrong — but it is a seller-side quirk, not a decimals error.
+
 ## Verification
 
 | Check | Result |
 |---|---|
-| Full root suite | **1,722 tests green** |
+| Full root suite | **1,729 tests green** |
 | Adversarial scorecard (`redteam.py`) | 25 caught, 2 known gaps, **0 false positives**, 0 misses |
+| `integrations/wallets` + `integrations/langchain` | 44 + 26 green |
+| Corpus coverage | **41 of 41 (network, asset) pairs resolved — 0 unknown** |
 | Live HTTP path | correct JPYC payment → clean; 10⁻¹² underpayment → STOP; contradicting caller decimals → STOP; wrong-chain payment → STOP |
 | Table self-consistency | no flat/chain contradictions; no address carrying two different values |
 
