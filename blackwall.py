@@ -1785,12 +1785,18 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path == "/healthz":
+        # Route on the path WITHOUT its query string: a probe with a cache-buster
+        # (/openapi.json?v=2) used to 404, so a monitor or discovery crawler
+        # scored our discovery documents dead. GET/HEAD only -- do_POST stays
+        # strictly matched, see discovery.route_path.
+        from discovery import route_path
+        path = route_path(self.path)
+        if path == "/healthz":
             self._send_json(200, {"status": "ok"})
-        elif self.path in ("/.well-known/x402", "/v1/discovery"):
+        elif path in ("/.well-known/x402", "/v1/discovery"):
             self._send_json(200, self._descriptor())
-        elif self.path in ("/jwks.json",
-                           "/.well-known/blackwall-receipt-key.json"):
+        elif path in ("/jwks.json",
+                      "/.well-known/blackwall-receipt-key.json"):
             # PUBLIC signing keys, so a receipt can be verified offline with no
             # secret of ours. Both paths on purpose: /jwks.json is the standard
             # name, and blackwall-mcp-remote already fetches the .well-known one
@@ -1798,7 +1804,7 @@ class _Handler(BaseHTTPRequestHandler):
             # dependency without needing a coordinated deploy.
             signer = getattr(self, "receipt_signer", None)
             self._send_json(200, signer.jwks() if signer else {"keys": []})
-        elif self.path == "/v1/price-index":
+        elif path == "/v1/price-index":
             # PUBLIC GOOD, and the cheapest distribution asset we have: a price
             # index for agent services computed from SETTLED on-chain reality
             # rather than what sellers advertise. Nothing else publishes one, and
@@ -1814,10 +1820,10 @@ class _Handler(BaseHTTPRequestHandler):
                           "classified by resource URL; see docs/CATEGORY.md",
                 "source": "https://github.com/bluetieroperations-create/agent-egress-proxy",
             })
-        elif self.path == "/openapi.json":
+        elif path == "/openapi.json":
             # x402scan probes the origin root for this discovery document.
             self._send_json(200, self._openapi())
-        elif self.path == "/stats":
+        elif path == "/stats":
             # Lightweight observability: request + verdict counters. No PII (IPs are
             # only kept in-memory for rate-limiting, never logged here).
             self._send_json(200, self.stats.snapshot() if self.stats else {})
@@ -1833,7 +1839,8 @@ class _Handler(BaseHTTPRequestHandler):
         # /.well-known/blackwall-receipt-key.json and /stats while do_GET served
         # all three, breaking any client that preflights with HEAD.
         from discovery import PUBLIC_GET_ROUTES
-        code = 200 if self.path in PUBLIC_GET_ROUTES else 404
+        from discovery import route_path
+        code = 200 if route_path(self.path) in PUBLIC_GET_ROUTES else 404
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", "0")
