@@ -355,3 +355,62 @@ wrong — but it is a seller-side quirk, not a decimals error.
 * **Coverage is a snapshot.** The table covers what the corpus advertised on
   2026-08-29. New assets still resolve to unknown — safely — until either the
   on-chain resolver is enabled or the table is refreshed.
+
+
+---
+
+# Third pass — audit / eval / verify against the merged `upto` work — 2026-08-29
+
+`main` moved while this sat unmerged: PR #25 landed the `upto` (metered) scheme
+and its Permit2 allowance screen, and it touched **`x402.py`** — the same file
+this change touches. Rebased onto it (**no conflicts**) and re-audited, because
+the interaction between the two is the one thing neither change was tested
+against.
+
+## Where the two changes actually meet
+
+`payment_satisfies` — the function #25 fixed the inverted ceiling branch in — is
+also the function that compares networks through `to_caip2`, the map this change
+widened. So the widening is live in *their* code path, not just the payload
+check.
+
+| Payment network | Required network | Result | Correct? |
+|---|---|---|---|
+| `polygon` | `eip155:137` | pass | yes — one chain, two spellings |
+| `celo` | `eip155:42220` | pass | yes |
+| `polygon` | `eip155:8453` | **network mismatch** | yes — genuinely different chains |
+| `base` | `eip155:137` | **network mismatch** | yes |
+
+The widening does what it claims in their path too: it stops us calling one
+chain two names, and does not let one chain pass as another.
+
+## Findings
+
+| # | Severity | Finding | Status |
+|---|---|---|---|
+| 1 | None | **The allowance ratio gate is scale-invariant.** `EXCESSIVE_RATIO` compares an allowance to a ceiling *in the same token*, so a 10x allowance reads `ok` and a 101x reads `excessive` identically at 6 and at 18 decimals. The 18-decimal assets this change adds cannot skew it. | Verified |
+| 2 | None | **`UNLIMITED_MIN` has ample headroom at 18 decimals.** `1 << 128` is 3.4e38 atomic — 3.4e20 whole tokens at 18 dp, about **340,000x** the largest plausible supply (1e15 tokens = 1e33 atomic). An honest large approval on an 18-decimal token cannot be mistaken for unlimited. Worth stating because the threshold is *absolute* while everything around it is relative. | Verified |
+| 3 | **LOW** | **A non-integer ceiling silently disables the ratio gate.** `parse_allowance` returns `None` for `"0.00335"`, so `assess_upto` reports `unknown` and the 100x check does not run. This is not hypothetical: probing the live corpus found **1 of 363 quotes advertised in human decimal units** rather than atomic. The UNLIMITED hard-STOP is unaffected — it needs only the allowance — so the exposure is the loss of one warning. | **Documented, not fixed** — see below |
+| 4 | None | 7 hostile `upto` request bodies (bare `{}`, `scheme: "UPTO "`, a boolean allowance, a hex-string allowance, doubly-nested `cryptoX402`) — no raise, correct dispositions. | Verified |
+| 5 | None | All 25 chain aliases re-checked against the registry after the rebase; every one resolves to a real chain id. | Verified |
+
+**Why finding 3 is documented rather than fixed.** Converting a human ceiling to
+atomic units requires the asset's decimals — which this change now supplies, so
+the fix is genuinely available. But `unknown -> no gate` is #25's deliberate
+fail-open posture, the path is unreachable on today's corpus (the one non-integer
+quote is on `hyperliquid:mainnet`, not an `upto` endpoint), and reversing another
+module's stated posture is not a decision to take inside a rebase. Flagged for
+its owner with the measurement attached.
+
+## Verification
+
+| Check | Result |
+|---|---|
+| Full root suite (this change + `upto`) | **1,755 green** |
+| Adversarial scorecard | **26 caught**, 2 known gaps, 9 clean, **0 false positives**, 0 misses |
+| Price eval re-run on the merged tree | 363/363 quotes, 41/41 pairs, **0 implausible, 0 unresolved** |
+| Live path — this change | correct JPYC → HOLD; 1e-12 underpayment, wrong chain, contradicting caller decimals → STOP; EURC and Avalanche USDC → clean |
+| Live path — `upto`, same build | unlimited allowance → **STOP**; sane allowance → HOLD; absent allowance → HOLD (fail-open) |
+
+The scorecard went 25 → 26 caught: #25 contributes one attack and one restraint
+control. Both changes gate on the same build with no interference.
