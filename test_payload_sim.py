@@ -486,3 +486,207 @@ class TestDecimalsAudit(unittest.TestCase):
                 self._claim("0x" + "9" * 40), self._xpay(1, "0x" + "9" * 40),
                 decimals=bad, verify_signer=False)
             self.assertEqual(r["amount_status"], "unverified_decimals")
+
+
+class TestPerChainDecimals(unittest.TestCase):
+    """The (network, asset) table resolved on-chain from the live x402 corpus.
+
+    Mutations these kill: dropping the chain-keyed lookup from `known_decimals`;
+    consulting it AFTER the address-only table; keying it by address alone;
+    matching the network case-sensitively; letting a caller override it.
+    """
+
+    JPYC = "0x431D5dfF03120AFA4bDf332c61A6e1766eF37BDB"   # Polygon, 18 dp
+    EURC = "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42"   # Base, 6 dp
+
+    def test_18_decimal_asset_resolves_from_its_chain(self):
+        # Kills: removing the chain-keyed lookup (falls through to unknown ->
+        # None), or reading this token at the corpus-wide default of 6.
+        self.assertEqual(PS.known_decimals({"asset": self.JPYC, "chain": "eip155:137"}), 18)
+
+    def test_human_chain_name_resolves_too(self):
+        # Kills: keying the table on CAIP-2 only. Real claims say "polygon".
+        self.assertEqual(PS.known_decimals({"asset": self.JPYC, "chain": "polygon"}), 18)
+
+    def test_checksummed_and_lowercase_asset_agree(self):
+        # Kills: storing the table checksummed. A live 402 returns EIP-55; our
+        # crawl stores lowercase. The same join bug already cost 64 endpoints
+        # once (see advertised_prices.py).
+        self.assertEqual(PS.known_decimals({"asset": self.JPYC.lower(), "chain": "polygon"}),
+                         PS.known_decimals({"asset": self.JPYC, "chain": "polygon"}))
+
+    def test_network_matching_is_case_insensitive(self):
+        # Kills: comparing the network verbatim, so "Polygon" misses.
+        self.assertEqual(PS.known_decimals({"asset": self.JPYC, "chain": "POLYGON"}), 18)
+
+    def test_no_chain_means_unknown_not_a_guess(self):
+        # Kills: also adding these to the address-only KNOWN_DECIMALS. An address
+        # alone does not determine a token -- answering here would be a guess.
+        self.assertIsNone(PS.known_decimals({"asset": self.JPYC}))
+
+    def test_right_address_wrong_chain_does_not_match(self):
+        # Kills: ignoring the network half of the key. This is the whole reason
+        # the table is chain-keyed.
+        self.assertIsNone(PS.known_decimals({"asset": self.JPYC, "chain": "base"}))
+
+    def test_caller_cannot_override_a_chain_resolved_asset(self):
+        # Kills: letting request-supplied decimals win for assets that are known
+        # only via the chain table -- the HIGH finding of 2026-08-29, which the
+        # address-only table's coverage would otherwise have left reachable here.
+        claim = {"asset": self.JPYC, "chain": "polygon"}
+        self.assertEqual(PS.resolve_decimals(claim, 6), 18)
+        self.assertTrue(PS.decimals_conflict(claim, 6))
+
+    def test_non_evm_assets_resolve(self):
+        # Kills: restricting the table to 0x addresses. Solana/Algorand/Stellar
+        # ids are not hex and were the bulk of the unresolved corpus.
+        self.assertEqual(PS.known_decimals(
+            {"asset": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+             "chain": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"}), 6)
+        self.assertEqual(PS.known_decimals(
+            {"asset": "31566704",
+             "chain": "algorand:wGHE2Pwdvd7S12BL5FaOP20EGYesN73ktiC1qzkkit8="}), 6)
+
+    def test_stellar_is_seven_not_six(self):
+        # Kills: folding Stellar into the 6-decimal majority. Stellar amounts are
+        # stroops (1e-7); at 6 dp a 0.02 USDC quote reads as 0.2.
+        self.assertEqual(PS.known_decimals(
+            {"asset": "USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+             "chain": "stellar:pubnet"}), 7)
+
+    def test_existing_flat_table_still_answers(self):
+        # Kills: replacing the address-only table instead of layering over it.
+        self.assertEqual(PS.known_decimals({"asset": USDC, "chain": "base"}), 6)
+        self.assertEqual(PS.known_decimals({"asset": USDC}), 6)
+
+    def test_table_keys_are_normalized(self):
+        # Kills: a hand-edited entry that can never match because it was pasted
+        # checksummed or with a mixed-case network.
+        for net, asset in PS.KNOWN_DECIMALS_BY_CHAIN:
+            self.assertEqual(net, net.lower(), net)
+            self.assertEqual(asset, asset.lower(), asset)
+
+    def test_non_evm_aliases_point_at_real_table_chains(self):
+        # Kills: a non-EVM alias for a chain the table does not carry -- silently
+        # inert. (EVM names go through x402.to_caip2, tested there.)
+        chains = {net for net, _ in PS.KNOWN_DECIMALS_BY_CHAIN}
+        for name, caip in PS._DECIMALS_NETWORKS.items():
+            self.assertIn(caip, chains, "alias %r points at an unused chain" % name)
+
+    def test_bare_solana_is_not_guessed(self):
+        # Kills: aliasing "solana" to mainnet. It names neither cluster, and the
+        # devnet and mainnet mints are different tokens.
+        self.assertIsNone(PS.known_decimals(
+            {"asset": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", "chain": "solana"}))
+
+
+class TestHumanChainNameIsNotANetworkMismatch(unittest.TestCase):
+    """AUDIT 2026-08-29 (HIGH): a CORRECT payment was hard-STOPped because the
+    claim spelled its chain "polygon" while the payment said "eip155:137", and
+    `x402._CAIP2` knew only Base and Ethereum -- so `to_caip2` compared the two
+    spellings of ONE chain and called it a network mismatch.
+    """
+
+    JPYC = "0x431D5dfF03120AFA4bDf332c61A6e1766eF37BDB"
+
+    def _check(self, chain, network):
+        payment = _payment(value="1000000000000000000", asset=self.JPYC, network=network)
+        return PS.check_payment_authorization(
+            _claim(amount="1.0", asset=self.JPYC, chain=chain), _b64(payment))
+
+    def test_human_chain_name_matches_its_caip2_payment(self):
+        # Kills: dropping the alias -- the reason list regains a network mismatch
+        # and a correct payment becomes a hard STOP.
+        result = self._check("polygon", "eip155:137")
+        self.assertEqual(result["mismatches"], [])
+        self.assertEqual(result["amount_status"], "verified")
+
+    def test_a_genuinely_different_chain_still_mismatches(self):
+        # Kills: making to_caip2 collapse everything to equal. The gate must
+        # still fire when the payment really is on another chain.
+        result = self._check("polygon", "eip155:8453")
+        self.assertTrue(any("network" in m for m in result["mismatches"]), result)
+
+    def test_alias_targets_are_well_formed(self):
+        # Kills: a typo'd or duplicated alias silently mapping a chain name to
+        # the wrong id -- which would make two DIFFERENT chains compare equal.
+        import x402
+        for name, caip in x402._CAIP2.items():
+            self.assertEqual(name, name.lower(), name)
+            self.assertRegex(caip, r"^eip155:[1-9][0-9]*$", name)
+        # every id reachable by more than one name must be reached only by names
+        # that are genuinely synonyms -- assert the count, so a paste error that
+        # points a new name at an existing id is visible in the diff.
+        self.assertEqual(len(set(x402._CAIP2.values())), 14)
+
+
+class TestAmountThatCannotBeRepresented(unittest.TestCase):
+    """AUDIT 2026-08-29 (MEDIUM): `to_atomic` returns None for a claim amount
+    carrying more precision than the asset has, and the three reasons a
+    comparison could not be made were collapsed into one message that always
+    read as a comparison -- while `amount_status` still said "verified",
+    asserting a check that never ran.
+    """
+
+    STELLAR = "USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
+
+    def _run(self, amount, value):
+        payment = _payment(value=value, asset="stellar-token", network="stellar:pubnet")
+        return PS.check_payment_authorization(
+            {"counterparty": CP, "amount": amount, "asset": self.STELLAR,
+             "chain": "stellar:pubnet"}, _b64(payment))
+
+    def test_over_precise_amount_is_not_called_verified(self):
+        # Kills: reporting amount_status "verified" when to_atomic returned None.
+        # 8 decimal places on a 7-decimal asset: nothing was ever compared.
+        result = self._run("0.00000001", "100000")
+        self.assertEqual(result["amount_status"], "unrepresentable_amount")
+        self.assertFalse(result["matches"])
+
+    def test_the_reason_does_not_pretend_a_comparison_happened(self):
+        # Kills: restoring the "value is X but you asked me to score Y" wording
+        # for this case, which sends an operator hunting a mismatch that is
+        # really an unrepresentable amount.
+        reason = self._run("0.00000001", "100000")["mismatches"][0]
+        self.assertIn("more precision than the asset has", reason)
+        self.assertNotIn("but you asked me to score", reason)
+
+    def test_a_representable_amount_still_compares_normally(self):
+        # Kills: routing every amount down the unrepresentable branch.
+        ok = self._run("0.01", "100000")
+        self.assertEqual(ok["amount_status"], "verified")
+        self.assertEqual([m for m in ok["mismatches"] if "amount" in m or "value" in m], [])
+
+    def test_a_real_mismatch_still_reads_as_a_mismatch(self):
+        # Kills: losing the genuine comparison message.
+        bad = self._run("0.01", "999999")
+        self.assertTrue(any("but you asked me to score" in m for m in bad["mismatches"]), bad)
+
+    def test_unreadable_signed_value_is_its_own_case(self):
+        # Kills: reporting a garbage signed value as an amount disagreement.
+        payment = _payment(value="not-a-number", asset=USDC)
+        r = PS.check_payment_authorization(_claim(), _b64(payment))
+        self.assertEqual(r["amount_status"], "unreadable_payment_value")
+        self.assertTrue(any("not a readable amount" in m for m in r["mismatches"]), r)
+
+
+class TestKnownAssetOnAForeignChain(unittest.TestCase):
+    """Pinning a DELIBERATE consequence of widening the chain aliases: a claim
+    naming Base USDC but a non-Base chain can now build an EIP-712 domain (it
+    previously could not, so signer verification degraded to a warning). The
+    pair is incoherent -- that token exists on Base -- so recovery fails and it
+    hard-stops. Pinned so the change stays intentional rather than incidental.
+    """
+
+    def test_base_usdc_claimed_on_polygon_fails_signer_recovery(self):
+        # Kills: silently reverting to a warning here, which would let a claim
+        # and a signature disagree about the chain without a stop.
+        payment = _payment(value="90000", asset=USDC, network="eip155:137")
+        r = PS.check_payment_authorization(_claim(chain="polygon"), _b64(payment))
+        self.assertEqual(r["signer_status"], "mismatch")
+
+    def test_base_usdc_on_base_is_unaffected(self):
+        # Kills: breaking the ordinary path while pinning the foreign-chain one.
+        payment = _payment(value="90000", asset=USDC, network="base")
+        r = PS.check_payment_authorization(_claim(chain="base"), _b64(payment))
+        self.assertNotIn("network", " ".join(r["mismatches"]))

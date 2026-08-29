@@ -60,12 +60,47 @@ BASE_SEPOLIA_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"  # Base Sepolia
 # CAIP-2 network identifiers (x402 v2 requires CAIP-2, not the bare chain name).
 # The billing layer keeps the human name internally ("base"/"base-sepolia") and
 # converts to CAIP-2 at the protocol edge (the 402 challenge + payment matching).
+# AUDIT FINDING (2026-08-29, HIGH -- false STOP on a CORRECT payment). This map
+# held only Base and Ethereum, and `to_caip2` returns an unknown name unchanged.
+# The payload-sim network check compares `to_caip2(payment.network)` against
+# `to_caip2(claim.chain)`, so an agent that spelled its chain the ordinary human
+# way -- "polygon" -- against a payment on `eip155:137` compared "polygon" to
+# "eip155:137", called it a network MISMATCH, and hard-STOPPED a payment that was
+# entirely correct. Reproduced end to end on the live HTTP path.
+#
+# That is not a Base-only edge case: the live x402 corpus advertises on 20+
+# networks, and sellers themselves write the bare name (15 corpus entries say
+# "base", 3 say "solana"). Every mapping below is UNAMBIGUOUS -- a truthful name
+# for exactly one chain -- so making them compare equal cannot let a payment on
+# one chain pass as a payment on another; it only stops us calling one chain two
+# different things. Ambiguous names are deliberately ABSENT: bare "solana" does
+# not say mainnet or devnet, and guessing there WOULD be a real loosening.
 _CAIP2 = {
     "base": "eip155:8453",
     "base-mainnet": "eip155:8453",
     "base-sepolia": "eip155:84532",
     "ethereum": "eip155:1",
     "mainnet": "eip155:1",
+    "polygon": "eip155:137",
+    "polygon-mainnet": "eip155:137",
+    "matic": "eip155:137",
+    "polygon-amoy": "eip155:80002",
+    "amoy": "eip155:80002",
+    "arbitrum": "eip155:42161",
+    "arbitrum-one": "eip155:42161",
+    "optimism": "eip155:10",
+    "op-mainnet": "eip155:10",
+    "bsc": "eip155:56",
+    "binance-smart-chain": "eip155:56",
+    "avalanche": "eip155:43114",
+    "avalanche-c-chain": "eip155:43114",
+    "celo": "eip155:42220",
+    "sei": "eip155:1329",
+    "monad": "eip155:143",
+    "xlayer": "eip155:196",
+    "x-layer": "eip155:196",
+    "worldchain": "eip155:480",
+    "world-chain": "eip155:480",
 }
 
 
