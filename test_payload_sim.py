@@ -271,6 +271,64 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class TestRequestSuppliedDecimalsCannotOverrideKnownAsset(unittest.TestCase):
+    """The request must not be able to re-scale the atomic comparison.
+
+    AUDIT FINDING (2026-08-29, HIGH). `blackwall.forecast` reads
+    `payload.get("decimals")` from the UNTRUSTED request body and
+    `resolve_decimals` let that value win unconditionally -- before the
+    known-token table was consulted. So a caller could re-scale the very
+    comparison that gives payload-sim its STOP authority.
+
+    Reproduced end-to-end through `forecast`: a signed authorization for 10^12
+    atomic USDC (1,000,000 USDC) against a claim of "1.0 USDC" is a hard STOP
+    honestly, and became verdict=HOLD / hard_stop=False with `"decimals": 12`
+    added to the request. amount_status even read "verified".
+
+    This is the ORIGINAL defect relocated: it moved from a hardcoded 6 to
+    attacker control, which is strictly worse because it is steerable.
+
+    Mutation: let the caller value win for a known asset -> these FAIL.
+    """
+    USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+
+    def _claim(self):
+        return {"counterparty": "0x" + "11" * 20, "amount": "1.0",
+                "asset": self.USDC, "chain": "base"}
+
+    def _payment(self, value):
+        return {"payload": {"authorization": {
+            "from": "0x" + "22" * 20, "to": "0x" + "11" * 20, "value": str(value),
+            "validAfter": "0", "validBefore": "99999999999",
+            "nonce": "0x" + "33" * 32}, "signature": "0x" + "44" * 65}}
+
+    def test_known_asset_ignores_request_decimals(self):
+        # USDC is 6dp in the table; the request claiming 12 must not re-scale it.
+        self.assertEqual(PS.resolve_decimals(self._claim(), 12), 6)
+
+    def test_overpayment_still_caught_with_hostile_decimals(self):
+        r = PS.check_payment_authorization(
+            self._claim(), self._payment(10 ** 12), decimals=12, now=1,
+            verify_signer=False)
+        self.assertTrue(r["mismatches"],
+                        "1,000,000 USDC vs a 1.0 USDC claim must not verify")
+
+    def test_contradicting_a_known_asset_is_itself_a_mismatch(self):
+        # Disagreeing with an asset we KNOW is an attack indicator, not a hint.
+        r = PS.check_payment_authorization(
+            self._claim(), self._payment(10 ** 6), decimals=12, now=1,
+            verify_signer=False)
+        self.assertTrue(any("decimals" in m.lower() for m in r["mismatches"]),
+                        "contradicting the known asset should be reported")
+
+    def test_request_decimals_still_used_for_an_UNKNOWN_asset(self):
+        # The legitimate case the parameter exists for (x402 v2 methodDetails):
+        # an asset we have no table entry for.
+        unknown = {"counterparty": "0x" + "11" * 20, "amount": "1.0",
+                   "asset": "0x" + "ab" * 20, "chain": "base"}
+        self.assertEqual(PS.resolve_decimals(unknown, 18), 18)
+
+
 class TestDecimalsAudit(unittest.TestCase):
     """Audit 2026-08-27: decimals were hardcoded to 6 everywhere, so the atomic
     comparison mis-scaled by 10^(d-6) for any non-6-decimal asset."""
@@ -326,13 +384,25 @@ class TestDecimalsAudit(unittest.TestCase):
         self.assertEqual(r["amount_status"], "unverified_decimals")
         self.assertTrue(any("NOT verified" in w for w in r["warnings"]))
 
-    def test_explicit_decimals_wins_over_the_table(self):
+    def test_explicit_decimals_used_for_an_asset_we_cannot_identify(self):
         # kills: ignoring a caller-supplied value, e.g. from the v2 challenge's
-        # methodDetails.decimals
+        # methodDetails.decimals.
+        #
+        # REVISED (audit 2026-08-29): this asserted that a caller value wins over
+        # the table, demonstrated on USDC -- a token we KNOW is 6dp. That is the
+        # capability shown on precisely the input where honouring it is unsafe:
+        # forecast sources `decimals` from the untrusted request body, so it let a
+        # request re-scale the atomic comparison and downgrade a hard STOP to HOLD
+        # (see TestRequestSuppliedDecimalsCannotOverrideKnownAsset). The capability
+        # is real and kept -- an 18dp asset with no table entry is exactly what the
+        # parameter exists for -- so it is asserted here on an UNKNOWN asset, where
+        # the caller is the only source of truth and cannot contradict us.
+        unknown = "0x" + "ab" * 20
         r = PS.check_payment_authorization(
-            self._claim(self.USDC), self._xpay(10 ** 18, self.USDC),
+            self._claim(unknown), self._xpay(10 ** 18, unknown),
             decimals=18, verify_signer=False)
         self.assertTrue(r["matches"])
+        self.assertEqual(r["amount_status"], "verified")
 
     def test_symbol_claims_still_resolve(self):
         # kills: requiring a contract address, breaking callers that pass "USDC"
