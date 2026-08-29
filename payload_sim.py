@@ -68,6 +68,15 @@ from x402 import (EIP712_DOMAINS, _accepted, _authorization, decode_payment_head
                   to_atomic, to_caip2)
 
 
+def _decimal_places(decimals):
+    """"7 decimal places" -- for a reason string that must not read as a
+    comparison when no comparison happened."""
+    try:
+        return "%d decimal places" % int(decimals)
+    except (TypeError, ValueError):
+        return "this asset's units"
+
+
 def _atomic_human(atomic, decimals):
     """Atomic units -> a human token amount string (e.g. 90000 -> "0.09"); falls
     back to the raw value if it can't be parsed. So reasons read in real amounts,
@@ -465,7 +474,31 @@ def check_payment_authorization(claim, x_payment, *, decimals=None, now=None,
         else:
             amount_status = "verified"
         want = to_atomic(claim.get("amount"), resolved)
-        if want is None or got is None or want != got:
+        # AUDIT FINDING (2026-08-29, MEDIUM). These three cases were collapsed
+        # into one message that always read as a COMPARISON ("value is X but you
+        # asked me to score Y") -- including when no comparison happened at all,
+        # because one side did not convert. `to_atomic` returns None for a claim
+        # amount carrying MORE precision than the asset has (0.00000001 on a
+        # 7-decimal asset), and the response still reported
+        # `amount_status: "verified"` -- asserting a check that never ran, the
+        # exact category error the branch above exists to avoid. Reachable now
+        # that the corpus contributes 7- and 8-decimal assets, where a quote with
+        # more decimal places than the token supports is an easy mistake.
+        if want is None:
+            amount_status = "unrepresentable_amount"
+            mismatches.append(
+                "the amount %s cannot be expressed in %s -- it carries more "
+                "precision than the asset has, so it was never compared to the "
+                "signed value %s"
+                % (_show(claim.get("amount")), _decimal_places(resolved),
+                   _show(auth.get("value"))))
+        elif got is None:
+            amount_status = "unreadable_payment_value"
+            mismatches.append(
+                "the signed payment value %s is not a readable amount, so it "
+                "could not be compared to the claimed %s"
+                % (_show(auth.get("value")), _show(claim.get("amount"))))
+        elif want != got:
             mismatches.append(
                 "signed payment value is %s but you asked me to score %s"
                 % (_atomic_human(auth.get("value"), resolved),
