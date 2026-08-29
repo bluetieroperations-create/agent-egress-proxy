@@ -221,7 +221,10 @@ def resolve_decimals(claim, decimals=None):
         # is exactly the safe behaviour the static table already produces.
         if _ONCHAIN is not None:
             try:
-                return _ONCHAIN.lookup(asset)
+                # The asset's CHAIN matters: the same address is a different
+                # token on a different chain, and the resolver caches forever.
+                return _ONCHAIN.lookup(asset, (claim or {}).get("chain")
+                                       or (claim or {}).get("network"))
             except Exception:
                 return None
     return None

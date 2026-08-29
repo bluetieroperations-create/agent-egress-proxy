@@ -354,3 +354,83 @@ class TestCrossAssetPricingCapability(unittest.TestCase):
                 "counterparty": "0x" + "a" * 40}
         resp, err = blackwall.forecast(body, reputation_source=Rep(), hold_above=100)
         self.assertEqual(resp["verdict"], "STOP")
+
+
+class TestChainRouting(unittest.TestCase):
+    """AUDIT BUG (2026-08-29): one rpc_url served EVERY asset regardless of chain.
+    Asked about a Celo token while configured with a BSC node it queried BSC, got
+    a plausible 18, and cached it FOREVER -- poisoning every future payment in
+    that asset. Live entries span 12+ chains, so this was not theoretical."""
+
+    CELO = "0xceba9300f2b948710d2653dd7b07f33a8b32118c"
+
+    def setUp(self):
+        self.calls = []
+
+        def transport(url, body):
+            self.calls.append((url, body["params"][0]["to"]))
+            return {"result": word(18)}
+
+        self.transport = transport
+
+    def test_chain_of(self):
+        self.assertEqual(TD.chain_of("eip155:8453"), "8453")
+        self.assertEqual(TD.chain_of("8453"), "8453")
+
+    def test_non_evm_namespace_is_not_a_chain_id(self):
+        # kills: treating "solana:EtWTRABZ" as chain "EtWTRABZ" and sending an
+        # eth_call to whatever endpoint happens to be configured
+        self.assertIsNone(TD.chain_of("solana:EtWTRABZa"))
+        self.assertIsNone(TD.chain_of("algorand:wGHE2Pw"))
+        self.assertIsNone(TD.chain_of(None))
+
+    def test_parse_rpc_map(self):
+        self.assertEqual(TD.parse_rpc_map("8453=https://a,56=https://b"),
+                         {"8453": "https://a", "56": "https://b"})
+        self.assertEqual(TD.parse_rpc_map("garbage,=,x="), {})
+        self.assertEqual(TD.parse_rpc_map(None), {})
+
+    def test_refuses_to_ask_a_different_chain(self):
+        # kills the bug itself: an unconfigured chain must resolve to unknown,
+        # NOT be answered by whatever endpoint is to hand
+        r = TD.OnChainDecimals(rpc_urls={"56": "https://bsc"},
+                               transport=self.transport, table={})
+        self.assertIsNone(r.lookup(self.CELO, "eip155:42220"))
+        self.assertEqual(self.calls, [])
+
+    def test_uses_the_endpoint_for_the_right_chain(self):
+        r = TD.OnChainDecimals(rpc_urls={"56": "https://bsc", "8453": "https://base"},
+                               transport=self.transport, table={})
+        r.lookup("0x" + "a" * 40, "eip155:8453")
+        self.assertEqual(self.calls[0][0], "https://base")
+
+    def test_same_address_on_two_chains_is_not_conflated(self):
+        # kills: a cache keyed on the asset alone. The same address is a
+        # different token on a different chain, and answers are cached forever,
+        # so one key would let one chain's answer serve the other's.
+        r = TD.OnChainDecimals(rpc_urls={"56": "https://bsc", "8453": "https://base"},
+                               transport=self.transport, table={})
+        r.lookup("0x" + "b" * 40, "eip155:56")
+        r.lookup("0x" + "b" * 40, "eip155:8453")
+        self.assertEqual(r.upstream_calls, 2)
+
+    def test_legacy_single_endpoint_needs_its_chain_stated(self):
+        # kills: silently reusing a bare rpc_url for a named chain it may not
+        # speak for
+        r = TD.OnChainDecimals(rpc_url="https://bsc", chain="eip155:56",
+                               transport=self.transport, table={})
+        self.assertEqual(r.lookup("0x" + "a" * 40, "eip155:56"), 18)
+        self.calls.clear()
+        self.assertIsNone(r.lookup("0x" + "a" * 40, "eip155:8453"))
+        self.assertEqual(self.calls, [])
+
+    def test_no_network_still_works_for_a_single_chain_setup(self):
+        # kills: breaking a deliberate one-chain deployment that passes no network
+        r = TD.OnChainDecimals(rpc_url="https://only", transport=self.transport, table={})
+        self.assertEqual(r.lookup("0x" + "a" * 40), 18)
+
+    def test_table_still_wins_without_any_endpoint(self):
+        # kills: requiring an RPC for assets we already know offline
+        r = TD.OnChainDecimals(table={"0xknown": 6}, transport=self.transport)
+        self.assertEqual(r.lookup("0xKNOWN", "eip155:42220"), 6)
+        self.assertEqual(self.calls, [])
