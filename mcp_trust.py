@@ -41,6 +41,8 @@ something substantive, is the mismatch. A server that merely ALSO ships `echo`
 alongside real tools is not flagged -- that is a health probe, not a lie.
 """
 
+import json
+
 from urllib.parse import urlparse
 
 # Grades
@@ -138,6 +140,64 @@ def build_index(reading, descriptions=None):
             "digest": row.get("tools_digest"),
         }
     return index
+
+
+DEFAULT_READING = "data/mcp_snapshots"
+DEFAULT_DESCRIPTIONS = "data/mcp_descriptions.json"
+
+
+def load_source(snapshot_dir=DEFAULT_READING, descriptions=DEFAULT_DESCRIPTIONS,
+                as_of=None):
+    """Build an `McpTrustSource` from the newest committed reading, or None.
+
+    The index is DERIVED at startup, never committed. An earlier version stored a
+    1.21 MB pre-built index; it was removed once the same thing could be rebuilt
+    from a 3.3 KB input.
+
+    That removal exposed a real dependency worth stating: the snapshot does NOT
+    record registry DESCRIPTIONS, and the capability-mismatch grade needs one --
+    so rebuilding from the snapshot alone silently lost all 24 mismatch grades
+    and the gate went dead while still looking healthy. `mcp_descriptions.json`
+    is the minimal missing input: only a server whose ENTIRE tool surface is
+    trivial can ever be a mismatch, so only those need a description (27 of
+    13,901).
+
+    Fail-open in every direction: a missing reading, an unreadable descriptions
+    file or a corrupt archive all yield None, and the caller simply runs without
+    the gate.
+    """
+    import gzip
+    import os
+    import re as _re
+
+    # Match ONLY a dated snapshot filename. A `*.json*` glob also matches any
+    # other JSON left in the directory -- including the descriptions file -- and
+    # `sorted()[-1]` would then pick it as "the newest reading". Found by the
+    # test below, which put both files in one directory.
+    dated = _re.compile(r"^\d{4}-\d{2}-\d{2}\.json(\.gz)?$")
+    try:
+        names = sorted(n for n in os.listdir(snapshot_dir) if dated.match(n))
+        if not names:
+            return None
+        path = os.path.join(snapshot_dir, names[-1])
+        opener = gzip.open if path.endswith(".gz") else open
+        with opener(path, "rt") as fh:
+            reading = json.load(fh)
+    except Exception:
+        return None
+
+    descs = {}
+    try:
+        with open(descriptions) as fh:
+            descs = json.load(fh)
+    except Exception:
+        descs = {}
+
+    try:
+        return McpTrustSource(reading=reading, descriptions=descs,
+                              as_of=as_of or reading.get("date"))
+    except Exception:
+        return None
 
 
 class McpTrustSource:

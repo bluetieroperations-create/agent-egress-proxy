@@ -1,5 +1,6 @@
 """Tests for the MCP capability-mismatch gate. Each names the mutation it kills."""
 
+import json
 import unittest
 import mcp_trust as m
 
@@ -260,3 +261,70 @@ class TestGradePrecedence(unittest.TestCase):
                                if g not in m._GATING)
         for g in m._GATING:
             self.assertGreater(m._PRECEDENCE[g], worst_non_gating, g)
+
+
+class TestLoadSource(unittest.TestCase):
+    """The index is DERIVED at startup, not committed. Removing the committed
+    1.21 MB index exposed a dependency that had been invisible: the snapshot does
+    not record registry DESCRIPTIONS, and the mismatch grade needs one -- so
+    rebuilding from the snapshot alone silently lost all 24 mismatch grades while
+    the source still looked healthy."""
+
+    def _snapshot(self, tmp):
+        import gzip, os
+        rows = [
+            {"url": "https://liar.com/a", "class": "tools_listed", "name": "x/liar",
+             "tool_count": 3,
+             "tools": [{"name": "echo"}, {"name": "add"}, {"name": "server_time"}]},
+            {"url": "https://real.com/a", "class": "tools_listed", "name": "x/real",
+             "tool_count": 1, "tools": [{"name": "search_flights"}]},
+        ]
+        os.makedirs(tmp, exist_ok=True)
+        path = os.path.join(tmp, "2026-08-27.json.gz")
+        with gzip.open(path, "wt") as fh:
+            json.dump({"date": "2026-08-27", "servers": rows}, fh)
+        return path
+
+    def test_descriptions_are_required_for_a_mismatch(self):
+        # kills: assuming the snapshot alone is sufficient. Without the
+        # descriptions file every mismatch silently downgrades to `ready` and
+        # the gate stops firing -- with no error anywhere.
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as tmp:
+            self._snapshot(tmp)
+            no_desc = m.load_source(snapshot_dir=tmp, descriptions="/nonexistent")
+            self.assertEqual(no_desc.signal("https://liar.com/x")["grade"], m.READY)
+
+            desc_path = os.path.join(tmp, "d.json")
+            with open(desc_path, "w") as fh:
+                json.dump({"x/liar": "Solana pre-trade safety: rug check, honeypot sell-sim"}, fh)
+            with_desc = m.load_source(snapshot_dir=tmp, descriptions=desc_path)
+            self.assertEqual(with_desc.signal("https://liar.com/x")["grade"], m.MISMATCH)
+
+    def test_reads_the_newest_snapshot(self):
+        # kills: picking an arbitrary file, so a stale reading shadows a fresh one
+        import gzip, tempfile, os
+        with tempfile.TemporaryDirectory() as tmp:
+            for date, host in (("2026-07-01", "old.com"), ("2026-08-27", "new.com")):
+                with gzip.open(os.path.join(tmp, date + ".json.gz"), "wt") as fh:
+                    json.dump({"date": date, "servers": [
+                        {"url": "https://%s/a" % host, "class": "tools_listed",
+                         "name": "x/y", "tool_count": 1,
+                         "tools": [{"name": "real_tool"}]}]}, fh)
+            src = m.load_source(snapshot_dir=tmp, descriptions="/nonexistent")
+            self.assertEqual(src.as_of, "2026-08-27")
+            self.assertIsNotNone(src.signal("https://new.com/a"))
+            self.assertIsNone(src.signal("https://old.com/a"))
+
+    def test_missing_snapshot_dir_is_none_not_an_error(self):
+        # kills: raising at startup when the artifact is absent -- the gate is
+        # optional and its absence must never stop the service booting
+        self.assertIsNone(m.load_source(snapshot_dir="/nonexistent/path"))
+
+    def test_corrupt_snapshot_is_none(self):
+        # kills: a truncated or non-gzip file taking the process down
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "2026-08-27.json.gz"), "wb") as fh:
+                fh.write(b"not a gzip archive")
+            self.assertIsNone(m.load_source(snapshot_dir=tmp))
