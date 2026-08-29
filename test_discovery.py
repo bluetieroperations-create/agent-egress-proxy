@@ -282,7 +282,9 @@ class TestDiscoveryEndpoint(unittest.TestCase):
         """
         spec = self._get("/openapi.json")[1]["paths"]
         # /v1/session is billing-only and correctly absent when billing is off.
-        billing_only = set(D.BILLING_POST_ROUTES)
+        # /stats and anything else in UNADVERTISED_ROUTES is served on purpose
+        # without being catalogued -- see test_unadvertised_routes_*.
+        billing_only = set(D.BILLING_POST_ROUTES) | set(D.UNADVERTISED_ROUTES)
         for path in sorted(self._dispatched_paths("do_GET") - billing_only):
             self.assertIn(path, spec,
                           "do_GET serves %s but openapi.json omits it" % path)
@@ -472,12 +474,43 @@ class TestDiscoveryEndpoint(unittest.TestCase):
         self.assertEqual(self._dispatched_paths("do_GET"),
                          set(D.PUBLIC_GET_ROUTES))
 
+    def test_unadvertised_routes_serve_but_stay_out_of_the_spec(self):
+        """/stats is served and HEAD-able, but deliberately NOT advertised.
+
+        It exposes only aggregate counters -- no addresses, no PII -- but it does
+        publish traffic volume and the GO/HOLD/STOP mix, and openapi.json is
+        indexed by x402scan and other crawlers. Being served is not the same as
+        being catalogued, and that is an operator decision, not a routing one.
+
+        It stays in PUBLIC_GET_ROUTES because that table also drives do_HEAD and
+        the dispatch-parity check: dropping it there would 404 HEAD /stats and
+        reintroduce exactly the GET/HEAD drift this table was built to kill.
+
+        Mutation: remove /stats from UNADVERTISED_ROUTES -> this FAILS.
+        Mutation: drop it from PUBLIC_GET_ROUTES instead -> the HEAD-parity and
+        dispatch tests FAIL.
+        """
+        spec = self._get("/openapi.json")[1]["paths"]
+        self.assertTrue(D.UNADVERTISED_ROUTES, "nothing marked unadvertised")
+        for path in D.UNADVERTISED_ROUTES:
+            self.assertIn(path, D.PUBLIC_GET_ROUTES,
+                          "%s must stay a known route" % path)
+            self.assertEqual(self._get(path)[0], 200,
+                             "%s must still serve" % path)
+            req = urllib.request.Request(self.base + path, method="HEAD")
+            with urllib.request.urlopen(req, timeout=3) as r:
+                self.assertEqual(r.status, 200, "HEAD %s must still serve" % path)
+            self.assertNotIn(path, spec,
+                             "%s must not be advertised in openapi.json" % path)
+
     def test_every_advertised_route_actually_serves(self):
         """The converse: nothing in the spec may 404. An advertised-but-absent
         route is the same defect pointed the other way -- it sends a caller to a
         dead path. Mutation: advertise /v1/nope -> this FAILS."""
         for path in D.PUBLIC_GET_ROUTES:
             self.assertEqual(self._get(path)[0], 200, "GET %s 404s" % path)
+            if path not in D.UNADVERTISED_ROUTES:
+                self.assertIn(path, self._get("/openapi.json")[1]["paths"])
 
     def test_head_matches_get_on_every_public_route(self):
         """HEAD must mirror GET. do_HEAD carried its own hardcoded list and had
