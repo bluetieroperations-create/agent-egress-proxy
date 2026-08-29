@@ -175,6 +175,104 @@ KNOWN_SYMBOL_DECIMALS = {"usdc": 6, "usdt": 6, "dai": 18, "weth": 18,
                          "eth": 18, "wbtc": 8, "gusd": 2}
 
 
+# ---------------------------------------------------------------------------
+# Per-CHAIN decimals, resolved on-chain from the LIVE x402 corpus (2026-08-29).
+#
+# WHY A SECOND, CHAIN-KEYED TABLE. `KNOWN_DECIMALS` above is keyed by ADDRESS
+# ALONE, which is only sound while every entry happens to agree across chains
+# (all canonical USDC deployments are 6). It stops being sound the moment a
+# corpus asset is NOT 6, because an address does not determine a token: the same
+# 20 bytes are a different contract on a different chain, and nothing stops a
+# 6-decimal token on one chain sharing an address with an 18-decimal token on
+# another. This corpus contains exactly that hazard -- JPYC on Polygon is 18 --
+# so the new entries are keyed by (network, asset) and NOT added to the flat
+# table. `chain` is a REQUIRED request field (see validate_request), so the
+# chain-keyed lookup covers every real request; a claim with no chain simply
+# resolves to unknown, which is the module's safe answer.
+#
+# PROVENANCE. Every EVM value is a live `decimals()` read (token_decimals.py,
+# with the totalSupply() confirmation on a zero result). 12 of the 16 EVM
+# entries were read from >= 2 INDEPENDENT public RPC providers and all agreed;
+# the 4 marked `1 rpc` had only one public endpoint available. Solana values are
+# the SPL mint account's own decimals byte; Algorand's are the asset's params.
+# The two Stellar entries are the protocol constant (classic Stellar amounts are
+# stroops, 1e-7) rather than a contract read -- corroborated by two unrelated
+# hosts whose Stellar leg is advertised at exactly 10x their 6-decimal legs.
+#
+# NOT a price table. Two of these are not dollars at all (JPYC is yen, EURC is
+# euro). Knowing the SCALE lets the atomic amount check work; it does not make
+# a JPYC quote comparable to a USDC one. See docs/DECIMALS_AUDIT.md.
+KNOWN_DECIMALS_BY_CHAIN = {
+    # -- EVM ---------------------------------------------------------------
+    ("eip155:137", "0x431d5dff03120afa4bdf332c61a6e1766ef37bdb"): 18,  # JPYC (yen!) 4 rpc
+    ("eip155:8453", "0x60a3e35cc302bfa44cb288bc5a4f316fdb1adb42"): 6,   # EURC (euro) 4 rpc
+    ("eip155:43114", "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e"): 6,  # USDC  Avalanche
+    ("eip155:480", "0x79a02482a880bce3f13e09da970dc34db4cd24d1"): 6,    # USDC  World Chain
+    ("eip155:4663", "0x5fc5360d0400a0fd4f2af552add042d716f1d168"): 6,   # USDG  Robinhood Chain
+    ("eip155:196", "0x74b7f16337b8972027f6196a17a631ac6de26d22"): 6,    # USDC  X Layer
+    ("eip155:196", "0x779ded0c9e1022225f8e0630b35a9b54be713736"): 6,    # USD-T0 X Layer
+    ("eip155:196", "0x4ae46a509f6b1d9056937ba4500cb143933d2dc8"): 6,    # USDG  X Layer
+    ("eip155:143", "0x754704bc059f8c67012fed69bc8a327a5aafb603"): 6,    # USDC  Monad (1 rpc)
+    ("eip155:1329", "0xe15fc38f6d8c56af07bbcbe3baf5708a2bf42392"): 6,   # USDC  Sei (1 rpc)
+    ("eip155:42220", "0xceba9300f2b948710d2653dd7b07f33a8b32118c"): 6,  # USDC  Celo (1 rpc)
+    ("eip155:1187947933", "0x85889c8c714505e0c94b30fcfcf64fe3ac8fcb20"): 6,  # USDC.e SKALE (1 rpc)
+    # testnets -- present in the live corpus, so scored like any other asset
+    ("eip155:84532", "0x036cbd53842c5426634e7929541ec2318f3dcf7e"): 6,  # USDC  Base Sepolia
+    ("eip155:80002", "0x41e94eb019c0762f9bfcf9fb1e58725bfb0e7582"): 6,  # USDC  Polygon Amoy
+    ("eip155:1952", "0xf0863d7a29a55d0c4263c11bfac754312ff078df"): 6,   # USDG  X Layer testnet
+    ("eip155:5042002", "0x3600000000000000000000000000000000000000"): 6,  # USDC Arc testnet
+    # -- Solana (SPL mint account) -----------------------------------------
+    ("solana:5eykt4usfv8p8njdtrepy1vzqkqzkvdp",
+     "es9vmfrzacermjfrf4h2fyd4kconky11mcce8benwnyb"): 6,                # USDT  Solana mainnet
+    ("solana:etwtrabzayq6imfeykouru166vu2xqa1",
+     "4zmmc9srt5ri5x14gagxhahii3gnpaeerypjgzjdncdu"): 6,                # USDC  Solana devnet
+    # -- Algorand (asset params) -------------------------------------------
+    ("algorand:wghe2pwdvd7s12bl5faop20egyesn73ktic1qzkkit8=", "31566704"): 6,  # USDC
+    # -- Stellar (protocol constant: amounts are stroops, 1e-7) ------------
+    ("stellar:pubnet",
+     "usdc:ga5zsejyb37jrc5avcia5mop4rhtm335x2kgx3ihojapp5re34k4kzvn"): 7,
+    ("stellar:pubnet",
+     "ccw67tszv3sss2hxmbq5jfgckjnxkzm7uquwuzputhxstzleo7sjmi75"): 7,    # the same asset's SAC
+    # -- Hyperliquid (canonical spotMeta weiDecimals) ----------------------
+    # NB: the one live seller on this network quotes a HUMAN decimal string
+    # ("0.003375"), not atomic units -- so this entry records the token's true
+    # scale but does not make that seller's quote atomically comparable.
+    ("hyperliquid:mainnet", "usdc:0x6d1e7cde53ba9467b783cb7c530ce054"): 8,
+}
+
+# Non-EVM network names the shared `x402.to_caip2` deliberately does not carry.
+# EVM names resolve through that map (one source of truth); these three are the
+# extras this table needs. Bare "solana" is absent ON PURPOSE -- it names neither
+# mainnet nor devnet, and answering would be a guess. An unrecognized name falls
+# through unchanged, fails to match, and resolves to unknown, which is safe.
+_DECIMALS_NETWORKS = {
+    "solana-mainnet": "solana:5eykt4usfv8p8njdtrepy1vzqkqzkvdp",
+    "solana-devnet": "solana:etwtrabzayq6imfeykouru166vu2xqa1",
+    "stellar": "stellar:pubnet",
+}
+
+
+def _chain_decimals(claim):
+    """Decimals from the per-CHAIN table, or None.
+
+    Both halves of the key are lowercased. For EVM that is plainly right (hex is
+    case-insensitive, and a live 402 returns an EIP-55 CHECKSUMMED asset while
+    our table stores lowercase). For base58/base32 ids it is a deliberate,
+    documented widening: two distinct Solana mints differing ONLY in case is not
+    a case that occurs, and matching case-sensitively would instead make the
+    lookup miss on any caller that normalized its input.
+    """
+    if not isinstance(claim, dict):
+        return None
+    asset, network = claim.get("asset"), claim.get("chain") or claim.get("network")
+    if not isinstance(asset, str) or not isinstance(network, str):
+        return None
+    net = to_caip2(network.strip())
+    net = net.lower() if isinstance(net, str) else ""
+    net = _DECIMALS_NETWORKS.get(net, net)
+    return KNOWN_DECIMALS_BY_CHAIN.get((net, asset.strip().lower()))
+
+
 # Optional on-chain resolver, installed by the caller at startup (see
 # token_decimals.resolver). Left None by default so nothing here ever touches the
 # network unless the operator opted in.
@@ -238,6 +336,12 @@ def known_decimals(claim):
     asset = (claim or {}).get("asset")
     if not isinstance(asset, str):
         return None
+    # The per-CHAIN table is consulted FIRST: it is strictly more specific than
+    # the address-only table, so where both could answer the chain-keyed answer
+    # is the one that cannot be wrong about which token this is.
+    chained = _chain_decimals(claim)
+    if chained is not None:
+        return chained
     key = asset.strip().lower()
     if key in KNOWN_DECIMALS:
         return KNOWN_DECIMALS[key]
