@@ -180,14 +180,9 @@ class TestPayloadSimIntegration(unittest.TestCase):
         # truth must beat an assertion. The same inversion let a request downgrade
         # a hard STOP to HOLD -- see
         # TestRequestSuppliedDecimalsCannotOverrideKnownAsset in test_payload_sim.
-        #
-        # The caller value is still used where it is the ONLY source: an asset the
-        # table does not list and no resolver is installed for
-        # (test_explicit_decimals_used_for_an_asset_we_cannot_identify).
         PS.set_onchain_resolver(TD.OnChainDecimals(
             rpc_url="http://node", table={}, transport=lambda u, b: {"result": word(8)}))
         self.assertEqual(PS.resolve_decimals({"asset": "0x" + "9" * 40}, 18), 8)
-        # and the disagreement is reported rather than silently resolved
         self.assertTrue(PS.decimals_conflict({"asset": "0x" + "9" * 40}, 18))
 
     def test_a_resolver_that_raises_fails_open(self):
@@ -306,3 +301,146 @@ class TestZeroDecimalsVerification(unittest.TestCase):
         r = TD.OnChainDecimals(rpc_url="http://n", transport=transport, table={})
         self.assertEqual(r.lookup("0x" + "a" * 40), 18)
         self.assertEqual(calls, [TD.DECIMALS_SELECTOR])
+
+
+class TestCrossAssetPricingCapability(unittest.TestCase):
+    """The capability the decimals work actually buys, pinned so it cannot
+    silently regress.
+
+    MEASURED 2026-08-29: x402 never transmits `decimals` (0 of 298 live accepts
+    entries), so every client must assume one. The ecosystem assumes 6. But 33%
+    of live entries use a non-6dp asset -- including Nansen and CoinMarketCap,
+    both charging $0.01 in an 18-decimal BSC stablecoin. Read at 6dp that is
+    $10,000,000,000, and any spending cap or price gate rejects a one-cent API
+    call.
+    """
+
+    USD1 = "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d"   # 18dp, verified on-chain
+    USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"   # 6dp
+
+    def test_eighteen_decimal_asset_resolves(self):
+        # kills: dropping the BSC entries from the table, which silently returns
+        # the whole class of assets to "unknown"
+        self.assertEqual(PS.resolve_decimals({"asset": self.USD1}), 18)
+
+    def test_naive_and_correct_reads_differ_by_ten_to_the_twelve(self):
+        # kills: any change that makes the 6dp assumption look harmless. This is
+        # the exact magnitude that turns $0.01 into $10,000,000,000.
+        atomic = 10 ** 10  # 0.01 USD1 in atomic units
+        naive = atomic / 10 ** 6
+        real = atomic / 10 ** PS.resolve_decimals({"asset": self.USD1})
+        self.assertEqual(naive / real, 10 ** 12)
+
+    def test_a_real_one_cent_payment_is_not_blocked(self):
+        # kills: the capability itself. A correctly-scaled 0.01 payment against a
+        # payee whose median is 0.01 must clear; under the naive read the price
+        # gate sees 10^12x the median and STOPs a legitimate API call.
+        import blackwall
+
+        class Rep:
+            def lookup(self, addr):
+                return {"settlement_count": 40, "distinct_payers": 12,
+                        "dispute_rate": 0.0,
+                        "price_history": ["0.01", "0.01", "0.012", "0.009"]}
+
+        body = {"amount": "0.01", "asset": self.USD1, "chain": "eip155:56",
+                "counterparty": "0x" + "a" * 40}
+        resp, err = blackwall.forecast(body, reputation_source=Rep(), hold_above=100)
+        self.assertIsNone(err)
+        self.assertEqual(resp["verdict"], "GO")
+
+    def test_the_naive_read_would_have_been_stopped(self):
+        # kills: a change that makes both reads agree, which would mean the
+        # decimals resolution had stopped mattering
+        import blackwall
+
+        class Rep:
+            def lookup(self, addr):
+                return {"settlement_count": 40, "distinct_payers": 12,
+                        "dispute_rate": 0.0,
+                        "price_history": ["0.01", "0.01", "0.012", "0.009"]}
+
+        body = {"amount": "10000000000", "asset": self.USD1, "chain": "eip155:56",
+                "counterparty": "0x" + "a" * 40}
+        resp, err = blackwall.forecast(body, reputation_source=Rep(), hold_above=100)
+        self.assertEqual(resp["verdict"], "STOP")
+
+
+class TestChainRouting(unittest.TestCase):
+    """AUDIT BUG (2026-08-29): one rpc_url served EVERY asset regardless of chain.
+    Asked about a Celo token while configured with a BSC node it queried BSC, got
+    a plausible 18, and cached it FOREVER -- poisoning every future payment in
+    that asset. Live entries span 12+ chains, so this was not theoretical."""
+
+    CELO = "0xceba9300f2b948710d2653dd7b07f33a8b32118c"
+
+    def setUp(self):
+        self.calls = []
+
+        def transport(url, body):
+            self.calls.append((url, body["params"][0]["to"]))
+            return {"result": word(18)}
+
+        self.transport = transport
+
+    def test_chain_of(self):
+        self.assertEqual(TD.chain_of("eip155:8453"), "8453")
+        self.assertEqual(TD.chain_of("8453"), "8453")
+
+    def test_non_evm_namespace_is_not_a_chain_id(self):
+        # kills: treating "solana:EtWTRABZ" as chain "EtWTRABZ" and sending an
+        # eth_call to whatever endpoint happens to be configured
+        self.assertIsNone(TD.chain_of("solana:EtWTRABZa"))
+        self.assertIsNone(TD.chain_of("algorand:wGHE2Pw"))
+        self.assertIsNone(TD.chain_of(None))
+
+    def test_parse_rpc_map(self):
+        self.assertEqual(TD.parse_rpc_map("8453=https://a,56=https://b"),
+                         {"8453": "https://a", "56": "https://b"})
+        self.assertEqual(TD.parse_rpc_map("garbage,=,x="), {})
+        self.assertEqual(TD.parse_rpc_map(None), {})
+
+    def test_refuses_to_ask_a_different_chain(self):
+        # kills the bug itself: an unconfigured chain must resolve to unknown,
+        # NOT be answered by whatever endpoint is to hand
+        r = TD.OnChainDecimals(rpc_urls={"56": "https://bsc"},
+                               transport=self.transport, table={})
+        self.assertIsNone(r.lookup(self.CELO, "eip155:42220"))
+        self.assertEqual(self.calls, [])
+
+    def test_uses_the_endpoint_for_the_right_chain(self):
+        r = TD.OnChainDecimals(rpc_urls={"56": "https://bsc", "8453": "https://base"},
+                               transport=self.transport, table={})
+        r.lookup("0x" + "a" * 40, "eip155:8453")
+        self.assertEqual(self.calls[0][0], "https://base")
+
+    def test_same_address_on_two_chains_is_not_conflated(self):
+        # kills: a cache keyed on the asset alone. The same address is a
+        # different token on a different chain, and answers are cached forever,
+        # so one key would let one chain's answer serve the other's.
+        r = TD.OnChainDecimals(rpc_urls={"56": "https://bsc", "8453": "https://base"},
+                               transport=self.transport, table={})
+        r.lookup("0x" + "b" * 40, "eip155:56")
+        r.lookup("0x" + "b" * 40, "eip155:8453")
+        self.assertEqual(r.upstream_calls, 2)
+
+    def test_legacy_single_endpoint_needs_its_chain_stated(self):
+        # kills: silently reusing a bare rpc_url for a named chain it may not
+        # speak for
+        r = TD.OnChainDecimals(rpc_url="https://bsc", chain="eip155:56",
+                               transport=self.transport, table={})
+        self.assertEqual(r.lookup("0x" + "a" * 40, "eip155:56"), 18)
+        self.calls.clear()
+        self.assertIsNone(r.lookup("0x" + "a" * 40, "eip155:8453"))
+        self.assertEqual(self.calls, [])
+
+    def test_no_network_still_works_for_a_single_chain_setup(self):
+        # kills: breaking a deliberate one-chain deployment that passes no network
+        r = TD.OnChainDecimals(rpc_url="https://only", transport=self.transport, table={})
+        self.assertEqual(r.lookup("0x" + "a" * 40), 18)
+
+    def test_table_still_wins_without_any_endpoint(self):
+        # kills: requiring an RPC for assets we already know offline
+        r = TD.OnChainDecimals(table={"0xknown": 6}, transport=self.transport)
+        self.assertEqual(r.lookup("0xKNOWN", "eip155:42220"), 6)
+        self.assertEqual(self.calls, [])

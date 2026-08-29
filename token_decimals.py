@@ -48,6 +48,40 @@ MAX_PLAUSIBLE_DECIMALS = 36
 ENV_FLAG = "BLACKWALL_TOKEN_DECIMALS"
 ENV_RPC = "BLACKWALL_TOKEN_DECIMALS_RPC"
 ENV_SOLANA_RPC = "BLACKWALL_TOKEN_DECIMALS_SOLANA_RPC"
+#: Per-chain RPC endpoints, as `chainId=url` pairs separated by commas, e.g.
+#: "8453=https://mainnet.base.org,56=https://bsc-dataseed.binance.org".
+ENV_RPCS = "BLACKWALL_TOKEN_DECIMALS_RPCS"
+
+
+def parse_rpc_map(spec):
+    """`"8453=https://a,56=https://b"` -> {"8453": "https://a", "56": "https://b"}."""
+    out = {}
+    for part in str(spec or "").split(","):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        chain, _, url = part.partition("=")
+        chain, url = chain.strip(), url.strip()
+        if chain and url:
+            out[chain] = url
+    return out
+
+
+def chain_of(network):
+    """The chain id from a CAIP-2 network string, or None.
+
+    `eip155:8453` -> "8453". A bare id is accepted too. Non-EVM namespaces
+    (solana:, algorand:) return None -- `eth_call` cannot answer for them.
+    """
+    if network is None:
+        return None
+    text = str(network).strip()
+    if not text:
+        return None
+    if ":" in text:
+        namespace, _, rest = text.partition(":")
+        return rest if namespace.lower() == "eip155" else None
+    return text if text.isdigit() else None
 
 
 def decode_decimals(result):
@@ -111,8 +145,26 @@ class OnChainDecimals:
     """
 
     def __init__(self, rpc_url=None, transport=None, timeout=8.0, table=None,
-                 solana_rpc=None):
-        self.rpc_url = rpc_url or os.environ.get(ENV_RPC)
+                 solana_rpc=None, rpc_urls=None, chain=None):
+        # AUDIT BUG (2026-08-29): a single `rpc_url` was used for EVERY asset
+        # regardless of the chain it lives on. Asked about a Celo token while
+        # configured with a BSC node, it queried BSC, got a plausible 18, and
+        # CACHED IT FOREVER -- one wrong answer poisoning every future payment in
+        # that asset. Live entries span 12+ chains, so this was not theoretical.
+        #
+        # Lookups are now keyed and ROUTED by chain. An asset whose chain has no
+        # configured endpoint resolves to None; it is never asked of a different
+        # chain.
+        self.rpc_urls = dict(rpc_urls or parse_rpc_map(os.environ.get(ENV_RPCS)))
+        legacy = rpc_url or os.environ.get(ENV_RPC)
+        if legacy:
+            # A single endpoint is only usable when its chain is stated, so we
+            # know what it may answer for.
+            key = chain_of(chain) if chain else None
+            if key:
+                self.rpc_urls.setdefault(key, legacy)
+            else:
+                self.default_rpc = legacy
         self.solana_rpc = solana_rpc or os.environ.get(ENV_SOLANA_RPC)
         self.timeout = timeout
         self._transport = transport
@@ -120,6 +172,8 @@ class OnChainDecimals:
         self._lock = threading.Lock()
         self._inflight = {}
         self.upstream_calls = 0
+        if not hasattr(self, "default_rpc"):
+            self.default_rpc = None
         if table is None:
             try:
                 from payload_sim import KNOWN_DECIMALS
@@ -129,17 +183,29 @@ class OnChainDecimals:
         self.table = table
 
     # -- internals ---------------------------------------------------------
-    def _send(self, token, selector=DECIMALS_SELECTOR):
+    def _rpc_for(self, network):
+        """The endpoint that may answer for `network`, or None. Never guesses."""
+        key = chain_of(network)
+        if key and key in self.rpc_urls:
+            return self.rpc_urls[key]
+        # A bare `rpc_url` with no chain stated is only used when the caller
+        # supplied no network either -- i.e. a deliberate single-chain setup.
+        if network is None:
+            return self.default_rpc
+        return None
+
+    def _send(self, token, selector=DECIMALS_SELECTOR, rpc=None):
         body = {"jsonrpc": "2.0", "id": 1, "method": "eth_call",
                 "params": [{"to": token, "data": selector}, "latest"]}
+        target = rpc or self.default_rpc
         if self._transport is not None:
-            return self._transport(self.rpc_url, body)
+            return self._transport(target, body)
         from rpc_node import forward_upstream
-        return forward_upstream(self.rpc_url, body, timeout=self.timeout)
+        return forward_upstream(target, body, timeout=self.timeout)
 
-    def _fetch(self, token):
+    def _fetch(self, token, rpc=None):
         try:
-            resp = self._send(token)
+            resp = self._send(token, rpc=rpc)
         except Exception:
             return None
         if not isinstance(resp, dict) or resp.get("error"):
@@ -153,7 +219,7 @@ class OnChainDecimals:
         # confirm with ONE extra call in that case only: a real ERC-20 also
         # implements totalSupply().
         try:
-            probe = self._send(token, TOTAL_SUPPLY_SELECTOR)
+            probe = self._send(token, TOTAL_SUPPLY_SELECTOR, rpc=rpc)
         except Exception:
             return None
         if not isinstance(probe, dict) or probe.get("error"):
@@ -179,8 +245,14 @@ class OnChainDecimals:
         return decode_spl_decimals(data[0] if isinstance(data, list) and data else data)
 
     # -- api ---------------------------------------------------------------
-    def lookup(self, asset):
-        """Decimals for `asset`, or None. Table first, then one cached call."""
+    def lookup(self, asset, network=None):
+        """Decimals for `asset` on `network`, or None.
+
+        Table first, then ONE cached call to the endpoint for that chain. The
+        cache is keyed on (network, asset): the same address is a different token
+        on different chains, so a single key would let one chain's answer serve
+        another's -- and these answers are cached forever.
+        """
         if not isinstance(asset, str):
             return None
         key = asset.strip().lower()
@@ -192,34 +264,39 @@ class OnChainDecimals:
         # Non-EVM (a Solana mint is base58, not 0x) needs getAccountInfo, not
         # eth_call. Handled when a Solana RPC is configured; otherwise unknown.
         is_evm = key.startswith("0x")
-        if is_evm and not self.rpc_url:
+        rpc = self._rpc_for(network) if is_evm else None
+        if is_evm and not rpc:
+            # No endpoint may speak for this chain. Resolve to unknown rather
+            # than ask a different chain -- the caller's safe path.
             return None
         if not is_evm and not self.solana_rpc:
             return None
+        cache_key = (str(network or ""), key)
 
         with self._lock:
-            if key in self._cache:
-                return self._cache[key]
-            event = self._inflight.get(key)
+            if cache_key in self._cache:
+                return self._cache[cache_key]
+            event = self._inflight.get(cache_key)
             if event is None:
                 event = threading.Event()
-                self._inflight[key] = event
+                self._inflight[cache_key] = event
                 leader = True
             else:
                 leader = False
         if not leader:
             event.wait(self.timeout)
             with self._lock:
-                return self._cache.get(key)
+                return self._cache.get(cache_key)
 
         # Solana mints are case-SENSITIVE base58, so use the original string.
-        value = self._fetch(key) if is_evm else self._fetch_solana(asset.strip())
+        value = (self._fetch(key, rpc=rpc) if is_evm
+                 else self._fetch_solana(asset.strip()))
         self.upstream_calls += 1
         with self._lock:
             # Cached FOREVER, including a None: decimals() is immutable, so a
             # miss is also stable and re-asking only re-leaks the query.
-            self._cache[key] = value
-            self._inflight.pop(key, None)
+            self._cache[cache_key] = value
+            self._inflight.pop(cache_key, None)
         event.set()
         return value
 

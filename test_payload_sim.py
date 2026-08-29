@@ -352,6 +352,36 @@ class TestRequestSuppliedDecimalsCannotOverrideKnownAsset(unittest.TestCase):
             self._claim(), self._payment(10 ** 6), now=1, verify_signer=False)
         self.assertEqual(r["amount_status"], "verified")
 
+    def test_onchain_lookup_receives_a_chain_it_can_route_on(self):
+        """The chain must reach the resolver in the form it understands.
+
+        MERGE BUG (2026-08-29). The cold-start branch routes the on-chain
+        `decimals()` read by chain -- a real fix, since the same address is a
+        different token on a different network and a wrong answer is cached
+        FOREVER. Its `chain_of()` accepts CAIP-2 ("eip155:8453") or a bare id.
+        But every claim in this codebase carries a HUMAN name ("base",
+        "ethereum"), for which chain_of returns None -- so passing
+        claim["chain"] straight through left the routing inert on every real
+        request while looking wired up. Exactly the silent-loss failure the
+        handoff warned about, arriving through a different door.
+
+        Mutation: pass claim["chain"] unnormalised -> this FAILS (network=None).
+        """
+        seen = {}
+
+        class Resolver:
+            def lookup(self, asset, network=None):
+                seen["network"] = network
+                return 18
+
+        PS.set_onchain_resolver(Resolver())
+        try:
+            PS.resolve_decimals({"asset": "0x" + "cd" * 20, "chain": "base"})
+        finally:
+            PS.set_onchain_resolver(None)
+        self.assertEqual(seen.get("network"), "eip155:8453",
+                         "the resolver must get a chain it can route on")
+
     def test_bool_is_not_a_decimals_value(self):
         # bool is an int subclass, so `"decimals": true` silently became 1.
         self.assertIsNone(PS.resolve_decimals({"asset": "0x" + "ab" * 20}, True))

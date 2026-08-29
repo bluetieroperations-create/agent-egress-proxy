@@ -248,7 +248,19 @@ def known_decimals(claim):
     # is exactly the safe behaviour the static table already produces.
     if _ONCHAIN is not None:
         try:
-            return _ONCHAIN.lookup(asset)
+            # Pass the CHAIN: the same address is a different token on a
+            # different network, and a resolver that routes by chain silently
+            # falls back to its default without it. `lookup` takes network=None,
+            # so omitting it does not error -- it just quietly asks the wrong node
+            # and caches the answer forever.
+            # NORMALISED to CAIP-2. The resolver routes on `chain_of()`, which
+            # takes "eip155:8453" or a bare id and returns None for a human name
+            # -- and every claim here carries "base"/"ethereum". Passing the raw
+            # value left the routing INERT on every real request while looking
+            # wired up: lookup takes network=None, so it does not error, it just
+            # asks whatever node is default and caches that answer forever.
+            _net = (claim or {}).get("chain") or (claim or {}).get("network")
+            return _ONCHAIN.lookup(asset, to_caip2(_net) if _net else None)
         except Exception:
             return None
     return None
