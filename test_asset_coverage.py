@@ -414,3 +414,74 @@ class TestReach(unittest.TestCase):
                            _resolver({("eip155:8453", USDC_BASE.lower()): 6}))
         report.update(AC.reach([("a", "u1"), ("b", "u2")], ["b"]))
         self.assertIn("1 silent", AC.format_report(report))
+
+
+class TestCensus(unittest.TestCase):
+    """A cross-session prevalence claim -- "12 of 351 entries carry a Permit2
+    transfer method" -- could not be reproduced from any committed artifact, so
+    the reader had to take it on trust. It bore on the urgency of a real
+    hard-STOP gap (an unlimited allowance on an `exact` payment returned GO).
+    These three fields make such a claim checkable.
+    """
+
+    def _accept(self, scheme="exact", method=None):
+        a = {"scheme": scheme, "network": "eip155:8453", "asset": USDC_BASE,
+             "payTo": "0x" + "a" * 40, "amount": "1000"}
+        if method:
+            a["extra"] = {"assetTransferMethod": method}
+        return a
+
+    def test_transfer_method_is_read_from_extra(self):
+        # Kills: looking for the method at the top level. Sellers put it in
+        # `extra`, which is where both live spellings appear.
+        self.assertEqual(AC.transfer_method(self._accept(method="permit2")), "permit2")
+
+    def test_a_missing_or_malformed_extra_is_not_a_method(self):
+        # Kills: assuming `extra` is a dict. It is seller-authored.
+        for accept in ({}, {"extra": None}, {"extra": []}, {"extra": {}},
+                       {"extra": {"assetTransferMethod": ""}},
+                       {"extra": {"assetTransferMethod": 7}}, None):
+            self.assertIsNone(AC.transfer_method(accept), accept)
+
+    def test_schemes_are_counted(self):
+        # Kills: reporting only `exact`. `upto`, batch-settlement and
+        # aggr_deferred all appear live, and each settles differently.
+        c = AC.census([{"scheme": "exact"}, {"scheme": "upto"}, {"scheme": "exact"}])
+        self.assertEqual(c["schemes"], {"exact": 2, "upto": 1})
+
+    def test_a_missing_scheme_is_counted_not_dropped(self):
+        # Kills: silently ignoring entries with no scheme, which would make the
+        # census total disagree with the quote total for no visible reason.
+        self.assertEqual(AC.census([{"scheme": None}])["schemes"], {"unstated": 1})
+
+    def test_permit2_entries_carry_the_rows_not_just_a_count(self):
+        # Kills: emitting a bare number. A count is exactly what another session
+        # cannot check -- the rows are what make the claim reproducible.
+        c = AC.census([{"host": "nansen", "scheme": "exact", "asset": USDC_BASE,
+                        "network": "eip155:8453", "transfer_method": "permit2-exact"}])
+        self.assertEqual(c["permit2_entries"][0]["host"], "nansen")
+        self.assertEqual(c["permit2_entries"][0]["method"], "permit2-exact")
+
+    def test_permit2_is_matched_on_the_method_not_the_scheme(self):
+        # Kills: keying on scheme == "upto". 10 of the 12 live Permit2 entries
+        # are `exact` -- the same conflation that let an unlimited allowance
+        # through until it was screened on the allowance itself.
+        c = AC.census([{"host": "h", "scheme": "exact", "transfer_method": "permit2-exact"}])
+        self.assertEqual(len(c["permit2_entries"]), 1)
+
+    def test_a_non_permit2_method_is_counted_but_not_listed(self):
+        # Kills: treating every transfer method as a Permit2 exposure.
+        c = AC.census([{"host": "h", "scheme": "exact", "transfer_method": "eip3009"}])
+        self.assertEqual(c["transfer_methods"], {"eip3009": 1})
+        self.assertEqual(c["permit2_entries"], [])
+
+    def test_harvest_carries_scheme_and_method_through(self):
+        # Kills: computing the census over rows that never carried the fields.
+        rows, _ = AC.harvest([("h", "u")],
+                             fetch=lambda url: [self._accept("upto", "permit2")])
+        self.assertEqual((rows[0]["scheme"], rows[0]["transfer_method"]),
+                         ("upto", "permit2"))
+
+    def test_census_never_raises_on_junk(self):
+        # Kills: assuming the harvest is well-formed. It comes from the network.
+        AC.census(None); AC.census(["x", 1, None, {}])
