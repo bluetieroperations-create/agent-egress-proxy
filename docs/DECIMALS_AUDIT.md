@@ -414,3 +414,71 @@ its owner with the measurement attached.
 
 The scorecard went 25 → 26 caught: #25 contributes one attack and one restraint
 control. Both changes gate on the same build with no interference.
+
+
+---
+
+# Closing finding 1 — the `upto` ceiling was unreadable — 2026-08-29
+
+The previous pass filed a LOW: a seller quoting its ceiling in **human units**
+(`"0.00335"`) made `parse_allowance` return `None`, so `assess_upto` reported
+`unknown` and the 100x excessive-allowance check never ran. Fixing it turned up a
+second, much larger cause of the same failure.
+
+## The bigger half: the wrong field name
+
+`blackwall._upto_ceiling` read `accepts[0]["maxAmountRequired"]` and nothing
+else. That is the **x402 v1** spelling. **v2 carries the quote in `amount`** —
+which is exactly why `x402._req_amount` tries `amount` first and falls back to
+`maxAmountRequired`. The ceiling extractor never got that treatment.
+
+Live sellers use the v2 spelling **69 to 4**. So on nearly every real challenge
+the ceiling came back `None`, the status was `unknown`, and the ratio gate did
+not run. It looked wired up and was inert — the same failure shape as the
+price-anomaly gate in the first audit above, and found the same way: by asking
+what the live corpus actually sends rather than what the code expects.
+
+## Measured on the live corpus
+
+Every quote the 195 live hosts advertise, run through the old extractor and the
+new one:
+
+| | Quotes with a readable ceiling |
+|---|---|
+| Before | **34 of 363 — 9.4%** |
+| After | **363 of 363 — 100%** |
+
+**328** of the gain is the v2 field name. **1** is the human-unit quote that
+started this, and it is readable only because the decimals table above supplies
+`8` for that asset — the two pieces of work meet exactly there.
+
+## The fix, and the one thing it must not do
+
+`parse_ceiling(max_amount, decimals)` takes the atomic integer when there is one
+and scales a human quote otherwise. Two properties matter:
+
+* **Only a value `parse_allowance` could not read reaches the scaling branch.**
+  Re-interpreting an atomic `1000000` as human units would multiply a real
+  ceiling by 10^decimals and *suppress* the warning — the dangerous direction.
+* **The scale must be one we verified.** Demonstrated: with the true scale (6)
+  a 1000x allowance reads `excessive`; told `9` or `12` it reads `ok`. A caller
+  choosing its own scale could switch off the check being applied to it. So the
+  call site passes `payload_sim.known_decimals(claim)` — never the request's
+  `decimals` field, which is used only where a conflict is itself reported.
+
+**Monotone.** Across atomic, human, junk and unlimited ceilings, no case loses
+caution: `unknown` becomes `ok` or `excessive` (the gate switching on), and
+nothing that gated before stops gating. Unknown decimals still fail **open**,
+preserving the module's posture — the gate now runs where it can, rather than
+guessing where it cannot.
+
+## Verification
+
+| Check | Result |
+|---|---|
+| Full root suite | **1,768 green** (13 new tests) |
+| Adversarial scorecard | 26 caught, 2 known gaps, 9 clean, **0 false positives**, 0 misses |
+| Monotonicity sweep | 6 ceiling shapes, **0 regressions** |
+| Suppression attack | reproduced with a caller-chosen scale; blocked by passing verified decimals |
+| Hostile input | 12 crafted ceilings + 8 malformed payloads, no raise |
+| Live HTTP path | v2 quote + 1000x → warning; +10x → clean; + unlimited → **STOP**; v1 quote still works; `exact` scheme ungated |

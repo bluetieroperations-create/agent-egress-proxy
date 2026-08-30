@@ -133,7 +133,35 @@ def scheme_from_request(body):
     return None
 
 
-def assess_upto(scheme, max_amount=None, allowance=None):
+def parse_ceiling(max_amount, decimals=None):
+    """The quoted ceiling as an ATOMIC int, or None when we cannot read it.
+
+    An atomic quote is an integer, so `parse_allowance` handles the ordinary
+    case. The remainder is a seller quoting in HUMAN units -- `"0.00335"` rather
+    than `"3350"` -- which previously read as unreadable and switched the ratio
+    check off. Measured, not hypothetical: probing the live corpus found one
+    quote in 363 written that way.
+
+    Scaling needs the asset's decimals, and the caller must pass only decimals it
+    can VERIFY (`payload_sim.known_decimals`), never a value the request
+    asserted. The direction of that risk is what matters: an inflated ceiling
+    SUPPRESSES the excessive-allowance warning, so a caller who could choose the
+    scale could switch off the check being applied to it.
+
+    Only a value `parse_allowance` could not read reaches the scaling branch, so
+    an integer is never re-interpreted as human units -- which would multiply a
+    real ceiling by 10^decimals and silently suppress the same warning.
+    """
+    atomic = parse_allowance(max_amount)
+    if atomic is not None:
+        return atomic
+    if decimals is None or not isinstance(max_amount, (str, int, float)):
+        return None
+    from x402 import to_atomic          # deferred: x402 is the base module
+    return to_atomic(max_amount, decimals)
+
+
+def assess_upto(scheme, max_amount=None, allowance=None, decimals=None):
     """Assess the Permit2 exposure of an `upto` payment.
 
     Returns {status, mismatches[], warnings[], allowance, ceiling} where status is
@@ -150,7 +178,7 @@ def assess_upto(scheme, max_amount=None, allowance=None):
         return out
 
     allow = parse_allowance(allowance)
-    ceiling = parse_allowance(max_amount)
+    ceiling = parse_ceiling(max_amount, decimals)
     out["allowance"] = allow
     out["ceiling"] = ceiling
 

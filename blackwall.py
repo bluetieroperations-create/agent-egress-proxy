@@ -1199,17 +1199,29 @@ def default_billing_asset(network, explicit, base_usdc, sepolia_usdc):
 def _upto_ceiling(payload, clean):
     """The atomic ceiling an `upto` quote advertises.
 
-    Prefers the 402 challenge's own `accepts[].maxAmountRequired`, which is
-    already atomic and is what the payer's wallet approves against. Falls back to
-    the request's `max_amount_required` if the caller states it directly. Returns
-    None rather than guessing from the human `amount`, because that would need
-    decimals we may not have -- and an unknown ceiling only ever means "no ratio
-    check", never a gate.
+    Prefers the 402 challenge's own quoted amount -- what the payer's wallet
+    approves against -- then the request's `max_amount_required` if the caller
+    states it directly.
+
+    AUDIT FINDING (2026-08-29, MEDIUM): this read `accepts[0]["maxAmountRequired"]`
+    and nothing else. That is the **v1** field name; x402 **v2** carries the quote
+    in `amount`, which is why `x402._req_amount` tries `amount` first and falls
+    back. Live sellers use the v2 spelling **69 to 4** in the corpus, so on the
+    overwhelming majority of real challenges the ceiling came back None, the
+    assessment reported `unknown`, and the excessive-allowance ratio check never
+    ran at all. The gate looked wired up and was inert. Reuses `_req_amount` so
+    the two cannot drift on which field names a quote.
+
+    The docstring here used to say it would not guess from the human `amount`
+    "because that would need decimals we may not have". We now have them for the
+    whole live corpus, so `assess_upto` takes them -- but only ones we can VERIFY
+    (see parse_ceiling), never a scale the request asserted.
     """
     body = payload if isinstance(payload, dict) else {}
     accepts = body.get("accepts")
     if isinstance(accepts, list) and accepts and isinstance(accepts[0], dict):
-        v = accepts[0].get("maxAmountRequired")
+        from x402 import _req_amount
+        v = _req_amount(accepts[0])
         if v is not None:
             return v
     return body.get("max_amount_required")
@@ -1266,6 +1278,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     # as a match. See docs/DECIMALS_AUDIT.md.
     _decimals = payload.get("decimals") if isinstance(payload, dict) else None
     from payload_sim import check_payment_authorization
+    from payload_sim import known_decimals as _known_decimals
     from calldata import screen_transaction
     # Phase 1 (recipient/amount/asset/chain field match) is cheap (~us) and stays inline
     # -- its mismatches are the highest-value hard STOP. Phase 2 (signer recovery) is
@@ -1292,7 +1305,12 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         _upto.scheme_from_request(payload),
         max_amount=(_upto.scheme_from_request(payload) and
                     _upto_ceiling(payload, clean)),
-        allowance=_upto.allowance_from_request(payload))
+        allowance=_upto.allowance_from_request(payload),
+        # VERIFIED decimals only -- deliberately not `_decimals` (the request's
+        # own assertion, used above where a conflict is itself reported). An
+        # inflated scale would enlarge the ceiling and suppress the very warning
+        # being applied to this payment.
+        decimals=_known_decimals(sim_claim))
     sim_mismatches = (pay_check["mismatches"] + tx_check["mismatches"]
                       + upto_check["mismatches"])
     sim_warnings = (pay_check["warnings"] + tx_check["warnings"]
