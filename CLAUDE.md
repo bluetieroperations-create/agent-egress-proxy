@@ -294,8 +294,16 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   person should look, so a scheduled run is actionable without reading it. FIRST
   LIVE RUN found two seller bugs on one host: a BSC asset truncated to 39 hex
   chars, and a Solana `payTo` with `FACILITATOR_URL=https://...` concatenated
-  onto it -- the address an agent would PAY. Both fail safe in the engine
-  (decimals unknown; `normalize_address` returns None). CLI:
+  onto it -- the address an agent would PAY. Both fail safe today for INCIDENTAL
+  reasons, which is not the same as being detected: the truncated asset resolves
+  to unknown decimals, and the glued payee is simply an unknown counterparty, so
+  it draws a cold-start HOLD. Neither is recognised as malformed by the engine --
+  `normalize_address` is applied to `payer` ONLY, never the counterparty, which
+  gets `is_evm_address` purely to decide whether to lowercase. Measured: the glued
+  payee and a clean Solana payee return byte-identical verdicts. Stated precisely
+  because the earlier wording implied a validation layer stands between a
+  malformed payee and a signature, and the next person to rely on that inherits a
+  gap that reads as covered. CLI:
   `python asset_coverage.py data/liveness.json [--json report.json]`.
   Tests: `test_asset_coverage.py`),
   `http_util.py` (hardened JSON GET for the live data path: retry+backoff on

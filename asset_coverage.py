@@ -31,6 +31,15 @@ docs/DECIMALS_AUDIT.md for the procedure actually used (read every public RPC th
 chain lists and require agreement). This module produces the WORK LIST; a human
 decides what enters the table.
 
+SCOPE NOTE, because it differs from every other ecosystem number in this repo:
+this module reads `accepts[]` off the LIVE probe, so it sees Solana, Stellar,
+Algorand and Hyperliquid quotes. The crawl corpus does not.
+`discovery_crawl._accept_record` drops any accept whose `payTo` is not an EVM
+address, so `data/directory.json`, `chain_backfill`, reputation, the payer graph
+and `advertised_prices` describe the EVM SUBSET -- 0 of 266 directory payees are
+non-EVM. That is a deliberate guard, not a bug, but it means a pair count here
+will not reconcile with `directory.json`, and neither is broken.
+
 The decision-critical logic is pure and network-free; the network is injected.
 
 CLI:
@@ -186,6 +195,19 @@ def implied_price(amount, decimals):
         return None
 
 
+def reach(targets, silent):
+    """How much of the corpus this run could actually see.
+
+    Reported ALWAYS, not only when it looks bad, so the number is familiar enough
+    that a drop is noticeable. Coverage percentages are over what ANSWERED; a host
+    that did not answer is not covered, it is unseen.
+    """
+    total = len(targets)
+    answered = total - len(silent)
+    return {"hosts_probed": total, "hosts_answered": answered,
+            "hosts_silent": sorted(silent)}
+
+
 def assess(pairs, resolver):
     """Coverage + price sanity over the harvested pairs.
 
@@ -261,6 +283,11 @@ def needs_attention(report):
 def format_report(report):
     """The report as text, ordered by what a reader needs first."""
     lines = []
+    if report.get("hosts_probed"):
+        lines.append("hosts: %d probed, %d answered (%d silent -- their findings, "
+                     "if any, are unseen this run)"
+                     % (report["hosts_probed"], report["hosts_answered"],
+                        len(report.get("hosts_silent") or [])))
     lines.append("pairs: %d  covered: %d (%.1f%%)  quotes: %d  priced: %d"
                  % (report["total_pairs"], report["known_pairs"],
                     coverage_pct(report), report["total_quotes"],
@@ -355,13 +382,23 @@ def fetch_accepts(url, timeout=TIMEOUT):
 
 
 def harvest(targets, fetch=None, workers=10):
-    """(host, url) pairs -> accept rows, via `fetch(url) -> accepts[]`."""
+    """(host, url) pairs -> (rows, silent_hosts), via `fetch(url) -> accepts[]`.
+
+    `silent_hosts` is the ones that answered with no readable challenge. They
+    matter because a host going dark takes its findings WITH it: the seller whose
+    two malformed identifiers this module was built on stopped responding hours
+    later, and the report went quiet without anything having been fixed. A quiet
+    report and a blind one look identical unless the reach is stated.
+    """
     fetch = fetch or fetch_accepts
     from x402 import _req_amount
     rows = []
+    silent = []
     urls = [url for _, url in targets]
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for (host, _), accepts in zip(targets, pool.map(fetch, urls)):
+            if not accepts:
+                silent.append(host)
             for accept in accepts or ():
                 if not isinstance(accept, dict):
                     continue
@@ -370,7 +407,7 @@ def harvest(targets, fetch=None, workers=10):
                              "asset": accept.get("asset"),
                              "pay_to": accept.get("payTo"),
                              "amount": _req_amount(accept)})
-    return rows
+    return rows, silent
 
 
 def main(argv=None):
@@ -382,11 +419,12 @@ def main(argv=None):
 
     with open(args.directory) as handle:
         targets = targets_from_directory(json.load(handle))
-    rows = harvest(targets, workers=args.workers)
+    rows, silent = harvest(targets, workers=args.workers)
 
     from payload_sim import known_decimals
     report = assess(pairs_from_accepts(rows),
                     lambda net, asset: known_decimals({"asset": asset, "chain": net}))
+    report.update(reach(targets, silent))
     print(format_report(report))
     if args.json:
         with open(args.json, "w") as handle:

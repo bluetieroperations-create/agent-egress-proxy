@@ -208,7 +208,7 @@ class TestHarvest(unittest.TestCase):
     def test_accepts_are_flattened_with_their_host(self):
         # Kills: losing the host, without which an unresolved asset cannot be
         # traced back to the seller that introduced it.
-        rows = AC.harvest([("a.example", "u1")],
+        rows, _silent = AC.harvest([("a.example", "u1")],
                           fetch=lambda url: [{"network": "eip155:8453",
                                               "asset": USDC_BASE, "amount": "5"}])
         self.assertEqual(rows[0]["host"], "a.example")
@@ -216,14 +216,14 @@ class TestHarvest(unittest.TestCase):
     def test_the_v2_amount_field_is_read(self):
         # Kills: reading only maxAmountRequired -- the v1 spelling. Live sellers
         # use `amount` 69 to 4; reading the wrong one silently prices nothing.
-        rows = AC.harvest([("a", "u")],
+        rows, _silent = AC.harvest([("a", "u")],
                           fetch=lambda url: [{"network": "eip155:8453",
                                               "asset": USDC_BASE, "amount": "7"}])
         self.assertEqual(rows[0]["amount"], "7")
 
     def test_the_v1_amount_field_still_works(self):
         # Kills: swapping one spelling for the other rather than trying both.
-        rows = AC.harvest([("a", "u")],
+        rows, _silent = AC.harvest([("a", "u")],
                           fetch=lambda url: [{"network": "eip155:8453",
                                               "asset": USDC_BASE,
                                               "maxAmountRequired": "9"}])
@@ -232,14 +232,14 @@ class TestHarvest(unittest.TestCase):
     def test_a_host_that_returns_nothing_is_skipped_not_fatal(self):
         # Kills: letting one dead host end the run. A probe over 195 hosts that
         # dies on the first failure never reports anything.
-        rows = AC.harvest([("dead", "u1"), ("live", "u2")],
+        rows, _silent = AC.harvest([("dead", "u1"), ("live", "u2")],
                           fetch=lambda url: [] if url == "u1" else
                           [{"network": "eip155:8453", "asset": USDC_BASE, "amount": "5"}])
         self.assertEqual([r["host"] for r in rows], ["live"])
 
     def test_non_dict_accepts_entries_are_ignored(self):
         # Kills: trusting the shape of attacker-authored challenge content.
-        rows = AC.harvest([("a", "u")], fetch=lambda url: ["nope", None, 3])
+        rows, _silent = AC.harvest([("a", "u")], fetch=lambda url: ["nope", None, 3])
         self.assertEqual(rows, [])
 
 
@@ -382,3 +382,35 @@ class TestMalformedPayee(unittest.TestCase):
         report = AC.assess(AC.pairs_from_accepts(rows),
                            _resolver({("eip155:8453", USDC_BASE.lower()): 6}))
         self.assertEqual(report["malformed_payees"][0]["hosts"], ["broken.example"])
+
+
+class TestReach(unittest.TestCase):
+    """A host that stops answering takes its findings with it. The seller whose
+    two malformed identifiers this module was built on went dark hours later and
+    the report went quiet -- with nothing fixed. A quiet report and a blind one
+    look identical unless the reach is stated.
+    """
+
+    def test_silent_hosts_are_reported(self):
+        # Kills: discarding the hosts that returned nothing, which is what makes
+        # a blind run indistinguishable from a clean one.
+        rows, silent = AC.harvest([("dead", "u1"), ("live", "u2")],
+                                  fetch=lambda url: [] if url == "u1" else
+                                  [{"network": "eip155:8453", "asset": USDC_BASE,
+                                    "amount": "5"}])
+        self.assertEqual(silent, ["dead"])
+        self.assertEqual(len(rows), 1)
+
+    def test_reach_counts_answered_not_probed(self):
+        # Kills: reporting the probe list size as if it were coverage.
+        r = AC.reach([("a", "u1"), ("b", "u2"), ("c", "u3")], ["b"])
+        self.assertEqual((r["hosts_probed"], r["hosts_answered"]), (3, 2))
+        self.assertEqual(r["hosts_silent"], ["b"])
+
+    def test_reach_appears_in_the_text_report(self):
+        # Kills: computing it and not printing it. The number is only useful if
+        # it is familiar enough that a drop is noticeable.
+        report = AC.assess(AC.pairs_from_accepts([_row()]),
+                           _resolver({("eip155:8453", USDC_BASE.lower()): 6}))
+        report.update(AC.reach([("a", "u1"), ("b", "u2")], ["b"]))
+        self.assertIn("1 silent", AC.format_report(report))
