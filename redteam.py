@@ -327,6 +327,21 @@ SIM_SCENARIOS = [
     ("honeypot: token blocks its own pool", "honeypot", "block", False,
      _payload(acquires={"token": "0x" + "7" * 40, "chain": "base"}),
      lambda: {"honeypot_source": _honeypot_source(TS_RECEIVER_BLOCKED)}),
+    # A payee that cannot possibly be an on-chain address -- an env var glued on
+    # by a missing newline in a `.env`, the exact string a live seller advertised.
+    # Before payee_syntax.py this and a clean payee returned BYTE-IDENTICAL
+    # verdicts: the engine never looked at the counterparty's SHAPE, and the
+    # cold-start HOLD that happened to cover it clears the moment the payee has
+    # history. This scenario carries full history, so nothing else can block it.
+    ("payee is an impossible address", "payee-syntax", "block", False,
+     _payload(counterparty=LEGIT + "FACILITATOR_URL=https://x402.org/facilitator"),
+     lambda: {}),
+    # The same defect with the whitespace an ASCII-only rule could not see. A
+    # non-breaking space is what a Windows `.env` or a copy-paste out of a
+    # rendered page produces, and it evaded the first version of the gate.
+    ("payee glued with a non-breaking space", "payee-syntax", "block", False,
+     _payload(counterparty=LEGIT + "\u00a0FACILITATOR_URL"),
+     lambda: {}),
 
     # --- controls: these must NOT be blocked (over-blocking is the real risk here) ---
     # RESTRAINT for the widened screen: an ordinary `exact` payment with a
@@ -371,6 +386,13 @@ SIM_SCENARIOS = [
     ("valid fresh authorization", "control", "allow", False,
      _payload(payment_authorization=_signed()),
      lambda: {"auth_sim_source": _auth_source(used=False)}),
+    # RESTRAINT for the payee-syntax gate, and the reason it is chain-agnostic:
+    # a raw base58 Solana payee is not an EVM address and must not be condemned
+    # for it. Any base58 or base32 guess sophisticated enough to "validate" this
+    # would eventually convict a real Solana, Stellar or Algorand seller.
+    ("non-EVM payee is not condemned", "control", "allow", False,
+     _payload(counterparty="2DgEL95L8DtaRb4ubYqrrnMbX7Zxgjxq7k8Ed9XAWYcp"),
+     lambda: {}),
 ]
 
 

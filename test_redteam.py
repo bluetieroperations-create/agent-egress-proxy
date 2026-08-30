@@ -25,7 +25,9 @@ class TestScorecard(unittest.TestCase):
         caught = [r for r in self.results if r["disposition"] == "CAUGHT"]
         # if a gate regresses (stops blocking its attack) this count drops. Tightened
         # from a loose floor to the ACTUAL count -- a weak floor guards nothing.
-        self.assertGreaterEqual(len(caught), 24)
+        # AUDIT: it had drifted back to being weak (floor 24, actual 30), which is
+        # six gates' worth of regression the guard would not have noticed.
+        self.assertGreaterEqual(len(caught), 30)
 
     def test_simulation_gates_are_represented_and_catch(self):
         """The newest gates (settlement / authorization / RWA simulation) fold in
@@ -34,7 +36,7 @@ class TestScorecard(unittest.TestCase):
         by_cat = {}
         for r in self.results:
             by_cat.setdefault(r["category"], []).append(r)
-        for cat in ("settlement-sim", "auth-sim", "rwa-sim"):
+        for cat in ("settlement-sim", "auth-sim", "rwa-sim", "payee-syntax"):
             self.assertIn(cat, by_cat, "simulation family missing from the scorecard")
             for r in by_cat[cat]:
                 if r["expect"] == "block":
@@ -51,7 +53,11 @@ class TestScorecard(unittest.TestCase):
                   "underfunded payer (must not gate)",
                   "RPC unreachable (fail-open)",
                   "clean payment, sim ready",
-                  "valid fresh authorization"):
+                  "valid fresh authorization",
+                  # The payee-syntax gate is chain-agnostic on purpose: a raw
+                  # base58 Solana payee must not be condemned for failing to be
+                  # an EVM address.
+                  "non-EVM payee is not condemned"):
             self.assertIn(n, names, "restraint control missing: %s" % n)
             self.assertEqual(names[n]["disposition"], "CLEAN",
                              "simulation gate over-blocked: %s" % n)

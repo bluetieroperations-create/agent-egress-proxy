@@ -1553,6 +1553,17 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
             _mp = None
         verdict = apply_market_peg(verdict, _mp)
 
+    # Payee syntax (payee_syntax.py): is the address the agent is about to pay a
+    # POSSIBLE address? Found in the wild -- a live seller advertises a Solana
+    # payTo with `FACILITATOR_URL=https://...` concatenated onto it, and until this
+    # fold the engine could not tell it from a clean one: both drew a cold-start
+    # HOLD because the payee was UNKNOWN, not because one was impossible. That
+    # HOLD clears once the payee has history, and a broken address does not get
+    # better with settlements. No network, no config; HOLD-only and fail-open, and
+    # `unknown` (any identifier we cannot cheaply validate) never escalates.
+    from payee_syntax import apply_payee_syntax, assess_payee
+    verdict = apply_payee_syntax(verdict, assess_payee(clean.get("counterparty")))
+
     # Holder-concentration rug-check (holder_concentration.py): a single non-contract
     # wallet holding a dominant share of the token supply -> dump/manipulation risk.
     # Keyless Blockscout; HOLD-only, fail-open, contract holders excluded (issuer custody).
