@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 
 OBSERVE = "observe"
 ENFORCE = "enforce"
@@ -57,6 +58,8 @@ FAIL_OPEN = "fail_open"
 ALLOW = "allow"
 CONFIRM = "confirm"
 BLOCK = "block"
+
+_REQUEST_PARAM = re.compile(r'request="([^"]+)"')
 
 X402 = "CRYPTO_X402"
 MPP = "MPP"
@@ -107,6 +110,45 @@ def _b64url(blob):
     return None
 
 
+
+def _mpp_currency(header):
+    """The SYMBOL an MPP challenge names in `currency`, when it names no address.
+
+    MPP often carries the token as a symbol ("USDC") rather than a contract
+    address. `x402_challenge` deliberately refuses to put a symbol in the `asset`
+    address slot -- correct, because every downstream address comparison would
+    silently fail against it. But `forecast` requires an asset, so without this
+    fallback EVERY MPP payment is unscoreable and falls to the availability
+    policy. Fail-closed is safe and useless there: it blocks the legitimate ones
+    too.
+
+    A symbol is a supported claim shape in this codebase (resolve_decimals reads
+    KNOWN_SYMBOL_DECIMALS; payload_sim's asset cross-check applies only when the
+    claim names a contract address), so it belongs in the CLAIM. It is never
+    written back into the parser's accepts entry, which keeps its strict address
+    semantics.
+
+    Returns None for an address (the entry already carries it) or anything
+    unreadable. Never raises.
+    """
+    match = _REQUEST_PARAM.search(header if isinstance(header, str) else "")
+    if not match:
+        return None
+    raw = _b64url(match.group(1))
+    if raw is None:
+        return None
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return None
+    currency = payload.get("currency") if isinstance(payload, dict) else None
+    if not isinstance(currency, str) or not currency.strip():
+        return None
+    currency = currency.strip()
+    # An address is already handled by the parser; only a symbol is new here.
+    return None if currency.startswith("0x") else currency
+
+
 def _first_accept(accepts):
     return accepts[0] if isinstance(accepts, list) and accepts \
         and isinstance(accepts[0], dict) else None
@@ -132,6 +174,17 @@ def claim_from_process_payment(body):
     kind = body.get("paymentType")
 
     crypto = payment_input.get("cryptoX402")
+    mpp_in = payment_input.get("mpp")
+    if kind is None and isinstance(crypto, dict) and isinstance(mpp_in, dict):
+        # AMBIGUOUS -- refuse rather than guess. AgentCore selects the protocol by
+        # `paymentType`; with it absent and BOTH payloads present, which one AWS
+        # signs is not specified by the API. Picking one risks scoring a different
+        # payee from the one that gets signed, which is the single property this
+        # guard exists to have. An attacker who can shape the body would put a
+        # clean payee in the payload we score and a hostile one in the payload
+        # that gets signed. None sends this to the availability policy, which is
+        # the honest answer to "we cannot tell what will be signed".
+        return None
     if isinstance(crypto, dict) and kind in (None, X402):
         payload = crypto.get("payload")
         if not isinstance(payload, dict):
@@ -156,7 +209,7 @@ def claim_from_process_payment(body):
             claim["permit2AllowanceLimit"] = allowance
         return claim
 
-    mpp = payment_input.get("mpp")
+    mpp = mpp_in
     if isinstance(mpp, dict) and kind in (None, MPP):
         headers = mpp.get("wwwAuthenticateHeaders")
         if not isinstance(headers, list) or not headers:
@@ -173,7 +226,7 @@ def claim_from_process_payment(body):
             amount = entry.get("maxAmountRequired")
         return {"counterparty": entry.get("payTo"),
                 "amount": None if amount is None else str(amount),
-                "asset": entry.get("asset"),
+                "asset": entry.get("asset") or _mpp_currency(headers[0]),
                 "chain": entry.get("network"),
                 "scheme": "mpp",
                 "accepts": [entry]}

@@ -73,6 +73,101 @@ class TestClaimFromProcessPayment(unittest.TestCase):
         self.assertEqual(c["counterparty"], PAYEE)
         self.assertEqual(c["amount"], "100000")
 
+    def test_ambiguous_body_is_refused_rather_than_guessed(self):
+        """Two payloads and no `paymentType` -> refuse.
+
+        AUDIT (2026-08-29). AgentCore selects the protocol by `paymentType`. With
+        it ABSENT and BOTH `cryptoX402` and `mpp` present, which one AWS signs is
+        not specified by the API -- so picking one is a guess, and a wrong guess
+        means scoring a different payee from the one that gets signed. That is the
+        single property this guard exists to have.
+
+        An attacker who can shape the body puts a clean payee in the payload we
+        score and a hostile one in the payload that gets signed.
+
+        Refusing sends it to the availability policy (FAIL_CLOSED by default),
+        which is the honest answer to "we cannot tell what will be signed".
+
+        Mutation: score cryptoX402 when the type is absent and both are present
+        -> this FAILS.
+        """
+        import base64, json
+        req = base64.urlsafe_b64encode(json.dumps({
+            "recipient": "0xdeadbeef00000000000000000000000000000001",
+            "amount": "1000", "methodDetails": {"chainId": 8453}}
+        ).encode()).decode().rstrip("=")
+        both = {"paymentInput": {
+            "cryptoX402": {"version": "2", "payload": {
+                "scheme": "exact", "network": "eip155:8453", "amount": "1000",
+                "asset": USDC_BASE, "payTo": PAYEE}},
+            "mpp": {"version": "1", "wwwAuthenticateHeaders": [
+                'Payment id="c1", realm="s", method="evm", intent="charge", '
+                'request="%s"' % req]}}}
+        self.assertIsNone(G.claim_from_process_payment(both))
+
+    def test_an_explicit_type_disambiguates(self):
+        # kills: refusing whenever both are present -- with the type stated there
+        # is no ambiguity, and AgentCore uses the one it names
+        import base64, json
+        req = base64.urlsafe_b64encode(json.dumps({
+            "recipient": "0xdeadbeef00000000000000000000000000000001",
+            "amount": "1000", "methodDetails": {"chainId": 8453}}
+        ).encode()).decode().rstrip("=")
+        both = {"paymentInput": {
+            "cryptoX402": {"version": "2", "payload": {
+                "scheme": "exact", "network": "eip155:8453", "amount": "1000",
+                "asset": USDC_BASE, "payTo": PAYEE}},
+            "mpp": {"version": "1", "wwwAuthenticateHeaders": [
+                'Payment id="c1", realm="s", method="evm", intent="charge", '
+                'request="%s"' % req]}}}
+        x = dict(both, paymentType="CRYPTO_X402")
+        m = dict(both, paymentType="MPP")
+        self.assertEqual(G.claim_from_process_payment(x)["counterparty"], PAYEE)
+        self.assertEqual(G.claim_from_process_payment(m)["counterparty"],
+                         "0xdeadbeef00000000000000000000000000000001")
+
+    def test_mpp_symbol_currency_becomes_the_asset(self):
+        """An MPP challenge that names only a SYMBOL must still be scoreable.
+
+        AUDIT (2026-08-29). MPP carries the token in `currency`, often as a symbol
+        ("USDC") rather than an address, and x402_challenge deliberately refuses to
+        put a symbol in the `asset` address slot -- correct, since every downstream
+        address comparison would silently fail. But `forecast` requires an asset,
+        so the claim was rejected and EVERY MPP payment fell to the availability
+        policy and blocked. Fail-closed is safe and useless: it blocks the
+        legitimate ones too, which makes the MPP path a false-positive machine.
+
+        The symbol is a supported claim shape here -- resolve_decimals reads
+        KNOWN_SYMBOL_DECIMALS, and payload_sim's asset cross-check applies only
+        when the claim names a contract address. So the symbol goes in the CLAIM,
+        never into the accepts entry the parser built.
+
+        Mutation: drop the currency fallback -> this FAILS.
+        """
+        import base64, json
+        req = base64.urlsafe_b64encode(json.dumps({
+            "recipient": PAYEE, "amount": "1000", "currency": "USDC",
+            "methodDetails": {"chainId": 8453}}).encode()).decode().rstrip("=")
+        c = G.claim_from_process_payment({"paymentType": "MPP", "paymentInput": {
+            "mpp": {"version": "1", "wwwAuthenticateHeaders": [
+                'Payment id="c1", realm="s", method="evm", intent="charge", '
+                'request="%s"' % req]}}})
+        self.assertEqual(c["asset"], "USDC")
+        # the parser's own entry keeps its strict address semantics
+        self.assertIsNone(c["accepts"][0]["asset"])
+
+    def test_mpp_address_currency_is_preferred_over_a_symbol(self):
+        # kills: overwriting a real contract address with a symbol
+        import base64, json
+        req = base64.urlsafe_b64encode(json.dumps({
+            "recipient": PAYEE, "amount": "1000", "currency": USDC_BASE,
+            "methodDetails": {"chainId": 8453}}).encode()).decode().rstrip("=")
+        c = G.claim_from_process_payment({"paymentType": "MPP", "paymentInput": {
+            "mpp": {"version": "1", "wwwAuthenticateHeaders": [
+                'Payment id="c1", realm="s", method="evm", intent="charge", '
+                'request="%s"' % req]}}})
+        self.assertEqual(c["asset"].lower(), USDC_BASE.lower())
+
     def test_unparseable_is_none(self):
         # kills: manufacturing a claim we cannot substantiate -- the availability
         # policy must govern, not a half-built claim that looks scoreable

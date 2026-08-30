@@ -108,6 +108,22 @@ Run from this directory:
 python3 -m unittest discover -p 'test_*.py'
 ```
 
-22 tests. Mutation-verified: calling through on STOP, letting approval override a
+26 tests. Mutation-verified: calling through on STOP, letting approval override a
 STOP, failing open on an unreadable body, dropping the Permit2 allowance from the
-claim, and returning `None` instead of raising each fail a test by name.
+claim, returning `None` instead of raising, guessing a payload when the body is
+ambiguous, and dropping the MPP currency fallback each fail a test by name.
+
+## Two findings from auditing this adapter
+
+**Ambiguous bodies are refused, not guessed.** AgentCore selects the protocol by
+`paymentType`. With it absent and BOTH `cryptoX402` and `mpp` present, which one
+AWS signs is unspecified — so picking one risks scoring a different payee from the
+one that gets signed. An attacker shaping the body would put a clean payee in the
+payload we score and a hostile one in the payload that gets signed.
+
+**MPP names its token in `currency`, often as a symbol.** `x402_challenge` refuses
+to put a symbol in the `asset` address slot (correct — address comparisons would
+silently fail), but `forecast` requires an asset, so every MPP payment was
+unscoreable and blocked. Fail-closed was safe and useless there: it blocked the
+legitimate ones too. The symbol now goes in the claim, never into the parser's
+accepts entry.
