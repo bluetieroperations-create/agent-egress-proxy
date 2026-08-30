@@ -683,15 +683,83 @@ class PricingPolicy:
       * else  -> bps of the amount, clamped to [min_fee, max_fee]. A big payment
         carries a (still tiny) fee proportional to the loss being prevented.
       * unknown amount -> min_fee (can't assess value; charge the floor).
+      * ... UNLESS the resulting fee would exceed `max_fee_ratio` of the amount,
+        in which case it is FREE. See below -- this is the invariant that makes
+        the whole thing hold together.
+
+    THE PROPORTIONALITY INVARIANT (added 2026-08-30, from measurement).
+
+    `min_fee` is a floor in ABSOLUTE terms, so as the amount falls it becomes an
+    ever-larger FRACTION of the payment. Nothing bounded that. It was invisible
+    only because `free_below` happened to sit above the range where the floor
+    bites -- so the two knobs were secretly one knob, and the "free tier" was
+    load-bearing for fee sanity rather than being a pricing choice.
+
+    That coupling is why the paid tier was unreachable. Measured against our own
+    crawl of 266 live x402 payees (data/directory.json): median advertised entry
+    price $0.005, highest anywhere $6.99. At the deployed free_below of $10.00,
+    ZERO of 265 payees could ever be billed. At the $1.00 code default, exactly
+    one. And lowering `free_below` to reach the market un-hid the floor:
+
+        free_below=$0.01 -> a $0.028 payment pays 3.57%
+        free_below=$0.005 -> a $0.01 payment pays 10.00%
+
+    So the fix is not a new number, it is a bound the policy never had: THE FEE
+    MAY NEVER EXCEED `max_fee_ratio` OF THE AMOUNT AT RISK. If proportional
+    pricing cannot produce a sane fee at this size, the honest answer is that we
+    do not charge -- the free tier then EMERGES from "we cannot price this
+    proportionately" instead of being an arbitrary constant guarding a defect.
+
+    `free_below` survives as an explicit operator floor (always free below X,
+    whatever the ratio says). It is no longer what keeps the fee curve sane.
     """
 
+    @staticmethod
+    def _config(name, value):
+        """Parse a pricing constant, or raise at CONSTRUCTION.
+
+        Every one of these arrives from an env var. Audit 2026-08-30 found the
+        whole policy accepted values that fail LATER or not at all:
+
+          * `nan` parses as a valid Decimal on free_below / bps / min_fee, then
+            raises InvalidOperation on EVERY priced request -- a config that is
+            valid at boot and fatal at runtime, so the banner reports a healthy
+            service that 500s the moment anyone is billed.
+          * negative values pass silently. `bps=-1` and `min_fee=-1` both produce
+            a fee; and a negative `max_fee_ratio_bps` fails the `> 0` guard, which
+            SILENTLY DISABLES the proportionality invariant. Nobody writes -100
+            meaning "off" -- that is a typo or a sign error turning a protection
+            off with no signal, the exact shape this codebase keeps finding.
+
+        So: fail LOUD at boot. Same policy receipt_signer already uses for a
+        malformed signing seed -- a set-but-invalid value means the operator
+        intended the feature, and guessing what they meant is worse than stopping.
+        Exactly 0 stays a legal, documented disable for the ratio cap.
+        """
+        try:
+            d = Decimal(str(value))
+        except (InvalidOperation, ValueError, TypeError):
+            raise ValueError("pricing: %s=%r is not a number" % (name, value))
+        if not d.is_finite():
+            raise ValueError("pricing: %s=%r is not finite" % (name, value))
+        if d < 0:
+            hint = (" If you meant to disable the cap, set it to 0 explicitly."
+                    if name == "max_fee_ratio_bps" else "")
+            raise ValueError("pricing: %s=%r is negative.%s" % (name, value, hint))
+        return d
+
     def __init__(self, decimals=6, free_below="1.00", bps=10,
-                 min_fee="0.001", max_fee="0.10"):
+                 min_fee="0.001", max_fee="0.10", max_fee_ratio_bps=100):
         self.decimals = int(decimals)
-        self.free_below = Decimal(str(free_below))
-        self.bps = Decimal(str(bps))            # basis points: 10 = 0.1%
-        self.min_fee = Decimal(str(min_fee))
-        self.max_fee = Decimal(str(max_fee))
+        self.free_below = self._config("free_below", free_below)
+        self.bps = self._config("bps", bps)     # basis points: 10 = 0.1%
+        self.min_fee = self._config("min_fee", min_fee)
+        self.max_fee = self._config("max_fee", max_fee)
+        # Hard ceiling on the fee as a fraction of the amount at risk. 100 bps
+        # = 1%. Set to exactly 0 to disable (restores the unbounded
+        # pre-2026-08-30 behaviour; there is no good reason to).
+        self.max_fee_ratio_bps = self._config("max_fee_ratio_bps",
+                                              max_fee_ratio_bps)
         self._q = Decimal(1).scaleb(-self.decimals)  # quantization unit
 
     def fee_atomic(self, amount_at_risk):
@@ -713,6 +781,17 @@ class PricingPolicy:
             elif fee > self.max_fee:
                 fee = self.max_fee
         fee = fee.quantize(self._q, rounding=ROUND_HALF_UP)
+        # THE PROPORTIONALITY INVARIANT. Applied AFTER quantization so the bound
+        # holds on the value ACTUALLY CHARGED rather than a pre-rounding
+        # intermediate. Honest scope: at the shipped constants this ordering is
+        # DEFENSIVE, not load-bearing -- a sweep of ~184k amounts found zero cases
+        # where rounding to the 1e-6 quantum crosses the bound, and a mutant that
+        # checks before quantizing passes the suite. It would begin to matter with
+        # a coarser quantum or a min_fee sitting nearer the cap, so the order
+        # stays; the earlier claim here that it fixed a real case was wrong.
+        if amt is not None and amt > 0 and self.max_fee_ratio_bps > 0:
+            if fee > amt * self.max_fee_ratio_bps / Decimal(10000):
+                return 0
         return int(fee * (Decimal(10) ** self.decimals))
 
 
