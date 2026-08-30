@@ -361,6 +361,54 @@ class TestPricingPolicy(unittest.TestCase):
                                  "fee %s exceeds 1%% of %s" % (fee, amt))
             amt *= Decimal("1.7")
 
+    def test_bad_config_is_refused_at_boot_not_at_request_time(self):
+        """AUDIT 2026-08-30. Every pricing constant arrives from an env var, and
+        the policy used to accept values that failed later or not at all:
+
+          * `nan` parsed as a valid Decimal on free_below / bps / min_fee, then
+            raised InvalidOperation on EVERY priced request -- valid at boot,
+            fatal at runtime, so the banner reported a healthy service that 500s
+            the moment anyone is billed.
+          * negatives passed silently, and a NEGATIVE max_fee_ratio_bps failed the
+            `> 0` guard, SILENTLY DISABLING the proportionality invariant. Nobody
+            writes -100 meaning "off".
+
+        kills: dropping the finite/negative checks, or moving them out of the
+        constructor so a bad value survives to request time.
+        """
+        for field in ("free_below", "bps", "min_fee", "max_fee",
+                      "max_fee_ratio_bps"):
+            for bad in ("nan", "inf", "-1", "abc", ""):
+                kw = {"free_below": "0.01", "min_fee": "0.0001",
+                      "max_fee_ratio_bps": 100}
+                kw[field] = bad
+                with self.assertRaises(ValueError, msg="%s=%r accepted" % (field, bad)):
+                    X.PricingPolicy(**kw)
+
+    def test_zero_is_still_a_legal_disable(self):
+        # kills: over-tightening the validator so an operator cannot turn the cap
+        # off deliberately -- 0 is documented and must stay legal
+        X.PricingPolicy(max_fee_ratio_bps=0)
+        X.PricingPolicy(free_below="0")
+
+    def test_fee_is_monotonic_in_the_amount(self):
+        """PROPERTY: paying more must never cost less.
+
+        A non-monotonic curve would create an incentive to OVER-declare the
+        amount, which is the opposite of the under-declaration the docstring
+        already defends against.
+
+        kills: a cap that returns 0 for a band above a charged band
+        """
+        from decimal import Decimal
+        p = X.PricingPolicy(free_below="0.01", min_fee="0.0001",
+                            max_fee_ratio_bps=100)
+        amt, prev = Decimal("0.0001"), Decimal(-1)
+        while amt < Decimal("100000"):
+            fee = Decimal(p.fee_atomic(amt))
+            self.assertGreaterEqual(fee, prev, "fee fell as the amount rose at %s" % amt)
+            prev, amt = fee, amt * Decimal("1.09")
+
     def test_cap_can_be_disabled(self):
         # kills: hardcoding the cap so an operator cannot restore prior behaviour
         p = X.PricingPolicy(free_below="0.005", bps=10, min_fee="0.001",

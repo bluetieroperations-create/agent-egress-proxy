@@ -714,17 +714,52 @@ class PricingPolicy:
     whatever the ratio says). It is no longer what keeps the fee curve sane.
     """
 
+    @staticmethod
+    def _config(name, value):
+        """Parse a pricing constant, or raise at CONSTRUCTION.
+
+        Every one of these arrives from an env var. Audit 2026-08-30 found the
+        whole policy accepted values that fail LATER or not at all:
+
+          * `nan` parses as a valid Decimal on free_below / bps / min_fee, then
+            raises InvalidOperation on EVERY priced request -- a config that is
+            valid at boot and fatal at runtime, so the banner reports a healthy
+            service that 500s the moment anyone is billed.
+          * negative values pass silently. `bps=-1` and `min_fee=-1` both produce
+            a fee; and a negative `max_fee_ratio_bps` fails the `> 0` guard, which
+            SILENTLY DISABLES the proportionality invariant. Nobody writes -100
+            meaning "off" -- that is a typo or a sign error turning a protection
+            off with no signal, the exact shape this codebase keeps finding.
+
+        So: fail LOUD at boot. Same policy receipt_signer already uses for a
+        malformed signing seed -- a set-but-invalid value means the operator
+        intended the feature, and guessing what they meant is worse than stopping.
+        Exactly 0 stays a legal, documented disable for the ratio cap.
+        """
+        try:
+            d = Decimal(str(value))
+        except (InvalidOperation, ValueError, TypeError):
+            raise ValueError("pricing: %s=%r is not a number" % (name, value))
+        if not d.is_finite():
+            raise ValueError("pricing: %s=%r is not finite" % (name, value))
+        if d < 0:
+            hint = (" If you meant to disable the cap, set it to 0 explicitly."
+                    if name == "max_fee_ratio_bps" else "")
+            raise ValueError("pricing: %s=%r is negative.%s" % (name, value, hint))
+        return d
+
     def __init__(self, decimals=6, free_below="1.00", bps=10,
                  min_fee="0.001", max_fee="0.10", max_fee_ratio_bps=100):
         self.decimals = int(decimals)
-        self.free_below = Decimal(str(free_below))
-        self.bps = Decimal(str(bps))            # basis points: 10 = 0.1%
-        self.min_fee = Decimal(str(min_fee))
-        self.max_fee = Decimal(str(max_fee))
+        self.free_below = self._config("free_below", free_below)
+        self.bps = self._config("bps", bps)     # basis points: 10 = 0.1%
+        self.min_fee = self._config("min_fee", min_fee)
+        self.max_fee = self._config("max_fee", max_fee)
         # Hard ceiling on the fee as a fraction of the amount at risk. 100 bps
-        # = 1%. Set to 0 to disable (restores the unbounded pre-2026-08-30
-        # behaviour; there is no good reason to).
-        self.max_fee_ratio_bps = Decimal(str(max_fee_ratio_bps))
+        # = 1%. Set to exactly 0 to disable (restores the unbounded
+        # pre-2026-08-30 behaviour; there is no good reason to).
+        self.max_fee_ratio_bps = self._config("max_fee_ratio_bps",
+                                              max_fee_ratio_bps)
         self._q = Decimal(1).scaleb(-self.decimals)  # quantization unit
 
     def fee_atomic(self, amount_at_risk):
