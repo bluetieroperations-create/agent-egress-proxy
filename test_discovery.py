@@ -624,8 +624,39 @@ class TestIdentityDiscriminators(unittest.TestCase):
         signals = D.build_descriptor()["signals"]
         for s in ("counterparty-reputation", "price-anomaly", "sybil-structure",
                   "payload-simulation", "permit2-allowance", "calldata-drainer",
-                  "secret-exfiltration", "evidence-confidence"):
+                  "secret-exfiltration", "payee-syntax", "evidence-confidence"):
             self.assertIn(s, signals)
+
+    def test_the_always_on_list_matches_what_a_bare_verdict_actually_emits(self):
+        """The list above is hand-maintained, so it drifts the moment two branches
+        land in parallel -- which is exactly how `payee-syntax` came to be missing
+        from it. This derives the answer instead of restating it: every advertised
+        always-on signal must be one a BARE forecast, with no optional source
+        wired, really produces.
+
+        kills: advertising a gate this deployment does not run, and (with the
+        test above) the reverse -- running one it does not advertise.
+        """
+        import blackwall
+
+        class _Empty:
+            def lookup(self, counterparty):
+                return {}
+
+        verdict, err = blackwall.forecast(
+            {"counterparty": "0x" + "1" * 40, "amount": "0.05",
+             "asset": "USDC", "chain": "eip155:8453"}, _Empty())
+        self.assertIsNone(err)
+        emitted = set(verdict["signals"])
+        # The descriptor's labels are kebab-case names for signal keys; only the
+        # ones that map to a key a bare verdict emits are checked here.
+        for label, key in (("counterparty-reputation", "counterparty_reputation"),
+                           ("price-anomaly", "price_anomaly"),
+                           ("secret-exfiltration", "secret_scan"),
+                           ("payee-syntax", "payee_syntax")):
+            self.assertIn(label, D.build_descriptor()["signals"])
+            self.assertIn(key, emitted,
+                          "advertised always-on but absent from a bare verdict: %s" % label)
 
     def test_configured_signals_are_not_claimed_when_off(self):
         # The restraint half: claiming a gate this deployment does not run is the

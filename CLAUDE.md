@@ -368,7 +368,13 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   nothing. HOLD-only, never STOP
   (defensible but declined pending real request traffic), fail-open, pure, 1.5us.
   Redteam: 2 attacks (the glued payee, the non-breaking-space evasion) + 1
-  restraint control (a raw base58 Solana payee must not be condemned).
+  restraint control (a raw base58 Solana payee must not be condemned). ALWAYS-ON,
+  so it is advertised in `discovery.py`'s signal list -- it was missing at first
+  because #42 and #43 landed in parallel, which is why `test_discovery.py` now
+  DERIVES that list from a bare verdict instead of restating it. Also the fifth
+  scenario in `integrations/agentcore/demo.py`, the sharpest form of that demo's
+  claim: AgentCore forwards `payTo` VERBATIM into the signature, so it never asks
+  whether the payee is an address at all.
   Tests: `test_payee_syntax.py`),
   `http_util.py` (hardened JSON GET for the live data path: retry+backoff on
   transient 429/5xx/timeout -- honors `Retry-After`, permanent 4xx not retried --

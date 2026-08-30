@@ -449,3 +449,47 @@ class TestAtomicAmountsBecomeHumanOnes(unittest.TestCase):
         # Kills: a check so strict it rejects a value that is unambiguous.
         c = G.claim_from_process_payment(x402_request(payload={"amount": " 50000 "}))
         self.assertEqual(c["amount"], "0.05")
+
+
+class TestTheDemoScenarios(unittest.TestCase):
+    """demo.py is the artifact people actually run, and nothing guarded it.
+
+    It hits the live service, so its OUTPUT cannot be asserted here. Its
+    PREMISES can, and they are the parts that rot silently: a scenario whose
+    payee is no longer malformed, or a ranking keyword that no longer matches
+    the reason text, both still print a clean-looking table.
+    """
+
+    def setUp(self):
+        import demo
+        self.demo = demo
+
+    def test_the_malformed_scenario_really_is_malformed(self):
+        # Kills: the scenario decaying into an ordinary cold-start HOLD, which
+        # looks identical in the demo output and demonstrates nothing.
+        import payee_syntax
+        grade = payee_syntax.assess_payee(self.demo.MALFORMED)["grade"]
+        self.assertEqual(grade, payee_syntax.MALFORMED)
+
+    def test_the_clean_merchant_is_not_swept_up_by_the_same_rule(self):
+        # Kills: a MALFORMED constant built so loosely the control fails too.
+        import payee_syntax
+        self.assertEqual(payee_syntax.assess_payee(self.demo.ESTABLISHED)["grade"],
+                         payee_syntax.OK)
+
+    def test_the_ranking_keyword_matches_the_reason_the_engine_emits(self):
+        # Kills: the keyword drifting from the reason text. The demo ranks
+        # reasons by KEYWORDS and prints only the top two; a keyword that
+        # matches nothing buries the payee reason under settlement counts and
+        # the scenario silently stops making its point.
+        import payee_syntax
+        reason = payee_syntax.assess_payee(self.demo.MALFORMED)["reasons"][0]
+        self.assertIn(self.demo.KEYWORDS[0], reason)
+
+    def test_every_scenario_is_inside_the_session_the_demo_claims(self):
+        # Kills: a scenario AgentCore would refuse on its own. The whole
+        # comparison rests on AgentCore approving all of them -- one that falls
+        # outside the cap or the window would make the demo's closing claim false.
+        for title, _note, body in self.demo.SCENARIOS:
+            allowed, why = self.demo.agentcore_session_allows(body)
+            self.assertTrue(allowed, "%s -- %s" % (title, why))
