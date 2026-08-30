@@ -690,3 +690,34 @@ class TestKnownAssetOnAForeignChain(unittest.TestCase):
         payment = _payment(value="90000", asset=USDC, network="base")
         r = PS.check_payment_authorization(_claim(chain="base"), _b64(payment))
         self.assertNotIn("network", " ".join(r["mismatches"]))
+
+
+class TestXdcUsdc(unittest.TestCase):
+    """Added 2026-08-30 after `asset_coverage` surfaced it as unresolved on
+    api.402rates.com -- the first asset the coverage probe found that the table
+    did not already cover, which is the whole reason that probe exists.
+
+    Resolved under the reviewed procedure in docs/DECIMALS_AUDIT.md: read
+    `decimals()` from every public RPC chain 50 publishes. 7 of 7 answered, all
+    returned 6, symbol USDC.
+    """
+
+    XDC_USDC = "0xfA2958CB79b0491CC627c1557F441eF849Ca8eb1"
+
+    def test_it_resolves_on_its_own_chain(self):
+        # Kills: dropping the entry, which returns this asset to "unverified" and
+        # switches the amount check off for every XDC payment.
+        self.assertEqual(PS.known_decimals(
+            {"asset": self.XDC_USDC, "chain": "eip155:50"}), 6)
+
+    def test_the_same_address_on_another_chain_does_not_match(self):
+        # Kills: adding it to the address-only table. Chain 50 is not Base.
+        self.assertIsNone(PS.known_decimals(
+            {"asset": self.XDC_USDC, "chain": "eip155:8453"}))
+
+    def test_a_caller_cannot_rescale_it(self):
+        # Kills: letting request-supplied decimals win for a newly added asset --
+        # the same HIGH finding the chain table was built to close.
+        claim = {"asset": self.XDC_USDC, "chain": "eip155:50"}
+        self.assertEqual(PS.resolve_decimals(claim, 18), 6)
+        self.assertTrue(PS.decimals_conflict(claim, 18))

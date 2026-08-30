@@ -225,6 +225,10 @@ KNOWN_DECIMALS_BY_CHAIN = {
     ("eip155:1329", "0xe15fc38f6d8c56af07bbcbe3baf5708a2bf42392"): 6,   # USDC  Sei (1 rpc)
     ("eip155:42220", "0xceba9300f2b948710d2653dd7b07f33a8b32118c"): 6,  # USDC  Celo (1 rpc)
     ("eip155:1187947933", "0x85889c8c714505e0c94b30fcfcf64fe3ac8fcb20"): 6,  # USDC.e SKALE (1 rpc)
+    # Added 2026-08-30, surfaced by asset_coverage on api.402rates.com. Resolved
+    # under the reviewed procedure: read from EVERY public RPC chain 50 publishes.
+    # 7 of 7 answered and all agreed -- the widest agreement of any entry here.
+    ("eip155:50", "0xfa2958cb79b0491cc627c1557f441ef849ca8eb1"): 6,   # USDC  XDC (7 rpc)
     # testnets -- present in the live corpus, so scored like any other asset
     ("eip155:84532", "0x036cbd53842c5426634e7929541ec2318f3dcf7e"): 6,  # USDC  Base Sepolia
     ("eip155:80002", "0x41e94eb019c0762f9bfcf9fb1e58725bfb0e7582"): 6,  # USDC  Polygon Amoy
