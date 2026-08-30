@@ -329,6 +329,26 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   gap that reads as covered. CLI:
   `python asset_coverage.py data/liveness.json [--json report.json]`.
   Tests: `test_asset_coverage.py`),
+  `payee_syntax.py` (is the address the agent is about to PAY a possible address?
+  Found in the wild by `asset_coverage`: a live seller advertises a Solana `payTo`
+  with `FACILITATOR_URL=https://...` concatenated onto it -- almost certainly a
+  missing newline in a `.env` -- and a payment there cannot arrive. The engine
+  could not tell it from a clean one: MEASURED, that payee and a clean Solana
+  payee returned BYTE-IDENTICAL verdicts, both HOLD because the counterparty was
+  UNKNOWN rather than impossible. That HOLD clears the moment the payee has
+  history, and a broken address does not get better with settlements. TWO GRADES,
+  split on EVIDENCE not taste: `malformed` (content that cannot appear in an
+  identifier on ANY chain -- `://`, `=`, whitespace) GATES, because that is the
+  case found in the wild; `invalid_hex` (`0x` but not a valid EVM address) is
+  RECORDED and does NOT gate, because 0 of 558 real payees exhibit it, its only
+  real instance was an ASSET field, and gating it failed 15 tests across 8 modules
+  -- every one a synthetic placeholder like `0xKNOWNGOOD00...`. A rule whose only
+  hits are fixtures is not ready to refuse a payment. Chain-agnostic on purpose:
+  no base58/base32 guess that would condemn real Solana, Stellar and Algorand
+  payees. FALSE-FLAG RATE MEASURED BEFORE SHIPPING IT ON, the way sybil_ring
+  graduated: 0 of 558 (266 directory + 292 seed manifest). HOLD-only, never STOP
+  (defensible but declined pending real request traffic), fail-open, pure, 1.9us.
+  Tests: `test_payee_syntax.py`),
   `http_util.py` (hardened JSON GET for the live data path: retry+backoff on
   transient 429/5xx/timeout -- honors `Retry-After`, permanent 4xx not retried --
   plus a read-size cap; transport+clock injectable. Used by `chain_backfill`'s
@@ -686,7 +706,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_honeypot.py
+ test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_honeypot.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop
