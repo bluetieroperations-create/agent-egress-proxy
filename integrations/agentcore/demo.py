@@ -14,9 +14,8 @@ WHAT IS BEING COMPARED
                      here in `agentcore_session_allows` -- `limits.maxSpendAmount`
                      and `expiryTimeInMinutes`, and NOTHING else, because there is
                      nothing else. No payee allowlist, no counterparty screening,
-                     no price check. Read that function: it is nine lines, and you
-                     can check it against AWS's documentation line by line. This
-                     script does NOT call AWS.
+                     no price check. Read that function and check it against AWS's
+                     documentation line by line. This script does NOT call AWS.
 
   Blackwall column   a real verdict from the live service, through the SAME
                      adapter (`AgentCoreGuard`) a production integration uses.
@@ -63,9 +62,19 @@ def agentcore_session_allows(body, session=SESSION, now_minutes=0):
     if now_minutes >= session["expiryTimeInMinutes"]:
         return False, "session expired"
     payload = body["paymentInput"]["cryptoX402"]["payload"]
-    amount = int(payload.get("amount") or payload.get("maxAmountRequired") or 0)
+    atomic = payload.get("amount") or payload.get("maxAmountRequired") or "0"
+    # AUDIT: this divided by 1e6 unconditionally. Every scenario below is USDC so
+    # nothing visible broke -- but a function that claims to BE AgentCore's check
+    # has to be right for anyone who reads it, and an 18-decimal asset came out a
+    # trillion times too large and "over the cap". The scale comes from the same
+    # verified table the engine uses.
+    from payload_sim import known_decimals
+    decimals = known_decimals({"asset": payload.get("asset"),
+                               "chain": payload.get("network")})
+    if decimals is None:
+        return True, "amount not in a currency this check can scale"
+    spend = int(atomic) / (10 ** decimals)
     cap = float(session["maxSpendAmount"]["value"])
-    spend = amount / 1e6                          # USDC is 6 decimals
     if spend > cap:
         return False, "over the $%.2f session cap" % cap
     return True, "$%.2f of a $%.2f cap, session valid" % (spend, cap)

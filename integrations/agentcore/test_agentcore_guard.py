@@ -435,3 +435,17 @@ class TestAtomicAmountsBecomeHumanOnes(unittest.TestCase):
         self.assertEqual(c["amount"], "0.05")
         self.assertEqual(c["accepts"][0]["maxAmountRequired"], "50000")
         self.assertEqual(c["permit2AllowanceLimit"], "99999999")
+
+    def test_only_ascii_digits_are_read_as_an_amount(self):
+        # Kills: relying on int(), which accepts underscores, a leading `+` and
+        # other scripts' digits. AgentCore -- not this adapter -- decides what the
+        # payload says; if AWS's parser reads a spelling differently we would
+        # score one amount while a different one gets signed.
+        for spelling in ("1_000", "٣", "+50000", "0x10", "1e6"):
+            self.assertIsNone(G.claim_from_process_payment(
+                x402_request(payload={"amount": spelling})), spelling)
+
+    def test_surrounding_whitespace_is_still_tolerated(self):
+        # Kills: a check so strict it rejects a value that is unambiguous.
+        c = G.claim_from_process_payment(x402_request(payload={"amount": " 50000 "}))
+        self.assertEqual(c["amount"], "0.05")

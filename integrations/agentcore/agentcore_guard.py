@@ -173,6 +173,18 @@ def _human_amount(atomic, asset, network):
     a claim: guessing the scale is the single thing this codebase exists to
     prevent. That sends the request to the availability policy, the same answer
     this function already gives for an ambiguous `paymentType`.
+
+    KNOWN LIMITATION, stated because it is attacker-SELECTABLE rather than
+    accidental: the merchant chooses the asset, so a merchant can put a request on
+    the unscoreable path at will by quoting in a token we cannot identify. Under
+    the default FAIL_CLOSED that is refused, which is the right answer. Under
+    FAIL_OPEN it is allowed through unscreened -- so FAIL_OPEN here is not only
+    "allow when the service is down", it is also "allow when the merchant picks an
+    asset we do not know". An operator choosing FAIL_OPEN should know that is the
+    trade, and 97% of live corpus assets are identifiable today (see
+    asset_coverage.py). Widening the availability policy to distinguish the two
+    cases is a change to this module's stated posture, not a bug fix, so it is
+    named here rather than made silently.
     """
     if atomic is None:
         return None
@@ -180,12 +192,16 @@ def _human_amount(atomic, asset, network):
     decimals = known_decimals({"asset": asset, "chain": network})
     if decimals is None:
         return None
-    try:
-        units = int(str(atomic).strip())
-    except (TypeError, ValueError):
+    # ASCII digits only. `int()` also accepts underscores, a leading `+`, and
+    # other scripts' digits (`int("\u0663")` is 3) -- and AgentCore, not this
+    # adapter, decides what the payload says. If AWS's parser reads a spelling
+    # differently from Python's, we would score one amount while a different one
+    # gets signed, which is the single property this guard exists to have. So an
+    # amount we cannot read the same way a strict parser would is not scored.
+    text = str(atomic).strip()
+    if not text or not all("0" <= ch <= "9" for ch in text):
         return None
-    if units < 0:
-        return None
+    units = int(text)
     from decimal import Decimal
     return format(Decimal(units) / (Decimal(10) ** int(decimals)), "f")
 
