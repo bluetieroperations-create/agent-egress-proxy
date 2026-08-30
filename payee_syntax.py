@@ -2,13 +2,20 @@
 payee_syntax.py -- is the address the agent is about to pay a possible address?
 
 FOUND IN THE WILD, not imagined. `asset_coverage` probing the live x402 corpus
-turned up a seller advertising this as its Solana `payTo`:
+on 2026-08-30 turned up a seller advertising this as its Solana `payTo`:
 
     2DgEL95L8DtaRb4ubYqrrnMbX7Zxgjxq7k8Ed9XAWYcpFACILITATOR_URL=https://x402.org/facilitator
 
 A real address with an environment variable concatenated onto it -- almost
 certainly a missing newline in a `.env`. A payment there cannot arrive. The same
 seller also advertised a 39-character EVM asset address.
+
+STATED IN THE PAST TENSE ON PURPOSE: a re-probe of the same 195 hosts later that
+day found 0 malformed payees among the 175 that answered, with 20 silent. The
+seller either fixed it or went quiet, and which of those is unknown. That does
+not weaken the case for the gate -- one seller stopping does nothing about the
+next one -- but "a seller advertises this" would be a claim about right now, and
+the measurement does not support it.
 
 WHAT THE ENGINE DID ABOUT IT: nothing. Measured before writing this, and again in
 the tests below -- that payee and a clean Solana payee returned BYTE-IDENTICAL
@@ -26,7 +33,7 @@ TWO GRADES, AND ONLY ONE OF THEM GATES -- the split is evidence, not taste:
   malformed    content that cannot appear in an identifier on ANY chain (`://`,
                `=`, whitespace). This is the case found in the wild. GATES.
   invalid_hex  `0x`-prefixed but not a valid EVM address. RECORDED, NOT GATED:
-               0 of 558 real payees exhibit it, its only real instance was an
+               0 of 292 real payees exhibit it, its only real instance was an
                ASSET field rather than a payee, and turning it on as a gate
                failed 15 tests across 8 modules -- every one a synthetic
                placeholder like `0xKNOWNGOOD00...`. A rule whose only hits are
@@ -40,10 +47,14 @@ chain, and that is the only rule that gates. Everything else is UNKNOWN and
 passes -- we decline to judge formats we cannot check.
 
 MEASURED FALSE-FLAG RATE BEFORE SHIPPING IT ON, the way sybil_ring graduated:
-**0 of 558** real payees flagged -- 266 in `data/directory.json`, 292 in the seed
-manifest -- plus 0 of 7 hand-picked good shapes including Stellar's colon form
-(`USDC:GA5Z...`), raw base58, and EIP-55 checksummed hex. The one flagged string
-in the entire corpus is the broken one above.
+**0 of 292 DISTINCT** real payees flagged -- the union of `data/directory.json`
+(266), the seed manifest (292) and `data/liveness.json` (195), which overlap
+heavily -- plus 0 of 7 hand-picked good shapes including Stellar's colon form
+(`USDC:GA5Z...`), raw base58, and EIP-55 checksummed hex. AUDIT CORRECTION: this
+first claimed "0 of 558" by ADDING two sets that are nearly the same set. The
+number is re-derivable from committed artifacts by `test_payee_syntax.py`, which
+now computes the union rather than restating it -- a prevalence claim another
+session cannot reproduce is worth nothing.
 
 HOLD, NOT STOP, and the argument for STOP is deliberately declined for now. A
 syntactically impossible payee is a fact rather than an inference, so a STOP would
@@ -61,7 +72,36 @@ Pure, stdlib-only, fail-open. Folded into `decide_payment`/`forecast` via
 # prompted this module is an env-var assignment glued onto an address; note that
 # Algorand uses `=` in its base64 NETWORK id, which is a different field and is
 # never passed here.
-_IMPOSSIBLE = ("://", "=", " ", "\t", "\n", "\r", ",", ";", '"', "'", "<", ">")
+_IMPOSSIBLE = ("://", "=", ",", ";", '"', "'", "<", ">")
+
+
+def _impossible_char(ch):
+    """Whitespace or a non-printable, ANYWHERE in the identifier.
+
+    AUDIT FINDING (fixed): this was a literal tuple of ASCII spaces, so the
+    check was ASCII-only and the evasions were trivial -- a non-breaking space
+    (a Windows `.env`, a copy-paste out of a web page) or a zero-width space
+    glued a URL onto an address and graded `unknown`, which does not gate. The
+    same shape as the case found in the wild, and it walked straight through.
+    `isspace()` covers NBSP and the Unicode spaces; `not isprintable()` covers
+    NUL, vertical tab, form feed, the zero-width characters and the
+    bidirectional overrides -- a lookalike-address trick in its own right.
+    Measured on the corpus: 0 additional flags, so the widening is free.
+    """
+    return ch.isspace() or not ch.isprintable()
+
+
+def _safe_hint(text):
+    """A short, LOG-SAFE rendering of a merchant-controlled string.
+
+    AUDIT FINDING (fixed): the hint went into `reasons[]` raw, so a payee
+    carrying a newline forged a line in any plain-text log or CLI report that
+    prints a reason. JSON escapes it; a terminal does not. `repr` without the
+    surrounding quotes escapes control characters and leaves ordinary
+    addresses completely readable.
+    """
+    short = text if len(text) <= 24 else text[:16] + "..." + text[-4:]
+    return repr(short)[1:-1]
 
 OK = "ok"
 MALFORMED = "malformed"          # impossible content -- GATES
@@ -86,9 +126,10 @@ def assess_payee(counterparty):
     text = counterparty.strip()
     if not text:
         return out
-    out["hint"] = text if len(text) <= 24 else text[:16] + "..." + text[-4:]
+    out["hint"] = _safe_hint(text)
 
     bad = [token for token in _IMPOSSIBLE if token in text]
+    bad += sorted({ch for ch in text if _impossible_char(ch)})
     if bad:
         out["grade"] = MALFORMED
         out["reasons"].append(
@@ -104,8 +145,8 @@ def assess_payee(counterparty):
         if not is_evm_address(text):
             # RECORDED, NOT GATED, and the reason is evidence rather than taste.
             # The impossible-content rule above comes from a payee found in the
-            # wild. This one does not: 0 of 558 real payees (266 in
-            # data/directory.json, 292 in the seed manifest) are 0x-prefixed but
+            # wild. This one does not: 0 of 292 distinct real payees are
+            # 0x-prefixed but
             # invalid, and the only real instance of this shape was an ASSET
             # field, which asset_coverage already reports. Gating on it would be
             # reasoning by analogy, which is what the rest of this module
@@ -148,11 +189,17 @@ def apply_payee_syntax(verdict, signal, gate=True):
     v = dict(verdict)
     v["signals"] = dict(v.get("signals") or {})
     v["signals"]["payee_syntax"] = {"grade": grade, "payee": signal.get("hint")}
-    reasons = list(v.get("reasons") or [])
+    # `list(...)` on a string would splay it into characters, in the verdict and
+    # in the signal alike. Neither can happen through `assess_payee`, but this
+    # fold is exported and the cost of being sure is one isinstance.
+    existing = v.get("reasons")
+    reasons = list(existing) if isinstance(existing, (list, tuple)) else []
+    found = signal.get("reasons")
+    found = list(found) if isinstance(found, (list, tuple)) else []
     if grade == INVALID_HEX:
-        reasons.extend(signal.get("reasons") or [])
+        reasons.extend(found)
     if grade == MALFORMED:
-        reasons.extend(signal.get("reasons") or [])
+        reasons.extend(found)
         if gate and v.get("verdict") == "GO":
             v["verdict"] = "HOLD"
             reasons.append("escalated GO->HOLD: the payee is not a possible "

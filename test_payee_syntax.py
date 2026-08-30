@@ -88,19 +88,115 @@ class TestWhatItRefusesToJudge(unittest.TestCase):
             self.assertEqual(PSX.assess_payee(payee)["grade"], PSX.UNKNOWN, payee)
 
 
+def real_payees():
+    """Every distinct payee in the committed corpus.
+
+    The UNION, deliberately. The first version of this claim said "0 of 558" by
+    ADDING data/directory.json (266) to the seed manifest (292) -- two sets that
+    are nearly the same set. The honest denominator is the union: 292. Computing
+    it here rather than restating it is the point: a prevalence claim that
+    another session cannot re-derive from committed artifacts is worth nothing.
+    """
+    payees = set()
+    for name in ("data/directory.json", "data/liveness.json"):
+        with open(name) as handle:
+            for row in json.load(handle):
+                if row.get("payee"):
+                    payees.add(row["payee"])
+    for name in ("data/seed_payees.txt", "data/seed_payees_bake.txt"):
+        with open(name) as handle:
+            lines = handle.readlines()
+        for line in lines:
+            # The manifest carries an inline `# distinct=87  host` comment. An
+            # audit harness that forgot to strip it "found" 60 malformed payees
+            # -- every one of them the comment, not the address.
+            payee = line.split("#", 1)[0].strip()
+            if payee:
+                payees.add(payee)
+    return payees
+
+
 class TestNoFalseFlagsOnRealPayees(unittest.TestCase):
     """Measured before shipping this on rather than behind a lock, the way
     sybil_ring graduated. If this ever fails, the rule got greedy."""
 
-    def test_every_committed_directory_payee_passes(self):
-        # Kills: any rule that flags a real payee. 266 of them, all harvested
-        # from public on-chain history.
-        with open("data/directory.json") as handle:
-            payees = [row["payee"] for row in json.load(handle)]
-        flagged = [p for p in payees
-                   if PSX.assess_payee(p)["grade"] == PSX.MALFORMED]
+    def test_no_real_payee_is_flagged(self):
+        # Kills: any rule that flags a real payee -- the measurement that lets
+        # this gate ship ON rather than behind a reversibility lock.
+        payees = real_payees()
+        self.assertGreater(len(payees), 250, "corpus shrank; re-check the claim")
+        flagged = sorted(p for p in payees
+                         if PSX.assess_payee(p)["grade"] == PSX.MALFORMED)
         self.assertEqual(flagged, [], "false flags on real payees")
-        self.assertGreater(len(payees), 200, "corpus shrank; re-check the claim")
+
+    def test_the_widened_character_rule_costs_nothing_on_real_payees(self):
+        # Kills: widening to "any non-ASCII character" or any other rule that
+        # trades the evasion fix for false flags. The whitespace/non-printable
+        # rule is only shippable because its cost on the corpus is zero.
+        offenders = [p for p in real_payees()
+                     if any(PSX._impossible_char(c) for c in p.strip())]
+        self.assertEqual(offenders, [])
+
+
+class TestEvasionsOfTheImpossibleRule(unittest.TestCase):
+    """AUDIT: the impossible-content set was a tuple of ASCII spaces, so the
+    check was ASCII-only. Each of these glued junk onto an address and graded
+    `unknown`, which does not gate -- the same shape as the case found in the
+    wild, walking straight through."""
+
+    GLUED_ONTO = "2DgEL95L8DtaRb4ubYqrrnMbX7Zxgjxq%sFACILITATOR_URL"
+
+    def test_a_non_breaking_space_does_not_evade(self):
+        # Kills: reverting to a literal ASCII-space tuple. A Windows `.env` or
+        # a copy-paste out of a rendered web page produces exactly this.
+        self.assertEqual(
+            PSX.assess_payee(self.GLUED_ONTO % "\u00a0")["grade"], PSX.MALFORMED)
+
+    def test_a_zero_width_space_does_not_evade(self):
+        # Kills: checking only `isspace()`. U+200B is not whitespace to Python;
+        # it is invisible to a human reading the address.
+        self.assertEqual(
+            PSX.assess_payee(self.GLUED_ONTO % "\u200b")["grade"], PSX.MALFORMED)
+
+    def test_control_characters_are_impossible_not_merely_invalid_hex(self):
+        # Kills: letting a NUL or vertical tab fall through to the 0x branch,
+        # where it graded `invalid_hex` -- recorded, and NOT gated.
+        for glue in ("\x00", "\x0b", "\x0c"):
+            payee = "0x480cd46e6fade651a0437deadda53d5c8e7d846a" + glue + "junk"
+            self.assertEqual(PSX.assess_payee(payee)["grade"], PSX.MALFORMED, glue)
+
+    def test_a_bidi_override_is_impossible(self):
+        # Kills: ignoring the invisible direction controls. U+202E reorders how
+        # an address RENDERS, which is a lookalike-payee trick in its own right.
+        self.assertEqual(
+            PSX.assess_payee("0x480cd46e6fade651a0437deadda53d5c8e7d846a\u202ejunk")["grade"],
+            PSX.MALFORMED)
+
+    def test_ordinary_padding_is_still_not_a_defect(self):
+        # Kills: applying the character rule before stripping. A payee arriving
+        # with leading or trailing spaces is untidy, not impossible.
+        self.assertEqual(
+            PSX.assess_payee("  0x480cd46e6fade651a0437deadda53d5c8e7d846a  ")["grade"],
+            PSX.OK)
+
+
+class TestTheHintIsLogSafe(unittest.TestCase):
+    """AUDIT: the hint went into `reasons[]` raw, so a payee carrying a newline
+    forged a line in any plain-text log or CLI report printing a reason. JSON
+    escapes it; a terminal does not."""
+
+    def test_a_newline_in_a_payee_cannot_forge_a_log_line(self):
+        # Kills: embedding the merchant's string unescaped.
+        out = PSX.assess_payee("0x480cd46e\nDANGER")
+        self.assertNotIn("\n", out["hint"])
+        self.assertNotIn("\n", out["reasons"][0])
+        self.assertIn("\\n", out["hint"])
+
+    def test_an_ordinary_address_is_still_completely_readable(self):
+        # Kills: escaping so aggressively the operator cannot recognise the
+        # payee. The hint exists to be acted on.
+        self.assertEqual(PSX.assess_payee(GOOD_EVM)["hint"],
+                         GOOD_EVM[:16] + "..." + GOOD_EVM[-4:])
 
 
 class TestTheFold(unittest.TestCase):
@@ -166,6 +262,16 @@ class TestTheFold(unittest.TestCase):
             self.assertEqual(PSX.apply_payee_syntax(self._go(), bad)["verdict"], "GO")
         for verdict in (None, "x", 7, []):
             PSX.apply_payee_syntax(verdict, PSX.assess_payee(GLUED))
+
+    def test_a_string_reasons_field_is_not_splayed_into_characters(self):
+        # Kills: `list(v["reasons"])` on a string, which turned one malformed
+        # reason into one reason PER CHARACTER -- in the verdict and in the
+        # signal alike. Unreachable through assess_payee; this fold is exported.
+        out = PSX.apply_payee_syntax(
+            {"verdict": "GO", "reasons": "notalist", "signals": {}},
+            {"grade": PSX.MALFORMED, "reasons": "alsonotalist"})
+        self.assertEqual(out["verdict"], "HOLD")
+        self.assertEqual(len(out["reasons"]), 1)
 
 
 class TestNeverRaises(unittest.TestCase):

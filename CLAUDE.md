@@ -330,24 +330,45 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `python asset_coverage.py data/liveness.json [--json report.json]`.
   Tests: `test_asset_coverage.py`),
   `payee_syntax.py` (is the address the agent is about to PAY a possible address?
-  Found in the wild by `asset_coverage`: a live seller advertises a Solana `payTo`
-  with `FACILITATOR_URL=https://...` concatenated onto it -- almost certainly a
-  missing newline in a `.env` -- and a payment there cannot arrive. The engine
+  Found in the wild by `asset_coverage` on 2026-08-30: a live seller advertised a
+  Solana `payTo` with `FACILITATOR_URL=https://...` concatenated onto it -- almost
+  certainly a missing newline in a `.env` -- and a payment there cannot arrive.
+  PAST TENSE ON PURPOSE: a re-probe of the same 195 hosts later that day found 0
+  malformed payees among the 175 that answered (20 silent), so the seller either
+  fixed it or went quiet; the gate is for the NEXT one. The engine
   could not tell it from a clean one: MEASURED, that payee and a clean Solana
   payee returned BYTE-IDENTICAL verdicts, both HOLD because the counterparty was
   UNKNOWN rather than impossible. That HOLD clears the moment the payee has
   history, and a broken address does not get better with settlements. TWO GRADES,
   split on EVIDENCE not taste: `malformed` (content that cannot appear in an
-  identifier on ANY chain -- `://`, `=`, whitespace) GATES, because that is the
+  identifier on ANY chain -- `://`, `=`, and any whitespace or non-printable
+  character) GATES, because that is the
   case found in the wild; `invalid_hex` (`0x` but not a valid EVM address) is
-  RECORDED and does NOT gate, because 0 of 558 real payees exhibit it, its only
+  RECORDED and does NOT gate, because 0 of 292 real payees exhibit it, its only
   real instance was an ASSET field, and gating it failed 15 tests across 8 modules
   -- every one a synthetic placeholder like `0xKNOWNGOOD00...`. A rule whose only
   hits are fixtures is not ready to refuse a payment. Chain-agnostic on purpose:
   no base58/base32 guess that would condemn real Solana, Stellar and Algorand
-  payees. FALSE-FLAG RATE MEASURED BEFORE SHIPPING IT ON, the way sybil_ring
-  graduated: 0 of 558 (266 directory + 292 seed manifest). HOLD-only, never STOP
-  (defensible but declined pending real request traffic), fail-open, pure, 1.9us.
+  payees. AUDIT FINDINGS (both fixed): the impossible-content rule was a literal
+  tuple of ASCII spaces, so it was ASCII-ONLY -- a NON-BREAKING space (a Windows
+  `.env`, a copy-paste out of a rendered page) or a ZERO-WIDTH space glued a URL
+  onto an address and graded `unknown`, which does not gate; the same shape as the
+  case found in the wild, walking straight through. Now `isspace() or not
+  isprintable()`, which also covers NUL, the bidi overrides (a lookalike-address
+  trick in its own right) and the zero-width characters, measured at 0 additional
+  corpus flags. And the redacted `hint` went into `reasons[]` RAW, so a payee
+  carrying a newline forged a line in any plain-text log printing a reason (JSON
+  escapes it; a terminal does not) -- now escaped. FALSE-FLAG RATE MEASURED BEFORE
+  SHIPPING IT ON, the way sybil_ring graduated: 0 of 292 DISTINCT real payees.
+  AUDIT CORRECTION: this first said "0 of 558" by ADDING directory.json (266) to
+  the seed manifest (292), two sets that are nearly the SAME set -- the union is
+  292, so the claim overstated its own evidence 1.9x. `test_payee_syntax.py` now
+  COMPUTES the union from committed artifacts rather than restating a number, on
+  the principle that a prevalence claim another session cannot reproduce is worth
+  nothing. HOLD-only, never STOP
+  (defensible but declined pending real request traffic), fail-open, pure, 1.5us.
+  Redteam: 2 attacks (the glued payee, the non-breaking-space evasion) + 1
+  restraint control (a raw base58 Solana payee must not be condemned).
   Tests: `test_payee_syntax.py`),
   `http_util.py` (hardened JSON GET for the live data path: retry+backoff on
   transient 429/5xx/timeout -- honors `Retry-After`, permanent 4xx not retried --
@@ -727,7 +748,7 @@ underfunded payer does not gate, and an unreachable RPC fails OPEN. `test_redtea
 guards it -- the caught set may not shrink, no control may become a false positive, and
 any attack that gets GO must be an EXPLICIT `known_gap`. MUTATION-VERIFIED: disabling the
 settlement escalation, the auth replay gate, or the control-attribution each makes the
-suite fail by name. Current: 27 attacks caught, 2 documented gaps, 0 false positives.
+suite fail by name. Current: 30 attacks caught, 2 documented gaps, 0 false positives.
 
 ## Standing working practice: ALWAYS deep audit → eval → verify
 
