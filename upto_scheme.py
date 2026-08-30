@@ -229,16 +229,32 @@ def apply_excessive(verdict, signal, gates=None):
     gates = EXCESSIVE_GATES if gates is None else gates
     if not isinstance(signal, dict) or signal.get("status") != "excessive":
         return verdict
-    v = dict(verdict or {})
-    v["signals"] = dict(v.get("signals") or {})
+    # A verdict we cannot read is returned untouched rather than rebuilt from
+    # junk. `forecast` has no try/except around this fold, so raising here would
+    # surface as a 503 on a request the engine could otherwise answer -- and every
+    # other fold in this codebase is documented as never raising.
+    if not isinstance(verdict, dict):
+        return verdict
+    v = dict(verdict)
+    signals = v.get("signals")
+    v["signals"] = dict(signals) if isinstance(signals, dict) else {}
     v["signals"]["upto_allowance"] = {
         "status": "excessive",
         "allowance": signal.get("allowance"),
         "ceiling": signal.get("ceiling"),
         "gated": bool(gates),
     }
-    reasons = list(v.get("reasons") or [])
-    reasons.extend(signal.get("warnings") or [])
+    existing = v.get("reasons")
+    reasons = list(existing) if isinstance(existing, (list, tuple)) else []
+    # IDEMPOTENT on the signal's own warnings. `forecast` already extends reasons
+    # with upto_check["warnings"] before calling this, so adding them
+    # unconditionally printed the same exposure TWICE -- which is how a reason
+    # list stops being read. Adding only what is missing is correct for both
+    # callers: the fold stays self-contained for a direct caller, and adds
+    # nothing the pipeline already surfaced.
+    for warning in signal.get("warnings") or []:
+        if warning not in reasons:
+            reasons.append(warning)
     if gates and v.get("verdict") == "GO":
         v["verdict"] = "HOLD"
         reasons.append(

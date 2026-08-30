@@ -204,6 +204,57 @@ class TestExcessiveGate(unittest.TestCase):
                              "apply_excessive handles `excessive` only; the hard "
                              "STOP travels as a mismatch")
 
+    def test_does_not_duplicate_a_warning_the_caller_already_added(self):
+        """`forecast` already extends reasons with upto_check["warnings"] via
+        sim_warnings, so re-adding them here printed the same line twice.
+
+        Found by auditing this change: the operator sees one exposure reported as
+        two, which is how a reason list stops being read.
+
+        Mutation: extend reasons with signal["warnings"] here -> this FAILS.
+        """
+        sig = self._signal()
+        already = list(sig["warnings"])          # the caller added these
+        v = U.apply_excessive({"verdict": "GO", "reasons": already},
+                              sig, gates=False)
+        self.assertEqual(len(v["reasons"]), len(already),
+                         "apply_excessive must not restate the caller's warnings")
+
+    def test_still_reports_when_the_caller_added_nothing(self):
+        # kills: relying on the caller to have added the warning -- a direct
+        # caller of apply_excessive must still see why it gated
+        v = U.apply_excessive({"verdict": "GO", "reasons": []},
+                              self._signal(), gates=True)
+        self.assertTrue(any("escalated GO->HOLD" in r for r in v["reasons"]))
+
+    def test_never_raises_on_a_malformed_verdict(self):
+        """A fold must not turn a recoverable verdict into a 503.
+
+        Found by auditing this change: `dict(v.get("signals") or {})` raised on a
+        non-dict `signals`, and `dict(verdict)` raised on a non-dict verdict --
+        6 of 64 malformed combinations. Every other fold here is documented as
+        never raising, and `forecast` has no try/except around this one, so the
+        exception would surface as a 503 from a request the engine could have
+        answered.
+
+        Mutation: drop the isinstance guards -> this FAILS.
+        """
+        sig = self._signal()
+        for verdict in (None, {}, {"verdict": None}, {"reasons": "notalist"},
+                        {"signals": "nope"}, 5, [], "x", 1.5, True):
+            for signal in (None, {}, sig, {"status": "excessive"},
+                           {"status": "excessive", "warnings": "str"},
+                           {"status": 123}, [], "x", 7):
+                U.apply_excessive(verdict, signal, gates=True)
+                U.apply_excessive(verdict, signal, gates=False)
+
+    def test_a_malformed_verdict_is_returned_untouched(self):
+        # kills: manufacturing a verdict out of junk -- if we cannot read it, the
+        # caller's object is what it was
+        for verdict in (None, 5, "x", []):
+            self.assertIs(U.apply_excessive(verdict, self._signal(), gates=True),
+                          verdict)
+
     def test_pure_does_not_mutate_the_input(self):
         v0 = {"verdict": "GO", "reasons": []}
         U.apply_excessive(v0, self._signal(), gates=True)
