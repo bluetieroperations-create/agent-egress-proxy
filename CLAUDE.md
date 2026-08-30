@@ -269,6 +269,29 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   corroboration, outcome/dispute depth, freshness. PURE + DESCRIPTIVE -- never
   changes the verdict; folded into every `decide_payment` response as `confidence`
   so a caller can tell a GO on real history from a cold-start default),
+  `asset_coverage.py` (does the decimals table still cover what the ecosystem
+  QUOTES? `KNOWN_DECIMALS_BY_CHAIN` is a SNAPSHOT of one day's corpus; an asset
+  missing from it resolves to unknown -- safe, but the amount check is off for
+  that payment, and nothing told us when that started. One pass over the live
+  hosts answers three questions: COVERAGE (which (network, asset) pairs we cannot
+  scale, with the hosts that introduced them -- the work list), DRIFT (a BROKEN
+  identifier is separated from a merely unknown one), and SANITY (with the table
+  applied, does every quote land at a plausible price? a wrong entry shows up as
+  an absurd implied price -- this is how the corpus corroborated Stellar's 7).
+  DELIBERATELY does NOT resolve on-chain and write the table: that table gates
+  payments, and a scale from a single public RPC is a value that RPC's operator
+  chose, so resolution stays a REVIEWED step (read every public RPC the chain
+  lists, require agreement -- see docs/DECIMALS_AUDIT.md). Reuses
+  `payload_sim.known_decimals` as the injected resolver (so the report is the
+  ENGINE's answer, not a reimplementation) and `upto_scheme.parse_ceiling` for
+  the atomic-vs-human rule (load-bearing there, must not drift). Exits 1 when a
+  person should look, so a scheduled run is actionable without reading it. FIRST
+  LIVE RUN found two seller bugs on one host: a BSC asset truncated to 39 hex
+  chars, and a Solana `payTo` with `FACILITATOR_URL=https://...` concatenated
+  onto it -- the address an agent would PAY. Both fail safe in the engine
+  (decimals unknown; `normalize_address` returns None). CLI:
+  `python asset_coverage.py data/liveness.json [--json report.json]`.
+  Tests: `test_asset_coverage.py`),
   `http_util.py` (hardened JSON GET for the live data path: retry+backoff on
   transient 429/5xx/timeout -- honors `Retry-After`, permanent 4xx not retried --
   plus a read-size cap; transport+clock injectable. Used by `chain_backfill`'s
@@ -583,7 +606,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py
+ test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop
