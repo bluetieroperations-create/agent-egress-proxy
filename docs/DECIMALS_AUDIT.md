@@ -482,3 +482,53 @@ guessing where it cannot.
 | Suppression attack | reproduced with a caller-chosen scale; blocked by passing verified decimals |
 | Hostile input | 12 crafted ceilings + 8 malformed payloads, no raise |
 | Live HTTP path | v2 quote + 1000x → warning; +10x → clean; + unlimited → **STOP**; v1 quote still works; `exact` scheme ungated |
+
+
+## Audit of the fix itself — two suppression vectors, in my own code
+
+Probing `parse_ceiling` with hostile ceilings found that its first version was
+wrong in the dangerous direction. The docstring claimed a discrimination rule —
+"only a value `parse_allowance` could not read reaches the scaling branch" — that
+was true but said nothing about what such a value had to **look like**, and
+`Decimal` accepts far more than a price.
+
+| Ceiling | Was | Now |
+|---|---|---|
+| `"1e999"` | scaled to a **1000-digit** ceiling → `status: ok`, **warning silenced** | `unknown` |
+| `"1e6"` | read as 1e6 **tokens** — inflating an atomic quote by a further 10⁶ | `unknown` |
+| `True` | already `None` (their `parse_allowance` rejects bools) | `unknown` |
+
+`"1e6"` is the worse of the two precisely because it looks plausible. And the
+ceiling arrives in the 402 challenge — it is **the screened party's own input**
+— so inflating it is exactly how you switch this check off.
+
+Fixed by stating the human-unit form explicitly: **digits, one point, digits**,
+matched with `[0-9]` rather than `\d` (which also matches other scripts' digits;
+`int("\u0663")` is 3, and a quote should not depend on the script it was written
+in). Exponents, hex, `inf`/`nan`, underscores, signs and a bare leading `.` are
+not prices we recognise, so they stay `unknown` and the gate does not run.
+
+Two behaviours left alone, both in the **safe** direction (a smaller ceiling
+means more warnings, never fewer): `parse_allowance` reads `"0x10"` as 16 and
+`"1_000"` as 1000, and `Decimal`'s 28-digit context rounds a 40-nine fraction up
+by less than one unit in the last place.
+
+## Interaction with the `Payment` and `MPP` carriers (#27)
+
+Landed under this work; both were checked against the ceiling extractor:
+
+* **`Payment`** emits `maxAmountRequired` *and* `amount`, so it reads either way.
+* **`MPP`** passes through `accepts_of` into the v2 shape — `amount` only. The
+  old extractor would not have read it at all. Every MPP challenge is readable
+  only because of the field-name fix above.
+
+## Verification of the fix
+
+| Check | Result |
+|---|---|
+| Full root suite | **1,794 green** (19 new tests) |
+| Adversarial scorecard | 26 caught, 2 known gaps, 9 clean, **0 false positives**, 0 misses |
+| Ceiling coverage on the live corpus | **9.4% → 100%**, unchanged by the tightening |
+| Monotonicity sweep | 6 ceiling shapes, **0 regressions** |
+| Hostile ceilings | 18 forms; every non-price stays `unknown` |
+| New carriers | `Payment` and `MPP` challenges both yield a readable ceiling |

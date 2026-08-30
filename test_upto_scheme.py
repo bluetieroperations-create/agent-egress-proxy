@@ -348,3 +348,52 @@ class TestUptoCeilingReadsTheV2FieldName(unittest.TestCase):
         self.assertEqual(
             blackwall._upto_ceiling(
                 {"accepts": [{"amount": "7", "maxAmountRequired": "9"}]}, {}), "7")
+
+
+class TestCeilingCannotBeInflatedToSilenceTheWarning(unittest.TestCase):
+    """AUDIT 2026-08-29 (MEDIUM, in parse_ceiling's first version): the scaling
+    branch accepted anything `Decimal` accepted. The ceiling comes from the 402
+    challenge -- the screened party's own input -- and INFLATING it is exactly
+    how the excessive-allowance warning gets switched off.
+    """
+
+    ALLOW = str(10 ** 9)          # far beyond any honest ceiling here
+
+    def _status(self, ceiling):
+        return U.assess_upto("upto", max_amount=ceiling,
+                             allowance=self.ALLOW, decimals=6)["status"]
+
+    def test_exponent_notation_cannot_manufacture_a_huge_ceiling(self):
+        # Kills: passing the raw value to Decimal. "1e999" scaled to a
+        # 1000-digit ceiling and the warning went quiet (status "ok").
+        self.assertIsNone(U.parse_ceiling("1e999", 6))
+        self.assertEqual(self._status("1e999"), "unknown")
+
+    def test_plausible_exponent_is_also_refused(self):
+        # Kills: blocking only absurd exponents. "1e6" is the dangerous one --
+        # it reads as a real price while inflating an atomic quote by 10^6.
+        self.assertIsNone(U.parse_ceiling("1e6", 6))
+
+    def test_a_real_human_quote_still_scales(self):
+        # Kills: tightening the pattern until the case this exists for stops
+        # working. This is the shape one live seller actually sends.
+        self.assertEqual(U.parse_ceiling("0.00335", 6), 3350)
+        self.assertEqual(self._status("0.00335"), "excessive")
+
+    def test_only_ascii_digits_qualify(self):
+        # Kills: using `\d`, which matches other scripts' digits -- int("٣")
+        # is 3, so a quote's value would depend on the script it was written in.
+        self.assertIsNone(U.parse_ceiling("٣.٤", 6))
+
+    def test_non_price_forms_stay_unknown(self):
+        # Kills: widening the pattern. None of these is a price, and each one
+        # that parsed would be an attacker-chosen ceiling.
+        for junk in ("inf", "nan", "NaN", "-1.5", ".5", "1.", "0x1.8",
+                     "1_0.5", "+1.5", "1.5e3", ""):
+            self.assertIsNone(U.parse_ceiling(junk, 6), junk)
+
+    def test_a_bool_is_never_a_ceiling(self):
+        # Kills: an isinstance(x, int) check that lets bool through -- True
+        # would become 10^decimals, a ceiling out of nothing.
+        self.assertIsNone(U.parse_ceiling(True, 6))
+        self.assertIsNone(U.parse_ceiling(False, 6))

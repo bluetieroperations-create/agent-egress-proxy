@@ -45,7 +45,13 @@ from __future__ import annotations
 # uint160-max. Both are unlimited in practice, and calldata.py already treats
 # anything at or above 2**128 as unlimited -- reused so the two modules cannot
 # drift into disagreeing about what "unlimited" means.
+import re
+
 from calldata import UNLIMITED_MIN
+
+# A human-unit price: digits, one decimal point, digits. Deliberately narrow --
+# see parse_ceiling. `[0-9]` rather than `\d` so only ASCII digits qualify.
+_HUMAN_QUOTE = re.compile(r"^[0-9]+\.[0-9]+$")
 
 # How far above the quoted ceiling an allowance may sit before it is worth a
 # HOLD. Deliberately generous: approving once and metering many calls under the
@@ -155,10 +161,29 @@ def parse_ceiling(max_amount, decimals=None):
     atomic = parse_allowance(max_amount)
     if atomic is not None:
         return atomic
-    if decimals is None or not isinstance(max_amount, (str, int, float)):
+    if decimals is None:
+        return None
+    # AUDIT FINDING (2026-08-29, MEDIUM -- in this function's first version).
+    # "Only a value parse_allowance could not read reaches the scaling branch"
+    # was true, but nothing said what such a value had to LOOK like, and
+    # `Decimal` accepts far more than a human price. A seller-authored `"1e999"`
+    # scaled to a ceiling with 1000 digits and the excessive-allowance warning
+    # went quiet -- `status: ok`. `"1e6"` was worse for being plausible: read as
+    # 1e6 TOKENS, it inflated a 1,000,000-atomic quote by a further 10^6. The
+    # ceiling comes from the 402 challenge, so it is the screened party's own
+    # input, and inflating it is exactly how you switch this check off.
+    #
+    # So the human-unit form is now stated explicitly: digits, one point, digits.
+    # `[0-9]` not `\d`, because `\d` also matches other scripts' digits and
+    # `int("\u0663")` is 3 -- a quote should not depend on that. Anything else
+    # (exponents, hex, inf/nan, underscores, a leading `.`, a sign) is NOT a
+    # price we recognise, so it stays unknown and the gate simply does not run.
+    text = max_amount if isinstance(max_amount, str) else (
+        repr(max_amount) if isinstance(max_amount, float) else None)
+    if text is None or not _HUMAN_QUOTE.match(text.strip()):
         return None
     from x402 import to_atomic          # deferred: x402 is the base module
-    return to_atomic(max_amount, decimals)
+    return to_atomic(text.strip(), decimals)
 
 
 def assess_upto(scheme, max_amount=None, allowance=None, decimals=None):
