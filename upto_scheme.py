@@ -86,8 +86,19 @@ SCHEME = "upto"
 # The intent was always to escalate, never to STOP, so the code now expresses it.
 # It ships OFF because turning it on changes live verdicts and the false-HOLD rate
 # is unmeasured: EXCESSIVE_RATIO is deliberately generous at 100x, but "generous"
-# is a design claim, not a measurement. Flip once the shipped corpus shows the
-# rate, the way sybil_ring graduated.
+# is a design claim, not a measurement.
+#
+# CORRECTED graduation rule (2026-08-30). This used to say "flip once the shipped
+# corpus shows the rate, the way sybil_ring graduated". That is NOT AVAILABLE and
+# never will be. `sybil_ring` could graduate off the corpus because its input --
+# payee reputation -- is IN the corpus. An allowance is not and cannot be: it is
+# PAYER-SIDE. The wallet chooses it, and it appears in a ProcessPayment request,
+# never in a 402 challenge, so no amount of crawling sellers will ever produce a
+# ratio distribution. Sellers advertise only `extra.assetTransferMethod`.
+# The honest gate is therefore N REAL REQUESTS through the API with a measured
+# ratio distribution -- production traffic, not observation. Left as-is rather
+# than reworded away, because the next person would otherwise go looking for
+# corpus data that does not exist and conclude the lock is merely stalled.
 EXCESSIVE_GATES = False
 
 
@@ -278,10 +289,28 @@ def assess_upto(scheme, max_amount=None, allowance=None, decimals=None):
     """
     out = {"status": "not_applicable", "mismatches": [], "warnings": [],
            "allowance": None, "ceiling": None}
-    if not is_upto(scheme):
+    allow = parse_allowance(allowance)
+    # AUDIT FINDING (2026-08-30, from the cold-start session; confirmed here end to
+    # end before accepting it). This keyed off `is_upto(scheme)`, but PERMIT2 IS
+    # USED WITH `exact` TOO -- sellers advertise it as
+    # `extra.assetTransferMethod: "permit2-exact"`. So an UNLIMITED Permit2
+    # allowance on an `exact` payment was not screened AT ALL: not gated, not
+    # warned, not recorded. Measured on the shipped code, that request returned a
+    # clean GO -- the drainer pattern calldata.py hard-STOPs as calldata, walking
+    # straight through as a payment intent.
+    #
+    # THE EXPOSURE IS CREATED BY THE ALLOWANCE, NOT BY THE SCHEME NAME. So the
+    # screen runs whenever an allowance is actually stated, whatever the scheme
+    # calls itself. Keying on the transfer method instead would have the same hole
+    # one level down: a seller can spell it anything, and an allowance we can read
+    # is an exposure whether or not we recognise the label on it.
+    #
+    # NOT more aggressive on payments that have no allowance: absent stays
+    # `not_applicable` for any other scheme, and `unknown` for `upto`, which is
+    # metered THROUGH Permit2 and so should have stated one.
+    if allow is None and not is_upto(scheme):
         return out
 
-    allow = parse_allowance(allowance)
     ceiling = parse_ceiling(max_amount, decimals)
     out["allowance"] = allow
     out["ceiling"] = ceiling
@@ -293,7 +322,7 @@ def assess_upto(scheme, max_amount=None, allowance=None, decimals=None):
     if allow >= UNLIMITED_MIN:
         out["status"] = "unlimited"
         out["mismatches"].append(
-            "`upto` payment grants an UNLIMITED Permit2 allowance -- Permit2 may "
+            "payment grants an UNLIMITED Permit2 allowance -- Permit2 may "
             "then move this asset from the wallet without a further signature, up "
             "to the entire balance. A spending cap cannot restrain it, because an "
             "allowance is not a spend. Approve the quoted ceiling instead.")
@@ -309,7 +338,7 @@ def assess_upto(scheme, max_amount=None, allowance=None, decimals=None):
         # saying nothing is an absent input, not a skipped check.
         out["status"] = "unknown"
         out["warnings"].append(
-            "`upto` Permit2 allowance %s could not be compared to the quoted "
+            "Permit2 allowance %s could not be compared to the quoted "
             "ceiling %s -- the ceiling is not an atomic integer, so the "
             "proportionality check did not run (an unlimited allowance is still "
             "refused)" % (allow, _show(max_amount)))
@@ -318,7 +347,7 @@ def assess_upto(scheme, max_amount=None, allowance=None, decimals=None):
     if allow > ceiling * EXCESSIVE_RATIO:
         out["status"] = "excessive"
         out["warnings"].append(
-            "`upto` payment grants a Permit2 allowance of %s against a quoted "
+            "payment grants a Permit2 allowance of %s against a quoted "
             "ceiling of %s (%.0fx) -- the wallet is exposed well beyond the amount "
             "it was shown" % (allow, ceiling, allow / float(ceiling)))
         return out
