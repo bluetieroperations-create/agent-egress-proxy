@@ -299,6 +299,14 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   identifier is separated from a merely unknown one), and SANITY (with the table
   applied, does every quote land at a plausible price? a wrong entry shows up as
   an absurd implied price -- this is how the corpus corroborated Stellar's 7).
+  Also CENSUSES the payment schemes and Permit2 transfer methods the corpus
+  advertises, with the rows behind the count -- added because a cross-session
+  prevalence claim could not be reproduced from any committed artifact and the
+  receiving session had to take it on trust. Measured 2026-08-30: `exact` 354,
+  `upto` 4, `batch-settlement` 3, `aggr_deferred` 1; and 12 entries on 6 hosts
+  (CoinMarketCap and Nansen among them) advertise a Permit2 transfer method, 10
+  of them on `exact` -- which is why `upto_scheme` screens the ALLOWANCE rather
+  than the scheme name.
   DELIBERATELY does NOT resolve on-chain and write the table: that table gates
   payments, and a scale from a single public RPC is a value that RPC's operator
   chose, so resolution stays a REVIEWED step (read every public RPC the chain

@@ -17,7 +17,14 @@ This module answers three questions from one pass over the live corpus:
                   is separated from a merely unknown one: the first run found a
                   seller advertising a 39-character address, which is a bug to
                   report, not decimals to look up.
-  3. SANITY    -- with the table applied, does every quote land at a plausible
+  3. CENSUS    -- which payment SCHEMES and Permit2 transfer methods the corpus
+                  actually advertises. Added because a cross-session prevalence
+                  claim ("12 of 351 entries carry a Permit2 transfer method,
+                  api.nansen.ai among them") could not be reproduced from any
+                  committed artifact: `data/liveness.json` carries no `accepts[]`,
+                  so the reader had to take it on trust. It bore on the urgency of
+                  a real hard-STOP gap. Three fields make the claim checkable.
+  4. SANITY    -- with the table applied, does every quote land at a plausible
                   price? A wrong decimals value does not hide here: it shows up
                   as an absurd implied price. This is how the corpus itself
                   corroborated Stellar's 7 (its quotes priced to $0.002/$0.02,
@@ -175,6 +182,49 @@ def pairs_from_accepts(rows):
     return out
 
 
+def transfer_method(accept):
+    """The Permit2 transfer method a seller advertises, or None.
+
+    Lives in `extra.assetTransferMethod` -- `"permit2"` on an `upto` quote,
+    `"permit2-exact"` on an `exact` one. Descriptive only: `upto_scheme` screens
+    on the ALLOWANCE, not on this label, precisely because a seller can spell a
+    label anything. Counted here so the prevalence of the exposure is a number
+    anyone can re-derive rather than a claim in a handoff.
+    """
+    if not isinstance(accept, dict):
+        return None
+    extra = accept.get("extra")
+    if not isinstance(extra, dict):
+        return None
+    method = extra.get("assetTransferMethod")
+    return method if isinstance(method, str) and method.strip() else None
+
+
+def census(rows):
+    """Scheme and transfer-method distribution, plus the rows behind it.
+
+    `permit2` carries the actual (host, network, asset, scheme, method) tuples,
+    not just a count -- a count alone is exactly the kind of number another
+    session cannot check.
+    """
+    schemes, methods, permit2 = {}, {}, []
+    for row in rows or ():
+        if not isinstance(row, dict):
+            continue
+        scheme = row.get("scheme")
+        key = scheme if isinstance(scheme, str) and scheme.strip() else "unstated"
+        schemes[key] = schemes.get(key, 0) + 1
+        method = row.get("transfer_method")
+        if method:
+            methods[method] = methods.get(method, 0) + 1
+            if "permit2" in method.lower():
+                permit2.append({"host": row.get("host"), "network": row.get("network"),
+                                "asset": row.get("asset"), "scheme": key,
+                                "method": method})
+    return {"schemes": schemes, "transfer_methods": methods,
+            "permit2_entries": sorted(permit2, key=lambda r: (str(r["host"]), str(r["asset"])))}
+
+
 def implied_price(amount, decimals):
     """A quote -> its price in whole token units, or None.
 
@@ -288,6 +338,15 @@ def format_report(report):
                      "if any, are unseen this run)"
                      % (report["hosts_probed"], report["hosts_answered"],
                         len(report.get("hosts_silent") or [])))
+    if report.get("schemes"):
+        lines.append("schemes: %s" % ", ".join(
+            "%s %d" % (k, v) for k, v in sorted(report["schemes"].items(),
+                                                key=lambda kv: -kv[1])))
+    if report.get("permit2_entries"):
+        lines.append("permit2: %d of %d entries, on %d host(s) -- these grant an "
+                     "ALLOWANCE, screened by upto_scheme regardless of scheme name"
+                     % (len(report["permit2_entries"]), report.get("total_quotes", 0),
+                        len({r["host"] for r in report["permit2_entries"]})))
     lines.append("pairs: %d  covered: %d (%.1f%%)  quotes: %d  priced: %d"
                  % (report["total_pairs"], report["known_pairs"],
                     coverage_pct(report), report["total_quotes"],
@@ -406,6 +465,8 @@ def harvest(targets, fetch=None, workers=10):
                              "network": accept.get("network"),
                              "asset": accept.get("asset"),
                              "pay_to": accept.get("payTo"),
+                             "scheme": accept.get("scheme"),
+                             "transfer_method": transfer_method(accept),
                              "amount": _req_amount(accept)})
     return rows, silent
 
@@ -425,6 +486,7 @@ def main(argv=None):
     report = assess(pairs_from_accepts(rows),
                     lambda net, asset: known_decimals({"asset": asset, "chain": net}))
     report.update(reach(targets, silent))
+    report.update(census(rows))
     print(format_report(report))
     if args.json:
         with open(args.json, "w") as handle:
