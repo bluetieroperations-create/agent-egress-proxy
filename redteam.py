@@ -227,6 +227,23 @@ def _auth_source(used=False, execution=_OK, now=1000):
     return AuthorizationSimSource(simulator=_Sim(), now=now)
 
 
+def _honeypot_source(outcome, revert_class=None, retention=None):
+    """HoneypotSource pinned to a given sell-path attribution.
+
+    The attribution is injected rather than driven through a transport because the
+    property under test is the DISPOSITION -- which outcomes gate and which defer --
+    not the eth_call encoding, which transfer_sim's own suite covers.
+    """
+    from honeypot import assess_honeypot
+
+    class _Src:
+        def check(self, token, chain):
+            return assess_honeypot(
+                {"outcome": outcome, "reason": "reverted",
+                 "revert_class": revert_class}, retention)
+    return _Src()
+
+
 def _rwa_source(target, control=_OK):
     from transfer_sim import SimulationReadinessSource, TransferSimulator
     seen = []
@@ -257,6 +274,10 @@ def _signed(auth_over=None):
 
 
 # (name, category, expect, known_gap, payload, forecast-source kwargs)
+from transfer_sim import OK as TS_OK
+from transfer_sim import RECEIVER_BLOCKED as TS_RECEIVER_BLOCKED
+from transfer_sim import SENDER_BLOCKED as TS_SENDER_BLOCKED
+
 SIM_SCENARIOS = [
     # --- attacks the simulation gates MUST catch ---
     # `upto` settles via Permit2 `transferFrom`, so it needs an ERC-20 allowance.
@@ -287,6 +308,14 @@ SIM_SCENARIOS = [
      _payload(acquires={"token": "0x" + "9" * 40, "chain": "ethereum",
                         "holder": "0x" + "8" * 40}),
      lambda: {"rwa_source": _rwa_source(_revert(KYC_REVERT))}),
+    # HONEYPOT: the token buys perfectly and cannot be SOLD. It permits an
+    # arbitrary fresh wallet and blocks its own liquidity pool -- a restriction
+    # that allows anyone except the market is not compliance, it is a trap. The
+    # control simulation is what convicts it; without one this is
+    # indistinguishable from a permissioned security (see the control below).
+    ("honeypot: token blocks its own pool", "honeypot", "block", False,
+     _payload(acquires={"token": "0x" + "7" * 40, "chain": "base"}),
+     lambda: {"honeypot_source": _honeypot_source(TS_RECEIVER_BLOCKED)}),
 
     # --- controls: these must NOT be blocked (over-blocking is the real risk here) ---
     ("upto with a sane allowance", "control", "allow", True,
@@ -305,6 +334,19 @@ SIM_SCENARIOS = [
      # here would be a false positive. This guards the control-attribution property.
      lambda: {"rwa_source": _rwa_source(_revert(KYC_REVERT),
                                         control=_revert(KYC_REVERT))}),
+    # The honeypot gate's RESTRAINT property, and the one this repo has already
+    # got wrong once: revert_scan's axis tried to downgrade BlackRock because BUIDL
+    # rejects non-allowlisted wallets -- i.e. because it works as designed. A
+    # permissioned security blocks the pool AND the fresh control, which attributes
+    # to the SENDER and is reported `restricted`, deferring to rwa_readiness. If
+    # this ever blocks, the honeypot gate has become that mistake with a new name.
+    ("permissioned RWA is not a honeypot", "control", "allow", False,
+     _payload(acquires={"token": "0x" + "7" * 40, "chain": "base"}),
+     lambda: {"honeypot_source": _honeypot_source(
+         TS_SENDER_BLOCKED, revert_class="restriction")}),
+    ("high sell tax is advisory, not a gate", "control", "allow", False,
+     _payload(acquires={"token": "0x" + "7" * 40, "chain": "base"}),
+     lambda: {"honeypot_source": _honeypot_source(TS_OK, retention="0.03")}),
     ("RPC unreachable (fail-open)", "control", "allow", False, _payload(),
      lambda: {"settlement_sim_source": _settlement_source({}, control={})}),
     ("valid fresh authorization", "control", "allow", False,

@@ -1234,6 +1234,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              rwa_source=None, stock_registry=None, pyth_source=None, rwa_ledger=None,
              balance_reader=None, backing_index=None, dex_source=None,
              holder_source=None, aave_source=None, issuer_trust_source=None,
+             honeypot_source=None,
              settlement_sim_source=None, auth_sim_source=None,
              receipt_signer=None):
     """
@@ -1578,6 +1579,23 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
             _av = None
         verdict = apply_aave(verdict, _av)
 
+    # Honeypot check (honeypot.py) -- can the agent SELL what it is buying? Every
+    # other acquisition gate asks whether the BUY clears; this asks whether the
+    # position can be EXITED. Simulates a transfer of the token to its OWN DEX pool
+    # with a fresh EOA as the control: pool blocked + control fine => the contract
+    # refuses the market specifically, which is a trap, not compliance. A
+    # permissioned security blocks both and is reported `restricted`, deferring to
+    # rwa_readiness rather than being called a scam. HOLD-only, never STOP,
+    # fail-open.
+    if honeypot_source is not None and clean.get("acquires"):
+        from honeypot import apply_honeypot
+        _acq = clean["acquires"]
+        try:
+            _hp = honeypot_source.check(_acq.get("token"), _acq.get("chain"))
+        except Exception:
+            _hp = None
+        verdict = apply_honeypot(verdict, _hp)
+
     # Earned ISSUER-TRUST grade (issuer_trust_gate.py) -- the payoff of the accumulation
     # corpus: an issuer's LABELED settlement/outcome history graded high/medium/low. O(1)
     # lookup off a precomputed snapshot. DESCRIPTIVE by default (ISSUER_TRUST_GATES lock
@@ -1777,6 +1795,7 @@ class _Handler(BaseHTTPRequestHandler):
     backing_index = None  # backed_oracle.BackedOracleIndex (proof-of-reserves), or None
     dex_source = None  # dex_price.DexPriceSource (market-vs-NAV peg), or None
     holder_source = None  # holder_concentration.HolderConcentrationSource (rug-check), or None
+    honeypot_source = None  # honeypot.HoneypotSource (sell-path / exit check), or None
     aave_source = None  # aave_reserve.AaveReserveSource (advisory quality), or None
     issuer_trust_source = None  # issuer_trust_gate.IssuerTrustSource (earned grade), or None
     settlement_sim_source = None  # settlement_sim.SettlementSimSource (pre-sig feasibility)
@@ -2164,6 +2183,7 @@ class _Handler(BaseHTTPRequestHandler):
                                  backing_index=self.backing_index,
                                  dex_source=self.dex_source,
                                  holder_source=self.holder_source,
+                                 honeypot_source=self.honeypot_source,
                                  aave_source=self.aave_source,
                                  issuer_trust_source=self.issuer_trust_source,
                                  settlement_sim_source=self.settlement_sim_source,
@@ -2258,6 +2278,7 @@ class BlackwallServer:
                  enrichment_source=None, rwa_source=None, stock_registry=None,
                  pyth_source=None, rwa_ledger=None, balance_reader=None,
                  backing_index=None, dex_source=None, holder_source=None,
+                 honeypot_source=None,
                  aave_source=None, issuer_trust_source=None,
                  settlement_sim_source=None, auth_sim_source=None):
         self.host = host
@@ -2287,6 +2308,7 @@ class BlackwallServer:
         self.backing_index = backing_index
         self.dex_source = dex_source
         self.holder_source = holder_source
+        self.honeypot_source = honeypot_source
         self.aave_source = aave_source
         self.issuer_trust_source = issuer_trust_source
         self.settlement_sim_source = settlement_sim_source
@@ -2317,6 +2339,7 @@ class BlackwallServer:
                         "backing_index": self.backing_index,
                         "dex_source": self.dex_source,
                         "holder_source": self.holder_source,
+                        "honeypot_source": self.honeypot_source,
                         "aave_source": self.aave_source,
                         "issuer_trust_source": self.issuer_trust_source,
                         "settlement_sim_source": self.settlement_sim_source,
@@ -2803,6 +2826,36 @@ def main(argv=None):
                          "Blockscout; dominant non-contract holder -> HOLD)\n")
         sys.stdout.flush()
 
+    # OPT-IN (BLACKWALL_HONEYPOT=1, needs an EVM RPC): the EXIT check. Simulates a
+    # transfer of the token to its own deepest USDC pool, with a fresh EOA as the
+    # control. Pool blocked while the control is permitted => the contract refuses
+    # the market specifically, and the position cannot be exited. Needs a real
+    # holder as the probe sender (an empty wallet reverts on BALANCE, which proves
+    # nothing) and the pool address, both looked up. HOLD-only, fail-open.
+    honeypot_source = None
+    if _env_flag("BLACKWALL_HONEYPOT"):
+        _hp_rpc = os.environ.get("BLACKWALL_RWA_RPC_URL", "")
+        if _hp_rpc:
+            from dex_price import DexPriceSource
+            from honeypot import HoneypotSource
+            from transfer_sim import BlockscoutHolderLookup, TransferSimulator
+            # Pool discovery costs one eth_call PER FEE TIER (3), and the sell
+            # simulation one or two more. MEASURED against a black-hole RPC: 7.53s
+            # end-to-end at the 2.5s default, versus 1.6ms for a payment with no
+            # `acquires` (which never reaches this source at all). A shorter
+            # timeout bounds a degraded RPC's cost on the hot path; the healthy-path
+            # figure is NOT measured here, because doing so honestly needs a real
+            # node rather than a loopback stand-in.
+            _hp_dex = dex_source or DexPriceSource(rpc_url=_hp_rpc, timeout=1.5)
+            honeypot_source = HoneypotSource(
+                simulator=TransferSimulator(rpc_url=_hp_rpc),
+                holder_lookup=BlockscoutHolderLookup(),
+                pool_lookup=_hp_dex.best_pool)
+            sys.stdout.write("blackwall: honeypot exit-check ON (transfer to the "
+                             "token's own pool, fresh-EOA control; unsellable -> "
+                             "HOLD, permissioned securities deferred)\n")
+            sys.stdout.flush()
+
     # OPT-IN (BLACKWALL_AAVE=1, needs an EVM RPC): Aave reserve quality (advisory). A
     # token Aave has frozen -> risk note (feeds the aggregate); listed -> positive note.
     aave_source = None
@@ -2950,6 +3003,7 @@ def main(argv=None):
                              backing_index=backing_index,
                              dex_source=dex_source,
                              holder_source=holder_source,
+                             honeypot_source=honeypot_source,
                              aave_source=aave_source,
                              issuer_trust_source=issuer_trust_source,
                              settlement_sim_source=settlement_sim_source,
