@@ -143,8 +143,13 @@ Blackwall service — nothing recorded, nothing staged. Change a number and re-r
 |---|---|---|
 | established merchant, $0.05 | approves | **GO** — 239 settlements, price in line |
 | merchant nobody has paid | approves | **HOLD** — no history is a question, not a denial |
-| $0.05 payment, **unlimited** Permit2 allowance | approves | **STOP** — signature withheld |
+| $0.05 `exact` payment, **unlimited** Permit2 allowance | approves | **STOP** — signature withheld |
 | $0.05 payment, allowance 1000× the quote | approves | **GO** — recorded, not gated |
+
+Note the third row's scheme: **`exact`**, not `upto`. Permit2 is used with both,
+and in the live x402 corpus **10 of the 12** endpoints that require it quote
+`exact` — so that is the common shape, not an exotic one. (Run
+`python asset_coverage.py data/liveness.json` to re-derive that count.)
 
 The last row matters as much as the third. Headroom is how the metered scheme is
 meant to be used, so a tight ratio would flag correct behaviour. The note is in

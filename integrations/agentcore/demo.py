@@ -117,8 +117,11 @@ SCENARIOS = [
 
     ("$0.05 payment, approval over the ENTIRE wallet",
      "AWS's own docs offer granting an unlimited allowance as a normal option. "
-     "An allowance is not a spend, so the $1.00 cap is still satisfied.",
-     request(pay_to=ESTABLISHED, amount="50000", scheme="upto",
+     "An allowance is not a spend, so the $1.00 cap is still satisfied. Note the "
+     "scheme: `exact`, not `upto`. Permit2 is used with both, and in the live "
+     "x402 corpus 10 of the 12 endpoints that require it quote `exact` -- so this "
+     "is the COMMON shape, not an exotic one.",
+     request(pay_to=ESTABLISHED, amount="50000", scheme="exact",
              allowance=UNLIMITED)),
 
     ("$0.05 payment, approval 1000x the quote",
