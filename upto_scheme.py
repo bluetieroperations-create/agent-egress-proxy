@@ -45,7 +45,13 @@ from __future__ import annotations
 # uint160-max. Both are unlimited in practice, and calldata.py already treats
 # anything at or above 2**128 as unlimited -- reused so the two modules cannot
 # drift into disagreeing about what "unlimited" means.
+import re
+
 from calldata import UNLIMITED_MIN
+
+# A human-unit price: digits, one decimal point, digits. Deliberately narrow --
+# see parse_ceiling. `[0-9]` rather than `\d` so only ASCII digits qualify.
+_HUMAN_QUOTE = re.compile(r"^[0-9]+\.[0-9]+$")
 
 # How far above the quoted ceiling an allowance may sit before it is worth a
 # HOLD. Deliberately generous: approving once and metering many calls under the
@@ -133,7 +139,54 @@ def scheme_from_request(body):
     return None
 
 
-def assess_upto(scheme, max_amount=None, allowance=None):
+def parse_ceiling(max_amount, decimals=None):
+    """The quoted ceiling as an ATOMIC int, or None when we cannot read it.
+
+    An atomic quote is an integer, so `parse_allowance` handles the ordinary
+    case. The remainder is a seller quoting in HUMAN units -- `"0.00335"` rather
+    than `"3350"` -- which previously read as unreadable and switched the ratio
+    check off. Measured, not hypothetical: probing the live corpus found one
+    quote in 363 written that way.
+
+    Scaling needs the asset's decimals, and the caller must pass only decimals it
+    can VERIFY (`payload_sim.known_decimals`), never a value the request
+    asserted. The direction of that risk is what matters: an inflated ceiling
+    SUPPRESSES the excessive-allowance warning, so a caller who could choose the
+    scale could switch off the check being applied to it.
+
+    Only a value `parse_allowance` could not read reaches the scaling branch, so
+    an integer is never re-interpreted as human units -- which would multiply a
+    real ceiling by 10^decimals and silently suppress the same warning.
+    """
+    atomic = parse_allowance(max_amount)
+    if atomic is not None:
+        return atomic
+    if decimals is None:
+        return None
+    # AUDIT FINDING (2026-08-29, MEDIUM -- in this function's first version).
+    # "Only a value parse_allowance could not read reaches the scaling branch"
+    # was true, but nothing said what such a value had to LOOK like, and
+    # `Decimal` accepts far more than a human price. A seller-authored `"1e999"`
+    # scaled to a ceiling with 1000 digits and the excessive-allowance warning
+    # went quiet -- `status: ok`. `"1e6"` was worse for being plausible: read as
+    # 1e6 TOKENS, it inflated a 1,000,000-atomic quote by a further 10^6. The
+    # ceiling comes from the 402 challenge, so it is the screened party's own
+    # input, and inflating it is exactly how you switch this check off.
+    #
+    # So the human-unit form is now stated explicitly: digits, one point, digits.
+    # `[0-9]` not `\d`, because `\d` also matches other scripts' digits and
+    # `int("\u0663")` is 3 -- a quote should not depend on that. Anything else
+    # (exponents, hex, inf/nan, underscores, a leading `.`, a sign) is NOT a
+    # price we recognise, so it stays unknown and the gate simply does not run.
+    text = max_amount if isinstance(max_amount, str) else (
+        repr(max_amount) if isinstance(max_amount, float) else None)
+    if text is None or not _HUMAN_QUOTE.match(text.strip()):
+        return None
+    from x402 import to_atomic          # deferred: x402 is the base module
+    return to_atomic(text.strip(), decimals)
+
+
+def assess_upto(scheme, max_amount=None, allowance=None, decimals=None):
     """Assess the Permit2 exposure of an `upto` payment.
 
     Returns {status, mismatches[], warnings[], allowance, ceiling} where status is
@@ -150,7 +203,7 @@ def assess_upto(scheme, max_amount=None, allowance=None):
         return out
 
     allow = parse_allowance(allowance)
-    ceiling = parse_allowance(max_amount)
+    ceiling = parse_ceiling(max_amount, decimals)
     out["allowance"] = allow
     out["ceiling"] = ceiling
 

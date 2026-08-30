@@ -270,3 +270,130 @@ class TestUptoBillingSemantics(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCeilingIsActuallyReadable(unittest.TestCase):
+    """AUDIT 2026-08-29: the ratio gate could not read the ceiling on real
+    challenges, so it never ran. Two causes, both fixed here.
+    """
+
+    def test_human_unit_ceiling_is_scaled_when_decimals_are_known(self):
+        # Kills: dropping parse_ceiling's scaling branch. 1 of 363 live quotes is
+        # written in human units, and it switched the ratio check off entirely.
+        self.assertEqual(U.parse_ceiling("0.00335", 6), 3350)
+
+    def test_human_unit_ceiling_without_decimals_stays_unknown(self):
+        # Kills: guessing a scale. Unknown decimals must fail OPEN, as before.
+        self.assertIsNone(U.parse_ceiling("0.00335", None))
+
+    def test_an_integer_is_never_reinterpreted_as_human_units(self):
+        # Kills: scaling every value. Treating an atomic 1000000 as human would
+        # multiply the ceiling by 10^decimals and SUPPRESS the warning -- the
+        # dangerous direction.
+        self.assertEqual(U.parse_ceiling("1000000", 6), 1000000)
+        self.assertEqual(U.parse_ceiling(1000000, 18), 1000000)
+
+    def test_the_ratio_gate_now_fires_on_a_human_unit_quote(self):
+        # Kills: fixing parse_ceiling but not threading it into assess_upto.
+        r = U.assess_upto("upto", max_amount="0.00335", allowance=str(3350 * 1000),
+                          decimals=6)
+        self.assertEqual(r["status"], "excessive")
+
+    def test_same_quote_without_decimals_is_unknown_not_excessive(self):
+        # Kills: defaulting decimals to 6. Fail-open is the posture; a guessed
+        # scale would make the warning depend on a number nobody verified.
+        r = U.assess_upto("upto", max_amount="0.00335", allowance=str(3350 * 1000))
+        self.assertEqual(r["status"], "unknown")
+
+    def test_unlimited_still_stops_regardless_of_the_ceiling(self):
+        # Kills: routing the unlimited hard-STOP through the ceiling. It needs
+        # only the allowance and must fire even when the quote is unreadable.
+        r = U.assess_upto("upto", max_amount="not-a-number", allowance=str(1 << 129))
+        self.assertEqual(r["status"], "unlimited")
+        self.assertTrue(r["mismatches"])
+
+    def test_parse_ceiling_never_raises(self):
+        # Kills: letting a crafted quote crash the gate.
+        for junk in (None, "", [], {}, True, "0x" + "f" * 64, "1e999", "-5",
+                     "." , "..", "0." + "9" * 100):
+            U.parse_ceiling(junk, 6)
+            U.parse_ceiling(junk, None)
+
+
+class TestUptoCeilingReadsTheV2FieldName(unittest.TestCase):
+    """AUDIT 2026-08-29 (MEDIUM): `_upto_ceiling` read only `maxAmountRequired`,
+    the v1 field name. x402 v2 carries the quote in `amount`, and live sellers
+    use the v2 spelling 69 to 4 -- so on nearly every real challenge the ceiling
+    was None, the status was `unknown`, and the ratio gate never ran.
+    """
+
+    def test_v2_amount_is_read(self):
+        # Kills: reverting to maxAmountRequired-only, which makes the gate inert
+        # on the overwhelming majority of live challenges.
+        import blackwall
+        self.assertEqual(
+            blackwall._upto_ceiling({"accepts": [{"amount": "1000"}]}, {}), "1000")
+
+    def test_v1_max_amount_required_still_works(self):
+        # Kills: swapping one field name for the other instead of trying both.
+        import blackwall
+        self.assertEqual(
+            blackwall._upto_ceiling({"accepts": [{"maxAmountRequired": "1000"}]}, {}),
+            "1000")
+
+    def test_v2_wins_when_a_challenge_carries_both(self):
+        # Kills: preferring v1. Mirrors x402._req_amount, so the two agree on
+        # which field names a quote.
+        import blackwall
+        self.assertEqual(
+            blackwall._upto_ceiling(
+                {"accepts": [{"amount": "7", "maxAmountRequired": "9"}]}, {}), "7")
+
+
+class TestCeilingCannotBeInflatedToSilenceTheWarning(unittest.TestCase):
+    """AUDIT 2026-08-29 (MEDIUM, in parse_ceiling's first version): the scaling
+    branch accepted anything `Decimal` accepted. The ceiling comes from the 402
+    challenge -- the screened party's own input -- and INFLATING it is exactly
+    how the excessive-allowance warning gets switched off.
+    """
+
+    ALLOW = str(10 ** 9)          # far beyond any honest ceiling here
+
+    def _status(self, ceiling):
+        return U.assess_upto("upto", max_amount=ceiling,
+                             allowance=self.ALLOW, decimals=6)["status"]
+
+    def test_exponent_notation_cannot_manufacture_a_huge_ceiling(self):
+        # Kills: passing the raw value to Decimal. "1e999" scaled to a
+        # 1000-digit ceiling and the warning went quiet (status "ok").
+        self.assertIsNone(U.parse_ceiling("1e999", 6))
+        self.assertEqual(self._status("1e999"), "unknown")
+
+    def test_plausible_exponent_is_also_refused(self):
+        # Kills: blocking only absurd exponents. "1e6" is the dangerous one --
+        # it reads as a real price while inflating an atomic quote by 10^6.
+        self.assertIsNone(U.parse_ceiling("1e6", 6))
+
+    def test_a_real_human_quote_still_scales(self):
+        # Kills: tightening the pattern until the case this exists for stops
+        # working. This is the shape one live seller actually sends.
+        self.assertEqual(U.parse_ceiling("0.00335", 6), 3350)
+        self.assertEqual(self._status("0.00335"), "excessive")
+
+    def test_only_ascii_digits_qualify(self):
+        # Kills: using `\d`, which matches other scripts' digits -- int("٣")
+        # is 3, so a quote's value would depend on the script it was written in.
+        self.assertIsNone(U.parse_ceiling("٣.٤", 6))
+
+    def test_non_price_forms_stay_unknown(self):
+        # Kills: widening the pattern. None of these is a price, and each one
+        # that parsed would be an attacker-chosen ceiling.
+        for junk in ("inf", "nan", "NaN", "-1.5", ".5", "1.", "0x1.8",
+                     "1_0.5", "+1.5", "1.5e3", ""):
+            self.assertIsNone(U.parse_ceiling(junk, 6), junk)
+
+    def test_a_bool_is_never_a_ceiling(self):
+        # Kills: an isinstance(x, int) check that lets bool through -- True
+        # would become 10^decimals, a ceiling out of nothing.
+        self.assertIsNone(U.parse_ceiling(True, 6))
+        self.assertIsNone(U.parse_ceiling(False, 6))
