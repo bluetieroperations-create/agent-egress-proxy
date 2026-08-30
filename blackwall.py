@@ -1400,6 +1400,11 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     # a bounded approval.
     if sim_warnings:
         verdict["reasons"].extend(sim_warnings)
+    # `excessive` is the one upto signal that can move a verdict, and only behind
+    # its reversibility lock (default OFF). Folded here rather than via
+    # sim_warnings because a warning only ever annotates -- which is precisely the
+    # bug this closes: the gate was documented as HOLD-only and did not hold.
+    verdict = _upto.apply_excessive(verdict, upto_check)
 
     # Make the Phase-2 signer state EXPLICIT in every response. When it was DEFERRED, a
     # non-STOP verdict is only PROVISIONAL w.r.t. signer authenticity -- say so, so a

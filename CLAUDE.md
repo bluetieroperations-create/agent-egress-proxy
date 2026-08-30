@@ -138,8 +138,14 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   rather than adds. That is the drainer pattern `calldata.py` already hard-STOPs as
   calldata, so this recognizes it arriving as a payment INTENT instead. UNLIMITED -> hard
   STOP (reuses calldata's `UNLIMITED_MIN` so the two cannot drift on what "unlimited"
-  means); >100x the ceiling -> HOLD only (approving once and metering many calls under it
-  is normal use); absent/unreadable -> no gate, FAIL-OPEN. Reads the AgentCore spelling
+  means); >100x the ceiling -> `excessive`, which escalates GO->HOLD behind the
+  reversibility lock `EXCESSIVE_GATES` (DEFAULT OFF -- advisory until flipped;
+  approving once and metering many calls under an approval is normal use, so the
+  false-HOLD rate wants measuring on the shipped corpus first, the way sybil_ring
+  graduated. AUDIT: this line previously claimed "HOLD only" and the code did NOT
+  hold -- `excessive` went into `warnings`, and forecast only extends `reasons`
+  with warnings, so a 10^6x disproportionate allowance returned GO with a note.
+  Confirmed live before the fix); absent/unreadable -> no gate, FAIL-OPEN. Reads the AgentCore spelling
   `permit2AllowanceLimit` (nested or top-level) as well as our own. Also FIXED a dormant
   inversion in `x402.payment_satisfies`: the non-`exact` branch demanded `value >=
   required`, exactly backwards for a ceiling. Unreachable because we only ever issue

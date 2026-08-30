@@ -140,6 +140,77 @@ class TestAssessUpto(unittest.TestCase):
                     U.assess_upto(scheme, max_amount=amt, allowance=allow)
 
 
+class TestExcessiveGate(unittest.TestCase):
+    """`excessive` may escalate GO -> HOLD, behind a reversibility lock.
+
+    AUDIT (2026-08-29). CLAUDE.md and the shipping PR both described ">100x the
+    ceiling -> HOLD only". It did not HOLD. `assess_upto` put it in `warnings`,
+    and blackwall.forecast only extends `reasons` with warnings -- it never moves
+    the verdict. So a 10^6x disproportionate allowance returned GO with a note
+    most callers never read. Confirmed live in production before the fix.
+
+    A control documented as gating that does not gate is the defect class this
+    codebase keeps finding, and this one was mine.
+
+    Graduated the way sybil_ring and issuer_trust were: behind a lock, DEFAULT
+    OFF, so nothing changes on live traffic until the false-HOLD rate is measured
+    on the shipped corpus. Flip EXCESSIVE_GATES to enable.
+
+    Mutation notes:
+      - gate while the lock is off -> test_lock_off_is_advisory FAILS.
+      - ignore the lock when on -> test_lock_on_escalates FAILS.
+      - escalate a STOP or a HOLD -> test_only_go_is_escalated FAILS.
+    """
+    def _signal(self, allowance=10 ** 9, ceiling="1000"):
+        return U.assess_upto("upto", max_amount=ceiling, allowance=allowance)
+
+    def test_lock_off_is_advisory(self):
+        self.assertFalse(U.EXCESSIVE_GATES, "the lock must ship OFF")
+        v = U.apply_excessive(
+            {"verdict": "GO", "reasons": []}, self._signal(), gates=False)
+        self.assertEqual(v["verdict"], "GO")
+        self.assertTrue(any("allowance" in r.lower() for r in v["reasons"]),
+                        "still reported, just not gating")
+
+    def test_lock_on_escalates(self):
+        v = U.apply_excessive(
+            {"verdict": "GO", "reasons": []}, self._signal(), gates=True)
+        self.assertEqual(v["verdict"], "HOLD")
+        self.assertTrue(any("escalated GO->HOLD" in r for r in v["reasons"]))
+
+    def test_only_go_is_escalated(self):
+        # kills: downgrading a STOP to HOLD, or re-escalating a HOLD
+        for start in ("STOP", "HOLD"):
+            v = U.apply_excessive({"verdict": start, "reasons": []},
+                                  self._signal(), gates=True)
+            self.assertEqual(v["verdict"], start)
+
+    def test_ok_and_unknown_never_escalate(self):
+        for status_signal in (U.assess_upto("upto", max_amount="1000", allowance=1000),
+                              U.assess_upto("upto", max_amount="1000", allowance=None),
+                              U.assess_upto("exact", max_amount="1000", allowance=10 ** 9)):
+            v = U.apply_excessive({"verdict": "GO", "reasons": []},
+                                  status_signal, gates=True)
+            self.assertEqual(v["verdict"], "GO", status_signal["status"])
+
+    def test_unlimited_is_untouched_by_the_lock(self):
+        # kills: routing the hard STOP through the lock -- an unlimited approval
+        # is a mismatch and STOPs whether or not `excessive` gates
+        sig = U.assess_upto("upto", max_amount="1000", allowance=(1 << 256) - 1)
+        self.assertTrue(sig["mismatches"])
+        for gates in (True, False):
+            v = U.apply_excessive({"verdict": "GO", "reasons": []}, sig, gates=gates)
+            self.assertEqual(v["verdict"], "GO",
+                             "apply_excessive handles `excessive` only; the hard "
+                             "STOP travels as a mismatch")
+
+    def test_pure_does_not_mutate_the_input(self):
+        v0 = {"verdict": "GO", "reasons": []}
+        U.apply_excessive(v0, self._signal(), gates=True)
+        self.assertEqual(v0["verdict"], "GO")
+        self.assertEqual(v0["reasons"], [])
+
+
 class TestAllowanceFromRequest(unittest.TestCase):
     """Read the allowance wherever a caller plausibly puts it -- our own field, or
     the AWS AgentCore spelling, which is the shape agents will actually hold."""
