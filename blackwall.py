@@ -1961,6 +1961,18 @@ class _Handler(BaseHTTPRequestHandler):
         screening = (isinstance(rs, SanctionsScreeningSource)
                      and sanctions_enabled(rs.sanctions))
         readiness = self.readiness_source is not None
+        # The CONFIGURED gates, read from what is actually wired on THIS handler
+        # rather than from the env flags -- a flag set with a missing RPC builds no
+        # source, and advertising a gate that did not construct is the same
+        # misdescription in the other direction. Same live-check discipline as
+        # `screening` above.
+        configured = {
+            "settlement_simulation": self.settlement_sim_source is not None,
+            "honeypot_check": self.honeypot_source is not None,
+            "rwa_readiness": self.rwa_source is not None,
+            "market_peg": self.dex_source is not None,
+            "holder_concentration": self.holder_source is not None,
+        }
         if self.billing is not None:
             cfg = self.billing.cfg
             return build_descriptor(
@@ -1971,9 +1983,9 @@ class _Handler(BaseHTTPRequestHandler):
                 price=str(cfg.price_atomic),
                 asset=cfg.asset, network=cfg.network,
                 mcp=True, sanctions_screening=screening,
-                endpoint_readiness=readiness)
+                endpoint_readiness=readiness, **configured)
         return build_descriptor(mcp=True, sanctions_screening=screening,
-                                endpoint_readiness=readiness)
+                                endpoint_readiness=readiness, **configured)
 
     def _openapi(self):
         """The x402scan OpenAPI discovery document for this origin.

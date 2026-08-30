@@ -49,9 +49,27 @@ _FORECAST_INPUT = {
     },
 }
 
-DESCRIPTION = ("Pre-signature x402 payment guardrail: returns a GO / HOLD / STOP "
-               "verdict before an agent signs a payment, from behavioral "
-               "counterparty reputation and price-anomaly signals.")
+# WHY THIS TEXT IS SHAPED THIS WAY. Two products share the Blackwall name -- this
+# x402 payment engine and the generalized pre-action gate at blackwalltier.com
+# (see docs/REGISTRIES.md, "The identity split"). That doc's discriminators are
+# AUTH and SCOPE, which is right for someone choosing which to install.
+#
+# It is not enough for someone DESCRIBING us. Measured 2026-08-30: a third-party
+# AI summary of "Black_Wall x402" credited this engine with a "remote safety LLM
+# forecasting loop" -- the generalized product's architecture, and the exact
+# INVERSE of this one's, which is deterministic, stdlib-only and has no model in
+# the verdict path at all. It also rated token safety as "basic context checking"
+# while `holder_concentration.py` and `dex_price.py` implement the very checks it
+# awarded to a competitor.
+#
+# The blend was possible because nothing we publish states the METHOD. So METHOD
+# is the third discriminator, and it leads. A summarizer that reads this cannot
+# reach for "LLM" without contradicting the first clause.
+DESCRIPTION = ("Deterministic pre-signature x402 payment guardrail: returns a "
+               "GO / HOLD / STOP verdict before an agent signs a payment. No model "
+               "in the verdict path -- every gate is an auditable, mutation-tested "
+               "check over counterparty reputation, price anomaly, Sybil structure, "
+               "sanctions, and simulation of the payment itself.")
 
 
 def human_price(price_atomic, decimals=6):
@@ -62,7 +80,10 @@ def human_price(price_atomic, decimals=6):
 
 
 def build_descriptor(pay_to=None, price=None, asset="USDC", network="base",
-                     mcp=True, sanctions_screening=False, endpoint_readiness=False):
+                     mcp=True, sanctions_screening=False, endpoint_readiness=False,
+                     settlement_simulation=False, honeypot_check=False,
+                     rwa_readiness=False, market_peg=False,
+                     holder_concentration=False):
     """
     The x402 service card. `price`/`pay_to` are present only when billing is on
     (otherwise the resource is advertised as unpriced).
@@ -90,20 +111,41 @@ def build_descriptor(pay_to=None, price=None, asset="USDC", network="base",
     }
     # What the verdict covers -- a SUPERSET of the free facilitator baseline:
     # sanctions screening (what KYT does) PLUS the signals it doesn't.
-    signals = ["counterparty-reputation", "price-anomaly"]
+    #
+    # ALWAYS-ON: these run in every verdict with no configuration, so advertising
+    # them is a statement of fact about any deployment. Previously only the first
+    # two were listed, which understated the engine by an order of magnitude and
+    # left a comparison-shopper with nothing to compare -- the concrete way the
+    # description gap above became a public misdescription.
+    signals = ["counterparty-reputation", "price-anomaly", "sybil-structure",
+               "payload-simulation", "permit2-allowance", "calldata-drainer",
+               "secret-exfiltration", "evidence-confidence"]
     if sanctions_screening:
         signals.insert(0, "sanctions-ofac")
-    # Composed third-party signal: endpoint readiness (e.g. Ontario), folded in
-    # conservatively. Blackwall = endpoint readiness PLUS the financial layer.
+    # CONFIGURED: opt-in, so advertised only when actually wired. Claiming a gate
+    # this deployment does not run would be the same defect in the other
+    # direction.
     if endpoint_readiness:
         signals.append("endpoint-readiness")
+    for flag, label in ((settlement_simulation, "settlement-simulation"),
+                        (honeypot_check, "honeypot-exit-check"),
+                        (rwa_readiness, "transfer-restriction-readiness"),
+                        (market_peg, "dex-market-peg"),
+                        (holder_concentration, "holder-concentration")):
+        if flag:
+            signals.append(label)
     descriptor = {
         "name": "Blackwall",
         "description": DESCRIPTION,
         "x402Version": 2,  # v2 (see build_openapi below for the openapi.json discovery doc)
         "category": "payment-risk",
+        # MACHINE-READABLE discriminator. A crawler building a comparison table
+        # reads fields before prose; leaving method implicit is what let one be
+        # invented for us.
+        "method": "deterministic",
+        "modelInVerdictPath": False,
         "tags": ["x402", "payments", "risk", "reputation", "agent-guardrail",
-                 "base", "usdc"],
+                 "base", "usdc", "deterministic", "pre-signature", "keyless"],
         "signals": signals,
         "screening": (["sanctions-ofac"] if sanctions_screening else []),
         "resources": [resource],
