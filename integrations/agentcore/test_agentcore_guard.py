@@ -486,6 +486,52 @@ class TestTheDemoScenarios(unittest.TestCase):
         reason = payee_syntax.assess_payee(self.demo.MALFORMED)["reasons"][0]
         self.assertIn(self.demo.KEYWORDS[0], reason)
 
+    def test_the_permit2_claim_matches_the_committed_census(self):
+        """The one number in the demo that is NOT a live verdict.
+
+        Every other figure on screen comes from the running service, so a reader
+        can falsify it by re-running. This one is a prevalence claim about the
+        ecosystem, and the first version of it ("10 of the 12 endpoints quote
+        `exact`") could not be re-derived from anything committed -- a claim
+        nobody else can reproduce, in the most public artifact we have. The
+        census is committed now, and this binds the sentence to it.
+
+        kills: the note drifting from the corpus it describes.
+        """
+        import json
+        import os
+        root = os.path.join(os.path.dirname(os.path.abspath(G.__file__)), "..", "..")
+        with open(os.path.join(root, "data", "asset_coverage.json")) as handle:
+            census = json.load(handle)
+        methods = census["transfer_methods"]
+        permit2 = sum(n for name, n in methods.items() if name.startswith("permit2"))
+        self.assertEqual(permit2, 12, "census moved; update the demo's note")
+        self.assertEqual(methods.get("permit2-exact"), permit2 // 2,
+                         "the 'half spell it permit2-exact' claim no longer holds")
+        note = [n for _t, n, _b in self.demo.SCENARIOS if "permit2-exact" in n]
+        self.assertEqual(len(note), 1)
+        self.assertIn("12 live", note[0])
+        # The SENTENCE, not just the number. Asserting the census alone left a
+        # mutation alive: rewriting the note to "ALL spell it `permit2-exact`"
+        # passed, because nothing tied the interpretation to the count. Checking
+        # a figure you can compute while leaving the claim about it unchecked is
+        # the defect this whole test exists to close.
+        self.assertIn("half spell it `permit2-exact`", note[0])
+
+    def test_a_clipped_reason_never_cuts_a_word_in_half(self):
+        # Kills: reverting to a hard slice, which printed "... without a furt"
+        # and read like the program had broken rather than summarised.
+        long = ("payment grants an UNLIMITED Permit2 allowance -- Permit2 may then "
+                "move this asset from the wallet without a further signature")
+        out = self.demo._clip(long)
+        self.assertTrue(out.endswith(" ..."))
+        self.assertTrue(long.startswith(out[:-4]))
+        self.assertNotIn("furt ...", out)
+
+    def test_a_short_reason_is_left_exactly_alone(self):
+        # Kills: appending an ellipsis to text that was never truncated.
+        self.assertEqual(self.demo._clip("short reason"), "short reason")
+
     def test_every_scenario_is_inside_the_session_the_demo_claims(self):
         # Kills: a scenario AgentCore would refuse on its own. The whole
         # comparison rests on AgentCore approving all of them -- one that falls

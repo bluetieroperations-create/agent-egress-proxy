@@ -121,9 +121,11 @@ SCENARIOS = [
     ("$0.05 payment, approval over the ENTIRE wallet",
      "AWS's own docs offer granting an unlimited allowance as a normal option. "
      "An allowance is not a spend, so the $1.00 cap is still satisfied. Note the "
-     "scheme: `exact`, not `upto`. Permit2 is used with both, and in the live "
-     "x402 corpus 10 of the 12 endpoints that require it quote `exact` -- so this "
-     "is the COMMON shape, not an exotic one.",
+     "scheme: `exact`, not `upto`. Permit2 is used with BOTH -- of the 12 live "
+     "x402 entries that require it, half spell it `permit2-exact` outright -- so "
+     "this is a common shape, not an exotic one. Re-derive that count yourself "
+     "with `python asset_coverage.py data/liveness.json`; it is the one claim "
+     "here that is not a live verdict.",
      request(pay_to=ESTABLISHED, amount="50000", scheme="exact",
              allowance=UNLIMITED)),
 
@@ -153,6 +155,20 @@ SCENARIOS = [
 # reputation reasons fire as well and are not the durable half.
 KEYWORDS = ("cannot appear in an on-chain address", "allowance", "UNLIMITED",
             "no price history", "prior settlements")
+
+def _clip(text, width=104):
+    """Trim a reason to one line WITHOUT cutting a word in half.
+
+    AUDIT: a hard slice printed "may then move this asset from the wallet
+    without a furt", which reads like the program broke rather than like a
+    deliberate summary. This is the artifact people are invited to run, so it
+    should not look broken.
+    """
+    if len(text) <= width:
+        return text
+    cut = text[:width].rsplit(" ", 1)[0]
+    return (cut or text[:width]) + " ..."
+
 
 VERDICT_LINE = {ALLOW: "signs the payment",
                 CONFIRM: "asks a human first",
@@ -193,7 +209,7 @@ def main(argv=None):
         ranked = sorted(reasons, key=lambda r: min(
             [KEYWORDS.index(k) for k in KEYWORDS if k in r] or [len(KEYWORDS)]))
         for reason in ranked[:2]:
-            print("              %s" % reason[:112])
+            print("              %s" % _clip(reason))
         print("  outcome   : %s"
               % ("signed -- %s" % json.dumps(result.response)
                  if result.processed else "NOT signed; no proof was ever generated"))

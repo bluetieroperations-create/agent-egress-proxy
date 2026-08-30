@@ -290,7 +290,11 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   corroboration, outcome/dispute depth, freshness. PURE + DESCRIPTIVE -- never
   changes the verdict; folded into every `decide_payment` response as `confidence`
   so a caller can tell a GO on real history from a cold-start default),
-  `asset_coverage.py` (does the decimals table still cover what the ecosystem
+  `asset_coverage.py` (writes `data/asset_coverage.json`, the COMMITTED census
+  behind every prevalence claim about the ecosystem -- added because the
+  AgentCore demo asserted "10 of 12 endpoints quote `exact`" from a number no
+  committed artifact could reproduce, in the most public place we make claims;
+  does the decimals table still cover what the ecosystem
   QUOTES? `KNOWN_DECIMALS_BY_CHAIN` is a SNAPSHOT of one day's corpus; an asset
   missing from it resolves to unknown -- safe, but the amount check is off for
   that payment, and nothing told us when that started. One pass over the live
