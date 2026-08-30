@@ -60,6 +60,17 @@ _HUMAN_QUOTE = re.compile(r"^[0-9]+\.[0-9]+$")
 # than the ceiling it was shown.
 EXCESSIVE_RATIO = 100
 
+# WHAT THE RATIO CHECK CANNOT DO, so nobody expects it to. It compares an
+# allowance against the CEILING THE PAYEE QUOTED, and both numbers ultimately
+# come from the same challenge -- so an allowance that is PROPORTIONATE to an
+# inflated quote is `ok` by construction. That is correct: proportionality is
+# exactly what this measures. Whether the quote itself is reasonable is the price
+# gate's question (is it Nx the payee's own settled median?), and how much may be
+# spent at all is the caller's spending cap. Measured: a 2^128-1 allowance against
+# a 10^9 ceiling is still caught as `excessive`, so the residual band is only a
+# genuinely proportionate large approval, which the price and amount gates see.
+# Three independent questions; this one is not a substitute for the others.
+
 SCHEME = "upto"
 
 
