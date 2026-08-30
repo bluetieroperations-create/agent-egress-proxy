@@ -293,16 +293,31 @@ before you sign." Captures developers at build time.
   all three.
 
 ### Listing follow-ups
-- ~~Update the awesome-x402 entry to "Live on Base".~~ **Done.**
-- ~~Submit to additional registries once MCP-over-HTTP exists.~~ **The gate is
-  now OPEN** — the transport shipped (below), and `mcp.blackwalltier.com` has been
-  a reachable hosted MCP endpoint for a while. Smithery and Glama are eligible
-  today; neither has been submitted.
-- **Do NOT double-publish on Smithery.** `bluetier-operations/blackwall` is already
-  listed there (the generalized blackwalltier product). A second listing for the
-  x402 engine fragments the presence — see `docs/REGISTRIES.md`, which records the
-  identity split and the canonical copy for every surface.
-- `Merit-Systems/awesome-x402` (the second active index) was never submitted.
+- ~~Update the `xpaysh/awesome-x402` entry to "Live on Base".~~ **Done** (PR #667).
+- ~~Submit to additional registries once MCP-over-HTTP exists.~~ **This gate was
+  never actually closed.** `mcp.blackwalltier.com` (the Cloudflare Worker proxying
+  the engine) has been a reachable hosted MCP endpoint over HTTP for a while, and
+  that is what the registries wanted. The `serve_http()` transport shipped in #5 is
+  a DIFFERENT thing — it makes the Python server itself `mcp add`-able and
+  self-hostable. Useful, but it was never the blocker. The underlying confusion is
+  worth naming: x402 is HTTP by construction (the 402 status code) and the verdict
+  API has always been HTTP; MCP is how an agent discovers and calls tools, and OUR
+  MCP server was stdio-only. "MCP-over-HTTP" was about the second, and nothing
+  about it ever gated x402.
+- **Smithery: already listed** — verified 2026-08-30 at
+  `smithery.ai/servers/@bluetier-operations/blackwall` (hosted as
+  `blackwall--bluetier-operations.run.tools`; one tool, `forecast`; API key
+  required). **Do NOT double-publish** a second listing for the x402 engine — that
+  fragments the presence. See `docs/REGISTRIES.md` for the identity split and the
+  canonical copy per surface.
+- **Glama: status UNKNOWN, not "eligible" and not "listed".** Reported listed, but
+  unverifiable from here — their API needs a key and the public search page is
+  client-rendered, so an absent result proves nothing either way. Confirm before
+  treating it as either an open task or a done one.
+- `Merit-Systems/awesome-x402` — the second active index, and the one genuinely
+  unconfirmed target. Distinct from `xpaysh/awesome-x402` above, which is done;
+  `docs/REGISTRIES.md` §5 carries both, and the bare name "awesome-x402" is
+  ambiguous between them.
 - Every listing must point at `blackwall-free.onrender.com`; the old
   `agent-egress-proxy.onrender.com` returns 404.
 
