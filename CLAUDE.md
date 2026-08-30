@@ -138,7 +138,22 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   rather than adds. That is the drainer pattern `calldata.py` already hard-STOPs as
   calldata, so this recognizes it arriving as a payment INTENT instead. UNLIMITED -> hard
   STOP (reuses calldata's `UNLIMITED_MIN` so the two cannot drift on what "unlimited"
-  means); >100x the ceiling -> `excessive`, which escalates GO->HOLD behind the
+  means); SCREEN SELECTION CORRECTED (2026-08-30, reported by the cold-start
+  session, confirmed here end to end before accepting): this keyed off
+  `is_upto(scheme)`, but PERMIT2 IS USED WITH `exact` TOO -- advertised as
+  `extra.assetTransferMethod: "permit2-exact"` -- so an UNLIMITED allowance on an
+  `exact` payment was screened NOT AT ALL: not gated, not warned, not recorded, and
+  measured returning a clean GO. The exposure is created by the ALLOWANCE, not the
+  scheme name, so the screen now runs whenever an allowance is actually stated,
+  whatever the scheme calls itself; absent stays `not_applicable` (`unknown` for
+  `upto`). THREE tests encoded the old behaviour and were replaced, one of them
+  asserting the opposite outcome on the wrong rationale that the field is
+  "meaningless for `exact`". Boundary re-measured: only genuinely unlimited
+  approvals STOP; 1x/3x/99x/101x/10^6x all stay GO with the ratio lock off, so the
+  widening adds no false-positive class. The GRADUATION RULE for `EXCESSIVE_GATES`
+  is also corrected: the shipped corpus can NEVER supply it, because an allowance is
+  PAYER-side -- it appears in a ProcessPayment request, never in a 402 challenge --
+  so the honest gate is N real requests through the API, not corpus observation.; >100x the ceiling -> `excessive`, which escalates GO->HOLD behind the
   reversibility lock `EXCESSIVE_GATES` (DEFAULT OFF -- advisory until flipped;
   approving once and metering many calls under an approval is normal use, so the
   false-HOLD rate wants measuring on the shipped corpus first, the way sybil_ring

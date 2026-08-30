@@ -49,13 +49,50 @@ class TestAssessUpto(unittest.TestCase):
       - return ok for an unlimited allowance -> test_unlimited_is_a_hard_stop FAILS.
       - use > instead of >= at the uint160 boundary -> test_permit2_uint160_max FAILS.
       - drop the ratio gate -> test_allowance_far_above_the_ceiling_holds FAILS.
-      - gate when the scheme is not upto -> test_exact_scheme_is_not_assessed FAILS.
+      - screen a payment that states no allowance ->
+        test_no_allowance_is_not_assessed FAILS.
+      - key the screen off the scheme name again ->
+        test_permit2_on_exact_is_screened FAILS.
     """
-    def test_exact_scheme_is_not_assessed(self):
-        r = U.assess_upto("exact", max_amount="1000", allowance=MAX_UINT256)
+    def test_no_allowance_is_not_assessed(self):
+        # An `exact` payment that states no allowance creates no Permit2 exposure,
+        # so there is nothing to screen. kills: screening on absent input, which
+        # would attach a finding to every ordinary EIP-3009 payment.
+        r = U.assess_upto("exact", max_amount="1000", allowance=None)
         self.assertEqual(r["status"], "not_applicable")
         self.assertFalse(r["mismatches"])
         self.assertFalse(r["warnings"])
+
+    def test_permit2_on_exact_is_screened(self):
+        """REGRESSION. The screen used to key off `is_upto(scheme)`.
+
+        Permit2 is used with `exact` too -- sellers advertise it as
+        `extra.assetTransferMethod: "permit2-exact"` -- so an UNLIMITED allowance
+        on an `exact` payment was not screened at all: not gated, not warned, not
+        recorded. End to end on the shipped code that request returned a clean GO,
+        which is the drainer pattern calldata.py hard-STOPs as calldata walking
+        through as a payment intent.
+
+        The exposure is created by the ALLOWANCE, not the scheme name.
+
+        The previous test here asserted the buggy behaviour -- `assess_upto("exact",
+        allowance=MAX_UINT256)` -> not_applicable with no mismatches -- and is
+        replaced rather than kept, because it encoded the defect.
+
+        kills: restoring the `if not is_upto(scheme): return` early exit.
+        """
+        for scheme in ("exact", "permit2-exact", "batch-settlement", None):
+            r = U.assess_upto(scheme, max_amount="1000", allowance=MAX_UINT256)
+            self.assertEqual(r["status"], "unlimited", "scheme=%r" % (scheme,))
+            self.assertTrue(r["mismatches"], "scheme=%r" % (scheme,))
+
+    def test_upto_with_no_allowance_stays_unknown(self):
+        # `upto` meters THROUGH Permit2, so a missing allowance is a gap in what we
+        # know, not an absence of exposure. kills: collapsing upto's absent-allowance
+        # case into not_applicable when the scheme check moved.
+        self.assertEqual(
+            U.assess_upto("upto", max_amount="1000", allowance=None)["status"],
+            "unknown")
 
     def test_unlimited_is_a_hard_stop(self):
         r = U.assess_upto("upto", max_amount="1000", allowance=MAX_UINT256)
@@ -186,9 +223,16 @@ class TestExcessiveGate(unittest.TestCase):
             self.assertEqual(v["verdict"], start)
 
     def test_ok_and_unknown_never_escalate(self):
+        # NB the third case used to be `exact` with a 10**9 allowance against a 1000
+        # ceiling -- 10^6x. It sat here as a "never escalates" example only because
+        # `exact` was not screened at all; now that the screen keys off the
+        # allowance it is correctly `excessive`, so it belongs in the gating test,
+        # not this one. Replaced with an `exact` payment carrying a PROPORTIONATE
+        # allowance, which is what this test was always meant to assert.
         for status_signal in (U.assess_upto("upto", max_amount="1000", allowance=1000),
                               U.assess_upto("upto", max_amount="1000", allowance=None),
-                              U.assess_upto("exact", max_amount="1000", allowance=10 ** 9)):
+                              U.assess_upto("exact", max_amount="1000", allowance=None),
+                              U.assess_upto("exact", max_amount="1000", allowance=3000)):
             v = U.apply_excessive({"verdict": "GO", "reasons": []},
                                   status_signal, gates=True)
             self.assertEqual(v["verdict"], "GO", status_signal["status"])
@@ -336,12 +380,29 @@ class TestFoldsIntoTheVerdict(unittest.TestCase):
         self.assertIsNone(err)
         self.assertNotEqual(v["verdict"], "STOP")
 
-    def test_exact_scheme_with_a_big_allowance_is_untouched(self):
-        # the field is meaningless for `exact` (AWS rejects it outright), so it
-        # must not gate a normal payment
+    def test_unlimited_allowance_on_exact_is_a_hard_stop(self):
+        """REGRESSION, end to end. This test previously asserted the OPPOSITE, on
+        the stated rationale that "the field is meaningless for `exact`". That
+        rationale was wrong: Permit2 is used with `exact` too, advertised as
+        `extra.assetTransferMethod: "permit2-exact"`. An unlimited approval over
+        the whole balance is the same exposure whatever the scheme is called, and
+        under the old behaviour this exact request returned a clean GO.
+
+        kills: restoring the scheme-keyed early exit in assess_upto.
+        """
         from blackwall import forecast
         v, err = forecast(self._body(scheme="exact",
                                      permit2AllowanceLimit=str(MAX_UINT256)),
+                          self._src(), verify_signer=False)
+        self.assertIsNone(err)
+        self.assertEqual(v["verdict"], "STOP")
+
+    def test_proportionate_allowance_on_exact_does_not_gate(self):
+        # The restraint half: widening the screen must not start blocking ordinary
+        # `exact` payments that grant a sane allowance.
+        # kills: gating on the mere PRESENCE of an allowance rather than its size
+        from blackwall import forecast
+        v, err = forecast(self._body(scheme="exact", permit2AllowanceLimit="3000"),
                           self._src(), verify_signer=False)
         self.assertIsNone(err)
         self.assertNotEqual(v["verdict"], "STOP")

@@ -268,6 +268,17 @@ SIM_SCENARIOS = [
               permit2AllowanceLimit=str((1 << 256) - 1),
               accepts=[{"scheme": "upto", "maxAmountRequired": "1000"}]),
      lambda: {}),
+    # The SAME unlimited-approval exposure arriving on an `exact` payment. Permit2
+    # is used with `exact` too (sellers advertise `extra.assetTransferMethod:
+    # "permit2-exact"`), and the screen used to key off the scheme NAME, so this
+    # returned a clean GO while the `upto` spelling above hard-STOPped. The
+    # exposure is created by the allowance, not by what the scheme is called.
+    ("permit2 unlimited allowance on `exact`", "upto-scheme", "block", False,
+     _payload(scheme="exact",
+              permit2AllowanceLimit=str((1 << 256) - 1),
+              accepts=[{"scheme": "exact", "maxAmountRequired": "1000",
+                        "extra": {"assetTransferMethod": "permit2-exact"}}]),
+     lambda: {}),
     ("blacklisted PAYEE (USDC)", "settlement-sim", "block", False, _payload(),
      lambda: {"settlement_sim_source": _settlement_source(_revert(BLACKLIST_REVERT))}),
     ("blacklisted PAYER (USDC)", "settlement-sim", "block", False, _payload(),
@@ -289,6 +300,14 @@ SIM_SCENARIOS = [
      lambda: {"rwa_source": _rwa_source(_revert(KYC_REVERT))}),
 
     # --- controls: these must NOT be blocked (over-blocking is the real risk here) ---
+    # RESTRAINT for the widened screen: an ordinary `exact` payment with a
+    # proportionate allowance must stay clean. Widening what gets screened is only
+    # safe if it does not start blocking normal traffic.
+    ("`exact` with a proportionate allowance", "control", "allow", True,
+     _payload(scheme="exact", permit2AllowanceLimit="3000",
+              accepts=[{"scheme": "exact", "maxAmountRequired": "1000",
+                        "extra": {"assetTransferMethod": "permit2-exact"}}]),
+     lambda: {}),
     ("upto with a sane allowance", "control", "allow", True,
      _payload(scheme="upto", permit2AllowanceLimit="1000",
               accepts=[{"scheme": "upto", "maxAmountRequired": "1000"}]),
