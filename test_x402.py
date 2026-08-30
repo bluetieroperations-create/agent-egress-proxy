@@ -289,6 +289,8 @@ class TestPricingPolicy(unittest.TestCase):
       - drop the free_below branch -> test_micro_is_free FAILS.
       - drop the max cap -> test_large_capped FAILS.
       - drop the min floor -> test_small_floored FAILS.
+      - drop the proportionality cap -> test_fee_never_exceeds_a_share_of_the_amount
+        FAILS.
     """
     def setUp(self):
         self.p = X.PricingPolicy(free_below="1.00", bps=10,
@@ -307,10 +309,63 @@ class TestPricingPolicy(unittest.TestCase):
         self.assertEqual(self.p.fee_atomic("5000"), 100000)
 
     def test_small_floored(self):
-        # With a low free threshold the min floor binds: $0.50 * 0.1% = $0.0005
-        # -> floored to min $0.01 = 10000 atomic.
-        p = X.PricingPolicy(free_below="0.10", bps=10, min_fee="0.01", max_fee="1.00")
+        """The min floor binds when the proportional fee falls below it.
+
+        NB the cap is explicitly DISABLED here. This case ($0.01 on $0.50) is a
+        2% fee, which the proportionality invariant now refuses -- so with the
+        cap on, this asserts the very behaviour the invariant exists to prevent.
+        Disabling it keeps the test's original intent (does the floor bind?)
+        while `test_fee_never_exceeds_a_share_of_the_amount` pins the new rule.
+        """
+        p = X.PricingPolicy(free_below="0.10", bps=10, min_fee="0.01",
+                            max_fee="1.00", max_fee_ratio_bps=0)
         self.assertEqual(p.fee_atomic("0.50"), 10000)
+
+    def test_fee_never_exceeds_a_share_of_the_amount(self):
+        """THE PROPORTIONALITY INVARIANT.
+
+        `min_fee` is an ABSOLUTE floor, so as the amount falls it becomes an
+        ever-larger fraction of the payment. Nothing bounded that; it was hidden
+        only because `free_below` sat above the range where the floor bites, which
+        is why the paid tier was unreachable (0 of 265 live payees billable at the
+        deployed $10.00).
+
+        kills: removing the ratio check, or ignoring an operator's request to
+        disable it. NOT killed by moving the check before quantization -- that
+        mutant survives, and a sweep of ~184k amounts finds no input where
+        rounding to the 1e-6 quantum crosses the bound. The post-quantization
+        order is kept as defence for coarser constants, not because a failing
+        case exists; saying otherwise would be a mutation note that cannot be
+        demonstrated.
+        """
+        p = X.PricingPolicy(free_below="0.005", bps=10, min_fee="0.001",
+                            max_fee="0.10", max_fee_ratio_bps=100)
+        # $0.001 on $0.01 would be 10%; on $0.028, 3.6%. Both refused -> free.
+        self.assertEqual(p.fee_atomic("0.01"), 0)
+        self.assertEqual(p.fee_atomic("0.028"), 0)
+        # At exactly 1% the fee stands -- the bound is a ceiling, not a strict <.
+        self.assertEqual(p.fee_atomic("0.10"), 1000)
+        # Above it, proportional pricing takes over normally.
+        self.assertEqual(p.fee_atomic("1.00"), 1000)
+
+    def test_cap_holds_across_the_whole_range(self):
+        # PROPERTY, not an example: no amount may ever be charged above the cap.
+        # kills: a cap that only fires in the band the examples happen to probe
+        from decimal import Decimal
+        p = X.PricingPolicy(free_below="0", bps=10, min_fee="0.0001",
+                            max_fee="0.10", max_fee_ratio_bps=100)
+        amt = Decimal("0.000001")
+        while amt < Decimal("100000"):
+            fee = Decimal(p.fee_atomic(amt)) / Decimal(10 ** 6)
+            self.assertLessEqual(fee, amt * Decimal("0.01") + Decimal("0.0000005"),
+                                 "fee %s exceeds 1%% of %s" % (fee, amt))
+            amt *= Decimal("1.7")
+
+    def test_cap_can_be_disabled(self):
+        # kills: hardcoding the cap so an operator cannot restore prior behaviour
+        p = X.PricingPolicy(free_below="0.005", bps=10, min_fee="0.001",
+                            max_fee="0.10", max_fee_ratio_bps=0)
+        self.assertEqual(p.fee_atomic("0.01"), 1000)
 
     def test_unknown_amount_charges_floor(self):
         self.assertEqual(self.p.fee_atomic(None), 1000)

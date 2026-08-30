@@ -2614,7 +2614,14 @@ def main(argv=None):
                 free_below=os.environ.get("BLACKWALL_FREE_BELOW", "1.00"),
                 bps=os.environ.get("BLACKWALL_PRICE_BPS", "10"),
                 min_fee=os.environ.get("BLACKWALL_MIN_FEE", "0.001"),
-                max_fee=os.environ.get("BLACKWALL_MAX_FEE", "0.10"))
+                max_fee=os.environ.get("BLACKWALL_MAX_FEE", "0.10"),
+                # Proportionality invariant (x402.PricingPolicy): the fee may
+                # never exceed this fraction of the amount at risk; if it would,
+                # the verdict is free. 100 bps = 1%. Without it, `min_fee` is an
+                # absolute floor that becomes an ever-larger share of a shrinking
+                # payment -- and the median live x402 quote is $0.005.
+                max_fee_ratio_bps=os.environ.get(
+                    "BLACKWALL_MAX_FEE_RATIO_BPS", "100"))
         # Fail loud (don't silently advertise mainnet USDC) if the network isn't
         # one we know an asset for and the operator didn't pin --asset.
         if args.network not in ("base", "base-sepolia") and not args.asset:
