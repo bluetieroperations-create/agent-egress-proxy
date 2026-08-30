@@ -477,7 +477,50 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   / `assess_concentration` / `apply_concentration` pure; `HolderConcentrationSource` fetches.
   HOLD-only, fail-open, advisory (noisier for RWAs where issuer-EOA custody would false-flag).
   Folded via `holder_source`, opt-in `BLACKWALL_HOLDER_CONCENTRATION`),
-  `dex_price.py` (the token's REAL on-chain market price from a Uniswap-v3 pool + a
+  `honeypot.py` (the EXIT check -- can the agent SELL what it is about to buy? Every
+  other acquisition gate asks whether the BUY clears (`rwa_readiness`: may the receiver
+  hold it; `settlement_sim`: will the stablecoin leg settle; `holder_concentration`: can
+  one wallet dump on you; `dex_price`: is the price real). None asks whether the position
+  can be EXITED, which is the whole honeypot mechanic: buys perfectly, cannot be sold.
+  THE DISCRIMINATOR is the control simulation, and it is why this may gate where
+  `revert_scan`'s bare revert axis may not -- that axis tried to downgrade BLACKROCK
+  because BUIDL rejects non-allowlisted wallets, i.e. because it works AS DESIGNED, so
+  `REVERT_AXIS_GATES` stays off. A transfer revert alone cannot tell a trap from
+  compliance. The rule that can: A RESTRICTION THAT PERMITS AN ARBITRARY FRESH WALLET
+  AND FORBIDS THE MARKET IS NOT COMPLIANCE, IT IS A TRAP. So the flag requires
+  `RECEIVER_BLOCKED` from `transfer_sim.attribute` -- the token's own deepest USDC pool
+  reverts while a fresh control EOA succeeds. A permissioned security blocks BOTH
+  (nothing is allowlisted) -> `SENDER_BLOCKED` -> reported `restricted` and DEFERRED to
+  rwa_readiness, never called a scam; verified as a redteam CONTROL, not just a unit
+  test. The revert CLASS is deliberately not consulted on the receiver path: a honeypot
+  is free to borrow compliance-shaped wording, and "allowlisted only, except any wallet
+  at all, except the pool" is not a coherent posture. SECOND, SOFTER AXIS: round-trip
+  retention (quote buy then sell through the same pool) catches the token that IS
+  sellable but takes 95% on the way out -- behind the reversibility lock
+  `SELL_TAX_GATES`, DEFAULT OFF (legitimate fee-on-transfer tokens exist; the threshold
+  wants measuring on a real corpus first, the way `EXCESSIVE_GATES` and `SYBIL_RING_GATES`
+  graduated). HOLD-only, NEVER STOP (this is inference from a simulation, not proof --
+  sanctions and payload-mismatch keep the STOP authority), FAIL-OPEN everywhere: no pool,
+  no holder, or an unreachable RPC all return `unknown`, and an unlisted token is not a
+  honeypot, it just has no market to probe. Reuses `transfer_sim` (simulation +
+  control attribution) and `dex_price.best_pool` (deepest-pool discovery, made public for
+  this). Opt-in `BLACKWALL_HONEYPOT=1` + an EVM RPC; folded via `honeypot_source`.
+  Measured: baseline GO -> HOLD on a honeypot, GO preserved on a permissioned security.
+  HOT-PATH COST, measured not assumed: pool discovery is one eth_call PER FEE TIER plus
+  the simulation, so a DEGRADED (hanging) RPC cost 7.53s end-to-end at the 2.5s default
+  -- bounded to 1.5s per call for the source this constructs itself. A payment with no
+  `acquires` never reaches the source at all (1.6ms, unchanged). The HEALTHY-path cost is
+  NOT measured: doing that honestly needs a real node, not a loopback stand-in.
+  BINDING HAZARD found here and now guarded by a STRUCTURAL PARITY TEST: adding a source
+  takes SEVEN edits, six of them signatures and the seventh a DICT LITERAL in
+  `serve_forever`'s `_BoundHandler`. Omitting that seventh raises nothing -- the handler
+  keeps its `None` default, the check never runs, and the startup banner still announces
+  it as ON. That is exactly what happened here: unit tests passed, redteam passed, and
+  the live endpoint answered in 7ms because it was doing nothing. `test_honeypot.py`
+  asserts the PROPERTY (every `*_source` on `_Handler` is bound in `serve_forever`) so
+  the next source added cannot repeat it.
+  Tests: `test_honeypot.py`, 31 tests, 8 mutations verified killed),
+    `dex_price.py` (the token's REAL on-chain market price from a Uniswap-v3 pool + a
   market-vs-NAV peg gate -- the piece the oracle-managed Pyth peg can't see (the Backed
   oracle tracks the underlying by construction, so it misses the TOKEN trading off NAV on
   an actual pool: bait/manipulated pool, thin liquidity, market depeg). `dex_token_price`
@@ -620,7 +663,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py
+ test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_honeypot.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop
@@ -641,7 +684,7 @@ underfunded payer does not gate, and an unreachable RPC fails OPEN. `test_redtea
 guards it -- the caught set may not shrink, no control may become a false positive, and
 any attack that gets GO must be an EXPLICIT `known_gap`. MUTATION-VERIFIED: disabling the
 settlement escalation, the auth replay gate, or the control-attribution each makes the
-suite fail by name. Current: 26 attacks caught, 2 documented gaps, 0 false positives.
+suite fail by name. Current: 27 attacks caught, 2 documented gaps, 0 false positives.
 
 ## Standing working practice: ALWAYS deep audit → eval → verify
 
