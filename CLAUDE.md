@@ -87,6 +87,20 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   ERC-20 transfers) with a runtime-toggleable FAIL_CLOSED/FAIL_OPEN availability
   policy; thin `turnkey_signer.py` / `privy_signer.py` shims map each provider's
   request. Stdlib; own tests run from that dir),
+  `integrations/agentcore/` (AWS Bedrock AgentCore Payments adapter -- gate
+  `ProcessPayment` with the verdict BEFORE it signs. AgentCore is GA, speaks x402
+  AND MPP, and connects to Coinbase and Stripe/Privy; a payment session constrains
+  exactly `limits.maxSpendAmount` + `expiryTimeInMinutes` and NOTHING else -- no
+  payee allowlist, no counterparty screening -- and the merchant's `payTo` is
+  forwarded VERBATIM into the signature. So it enforces HOW MUCH and never asks
+  WHO. GO calls through, HOLD asks a human (refuses by default), STOP withholds so
+  no proof is ever generated -- the only durable control, since a returned
+  `PROOF_GENERATED` puts the signed payload in the agent's hands. Reads both
+  payment types (`cryptoX402.payload`, and MPP's raw `WWW-Authenticate: Payment`
+  challenge via `x402_challenge`), and carries `permit2AllowanceLimit` through
+  under AWS's own spelling so `upto_scheme` sees the allowance a spend cap cannot.
+  Dependency-free core `agentcore_guard.py` + thin `strands_plugin.py` /
+  `langgraph_middleware.py`; own tests run from that dir),
   `integrations/openclaw/` (OpenClaw/NemoClaw plugin -- a `before_tool_call` hook
   that recognizes payment-shaped tool calls (flat payTo/amount, 402-challenge
   accepts[], or a signed X-PAYMENT header -> passed through for payload-sim),
