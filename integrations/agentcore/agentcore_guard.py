@@ -154,6 +154,58 @@ def _first_accept(accepts):
         and isinstance(accepts[0], dict) else None
 
 
+def _human_amount(atomic, asset, network):
+    """An x402 ATOMIC amount -> the human decimal string the engine scores, or None.
+
+    AUDIT FINDING (2026-08-30, HIGH -- mass false STOPs). This adapter passed the
+    payload's `amount` straight into `claim["amount"]`. Those are different units:
+    an x402 payload quotes ATOMIC units (`"50000"` is $0.05 of 6-decimal USDC),
+    while the engine reads `claim["amount"]` as a HUMAN decimal string (`"0.05"`).
+    So every AgentCore payment was scored at 10^decimals its real size, and the
+    price-anomaly gate fired on ordinary traffic -- a live $0.05 payment to a
+    merchant with 239 settlements came back STOP, "866.9x the counterparty's own
+    median". Found by running the demo against the live service, not by a test:
+    both sides were individually correct and only the seam between them was wrong.
+
+    The scale comes from `payload_sim.known_decimals` -- what we can VERIFY, never
+    a value the request asserted. When the asset is one we cannot identify there
+    is no honest conversion, so this returns None and the caller declines to build
+    a claim: guessing the scale is the single thing this codebase exists to
+    prevent. That sends the request to the availability policy, the same answer
+    this function already gives for an ambiguous `paymentType`.
+
+    KNOWN LIMITATION, stated because it is attacker-SELECTABLE rather than
+    accidental: the merchant chooses the asset, so a merchant can put a request on
+    the unscoreable path at will by quoting in a token we cannot identify. Under
+    the default FAIL_CLOSED that is refused, which is the right answer. Under
+    FAIL_OPEN it is allowed through unscreened -- so FAIL_OPEN here is not only
+    "allow when the service is down", it is also "allow when the merchant picks an
+    asset we do not know". An operator choosing FAIL_OPEN should know that is the
+    trade, and 97% of live corpus assets are identifiable today (see
+    asset_coverage.py). Widening the availability policy to distinguish the two
+    cases is a change to this module's stated posture, not a bug fix, so it is
+    named here rather than made silently.
+    """
+    if atomic is None:
+        return None
+    from payload_sim import known_decimals
+    decimals = known_decimals({"asset": asset, "chain": network})
+    if decimals is None:
+        return None
+    # ASCII digits only. `int()` also accepts underscores, a leading `+`, and
+    # other scripts' digits (`int("\u0663")` is 3) -- and AgentCore, not this
+    # adapter, decides what the payload says. If AWS's parser reads a spelling
+    # differently from Python's, we would score one amount while a different one
+    # gets signed, which is the single property this guard exists to have. So an
+    # amount we cannot read the same way a strict parser would is not scored.
+    text = str(atomic).strip()
+    if not text or not all("0" <= ch <= "9" for ch in text):
+        return None
+    units = int(text)
+    from decimal import Decimal
+    return format(Decimal(units) / (Decimal(10) ** int(decimals)), "f")
+
+
 def claim_from_process_payment(body):
     """A ProcessPayment request body -> the claim to score, or None.
 
@@ -197,11 +249,19 @@ def claim_from_process_payment(body):
         amount = payload.get("amount")
         if amount is None:
             amount = payload.get("maxAmountRequired")
+        human = _human_amount(amount, payload.get("asset"), payload.get("network"))
+        if amount is not None and human is None:
+            # An amount we cannot put in human units is an amount we cannot score.
+            return None
         claim = {"counterparty": pay_to,
-                 "amount": None if amount is None else str(amount),
+                 "amount": human,
                  "asset": payload.get("asset"),
                  "chain": payload.get("network"),
                  "scheme": payload.get("scheme"),
+                 # `accepts` carries the payload VERBATIM, atomic amount included.
+                 # Deliberate: the `upto` ceiling check compares an allowance
+                 # against the quote in ATOMIC units, so converting here too would
+                 # break it. Only `claim["amount"]` is human.
                  "accepts": [dict(payload)]}
         allowance = crypto.get("permit2AllowanceLimit")
         if allowance is not None:
@@ -224,9 +284,13 @@ def claim_from_process_payment(body):
         amount = entry.get("amount")
         if amount is None:
             amount = entry.get("maxAmountRequired")
+        asset = entry.get("asset") or _mpp_currency(headers[0])
+        human = _human_amount(amount, asset, entry.get("network"))
+        if amount is not None and human is None:
+            return None
         return {"counterparty": entry.get("payTo"),
-                "amount": None if amount is None else str(amount),
-                "asset": entry.get("asset") or _mpp_currency(headers[0]),
+                "amount": human,
+                "asset": asset,
                 "chain": entry.get("network"),
                 "scheme": "mpp",
                 "accepts": [entry]}

@@ -127,3 +127,25 @@ silently fail), but `forecast` requires an asset, so every MPP payment was
 unscoreable and blocked. Fail-closed was safe and useless there: it blocked the
 legitimate ones too. The symbol now goes in the claim, never into the parser's
 accepts entry.
+
+
+## Try it
+
+```
+python integrations/agentcore/demo.py
+```
+
+Four ProcessPayment requests, all inside a $1.00 session cap, all approved by
+AgentCore's own two constraints. Every verdict is a live HTTP call to the public
+Blackwall service — nothing recorded, nothing staged. Change a number and re-run.
+
+| request | AgentCore | Blackwall |
+|---|---|---|
+| established merchant, $0.05 | approves | **GO** — 239 settlements, price in line |
+| merchant nobody has paid | approves | **HOLD** — no history is a question, not a denial |
+| $0.05 payment, **unlimited** Permit2 allowance | approves | **STOP** — signature withheld |
+| $0.05 payment, allowance 1000× the quote | approves | **GO** — recorded, not gated |
+
+The last row matters as much as the third. Headroom is how the metered scheme is
+meant to be used, so a tight ratio would flag correct behaviour. The note is in
+the response if you want it; the payment still goes through.

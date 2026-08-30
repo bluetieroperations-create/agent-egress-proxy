@@ -48,7 +48,9 @@ class TestClaimFromProcessPayment(unittest.TestCase):
         self.assertEqual(c["counterparty"], PAYEE)
         self.assertEqual(c["asset"], USDC_BASE)
         self.assertEqual(c["chain"], "eip155:8453")
-        self.assertEqual(c["amount"], "1000")
+        # HUMAN units. The payload quotes 1000 ATOMIC units of 6-decimal USDC;
+        # the engine reads claim["amount"] as a decimal string. See _human_amount.
+        self.assertEqual(c["amount"], "0.001")
         self.assertEqual(c["scheme"], "exact")
 
     def test_x402_upto_carries_the_allowance(self):
@@ -71,7 +73,7 @@ class TestClaimFromProcessPayment(unittest.TestCase):
                 'intent="charge", request="%s"' % req]}}}
         c = G.claim_from_process_payment(body)
         self.assertEqual(c["counterparty"], PAYEE)
-        self.assertEqual(c["amount"], "100000")
+        self.assertEqual(c["amount"], "0.1")     # 100000 atomic USDC
 
     def test_ambiguous_body_is_refused_rather_than_guessed(self):
         """Two payloads and no `paymentType` -> refuse.
@@ -94,7 +96,8 @@ class TestClaimFromProcessPayment(unittest.TestCase):
         import base64, json
         req = base64.urlsafe_b64encode(json.dumps({
             "recipient": "0xdeadbeef00000000000000000000000000000001",
-            "amount": "1000", "methodDetails": {"chainId": 8453}}
+            "amount": "1000", "currency": "USDC",
+            "methodDetails": {"chainId": 8453}}
         ).encode()).decode().rstrip("=")
         both = {"paymentInput": {
             "cryptoX402": {"version": "2", "payload": {
@@ -111,7 +114,8 @@ class TestClaimFromProcessPayment(unittest.TestCase):
         import base64, json
         req = base64.urlsafe_b64encode(json.dumps({
             "recipient": "0xdeadbeef00000000000000000000000000000001",
-            "amount": "1000", "methodDetails": {"chainId": 8453}}
+            "amount": "1000", "currency": "USDC",
+            "methodDetails": {"chainId": 8453}}
         ).encode()).decode().rstrip("=")
         both = {"paymentInput": {
             "cryptoX402": {"version": "2", "payload": {
@@ -369,3 +373,79 @@ class TestShims(unittest.TestCase):
             inner, guard=G.AgentCoreGuard(lambda c: {"verdict": "GO"}))
         self.assertEqual(m.process_payment(x402_request())["ok"], 1)
         self.assertEqual(m.some_other_hook(), "delegated")
+
+
+class TestAtomicAmountsBecomeHumanOnes(unittest.TestCase):
+    """AUDIT 2026-08-30 (HIGH): the adapter passed the payload's ATOMIC `amount`
+    straight into `claim["amount"]`, which the engine reads as a HUMAN decimal.
+    Every AgentCore payment was therefore scored at 10^decimals its real size,
+    and the price-anomaly gate fired on ordinary traffic.
+
+    Found by running demo.py against the LIVE service: a $0.05 payment to a
+    merchant with 239 settlements came back STOP, "866.9x the counterparty's own
+    median". Both sides were individually correct; only the seam was wrong, which
+    is exactly what a unit test on either side alone cannot see.
+    """
+
+    def test_atomic_usdc_becomes_a_human_decimal(self):
+        # Kills: passing the payload amount through. This is the bug itself.
+        c = G.claim_from_process_payment(x402_request(
+            payload={"scheme": "exact", "amount": "50000"}))
+        self.assertEqual(c["amount"], "0.05")
+
+    def test_an_eighteen_decimal_asset_is_scaled_by_its_own_decimals(self):
+        # Kills: hardcoding 6. JPYC on Polygon is 18 -- assuming 6 reports a
+        # 1.0 payment as a trillion.
+        c = G.claim_from_process_payment(x402_request(payload={
+            "scheme": "exact", "network": "eip155:137",
+            "asset": "0x431D5dfF03120AFA4bDf332c61A6e1766eF37BDB",
+            "amount": "1000000000000000000"}))
+        self.assertEqual(c["amount"], "1")
+
+    def test_accepts_keeps_the_atomic_amount(self):
+        # Kills: converting the payload too. The `upto` ceiling check compares an
+        # allowance against the quote in ATOMIC units, so a converted `accepts`
+        # would silently break the proportionality gate.
+        c = G.claim_from_process_payment(x402_request(
+            payload={"scheme": "exact", "amount": "50000"}))
+        self.assertEqual(c["accepts"][0]["amount"], "50000")
+
+    def test_an_asset_we_cannot_identify_yields_no_claim(self):
+        # Kills: falling back to a guessed scale. There is no honest conversion
+        # for an unknown asset, and guessing is the defect this codebase exists
+        # to prevent -- so it goes to the availability policy instead, the same
+        # answer an ambiguous paymentType already gets.
+        self.assertIsNone(G.claim_from_process_payment(x402_request(
+            payload={"scheme": "exact", "asset": "0x" + "f" * 40,
+                     "amount": "50000"})))
+
+    def test_a_junk_amount_yields_no_claim(self):
+        # Kills: letting a non-integer amount through as if it were units.
+        for junk in ("1e6", "0.5", "-1", "abc", ""):
+            self.assertIsNone(G.claim_from_process_payment(
+                x402_request(payload={"scheme": "exact", "amount": junk})), junk)
+
+    def test_the_upto_ceiling_still_reaches_the_allowance_check(self):
+        # Kills: breaking the upto path while fixing the exact path. The ceiling
+        # is the atomic maxAmountRequired and must survive into `accepts`.
+        c = G.claim_from_process_payment(x402_request(
+            payload={"scheme": "upto", "amount": None,
+                     "maxAmountRequired": "50000"},
+            permit2AllowanceLimit="99999999"))
+        self.assertEqual(c["amount"], "0.05")
+        self.assertEqual(c["accepts"][0]["maxAmountRequired"], "50000")
+        self.assertEqual(c["permit2AllowanceLimit"], "99999999")
+
+    def test_only_ascii_digits_are_read_as_an_amount(self):
+        # Kills: relying on int(), which accepts underscores, a leading `+` and
+        # other scripts' digits. AgentCore -- not this adapter -- decides what the
+        # payload says; if AWS's parser reads a spelling differently we would
+        # score one amount while a different one gets signed.
+        for spelling in ("1_000", "٣", "+50000", "0x10", "1e6"):
+            self.assertIsNone(G.claim_from_process_payment(
+                x402_request(payload={"amount": spelling})), spelling)
+
+    def test_surrounding_whitespace_is_still_tolerated(self):
+        # Kills: a check so strict it rejects a value that is unambiguous.
+        c = G.claim_from_process_payment(x402_request(payload={"amount": " 50000 "}))
+        self.assertEqual(c["amount"], "0.05")
