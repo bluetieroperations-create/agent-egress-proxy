@@ -42,6 +42,9 @@ USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 # harvested from public Base history. Its reputation is earned, not configured.
 ESTABLISHED = "0x480cd46e6fade651a0437deadda53d5c8e7d846a"
 BRAND_NEW = "0x" + "7" * 40
+# The defect found in the wild, reproduced on an address you can check: a real
+# payee with `FACILITATOR_URL=...` glued on. A payment sent there cannot arrive.
+MALFORMED = ESTABLISHED + "FACILITATOR_URL=https://x402.org/facilitator"
 AGENT_WALLET = "0x" + "2" * 40
 
 # The session the agent is operating under. This is the WHOLE of what AgentCore
@@ -118,9 +121,11 @@ SCENARIOS = [
     ("$0.05 payment, approval over the ENTIRE wallet",
      "AWS's own docs offer granting an unlimited allowance as a normal option. "
      "An allowance is not a spend, so the $1.00 cap is still satisfied. Note the "
-     "scheme: `exact`, not `upto`. Permit2 is used with both, and in the live "
-     "x402 corpus 10 of the 12 endpoints that require it quote `exact` -- so this "
-     "is the COMMON shape, not an exotic one.",
+     "scheme: `exact`, not `upto`. Permit2 is used with BOTH -- of the 12 live "
+     "x402 entries that require it, half spell it `permit2-exact` outright -- so "
+     "this is a common shape, not an exotic one. Re-derive that count yourself "
+     "with `python asset_coverage.py data/liveness.json`; it is the one claim "
+     "here that is not a live verdict.",
      request(pay_to=ESTABLISHED, amount="50000", scheme="exact",
              allowance=UNLIMITED)),
 
@@ -130,11 +135,40 @@ SCENARIOS = [
      "flag correct behaviour. The note is there if you want it.",
      request(pay_to=ESTABLISHED, amount="50000", scheme="upto",
              allowance=str(50000 * 1000))),
+
+    ("A payee that cannot possibly be an address",
+     "This shape was found in the live x402 corpus: an address with an "
+     "environment variable concatenated onto it, almost certainly a missing "
+     "newline in a `.env`. AgentCore forwards `payTo` VERBATIM into the "
+     "signature -- there is no field in which to question it -- so the one "
+     "control that can act on it is the one that reads the payee before the "
+     "signature exists. READ THE REASONS BELOW HONESTLY: this address also has "
+     "no history, so a cold-start question fires too. The difference is that a "
+     "cold-start question clears the moment the payee has settlements, and a "
+     "broken address does not get better with settlements.",
+     request(pay_to=MALFORMED, amount="50000")),
 ]
 
 # Which reason actually explains each verdict. Printing the first two buries the
-# interesting one behind boilerplate about settlement counts.
-KEYWORDS = ("allowance", "UNLIMITED", "no price history", "prior settlements")
+# interesting one behind boilerplate about settlement counts -- and for the
+# malformed payee that boilerplate is actively misleading, because the
+# reputation reasons fire as well and are not the durable half.
+KEYWORDS = ("cannot appear in an on-chain address", "allowance", "UNLIMITED",
+            "no price history", "prior settlements")
+
+def _clip(text, width=104):
+    """Trim a reason to one line WITHOUT cutting a word in half.
+
+    AUDIT: a hard slice printed "may then move this asset from the wallet
+    without a furt", which reads like the program broke rather than like a
+    deliberate summary. This is the artifact people are invited to run, so it
+    should not look broken.
+    """
+    if len(text) <= width:
+        return text
+    cut = text[:width].rsplit(" ", 1)[0]
+    return (cut or text[:width]) + " ..."
+
 
 VERDICT_LINE = {ALLOW: "signs the payment",
                 CONFIRM: "asks a human first",
@@ -175,7 +209,7 @@ def main(argv=None):
         ranked = sorted(reasons, key=lambda r: min(
             [KEYWORDS.index(k) for k in KEYWORDS if k in r] or [len(KEYWORDS)]))
         for reason in ranked[:2]:
-            print("              %s" % reason[:112])
+            print("              %s" % _clip(reason))
         print("  outcome   : %s"
               % ("signed -- %s" % json.dumps(result.response)
                  if result.processed else "NOT signed; no proof was ever generated"))
@@ -196,7 +230,9 @@ def main(argv=None):
     print("metered scheme is meant to work. Only an approval over the entire")
     print("balance was refused outright, and an unknown counterparty became a")
     print("question rather than a denial.")
-    print("\nAgentCore enforces HOW MUCH. It never asks WHO.")
+    print("\nAgentCore enforces HOW MUCH. It never asks WHO -- not whether the payee")
+    print("has ever been paid, not whether it is sanctioned, and not, as the last")
+    print("scenario shows, whether it is an address at all.")
     return 0
 
 

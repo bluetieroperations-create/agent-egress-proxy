@@ -290,7 +290,11 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   corroboration, outcome/dispute depth, freshness. PURE + DESCRIPTIVE -- never
   changes the verdict; folded into every `decide_payment` response as `confidence`
   so a caller can tell a GO on real history from a cold-start default),
-  `asset_coverage.py` (does the decimals table still cover what the ecosystem
+  `asset_coverage.py` (writes `data/asset_coverage.json`, the COMMITTED census
+  behind every prevalence claim about the ecosystem -- added because the
+  AgentCore demo asserted "10 of 12 endpoints quote `exact`" from a number no
+  committed artifact could reproduce, in the most public place we make claims;
+  does the decimals table still cover what the ecosystem
   QUOTES? `KNOWN_DECIMALS_BY_CHAIN` is a SNAPSHOT of one day's corpus; an asset
   missing from it resolves to unknown -- safe, but the amount check is off for
   that payment, and nothing told us when that started. One pass over the live
@@ -368,7 +372,13 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   nothing. HOLD-only, never STOP
   (defensible but declined pending real request traffic), fail-open, pure, 1.5us.
   Redteam: 2 attacks (the glued payee, the non-breaking-space evasion) + 1
-  restraint control (a raw base58 Solana payee must not be condemned).
+  restraint control (a raw base58 Solana payee must not be condemned). ALWAYS-ON,
+  so it is advertised in `discovery.py`'s signal list -- it was missing at first
+  because #42 and #43 landed in parallel, which is why `test_discovery.py` now
+  DERIVES that list from a bare verdict instead of restating it. Also the fifth
+  scenario in `integrations/agentcore/demo.py`, the sharpest form of that demo's
+  claim: AgentCore forwards `payTo` VERBATIM into the signature, so it never asks
+  whether the payee is an address at all.
   Tests: `test_payee_syntax.py`),
   `http_util.py` (hardened JSON GET for the live data path: retry+backoff on
   transient 429/5xx/timeout -- honors `Retry-After`, permanent 4xx not retried --

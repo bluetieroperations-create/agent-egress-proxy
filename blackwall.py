@@ -740,8 +740,14 @@ def decide_payment(amount, record, price_history,
             "no price history for this counterparty/resource -- price anomaly unknown"
         )
     elif ratio <= 1.1:
+        # AUDIT: this said "within %.2fx of the median", which reads correctly at
+        # 0.95x or 1.05x and reads like a bug at 0.004x -- a real established
+        # merchant quoting well UNDER its own median printed "within 0.00x",
+        # which is what a reader sees in the AgentCore demo. The branch covers
+        # everything up to 1.1x, so the wording has to be true across all of it.
         reasons.append(
-            "quoted amount within %.2fx of the counterparty's median for this resource class"
+            "quoted amount is %.2fx the counterparty's median for this resource "
+            "class -- within the normal range"
             % ratio
         )
     else:

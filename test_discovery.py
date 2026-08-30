@@ -624,8 +624,85 @@ class TestIdentityDiscriminators(unittest.TestCase):
         signals = D.build_descriptor()["signals"]
         for s in ("counterparty-reputation", "price-anomaly", "sybil-structure",
                   "payload-simulation", "permit2-allowance", "calldata-drainer",
-                  "secret-exfiltration", "evidence-confidence"):
+                  "secret-exfiltration", "payee-syntax", "evidence-confidence"):
             self.assertIn(s, signals)
+
+    def test_every_advertised_always_on_gate_really_runs_unconfigured(self):
+        """The list above is hand-maintained, so it drifts the moment two branches
+        land in parallel -- which is exactly how `payee-syntax` came to be missing
+        from it. This derives the answer instead of restating it.
+
+        SCOPE, stated precisely because an earlier version of this test claimed
+        more than it checked. "Always-on" means the GATE RUNS with no optional
+        source wired. It does NOT mean a `signals` key always appears: measured,
+        only 4 of the 9 advertised labels emit a key unconditionally,
+        `evidence-confidence` lands in the top-level `confidence` field, and
+        `permit2-allowance` / `calldata-drainer` correctly say nothing at all on
+        a payment that carries neither an allowance nor a transaction. So each
+        label is checked by the evidence that actually exists for it: a key when
+        it always emits one, and a FIRED VERDICT when it only speaks up on input.
+
+        `sybil-structure` has no dedicated key or standalone trigger here -- it
+        is folded into the reputation gate -- and is covered by test_redteam's
+        "Sybil: <3 distinct payers" scenario instead.
+
+        kills: advertising a gate this deployment does not run, in either the
+        key-emitting or the input-triggered half.
+        """
+        import blackwall
+
+        class _Empty:
+            def lookup(self, counterparty):
+                return {}
+
+        class _Reputable:
+            def lookup(self, counterparty):
+                return {"settlement_count": 500, "dispute_rate": 0.0,
+                        "distinct_payers": 30, "price_history": ["0.05"] * 20}
+
+        def verdict(source, **extra):
+            payload = {"counterparty": "0x" + "1" * 40, "amount": "0.05",
+                       "asset": "USDC", "chain": "eip155:8453",
+                       "payer": "0x" + "2" * 40}
+            payload.update(extra)
+            resp, err = blackwall.forecast(payload, source)
+            self.assertIsNone(err)
+            return resp
+
+        advertised = D.build_descriptor()["signals"]
+        bare = verdict(_Empty())
+
+        # (a) the labels that emit a signal key on EVERY verdict.
+        for label, key in (("counterparty-reputation", "counterparty_reputation"),
+                           ("price-anomaly", "price_anomaly"),
+                           ("payload-simulation", "payload_signer_status"),
+                           ("secret-exfiltration", "secret_scan"),
+                           ("payee-syntax", "payee_syntax")):
+            self.assertIn(label, advertised)
+            self.assertIn(key, bare["signals"],
+                          "advertised always-on but absent from a bare verdict: %s"
+                          % label)
+
+        # (b) evidence-confidence is emitted, just not under `signals`.
+        self.assertIn("evidence-confidence", advertised)
+        self.assertIn("confidence", bare)
+
+        # (c) the two that correctly say nothing until given their input. A key
+        # check would pass vacuously here, so assert the gate FIRES instead --
+        # which is the property being advertised anyway.
+        approve = "0x095ea7b3" + "0" * 24 + "9" * 40 + "f" * 64
+        for label, extra in (
+                ("permit2-allowance",
+                 {"scheme": "exact", "permit2AllowanceLimit": str((1 << 256) - 1),
+                  "accepts": [{"scheme": "exact", "maxAmountRequired": "50000",
+                               "extra": {"assetTransferMethod": "permit2-exact"}}]}),
+                ("calldata-drainer",
+                 {"transaction": {"to": "0x" + "8" * 40, "data": approve,
+                                  "value": "0"}})):
+            self.assertIn(label, advertised)
+            fired = verdict(_Reputable(), **extra)
+            self.assertEqual(fired["verdict"], "STOP",
+                             "advertised always-on but inert unconfigured: %s" % label)
 
     def test_configured_signals_are_not_claimed_when_off(self):
         # The restraint half: claiming a gate this deployment does not run is the

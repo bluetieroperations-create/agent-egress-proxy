@@ -119,7 +119,7 @@ def build_descriptor(pay_to=None, price=None, asset="USDC", network="base",
     # description gap above became a public misdescription.
     signals = ["counterparty-reputation", "price-anomaly", "sybil-structure",
                "payload-simulation", "permit2-allowance", "calldata-drainer",
-               "secret-exfiltration", "evidence-confidence"]
+               "secret-exfiltration", "payee-syntax", "evidence-confidence"]
     if sanctions_screening:
         signals.insert(0, "sanctions-ofac")
     # CONFIGURED: opt-in, so advertised only when actually wired. Claiming a gate
