@@ -73,6 +73,23 @@ EXCESSIVE_RATIO = 100
 
 SCHEME = "upto"
 
+# REVERSIBILITY LOCK, default OFF -- the same graduation discipline as
+# `SYBIL_RING_GATES` and `ISSUER_TRUST_GATES`.
+#
+# AUDIT (2026-08-29): CLAUDE.md and the shipping PR both described ">100x the
+# ceiling -> HOLD only". It did not HOLD. `excessive` went into `warnings`, and
+# `forecast` only extends `reasons` with warnings -- it never moves the verdict --
+# so a 10^6x disproportionate allowance returned GO with a note most callers never
+# read. Confirmed live in production. A control documented as gating that does not
+# gate is exactly the defect class this codebase keeps finding.
+#
+# The intent was always to escalate, never to STOP, so the code now expresses it.
+# It ships OFF because turning it on changes live verdicts and the false-HOLD rate
+# is unmeasured: EXCESSIVE_RATIO is deliberately generous at 100x, but "generous"
+# is a design claim, not a measurement. Flip once the shipped corpus shows the
+# rate, the way sybil_ring graduated.
+EXCESSIVE_GATES = False
+
 
 
 def _show(v):
@@ -195,6 +212,57 @@ def parse_ceiling(max_amount, decimals=None):
         return None
     from x402 import to_atomic          # deferred: x402 is the base module
     return to_atomic(text.strip(), decimals)
+
+
+
+def apply_excessive(verdict, signal, gates=None):
+    """PURE fold: record an `excessive` allowance, and escalate GO -> HOLD when
+    the lock is on.
+
+    CONSERVATIVE-ONLY, matching `settlement_sim.apply_settlement_sim`: it moves a
+    GO to HOLD and nothing else. A STOP is never softened and a HOLD is never
+    re-escalated. `unlimited` does not travel through here at all -- that is a
+    mismatch, and a mismatch is a hard STOP whether or not this lock is on.
+
+    Never mutates the caller's verdict.
+    """
+    gates = EXCESSIVE_GATES if gates is None else gates
+    if not isinstance(signal, dict) or signal.get("status") != "excessive":
+        return verdict
+    # A verdict we cannot read is returned untouched rather than rebuilt from
+    # junk. `forecast` has no try/except around this fold, so raising here would
+    # surface as a 503 on a request the engine could otherwise answer -- and every
+    # other fold in this codebase is documented as never raising.
+    if not isinstance(verdict, dict):
+        return verdict
+    v = dict(verdict)
+    signals = v.get("signals")
+    v["signals"] = dict(signals) if isinstance(signals, dict) else {}
+    v["signals"]["upto_allowance"] = {
+        "status": "excessive",
+        "allowance": signal.get("allowance"),
+        "ceiling": signal.get("ceiling"),
+        "gated": bool(gates),
+    }
+    existing = v.get("reasons")
+    reasons = list(existing) if isinstance(existing, (list, tuple)) else []
+    # IDEMPOTENT on the signal's own warnings. `forecast` already extends reasons
+    # with upto_check["warnings"] before calling this, so adding them
+    # unconditionally printed the same exposure TWICE -- which is how a reason
+    # list stops being read. Adding only what is missing is correct for both
+    # callers: the fold stays self-contained for a direct caller, and adds
+    # nothing the pipeline already surfaced.
+    for warning in signal.get("warnings") or []:
+        if warning not in reasons:
+            reasons.append(warning)
+    if gates and v.get("verdict") == "GO":
+        v["verdict"] = "HOLD"
+        reasons.append(
+            "escalated GO->HOLD: the Permit2 allowance is far larger than the "
+            "ceiling this payment quoted -- the wallet is exposed beyond the "
+            "amount it was shown, and a spending cap cannot restrain an allowance")
+    v["reasons"] = reasons
+    return v
 
 
 def assess_upto(scheme, max_amount=None, allowance=None, decimals=None):

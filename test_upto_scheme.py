@@ -140,6 +140,128 @@ class TestAssessUpto(unittest.TestCase):
                     U.assess_upto(scheme, max_amount=amt, allowance=allow)
 
 
+class TestExcessiveGate(unittest.TestCase):
+    """`excessive` may escalate GO -> HOLD, behind a reversibility lock.
+
+    AUDIT (2026-08-29). CLAUDE.md and the shipping PR both described ">100x the
+    ceiling -> HOLD only". It did not HOLD. `assess_upto` put it in `warnings`,
+    and blackwall.forecast only extends `reasons` with warnings -- it never moves
+    the verdict. So a 10^6x disproportionate allowance returned GO with a note
+    most callers never read. Confirmed live in production before the fix.
+
+    A control documented as gating that does not gate is the defect class this
+    codebase keeps finding, and this one was mine.
+
+    Graduated the way sybil_ring and issuer_trust were: behind a lock, DEFAULT
+    OFF, so nothing changes on live traffic until the false-HOLD rate is measured
+    on the shipped corpus. Flip EXCESSIVE_GATES to enable.
+
+    Mutation notes:
+      - gate while the lock is off -> test_lock_off_is_advisory FAILS.
+      - ignore the lock when on -> test_lock_on_escalates FAILS.
+      - escalate a STOP or a HOLD -> test_only_go_is_escalated FAILS.
+    """
+    def _signal(self, allowance=10 ** 9, ceiling="1000"):
+        return U.assess_upto("upto", max_amount=ceiling, allowance=allowance)
+
+    def test_lock_off_is_advisory(self):
+        self.assertFalse(U.EXCESSIVE_GATES, "the lock must ship OFF")
+        v = U.apply_excessive(
+            {"verdict": "GO", "reasons": []}, self._signal(), gates=False)
+        self.assertEqual(v["verdict"], "GO")
+        self.assertTrue(any("allowance" in r.lower() for r in v["reasons"]),
+                        "still reported, just not gating")
+
+    def test_lock_on_escalates(self):
+        v = U.apply_excessive(
+            {"verdict": "GO", "reasons": []}, self._signal(), gates=True)
+        self.assertEqual(v["verdict"], "HOLD")
+        self.assertTrue(any("escalated GO->HOLD" in r for r in v["reasons"]))
+
+    def test_only_go_is_escalated(self):
+        # kills: downgrading a STOP to HOLD, or re-escalating a HOLD
+        for start in ("STOP", "HOLD"):
+            v = U.apply_excessive({"verdict": start, "reasons": []},
+                                  self._signal(), gates=True)
+            self.assertEqual(v["verdict"], start)
+
+    def test_ok_and_unknown_never_escalate(self):
+        for status_signal in (U.assess_upto("upto", max_amount="1000", allowance=1000),
+                              U.assess_upto("upto", max_amount="1000", allowance=None),
+                              U.assess_upto("exact", max_amount="1000", allowance=10 ** 9)):
+            v = U.apply_excessive({"verdict": "GO", "reasons": []},
+                                  status_signal, gates=True)
+            self.assertEqual(v["verdict"], "GO", status_signal["status"])
+
+    def test_unlimited_is_untouched_by_the_lock(self):
+        # kills: routing the hard STOP through the lock -- an unlimited approval
+        # is a mismatch and STOPs whether or not `excessive` gates
+        sig = U.assess_upto("upto", max_amount="1000", allowance=(1 << 256) - 1)
+        self.assertTrue(sig["mismatches"])
+        for gates in (True, False):
+            v = U.apply_excessive({"verdict": "GO", "reasons": []}, sig, gates=gates)
+            self.assertEqual(v["verdict"], "GO",
+                             "apply_excessive handles `excessive` only; the hard "
+                             "STOP travels as a mismatch")
+
+    def test_does_not_duplicate_a_warning_the_caller_already_added(self):
+        """`forecast` already extends reasons with upto_check["warnings"] via
+        sim_warnings, so re-adding them here printed the same line twice.
+
+        Found by auditing this change: the operator sees one exposure reported as
+        two, which is how a reason list stops being read.
+
+        Mutation: extend reasons with signal["warnings"] here -> this FAILS.
+        """
+        sig = self._signal()
+        already = list(sig["warnings"])          # the caller added these
+        v = U.apply_excessive({"verdict": "GO", "reasons": already},
+                              sig, gates=False)
+        self.assertEqual(len(v["reasons"]), len(already),
+                         "apply_excessive must not restate the caller's warnings")
+
+    def test_still_reports_when_the_caller_added_nothing(self):
+        # kills: relying on the caller to have added the warning -- a direct
+        # caller of apply_excessive must still see why it gated
+        v = U.apply_excessive({"verdict": "GO", "reasons": []},
+                              self._signal(), gates=True)
+        self.assertTrue(any("escalated GO->HOLD" in r for r in v["reasons"]))
+
+    def test_never_raises_on_a_malformed_verdict(self):
+        """A fold must not turn a recoverable verdict into a 503.
+
+        Found by auditing this change: `dict(v.get("signals") or {})` raised on a
+        non-dict `signals`, and `dict(verdict)` raised on a non-dict verdict --
+        6 of 64 malformed combinations. Every other fold here is documented as
+        never raising, and `forecast` has no try/except around this one, so the
+        exception would surface as a 503 from a request the engine could have
+        answered.
+
+        Mutation: drop the isinstance guards -> this FAILS.
+        """
+        sig = self._signal()
+        for verdict in (None, {}, {"verdict": None}, {"reasons": "notalist"},
+                        {"signals": "nope"}, 5, [], "x", 1.5, True):
+            for signal in (None, {}, sig, {"status": "excessive"},
+                           {"status": "excessive", "warnings": "str"},
+                           {"status": 123}, [], "x", 7):
+                U.apply_excessive(verdict, signal, gates=True)
+                U.apply_excessive(verdict, signal, gates=False)
+
+    def test_a_malformed_verdict_is_returned_untouched(self):
+        # kills: manufacturing a verdict out of junk -- if we cannot read it, the
+        # caller's object is what it was
+        for verdict in (None, 5, "x", []):
+            self.assertIs(U.apply_excessive(verdict, self._signal(), gates=True),
+                          verdict)
+
+    def test_pure_does_not_mutate_the_input(self):
+        v0 = {"verdict": "GO", "reasons": []}
+        U.apply_excessive(v0, self._signal(), gates=True)
+        self.assertEqual(v0["verdict"], "GO")
+        self.assertEqual(v0["reasons"], [])
+
+
 class TestAllowanceFromRequest(unittest.TestCase):
     """Read the allowance wherever a caller plausibly puts it -- our own field, or
     the AWS AgentCore spelling, which is the shape agents will actually hold."""
