@@ -444,9 +444,29 @@ class HttpFacilitator:
     Blackwall does not (spec 5.4).
     """
 
-    def __init__(self, base_url, timeout=20.0):
+    # SPLIT TIMEOUTS, and the split is the point (audit 2026-08-30, pre-billing).
+    #
+    # `/verify` is READ-ONLY and idempotent: a hang there costs only a held
+    # thread, so it wants a SHORT bound. Measured before this change, a
+    # black-hole facilitator held a paid request for the full 20s, and
+    # ThreadingHTTPServer is thread-per-request and unbounded -- so a facilitator
+    # DEGRADATION (not an outage; an outage fails fast at 0.07s) could starve the
+    # pool and take the FREE tier down alongside the paid one.
+    #
+    # `/settle` HAS A SIDE EFFECT, and shortening it is actively dangerous. Time
+    # out after the facilitator has already broadcast and the on-chain EIP-3009
+    # nonce is spent while we return a 402: the agent has paid and got nothing,
+    # and every retry with that authorization now fails forever because the nonce
+    # is used. Waiting longer is the safe error here, so settle keeps the longer
+    # bound.
+    #
+    # Worst case is NOT the sum: verify fails closed and short-circuits settle, so
+    # a wholly unresponsive facilitator costs `timeout`, not `timeout +
+    # settle_timeout`.
+    def __init__(self, base_url, timeout=8.0, settle_timeout=25.0):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.settle_timeout = settle_timeout
 
     def _auth_headers(self, path):
         """Per-request auth headers -- empty for a keyless facilitator. Subclasses
@@ -468,8 +488,11 @@ class HttpFacilitator:
         headers.update(self._auth_headers(path))
         req = urllib.request.Request(self.base_url + path, data=body,
                                      headers=headers)
+        # Side-effecting endpoint gets the longer bound -- see __init__.
+        budget = (getattr(self, "settle_timeout", self.timeout)
+                  if path == "/settle" else self.timeout)
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            with urllib.request.urlopen(req, timeout=budget) as r:
                 return json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             # Real facilitators return a STRUCTURED x402 error with a non-2xx
@@ -536,8 +559,9 @@ class CdpFacilitator(HttpFacilitator):
     """
 
     def __init__(self, key_id, key_secret, base_url=CDP_FACILITATOR_URL,
-                 timeout=20.0):
-        super().__init__(base_url, timeout=timeout)
+                 timeout=8.0, settle_timeout=25.0):
+        super().__init__(base_url, timeout=timeout,
+                         settle_timeout=settle_timeout)
         self.key_id = key_id
         self.key_secret = key_secret
 
@@ -550,7 +574,7 @@ class CdpFacilitator(HttpFacilitator):
         return {"Authorization": "Bearer " + token}
 
 
-def choose_facilitator(facilitator_url, cdp_id, cdp_secret):
+def choose_facilitator(facilitator_url, cdp_id, cdp_secret, timeout=8.0, settle_timeout=25.0):
     """
     Pick the facilitator from config, returning (facilitator_or_None, note).
 
@@ -572,9 +596,12 @@ def choose_facilitator(facilitator_url, cdp_id, cdp_secret):
                         "non-CDP BLACKWALL_FACILITATOR=%s" % (url, facilitator_url))
             else:
                 note = "CDP facilitator (authenticated) at %s -- Bazaar-eligible" % url
-        return CdpFacilitator(cdp_id, cdp_secret, base_url=url), note
+        return (CdpFacilitator(cdp_id, cdp_secret, base_url=url,
+                               timeout=timeout, settle_timeout=settle_timeout),
+                note)
     if facilitator_url:
-        return (HttpFacilitator(facilitator_url),
+        return (HttpFacilitator(facilitator_url, timeout=timeout,
+                                settle_timeout=settle_timeout),
                 "HTTP facilitator at %s (keyless -- settles but NOT Bazaar-listed)"
                 % facilitator_url)
     return None, "built-in mock facilitator (no --facilitator, no CDP creds)"
