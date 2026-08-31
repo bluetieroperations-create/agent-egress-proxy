@@ -337,9 +337,15 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   Found in the wild by `asset_coverage` on 2026-08-30: a live seller advertised a
   Solana `payTo` with `FACILITATOR_URL=https://...` concatenated onto it -- almost
   certainly a missing newline in a `.env` -- and a payment there cannot arrive.
-  PAST TENSE ON PURPOSE: a re-probe of the same 195 hosts later that day found 0
-  malformed payees among the 175 that answered (20 silent), so the seller either
-  fixed it or went quiet; the gate is for the NEXT one. The engine
+  STILL LIVE, and the road to knowing that is the point: a re-probe the same day
+  found 0 malformed among the 175 hosts that answered (20 silent), which read as
+  "fixed or gone quiet, unknown which" -- a later probe found the host,
+  `apiwitchcraft.duckdns.org`, back up and STILL advertising it on two Solana
+  networks plus a truncated 39-hex BSC asset. It went quiet; it was never fixed.
+  A silent host and a healthy one produce the same absence of findings, so
+  "0 malformed" was only ever evidence of 0 SEEN -- which is why every
+  `asset_coverage` run leads with how many hosts answered. In
+  `data/asset_coverage.json`. The engine
   could not tell it from a clean one: MEASURED, that payee and a clean Solana
   payee returned BYTE-IDENTICAL verdicts, both HOLD because the counterparty was
   UNKNOWN rather than impossible. That HOLD clears the moment the payee has
