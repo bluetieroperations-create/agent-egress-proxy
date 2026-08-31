@@ -53,6 +53,7 @@ CLI:
     python asset_coverage.py data/liveness.json [--json report.json]
 """
 import argparse
+import datetime
 import json
 import sys
 import urllib.error
@@ -471,6 +472,12 @@ def harvest(targets, fetch=None, workers=10):
     return rows, silent
 
 
+def _utcnow():
+    """Injection seam: the one impure call in this module, isolated so a test can
+    pin it rather than assert on a moving value."""
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     parser.add_argument("directory", help="a data/liveness.json-shaped file")
@@ -489,8 +496,17 @@ def main(argv=None):
     report.update(census(rows))
     print(format_report(report))
     if args.json:
+        # DATE THE ARTIFACT. This file is the committed evidence behind
+        # prevalence claims made elsewhere (the AgentCore demo's Permit2 note is
+        # asserted against it), and a census with no date cannot be told from a
+        # current one -- the reader has no way to know whether "12 permit2
+        # entries" describes today's ecosystem or last quarter's. Written here
+        # rather than in `assess` so the pure functions stay pure and clock-free.
+        stamped = dict(report,
+                       generated_at=_utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"))
         with open(args.json, "w") as handle:
-            json.dump(report, handle, indent=1, sort_keys=True)
+            json.dump(stamped, handle, indent=1, sort_keys=True)
+        print("\nwritten to %s, dated %s" % (args.json, stamped["generated_at"]))
     # Exit 1 when a person should look, so a scheduled run is actionable without
     # anyone reading the output.
     return 1 if needs_attention(report) else 0

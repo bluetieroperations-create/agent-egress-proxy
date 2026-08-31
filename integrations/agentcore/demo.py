@@ -122,10 +122,11 @@ SCENARIOS = [
      "AWS's own docs offer granting an unlimited allowance as a normal option. "
      "An allowance is not a spend, so the $1.00 cap is still satisfied. Note the "
      "scheme: `exact`, not `upto`. Permit2 is used with BOTH -- of the 12 live "
-     "x402 entries that require it, half spell it `permit2-exact` outright -- so "
-     "this is a common shape, not an exotic one. Re-derive that count yourself "
-     "with `python asset_coverage.py data/liveness.json`; it is the one claim "
-     "here that is not a live verdict.",
+     "x402 entries that require an allowance, 8 are on `exact` -- so this is the "
+     "COMMON shape, not an exotic one, and a screen keyed off the scheme NAME "
+     "would miss two thirds of it. That count is the one claim here that is not "
+     "a live verdict; it comes from data/asset_coverage.json, which "
+     "`python asset_coverage.py data/liveness.json` regenerates.",
      request(pay_to=ESTABLISHED, amount="50000", scheme="exact",
              allowance=UNLIMITED)),
 

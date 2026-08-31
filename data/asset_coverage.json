@@ -1,5 +1,6 @@
 {
- "hosts_answered": 175,
+ "generated_at": "2026-08-31T04:58:08Z",
+ "hosts_answered": 176,
  "hosts_probed": 195,
  "hosts_silent": [
   "address-risk.hergertsynthora.com",
@@ -10,7 +11,6 @@
   "api.osf-master-server.com",
   "api.scanna.xyz",
   "api.tickersfeed.net",
-  "apiwitchcraft.duckdns.org",
   "app-production-23b4.up.railway.app",
   "app.heinrichstech.com",
   "cloud.hyrule.host",
@@ -21,12 +21,36 @@
   "nonvisceral-eloisa-mousily.ngrok-free.dev",
   "pmhxr44qn4qitobucm7ctgklbq0svqjb.lambda-url.ap-southeast-2.on.aws",
   "scvd.store",
-  "stable-financial.vercel.app"
+  "vaaya.ai"
  ],
  "implausible": [],
  "known_pairs": 35,
- "malformed": [],
- "malformed_payees": [],
+ "malformed": [
+  {
+   "asset": "0x8AC76a51cc950d9822D68b83fE43AD4843bA77E",
+   "hosts": [
+    "apiwitchcraft.duckdns.org"
+   ],
+   "network": "eip155:56",
+   "quotes": 1
+  }
+ ],
+ "malformed_payees": [
+  {
+   "hosts": [
+    "apiwitchcraft.duckdns.org"
+   ],
+   "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+   "pay_to": "2DgEL95L8DtaRb4ubYqrrnMbX7Zxgjxq7k8Ed9XAWYcpFACILITATOR_URL=https://x402.org/facilitator"
+  },
+  {
+   "hosts": [
+    "apiwitchcraft.duckdns.org"
+   ],
+   "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+   "pay_to": "2DgEL95L8DtaRb4ubYqrrnMbX7Zxgjxq7k8Ed9XAWYcpFACILITATOR_URL=https://x402.org/facilitator"
+  }
+ ],
  "non_usd": [
   {
    "asset": "0x431D5dfF03120AFA4bDf332c61A6e1766eF37BDB",
@@ -139,15 +163,15 @@
    "scheme": "exact"
   }
  ],
- "priced_quotes": 359,
+ "priced_quotes": 367,
  "schemes": {
   "aggr_deferred": 1,
   "batch-settlement": 3,
-  "exact": 351,
+  "exact": 360,
   "upto": 4
  },
- "total_pairs": 35,
- "total_quotes": 359,
+ "total_pairs": 36,
+ "total_quotes": 368,
  "transfer_methods": {
   "eip3009": 8,
   "permit2": 6,

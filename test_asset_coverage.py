@@ -5,6 +5,8 @@ Each test states the mutation it kills. The network is injected everywhere, so
 nothing here touches a live host.
 """
 import json
+import os
+import tempfile
 import unittest
 
 import asset_coverage as AC
@@ -485,3 +487,38 @@ class TestCensus(unittest.TestCase):
     def test_census_never_raises_on_junk(self):
         # Kills: assuming the harvest is well-formed. It comes from the network.
         AC.census(None); AC.census(["x", 1, None, {}])
+
+
+class TestTheArtifactIsDated(unittest.TestCase):
+    """The JSON report is committed as `data/asset_coverage.json` and other
+    code asserts prevalence claims against it. A census with no date cannot be
+    told from a current one."""
+
+    def _run(self, out):
+        import datetime
+        directory = os.path.join(os.path.dirname(out), "directory.json")
+        with open(directory, "w") as handle:
+            json.dump([], handle)          # no targets -> no network
+        pinned = datetime.datetime(2026, 8, 31, 12, 0, 0,
+                                   tzinfo=datetime.timezone.utc)
+        original = AC._utcnow
+        AC._utcnow = lambda: pinned
+        try:
+            AC.main([directory, "--json", out])
+        finally:
+            AC._utcnow = original
+        with open(out) as handle:
+            return json.load(handle)
+
+    def test_the_written_report_carries_the_date_it_was_taken(self):
+        # Kills: dropping the stamp. Without it the committed artifact is
+        # indistinguishable from a current one at any later date.
+        with tempfile.TemporaryDirectory() as tmp:
+            report = self._run(os.path.join(tmp, "cov.json"))
+        self.assertEqual(report["generated_at"], "2026-08-31T12:00:00Z")
+
+    def test_the_committed_artifact_is_dated(self):
+        # Kills: committing a report written before the stamp existed, which
+        # would silently reintroduce the undated snapshot.
+        with open("data/asset_coverage.json") as handle:
+            self.assertIn("generated_at", json.load(handle))
