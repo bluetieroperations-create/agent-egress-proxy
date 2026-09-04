@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 BlueTier Operations. All rights reserved.
+// SPDX-License-Identifier: MIT
+
 // Tests for the OpenClaw x402 payment gate (index.ts).
 //
 // MUTATION NOTES appear per-describe: each names the regression that block of
