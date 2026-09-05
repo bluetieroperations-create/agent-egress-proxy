@@ -425,3 +425,24 @@ class TestPoisonScan(unittest.TestCase):
             {"name": "dirty", "description": "zero​width"}]}]
         out = p.scan_reading(rows)
         self.assertEqual(list(out["s"]), ["dirty"])
+
+
+class TestDecodeLimits(unittest.TestCase):
+    """The decode fix works; these pin WHERE it stops, so the next person does
+    not discover the edge in production."""
+
+    def test_utf16_is_not_silently_mangled_into_a_wrong_parse(self):
+        # kills: guessing an encoding. UTF-16 through errors="replace" yields
+        # interleaved nulls, and the honest answer is None -- a parser that
+        # starts guessing encodings starts accepting what it should reject.
+        # No corpus server does this; RFC 8259 requires UTF-8 for interchange.
+        self.assertIsNone(p._decode_json('{"ok":1}'.encode("utf-16")))
+
+    def test_a_body_truncated_mid_codepoint_is_none_not_a_partial_parse(self):
+        # kills: returning a truncated prefix as if it were the whole answer.
+        self.assertIsNone(p._decode_json(b'{"name":"caf\xc3'))
+
+    def test_a_lone_surrogate_still_parses(self):
+        # kills: treating an unpaired surrogate as fatal. It is invalid UTF-8
+        # but the rest of the message is still the server's real answer.
+        self.assertEqual(p._decode_json(b'{"n":"\xed\xa0\x80"}')["n"], "���")

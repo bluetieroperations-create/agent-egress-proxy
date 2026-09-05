@@ -104,8 +104,42 @@ Streamable-HTTP servers hold the SSE stream open after answering, so a plain
 stops at the first complete JSON-RPC message. Verified against a live server:
 identical digest, 2.7s. Three regression tests added.
 
-Also noted, not yet fixed: 128 servers returned `tools/list UnicodeDecodeError`.
-Their tool definitions were not captured. Worth handling before reading #2.
+Also noted: 128 servers returned `tools/list UnicodeDecodeError`. Their tool
+definitions were not captured. **Since fixed and verified end to end** — see
+the next section, which matters more than the bug did.
+
+## The first diff will contain 129 rows that are NOT ecosystem change
+
+`_decode_json` now decodes with `errors="replace"` before parsing and catches
+`ValueError`, which covers both the JSON and the Unicode failure. Unit tests
+cover it, but the check that settles it is running the fixed probe against the
+servers it was written for: **27 of 28 sampled now return their tools**, across
+all 22 distinct hosts. The one failure is a genuine HTTP 404 — that server
+moved. So reading #2 will capture these.
+
+THAT IS THE PROBLEM. Those 129 will appear in the first diff as servers whose
+tool definitions materialised between August and September, and that is an
+INSTRUMENTATION change, not an ecosystem one. We started seeing them; they did
+not start existing. Read naively, the first `drift()` output overstates real
+change by 129 rows, and every one of them looks like a server that "added
+tools".
+
+The names are committed at `data/mcp_snapshots/2026-08-27.coverage_gap.json` so
+reading #2 can subtract them exactly rather than approximately. Any count of
+"servers that changed" must state whether they are in or out.
+
+They are also more concentrated than the number suggests: **107 of the 129 are
+two hosts** — `gateway.pipeworx.io` (73) and `api.mcp.ai` (34), the same
+directory whose apparent multi-brand publishing was investigated and retracted
+above. The fix recovers roughly 8 distinct operators, not 129 of them. Quoting
+129 as "servers recovered" would repeat exactly the error the retraction was
+about.
+
+KNOWN LIMIT, stated rather than discovered later: a body encoded in UTF-16
+still parses to `None`. `errors="replace"` on UTF-16 input yields interleaved
+nulls, not JSON. No server in the corpus does this, RFC 8259 requires UTF-8 for
+interchange, and guessing an encoding is how a parser starts accepting things
+it should reject — so this is documented, not handled.
 
 ## What reading #2 gives that this one cannot
 
