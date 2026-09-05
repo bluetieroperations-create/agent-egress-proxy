@@ -220,6 +220,11 @@ PUBLIC_POST_ROUTES = (
     "/v1/verify-signer",
     "/v1/report-outcome",
     "/v1/screen-payer",
+    # The human-in-the-loop half of a HOLD. Rate-limited like every other POST:
+    # opening an approval is the cheapest call here and it WRITES, so it is the
+    # obvious way to try to grow the store.
+    "/v1/approvals",
+    "/v1/approvals/decide",
 )
 
 # Served ONLY when x402 billing is configured; the handler answers 404
@@ -238,6 +243,12 @@ _ROUTE_SUMMARY = {
     "/v1/price-index": "Per-category median price for agent services, computed "
                        "from SETTLED on-chain payments rather than advertised "
                        "prices. Read-only reference data.",
+    "/v1/approvals": "Open a human-approval request for a HOLD verdict. Returns "
+                     "an approval_id and an owner-only approval_token. Only a "
+                     "HOLD can be opened -- a STOP is never approvable.",
+    "/v1/approvals/decide": "Approve or decline a pending request (owner token "
+                            "required). An approval is bound to the exact "
+                            "payment, single-use, and expires.",
     "/openapi.json": "This document.",
     "/stats": "Request and verdict counters. No PII.",
     "/v1/verify-signer": "Stage-2 EIP-3009 signer recovery for a request that "
