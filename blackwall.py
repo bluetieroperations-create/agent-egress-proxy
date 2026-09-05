@@ -561,7 +561,7 @@ def decide_payment(amount, record, price_history,
                    verified_floor=None, verified_grade=None,
                    payer_graph_signal=None, temporal_signal=None,
                    category=None, category_median=None, divergence_ratio=None,
-                   enrichment=None, secret_findings=None):
+                   enrichment=None, secret_findings=None, non_usd_amount=False):
     """
     The core verdict. Returns a dict:
         {verdict, score, reasons[], signals{...}}
@@ -764,6 +764,17 @@ def decide_payment(amount, record, price_history,
     threshold = (HOLD_AMOUNT_THRESHOLD if hold_above is None
                  else Decimal(str(hold_above)))
     over_budget = amount_dec > threshold
+    # The threshold is DOLLARS. When the amount is denominated in something else
+    # the comparison above is meaningless, so a GO it produces is not evidence of
+    # anything. MEASURED before this existed: 5.00 SOL (~$500) returned a clean
+    # GO while 50.00 USDC (~$50) correctly escalated -- the GUSD spending-cap
+    # bypass from docs/DECIMALS_AUDIT.md, by CURRENCY instead of by decimals.
+    # HOLD-only and knowledge-based: `payload_sim.is_non_usd` names the assets we
+    # KNOW are not dollars, so an unrecognized asset is never blocked on a guess.
+    # No rate is applied -- a hardcoded one is stale the day it is written, and
+    # declining to auto-approve is the honest answer, exactly as an unverified
+    # decimals scale is reported rather than assumed.
+    budget_uncheckable = bool(non_usd_amount)
 
     # Peer-group cross-check: is this counterparty priced far above COMPARABLE
     # counterparties for the same resource class? Reference = its own class median
@@ -831,6 +842,9 @@ def decide_payment(amount, record, price_history,
         (a_score >= HOLD_ANOMALY, lambda: "price anomaly above the auto-approve ceiling"),
         (over_budget, lambda: "amount %s exceeds the auto-approve threshold %s -- hand to "
             "spending-cap layer" % (amount_dec, threshold)),
+        (budget_uncheckable, lambda: "amount %s is denominated in a non-dollar asset, so "
+            "the %s auto-approve threshold cannot be applied to it -- confirm the value "
+            "before releasing" % (amount_dec, threshold)),
         (peer_hold, lambda: "priced %.1fx the peer-group market rate for this class -- "
             "above comparable counterparties" % peer_ratio),
         (category_hold, lambda: "quoted %.1fx the on-chain median for the '%s' category "
@@ -914,7 +928,10 @@ def decide_payment(amount, record, price_history,
                         if secret_findings else None),
         # x402 settlement is on-chain and final.
         "reversibility": "irreversible",
-        "blast_radius": "bounded" if not over_budget else "unbounded",
+        # "bounded" is a claim about the DOLLAR value, so an amount whose currency
+        # we cannot judge is "unknown" -- not bounded, and not asserted unbounded.
+        "blast_radius": ("unknown" if budget_uncheckable
+                         else "bounded" if not over_budget else "unbounded"),
         # the merchant's Blackwall seller-audit grade, when it holds a valid badge
         # (None otherwise). Bounded/earned/revocable -- never a pay-to-whitelist.
         "seller_verified": verified_grade,
@@ -1285,6 +1302,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     # as a match. See docs/DECIMALS_AUDIT.md.
     _decimals = payload.get("decimals") if isinstance(payload, dict) else None
     from payload_sim import check_payment_authorization
+    from payload_sim import is_non_usd as _is_non_usd
     from payload_sim import known_decimals as _known_decimals
     from calldata import screen_transaction
     # Phase 1 (recipient/amount/asset/chain field match) is cheap (~us) and stays inline
@@ -1395,6 +1413,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         peer_median=(peer_index.get(clean["resource_class"])
                      if peer_index and clean.get("resource_class") else None),
         payload_mismatch_reasons=sim_mismatches,
+        non_usd_amount=_is_non_usd(sim_claim),
         verified_floor=verified_floor, verified_grade=verified_grade,
         payer_graph_signal=payer_graph_signal,
         temporal_signal=temporal_sig,

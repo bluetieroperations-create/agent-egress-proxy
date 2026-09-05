@@ -77,19 +77,11 @@ MAX_PLAUSIBLE = Decimal("1000")
 # separately rather than run through it. NO exchange rates are kept here on
 # purpose: a hardcoded rate is stale the day it is written, and this module must
 # not turn a currency guess into a "suspicious price" finding.
-NON_USD = {
-    ("eip155:137", "0x431d5dff03120afa4bdf332c61a6e1766ef37bdb"),   # JPYC, yen
-    ("eip155:8453", "0x60a3e35cc302bfa44cb288bc5a4f316fdb1adb42"),  # EURC, euro
-    # SOL on Base, added 2026-09-05 with its decimals entry. NOT a currency, and
-    # the first non-stablecoin the corpus has quoted -- which is why it matters
-    # here: the plausibility window below is DOLLARS (0.000001 .. 1000), so a
-    # crypto-denominated quote is silently read as if it were dollars. Today's
-    # 0.004913 SOL passes, but only by luck -- it is ~$0.50, and 0.5 SOL would
-    # pass identically while being ~$50. That is the INVERSE of the failure this
-    # set was built for: not a false finding from a currency guess, but a real
-    # one that reads as fine. Reported, never price-checked.
-    ("eip155:8453", "0x311935cd80b76769bf2ecc9d8ab7635b2139cf82"),  # SOL, not USD
-}
+# SINGLE SOURCE, not a second copy. This set also gates the verdict -- a dollar
+# threshold cannot judge a non-dollar amount (see payload_sim.is_non_usd) -- and
+# two lists of the same fact drift. The census reports what the ENGINE believes,
+# which is the same principle as injecting `known_decimals` as the resolver.
+from payload_sim import NON_USD_ASSETS as NON_USD  # noqa: E402
 
 
 # ===========================================================================

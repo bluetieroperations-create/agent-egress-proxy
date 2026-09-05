@@ -284,6 +284,24 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   a shared label would let a verifier trusting both issuers' keys accept one for the
   other. Post-quantum (ML-DSA-65 hybrid) is phase 2 -- see `docs/RECEIPT_SIGNING_SCOPE.md`.
   Tests: `test_receipt_signer.py`, incl. cross-verification under Node WebCrypto),
+  `payload_sim.NON_USD_ASSETS` / `is_non_usd` (WHICH corpus assets are not US
+  dollars -- the companion to the decimals table, because knowing an asset's
+  SCALE is not knowing its PRICE and the two mistakes have the same shape.
+  `decide_payment` compares the amount to a DOLLAR threshold
+  (`HOLD_AMOUNT_THRESHOLD`, and whatever a treasury deployment raises it to);
+  for a non-dollar asset that comparison is meaningless. MEASURED before the
+  fix: 5.00 SOL -- roughly $500 -- returned a clean GO while 50.00 USDC (~$50)
+  correctly escalated. That is the GUSD spending-cap bypass from
+  docs/DECIMALS_AUDIT.md again, by CURRENCY rather than by decimals. JPYC and
+  EURC were already in the corpus and harmless by luck (yen numbers are large so
+  they err toward HOLD; EURC is near parity); SOL, added 2026-09-05, is the
+  first where the error is large AND unsafe (~100x understated). NOT a
+  conversion -- a hardcoded rate is stale the day it is written -- so a known
+  non-dollar amount simply cannot auto-approve: HOLD-only, `blast_radius` reads
+  `unknown` rather than `bounded`, and an UNRECOGNIZED asset is never gated,
+  since "not known to be USD" is not "known not to be USD". Blast radius
+  measured at 5 of 371 live quotes. `asset_coverage.NON_USD` is the SAME object,
+  not a second copy. Redteam: 1 attack + 1 restraint control),
   `confidence.py` (how much EVIDENCE backs a verdict -- `assess_confidence(record,
   signals)` -> {level high/medium/low, score 0..1, backed_by[], missing[]} across
   five weighted dimensions: history depth, payer breadth, cross-counterparty
@@ -771,7 +789,7 @@ underfunded payer does not gate, and an unreachable RPC fails OPEN. `test_redtea
 guards it -- the caught set may not shrink, no control may become a false positive, and
 any attack that gets GO must be an EXPLICIT `known_gap`. MUTATION-VERIFIED: disabling the
 settlement escalation, the auth replay gate, or the control-attribution each makes the
-suite fail by name. Current: 30 attacks caught, 2 documented gaps, 0 false positives.
+suite fail by name. Current: 31 attacks caught, 2 documented gaps, 0 false positives.
 
 ## Standing working practice: ALWAYS deep audit → eval → verify
 

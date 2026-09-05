@@ -342,6 +342,15 @@ SIM_SCENARIOS = [
     ("payee glued with a non-breaking space", "payee-syntax", "block", False,
      _payload(counterparty=LEGIT + "\u00a0FACILITATOR_URL"),
      lambda: {}),
+    # A spending cap denominated in DOLLARS, and an amount that is not dollars.
+    # 5.00 SOL is roughly $500 and sailed under a $10 auto-approve threshold as a
+    # clean GO, while 50.00 USDC (~$50) correctly escalated -- the GUSD bypass
+    # from docs/DECIMALS_AUDIT.md, by CURRENCY rather than by decimals. The
+    # amount is deliberately SMALL: the attack is that it looks small.
+    ("non-dollar amount under a dollar cap", "currency", "block", False,
+     _payload(amount="5.00", asset="0x311935Cd80B76769bF2ecC9D8Ab7635b2139cf82",
+              chain="eip155:8453", price_history=["5.00"] * 20),
+     lambda: {}),
 
     # --- controls: these must NOT be blocked (over-blocking is the real risk here) ---
     # RESTRAINT for the widened screen: an ordinary `exact` payment with a
@@ -392,6 +401,14 @@ SIM_SCENARIOS = [
     # would eventually convict a real Solana, Stellar or Algorand seller.
     ("non-EVM payee is not condemned", "control", "allow", False,
      _payload(counterparty="2DgEL95L8DtaRb4ubYqrrnMbX7Zxgjxq7k8Ed9XAWYcp"),
+     lambda: {}),
+    # RESTRAINT for the currency gate, and the reason it is knowledge-based: an
+    # asset we have simply never seen must NOT be condemned for being unfamiliar.
+    # Only assets KNOWN not to be dollars gate; "not known to be USD" is not the
+    # same claim as "known not to be USD", and conflating them would HOLD every
+    # new token the ecosystem adds.
+    ("an unrecognized asset is not gated on a guess", "control", "allow", False,
+     _payload(asset="0x" + "9" * 40, chain="eip155:8453"),
      lambda: {}),
 ]
 

@@ -274,6 +274,52 @@ _DECIMALS_NETWORKS = {
 }
 
 
+# Assets in the live corpus that are NOT denominated in US dollars. Keyed and
+# normalized exactly like KNOWN_DECIMALS_BY_CHAIN so the two cannot drift.
+#
+# WHY THIS LIVES HERE, next to the scale table: knowing an asset's SCALE is not
+# knowing its PRICE, and the two mistakes have the same shape. `decide_payment`
+# compares the amount to a DOLLAR threshold (HOLD_AMOUNT_THRESHOLD, and whatever
+# a treasury deployment raises it to). For a non-dollar asset that comparison is
+# meaningless. Measured before this existed: 5.00 SOL -- roughly $500 -- returned
+# a clean GO, while 50.00 USDC (~$50) correctly escalated to HOLD. That is the
+# GUSD spending-cap bypass from docs/DECIMALS_AUDIT.md again, by CURRENCY rather
+# than by decimals.
+#
+# JPYC and EURC were already here and were harmless by luck: yen numbers are
+# large, so a JPYC amount over-states and errs toward HOLD, and EURC is near
+# parity. SOL is the first corpus asset where the error is large AND in the
+# unsafe direction (~100x understated), which is what made this worth closing.
+#
+# NOT a conversion. We decline to guess a rate -- a hardcoded one is stale the
+# day it is written. This only records WHICH assets a dollar threshold cannot
+# judge, so the engine can decline to auto-approve rather than approve wrongly.
+NON_USD_ASSETS = {
+    ("eip155:137", "0x431d5dff03120afa4bdf332c61a6e1766ef37bdb"),   # JPYC, yen
+    ("eip155:8453", "0x60a3e35cc302bfa44cb288bc5a4f316fdb1adb42"),  # EURC, euro
+    ("eip155:8453", "0x311935cd80b76769bf2ecc9d8ab7635b2139cf82"),  # SOL, not a currency
+}
+
+
+def is_non_usd(claim):
+    """True when the claim's asset is KNOWN not to be US dollars.
+
+    Tri-state by omission: False means "not known to be non-USD", which covers
+    both real USDC and an asset we have never seen. Only a KNOWN non-dollar
+    asset gates, so this can never block on a guess.
+    """
+    if not isinstance(claim, dict):
+        return False
+    asset = claim.get("asset")
+    network = claim.get("chain") or claim.get("network")
+    if not isinstance(asset, str) or not isinstance(network, str):
+        return False
+    net = to_caip2(network.strip())
+    net = net.lower() if isinstance(net, str) else ""
+    net = _DECIMALS_NETWORKS.get(net, net)
+    return (net, asset.strip().lower()) in NON_USD_ASSETS
+
+
 def _chain_decimals(claim):
     """Decimals from the per-CHAIN table, or None.
 
