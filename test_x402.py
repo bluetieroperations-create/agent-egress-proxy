@@ -726,3 +726,102 @@ class TestChooseFacilitator(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFacilitatorTimeouts(unittest.TestCase):
+    """`/verify` and `/settle` get DIFFERENT budgets, and the split is the point.
+
+    AUDIT 2026-08-30, pre-billing. Measured against a black-hole facilitator, a
+    paid request held a thread for the full 20s default. ThreadingHTTPServer is
+    thread-per-request and unbounded, so a facilitator DEGRADATION (not an
+    outage -- an outage fails fast at 0.07s) could starve the pool and take the
+    FREE tier down alongside the paid one.
+
+    The naive fix -- one shorter timeout -- is actively dangerous. `/settle` has a
+    SIDE EFFECT: time out after the facilitator has broadcast and the on-chain
+    EIP-3009 nonce is spent while we return a 402, so the agent has paid and got
+    nothing, and every retry with that authorization fails forever. Waiting longer
+    is the safe error there.
+    """
+
+    def test_defaults_are_split_and_settle_is_longer(self):
+        # kills: collapsing both back to one value, or shortening settle
+        f = X.HttpFacilitator("http://x")
+        self.assertEqual(f.timeout, 8.0)
+        self.assertGreater(f.settle_timeout, f.timeout)
+
+    def test_cdp_inherits_the_split(self):
+        # kills: fixing HttpFacilitator but leaving the CDP path on 20s -- CDP is
+        # the facilitator that actually gets used in production
+        f = X.CdpFacilitator("id", "secret")
+        self.assertEqual(f.timeout, 8.0)
+        self.assertEqual(f.settle_timeout, 25.0)
+
+    def test_settle_actually_gets_the_longer_budget(self):
+        """The wired-and-inert check: it is not enough for the attribute to
+        exist, the REAL `_post` must select it for /settle.
+
+        My first version of this test subclassed `_post` and reimplemented the
+        budget selection inside the test -- so it asserted the test's own copy of
+        the logic and passed under a mutant that made `_post` ignore
+        settle_timeout entirely. It is replaced with one that drives the real
+        `_post` and captures what urlopen is actually handed.
+
+        kills: adding settle_timeout but never reading it in _post
+        """
+        import io as _io
+        import urllib.request
+        seen = {}
+        real = urllib.request.urlopen
+
+        class _Resp:
+            def __enter__(self_):
+                return _io.BytesIO(b'{"isValid":true,"success":true}')
+
+            def __exit__(self_, *a):
+                return False
+
+        def fake(req, timeout=None):
+            seen[req.full_url.rsplit("/", 1)[-1]] = timeout
+            return _Resp()
+
+        urllib.request.urlopen = fake
+        try:
+            f = X.HttpFacilitator("http://x", timeout=3.0, settle_timeout=9.0)
+            f.verify({}, {})
+            f.settle({}, {})
+        finally:
+            urllib.request.urlopen = real
+        self.assertEqual(seen["verify"], 3.0)
+        self.assertEqual(seen["settle"], 9.0)
+
+    def test_choose_facilitator_threads_the_budgets_through(self):
+        # kills: adding the parameters but constructing with the defaults anyway
+        f, _ = X.choose_facilitator("http://x", None, None,
+                                    timeout=2.0, settle_timeout=7.0)
+        self.assertEqual(f.timeout, 2.0)
+        self.assertEqual(f.settle_timeout, 7.0)
+
+
+class TestFacilitatorTimeoutEnv(unittest.TestCase):
+    def test_bad_timeout_is_refused_at_boot(self):
+        # kills: dropping the validator so a bad value silently reverts to the
+        # default -- a silently-ignored timeout is how a protection ends up not
+        # applying while the banner reports health
+        import blackwall
+        import os
+        for bad in ("abc", "nan", "inf", "0", "-1"):
+            os.environ["BW_TEST_TIMEOUT"] = bad
+            with self.assertRaises(ValueError, msg="%r accepted" % bad):
+                blackwall._float_env("BW_TEST_TIMEOUT", 8.0)
+        os.environ.pop("BW_TEST_TIMEOUT", None)
+
+    def test_unset_and_empty_fall_back_to_the_default(self):
+        # kills: treating an unset var as an error and refusing to boot normally
+        import blackwall
+        import os
+        os.environ.pop("BW_TEST_TIMEOUT", None)
+        self.assertEqual(blackwall._float_env("BW_TEST_TIMEOUT", 8.0), 8.0)
+        os.environ["BW_TEST_TIMEOUT"] = ""
+        self.assertEqual(blackwall._float_env("BW_TEST_TIMEOUT", 8.0), 8.0)
+        os.environ.pop("BW_TEST_TIMEOUT", None)

@@ -2587,6 +2587,27 @@ class BlackwallServer:
 # ===========================================================================
 # CLI
 # ===========================================================================
+def _float_env(name, default):
+    """A positive, finite float from the environment, or raise at BOOT.
+
+    Same fail-loud policy as the pricing constants: a set-but-invalid value means
+    the operator intended to configure this, and a silently-ignored timeout is
+    how a protection ends up not applying while the banner reports health.
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return float(default)
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError("%s=%r is not a number" % (name, raw))
+    if v != v or v in (float("inf"), float("-inf")):
+        raise ValueError("%s=%r is not finite" % (name, raw))
+    if v <= 0:
+        raise ValueError("%s=%r must be greater than 0" % (name, raw))
+    return v
+
+
 def _env_flag(name):
     """A BLACKWALL_* boolean env var. Truthy ONLY for 1/true/yes/on
     (case-insensitive); "0"/"false"/"no"/""/unset -> False. `bool(os.environ.get())`
@@ -2786,9 +2807,19 @@ def main(argv=None):
         # facilitators (keyless) settle on-chain but never list. The selection
         # (and the guard against misrouting a CDP token to a community URL) lives
         # in choose_facilitator so it can be unit-tested.
+        # Split timeouts (x402.HttpFacilitator): /verify is read-only so a hang
+        # costs only a held thread and wants a SHORT bound; /settle has a side
+        # effect, and timing out after the facilitator has broadcast leaves the
+        # agent paid-but-unserved with a spent on-chain nonce, so it keeps a
+        # LONGER one. Validated here rather than at request time -- a malformed
+        # value should stop the boot, not surface as a hung request later.
+        _fac_timeout = _float_env("BLACKWALL_FACILITATOR_TIMEOUT", 8.0)
+        _fac_settle_timeout = _float_env(
+            "BLACKWALL_FACILITATOR_SETTLE_TIMEOUT", 25.0)
         facilitator, fac_note = choose_facilitator(
             args.facilitator, os.environ.get("CDP_API_KEY_ID"),
-            os.environ.get("CDP_API_KEY_SECRET"))
+            os.environ.get("CDP_API_KEY_SECRET"),
+            timeout=_fac_timeout, settle_timeout=_fac_settle_timeout)
         sys.stderr.write("blackwall: %s\n" % fac_note)
         sys.stderr.flush()
         pricing = None

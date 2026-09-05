@@ -70,6 +70,22 @@ services:
       # payees (17%) at a worst-case 0.83%, versus 0 of 265 before.
       - key: BLACKWALL_MAX_FEE_RATIO_BPS
         value: "100"
+      # Facilitator budgets, SPLIT on purpose. /verify is read-only, so a hang
+      # there costs only a held thread -- and ThreadingHTTPServer is
+      # thread-per-request and unbounded, so a facilitator DEGRADATION (not an
+      # outage; an outage fails fast) could starve the pool and take the FREE
+      # tier down with the paid one. Measured at the old 20s default: a paid
+      # request held a thread the full 20s. At 8s: 8.0s.
+      - key: BLACKWALL_FACILITATOR_TIMEOUT
+        value: "8"
+      # /settle HAS A SIDE EFFECT, so shortening it is actively dangerous: time
+      # out after the facilitator has broadcast and the on-chain EIP-3009 nonce
+      # is spent while we return a 402 -- the agent has paid and got nothing, and
+      # every retry with that authorization fails forever. Waiting longer is the
+      # safe error. Not the sum of the two: verify fails closed and
+      # short-circuits settle.
+      - key: BLACKWALL_FACILITATOR_SETTLE_TIMEOUT
+        value: "25"
       # Secrets -- Render prompts for these; left unset, billing stays OFF and
       # the service runs free/public (the server prints a loud warning).
       - key: BLACKWALL_PAY_TO
