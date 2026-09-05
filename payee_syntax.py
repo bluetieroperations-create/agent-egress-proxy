@@ -10,19 +10,26 @@ A real address with an environment variable concatenated onto it -- almost
 certainly a missing newline in a `.env`. A payment there cannot arrive. The same
 seller also advertised a 39-character EVM asset address.
 
-STILL LIVE, and the record of getting to that answer is worth keeping. A re-probe
-the same day found 0 malformed payees among the 175 hosts that answered, with 20
-silent, and this docstring said the seller had "either fixed it or gone quiet,
-and which of those is unknown". A later probe answered it: the host is
-`apiwitchcraft.duckdns.org`, it had simply been unreachable, and it still
-advertises this payee -- on TWO Solana networks, alongside a truncated 39-hex BSC
-asset. It went quiet; it was never fixed.
+SINCE FIXED BY THE SELLER, on 2026-09-05 -- and the three-step road to knowing
+that is worth more than the finding. (1) The first re-probe found 0 malformed
+among the 175 hosts that answered, with 20 silent, and this docstring concluded
+"fixed or gone quiet, unknown which". (2) A later probe found the host,
+`apiwitchcraft.duckdns.org`, back up and STILL advertising it, so the docstring
+was corrected to "it went quiet; it was never fixed". (3) The monthly run found
+0 again -- and this time the host is ANSWERING and its `payTo` reads
+`2DgEL95L8DtaRb4ubYqrrnMbX7Zxgjxq7k8Ed9XAWYcp`, clean. Verified by reading the
+host's own challenge, not inferred from the count reaching zero.
 
-The lesson is about the measurement, not the seller. A silent host and a healthy
-one produce the same absence of findings, so "0 malformed" was never evidence of
-0 malformed -- only of 0 SEEN. `asset_coverage` leads every run with how many
-hosts answered for exactly this reason, and this is the case that proves the line
-earns its place. Re-derivable from `data/asset_coverage.json`.
+WHAT DISTINGUISHES FIXED FROM SILENT, concretely: that seller had TWO defects,
+and only one is repaired. Its BSC asset is still truncated to 39 hex characters,
+still reported by `asset_coverage`, on the same host in the same run. A finding
+that survives is proof the host answered; without it, "0 malformed" is once again
+just 0 SEEN. That is why every run leads with how many hosts answered, and why
+this module states the date it last checked rather than a standing claim.
+
+The gate is not weakened by its motivating case being repaired -- one seller
+fixing a `.env` does nothing about the next one, and the corpus still carries a
+malformed identifier today. Re-derivable from `data/asset_coverage.json`.
 
 WHAT THE ENGINE DID ABOUT IT: nothing. Measured before writing this, and again in
 the tests below -- that payee and a clean Solana payee returned BYTE-IDENTICAL

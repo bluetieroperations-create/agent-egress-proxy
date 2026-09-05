@@ -77,10 +77,11 @@ MAX_PLAUSIBLE = Decimal("1000")
 # separately rather than run through it. NO exchange rates are kept here on
 # purpose: a hardcoded rate is stale the day it is written, and this module must
 # not turn a currency guess into a "suspicious price" finding.
-NON_USD = {
-    ("eip155:137", "0x431d5dff03120afa4bdf332c61a6e1766ef37bdb"),   # JPYC, yen
-    ("eip155:8453", "0x60a3e35cc302bfa44cb288bc5a4f316fdb1adb42"),  # EURC, euro
-}
+# SINGLE SOURCE, not a second copy. This set also gates the verdict -- a dollar
+# threshold cannot judge a non-dollar amount (see payload_sim.is_non_usd) -- and
+# two lists of the same fact drift. The census reports what the ENGINE believes,
+# which is the same principle as injecting `known_decimals` as the resolver.
+from payload_sim import NON_USD_ASSETS as NON_USD  # noqa: E402
 
 
 # ===========================================================================

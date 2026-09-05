@@ -284,6 +284,24 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   a shared label would let a verifier trusting both issuers' keys accept one for the
   other. Post-quantum (ML-DSA-65 hybrid) is phase 2 -- see `docs/RECEIPT_SIGNING_SCOPE.md`.
   Tests: `test_receipt_signer.py`, incl. cross-verification under Node WebCrypto),
+  `payload_sim.NON_USD_ASSETS` / `is_non_usd` (WHICH corpus assets are not US
+  dollars -- the companion to the decimals table, because knowing an asset's
+  SCALE is not knowing its PRICE and the two mistakes have the same shape.
+  `decide_payment` compares the amount to a DOLLAR threshold
+  (`HOLD_AMOUNT_THRESHOLD`, and whatever a treasury deployment raises it to);
+  for a non-dollar asset that comparison is meaningless. MEASURED before the
+  fix: 5.00 SOL -- roughly $500 -- returned a clean GO while 50.00 USDC (~$50)
+  correctly escalated. That is the GUSD spending-cap bypass from
+  docs/DECIMALS_AUDIT.md again, by CURRENCY rather than by decimals. JPYC and
+  EURC were already in the corpus and harmless by luck (yen numbers are large so
+  they err toward HOLD; EURC is near parity); SOL, added 2026-09-05, is the
+  first where the error is large AND unsafe (~100x understated). NOT a
+  conversion -- a hardcoded rate is stale the day it is written -- so a known
+  non-dollar amount simply cannot auto-approve: HOLD-only, `blast_radius` reads
+  `unknown` rather than `bounded`, and an UNRECOGNIZED asset is never gated,
+  since "not known to be USD" is not "known not to be USD". Blast radius
+  measured at 5 of 371 live quotes. `asset_coverage.NON_USD` is the SAME object,
+  not a second copy. Redteam: 1 attack + 1 restraint control),
   `confidence.py` (how much EVIDENCE backs a verdict -- `assess_confidence(record,
   signals)` -> {level high/medium/low, score 0..1, backed_by[], missing[]} across
   five weighted dimensions: history depth, payer breadth, cross-counterparty
@@ -306,11 +324,14 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   Also CENSUSES the payment schemes and Permit2 transfer methods the corpus
   advertises, with the rows behind the count -- added because a cross-session
   prevalence claim could not be reproduced from any committed artifact and the
-  receiving session had to take it on trust. Measured 2026-08-30: `exact` 354,
-  `upto` 4, `batch-settlement` 3, `aggr_deferred` 1; and 12 entries on 6 hosts
-  (CoinMarketCap and Nansen among them) advertise a Permit2 transfer method, 10
+  receiving session had to take it on trust. Measured 2026-09-05: `exact` 363,
+  `upto` 4, `batch-settlement` 3, `aggr_deferred` 1; and 13 entries on 7 hosts
+  (CoinMarketCap and Nansen among them) advertise a Permit2 transfer method, 9
   of them on `exact` -- which is why `upto_scheme` screens the ALLOWANCE rather
-  than the scheme name.
+  than the scheme name. Those figures move: they are the LIVE ecosystem, so the
+  committed `data/asset_coverage.json` is dated and `test_agentcore_guard`
+  asserts the demo's copy of them against it -- a stale artifact fails as a
+  tripwire rather than passing as a fact.
   DELIBERATELY does NOT resolve on-chain and write the table: that table gates
   payments, and a scale from a single public RPC is a value that RPC's operator
   chose, so resolution stays a REVIEWED step (read every public RPC the chain
@@ -337,15 +358,19 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   Found in the wild by `asset_coverage` on 2026-08-30: a live seller advertised a
   Solana `payTo` with `FACILITATOR_URL=https://...` concatenated onto it -- almost
   certainly a missing newline in a `.env` -- and a payment there cannot arrive.
-  STILL LIVE, and the road to knowing that is the point: a re-probe the same day
-  found 0 malformed among the 175 hosts that answered (20 silent), which read as
-  "fixed or gone quiet, unknown which" -- a later probe found the host,
-  `apiwitchcraft.duckdns.org`, back up and STILL advertising it on two Solana
-  networks plus a truncated 39-hex BSC asset. It went quiet; it was never fixed.
-  A silent host and a healthy one produce the same absence of findings, so
-  "0 malformed" was only ever evidence of 0 SEEN -- which is why every
-  `asset_coverage` run leads with how many hosts answered. In
-  `data/asset_coverage.json`. The engine
+  SINCE FIXED BY THE SELLER (2026-09-05), and the three-step road there is the
+  point: probe 1 found 0 malformed among 175 answering (20 silent) -> "fixed or
+  gone quiet, unknown which"; probe 2 found the host, `apiwitchcraft.duckdns.org`,
+  back up and STILL advertising it -> "it went quiet, never fixed"; the monthly
+  run found 0 again, but this time the host ANSWERS and its `payTo` reads clean,
+  VERIFIED against the host rather than inferred from the count. What separates
+  fixed from silent: that seller had TWO defects and repaired one -- its 39-hex
+  BSC asset is still reported, on the same host in the same run, which is the
+  proof the host answered. A silent host and a healthy one produce the same
+  absence of findings, which is why every run leads with how many answered. The
+  gate is not weakened by its motivating case being repaired: one seller fixing a
+  `.env` does nothing about the next, and the corpus still carries a malformed
+  identifier today. In `data/asset_coverage.json`. The engine
   could not tell it from a clean one: MEASURED, that payee and a clean Solana
   payee returned BYTE-IDENTICAL verdicts, both HOLD because the counterparty was
   UNKNOWN rather than impossible. That HOLD clears the moment the payee has
@@ -764,7 +789,7 @@ underfunded payer does not gate, and an unreachable RPC fails OPEN. `test_redtea
 guards it -- the caught set may not shrink, no control may become a false positive, and
 any attack that gets GO must be an EXPLICIT `known_gap`. MUTATION-VERIFIED: disabling the
 settlement escalation, the auth replay gate, or the control-attribution each makes the
-suite fail by name. Current: 30 attacks caught, 2 documented gaps, 0 false positives.
+suite fail by name. Current: 31 attacks caught, 2 documented gaps, 0 false positives.
 
 ## Standing working practice: ALWAYS deep audit → eval → verify
 

@@ -504,25 +504,25 @@ class TestTheDemoScenarios(unittest.TestCase):
         with open(os.path.join(root, "data", "asset_coverage.json")) as handle:
             census = json.load(handle)
         entries = census["permit2_entries"]
-        self.assertEqual(len(entries), 12, "census moved; update the demo's note")
+        self.assertEqual(len(entries), 13, "census moved; update the demo's note")
         # The scheme each entry actually runs, not the method NAME. `permit2`
         # and `permit2-exact` are both spellings sellers use, and the demo's
         # point is about the SCHEME the allowance rides on -- which is the whole
         # reason upto_scheme screens the allowance rather than the scheme name.
         on_exact = sum(1 for e in entries if e.get("scheme") == "exact")
-        self.assertEqual(on_exact, 8, "the '8 are on `exact`' claim no longer holds")
+        self.assertEqual(on_exact, 9, "the '9 are on `exact`' claim no longer holds")
         # Select on the CLAIM, not on a spelling the note may stop using -- the
         # first version keyed off "permit2-exact" and silently found nothing the
         # moment the sentence was rewritten, which is a guard that stops guarding.
-        note = [n for _t, n, _b in self.demo.SCENARIOS if "12 live" in n]
+        note = [n for _t, n, _b in self.demo.SCENARIOS if "live x402 entries" in n]
         self.assertEqual(len(note), 1)
-        self.assertIn("12 live", note[0])
+        self.assertIn("13 live", note[0])
         # The SENTENCE, not just the number. Asserting the census alone left a
         # mutation alive: rewriting the note to "ALL spell it `permit2-exact`"
         # passed, because nothing tied the interpretation to the count. Checking
         # a figure you can compute while leaving the claim about it unchecked is
         # the defect this whole test exists to close.
-        self.assertIn("8 are on `exact`", note[0])
+        self.assertIn("9 are on `exact`", note[0])
 
     def test_a_clipped_reason_never_cuts_a_word_in_half(self):
         # Kills: reverting to a hard slice, which printed "... without a furt"

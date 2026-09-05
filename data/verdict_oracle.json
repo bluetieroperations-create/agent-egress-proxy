@@ -56,6 +56,14 @@
     "verdict": "HOLD"
   },
   {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "cold|empty_hist|non_usd_amount",
+    "num_reasons": 5,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "cold|empty_hist|none",
@@ -171,6 +179,14 @@
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "cold|fair|enrichment_review",
+    "num_reasons": 5,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "cold|fair|non_usd_amount",
     "num_reasons": 5,
     "score": 0.5,
     "verdict": "HOLD"
@@ -296,6 +312,14 @@
     "verdict": "STOP"
   },
   {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "cold|gouge|non_usd_amount",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "cold|gouge|none",
@@ -411,6 +435,14 @@
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "cold|moderate_anomaly|enrichment_review",
+    "num_reasons": 6,
+    "score": 0.333,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "cold|moderate_anomaly|non_usd_amount",
     "num_reasons": 6,
     "score": 0.333,
     "verdict": "HOLD"
@@ -536,6 +568,14 @@
     "verdict": "HOLD"
   },
   {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "cold|over_budget|non_usd_amount",
+    "num_reasons": 6,
+    "score": 0.5,
+    "verdict": "HOLD"
+  },
+  {
     "blast_radius": "unbounded",
     "hard_stop": false,
     "id": "cold|over_budget|none",
@@ -651,6 +691,14 @@
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "few_payers|empty_hist|enrichment_review",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "few_payers|empty_hist|non_usd_amount",
     "num_reasons": 4,
     "score": 0.998,
     "verdict": "HOLD"
@@ -776,6 +824,14 @@
     "verdict": "HOLD"
   },
   {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "few_payers|fair|non_usd_amount",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "few_payers|fair|none",
@@ -891,6 +947,14 @@
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "few_payers|gouge|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "few_payers|gouge|non_usd_amount",
     "num_reasons": 3,
     "score": 0.0,
     "verdict": "STOP"
@@ -1016,6 +1080,14 @@
     "verdict": "HOLD"
   },
   {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "few_payers|moderate_anomaly|non_usd_amount",
+    "num_reasons": 5,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "few_payers|moderate_anomaly|none",
@@ -1131,6 +1203,14 @@
     "blast_radius": "unbounded",
     "hard_stop": false,
     "id": "few_payers|over_budget|enrichment_review",
+    "num_reasons": 5,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "few_payers|over_budget|non_usd_amount",
     "num_reasons": 5,
     "score": 0.998,
     "verdict": "HOLD"
@@ -1256,6 +1336,14 @@
     "verdict": "HOLD"
   },
   {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "going_bad|empty_hist|non_usd_amount",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "going_bad|empty_hist|none",
@@ -1371,6 +1459,14 @@
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "going_bad|fair|enrichment_review",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "going_bad|fair|non_usd_amount",
     "num_reasons": 4,
     "score": 0.998,
     "verdict": "HOLD"
@@ -1496,6 +1592,14 @@
     "verdict": "STOP"
   },
   {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "going_bad|gouge|non_usd_amount",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "going_bad|gouge|none",
@@ -1611,6 +1715,14 @@
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "going_bad|moderate_anomaly|enrichment_review",
+    "num_reasons": 5,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "going_bad|moderate_anomaly|non_usd_amount",
     "num_reasons": 5,
     "score": 0.665,
     "verdict": "HOLD"
@@ -1736,6 +1848,14 @@
     "verdict": "HOLD"
   },
   {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "going_bad|over_budget|non_usd_amount",
+    "num_reasons": 5,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
     "blast_radius": "unbounded",
     "hard_stop": false,
     "id": "going_bad|over_budget|none",
@@ -1851,6 +1971,14 @@
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "good|empty_hist|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "good|empty_hist|non_usd_amount",
     "num_reasons": 3,
     "score": 0.998,
     "verdict": "HOLD"
@@ -1976,6 +2104,14 @@
     "verdict": "HOLD"
   },
   {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "good|fair|non_usd_amount",
+    "num_reasons": 3,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "good|fair|none",
@@ -2091,6 +2227,14 @@
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "good|gouge|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "good|gouge|non_usd_amount",
     "num_reasons": 3,
     "score": 0.0,
     "verdict": "STOP"
@@ -2216,6 +2360,14 @@
     "verdict": "HOLD"
   },
   {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "good|moderate_anomaly|non_usd_amount",
+    "num_reasons": 4,
+    "score": 0.665,
+    "verdict": "HOLD"
+  },
+  {
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "good|moderate_anomaly|none",
@@ -2331,6 +2483,14 @@
     "blast_radius": "unbounded",
     "hard_stop": false,
     "id": "good|over_budget|enrichment_review",
+    "num_reasons": 4,
+    "score": 0.998,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "good|over_budget|non_usd_amount",
     "num_reasons": 4,
     "score": 0.998,
     "verdict": "HOLD"
@@ -2456,6 +2616,14 @@
     "verdict": "STOP"
   },
   {
+    "blast_radius": "unknown",
+    "hard_stop": true,
+    "id": "known_bad|empty_hist|non_usd_amount",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
     "blast_radius": "bounded",
     "hard_stop": true,
     "id": "known_bad|empty_hist|none",
@@ -2571,6 +2739,14 @@
     "blast_radius": "bounded",
     "hard_stop": true,
     "id": "known_bad|fair|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unknown",
+    "hard_stop": true,
+    "id": "known_bad|fair|non_usd_amount",
     "num_reasons": 3,
     "score": 0.0,
     "verdict": "STOP"
@@ -2696,6 +2872,14 @@
     "verdict": "STOP"
   },
   {
+    "blast_radius": "unknown",
+    "hard_stop": true,
+    "id": "known_bad|gouge|non_usd_amount",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
     "blast_radius": "bounded",
     "hard_stop": true,
     "id": "known_bad|gouge|none",
@@ -2811,6 +2995,14 @@
     "blast_radius": "bounded",
     "hard_stop": true,
     "id": "known_bad|moderate_anomaly|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unknown",
+    "hard_stop": true,
+    "id": "known_bad|moderate_anomaly|non_usd_amount",
     "num_reasons": 3,
     "score": 0.0,
     "verdict": "STOP"
@@ -2936,6 +3128,14 @@
     "verdict": "STOP"
   },
   {
+    "blast_radius": "unknown",
+    "hard_stop": true,
+    "id": "known_bad|over_budget|non_usd_amount",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
     "blast_radius": "unbounded",
     "hard_stop": true,
     "id": "known_bad|over_budget|none",
@@ -3051,6 +3251,14 @@
     "blast_radius": "bounded",
     "hard_stop": true,
     "id": "sanctioned|empty_hist|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unknown",
+    "hard_stop": true,
+    "id": "sanctioned|empty_hist|non_usd_amount",
     "num_reasons": 3,
     "score": 0.0,
     "verdict": "STOP"
@@ -3176,6 +3384,14 @@
     "verdict": "STOP"
   },
   {
+    "blast_radius": "unknown",
+    "hard_stop": true,
+    "id": "sanctioned|fair|non_usd_amount",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
     "blast_radius": "bounded",
     "hard_stop": true,
     "id": "sanctioned|fair|none",
@@ -3291,6 +3507,14 @@
     "blast_radius": "bounded",
     "hard_stop": true,
     "id": "sanctioned|gouge|enrichment_review",
+    "num_reasons": 4,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unknown",
+    "hard_stop": true,
+    "id": "sanctioned|gouge|non_usd_amount",
     "num_reasons": 4,
     "score": 0.0,
     "verdict": "STOP"
@@ -3416,6 +3640,14 @@
     "verdict": "STOP"
   },
   {
+    "blast_radius": "unknown",
+    "hard_stop": true,
+    "id": "sanctioned|moderate_anomaly|non_usd_amount",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
     "blast_radius": "bounded",
     "hard_stop": true,
     "id": "sanctioned|moderate_anomaly|none",
@@ -3531,6 +3763,14 @@
     "blast_radius": "unbounded",
     "hard_stop": true,
     "id": "sanctioned|over_budget|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unknown",
+    "hard_stop": true,
+    "id": "sanctioned|over_budget|non_usd_amount",
     "num_reasons": 3,
     "score": 0.0,
     "verdict": "STOP"
@@ -3656,6 +3896,14 @@
     "verdict": "HOLD"
   },
   {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "thin|empty_hist|non_usd_amount",
+    "num_reasons": 4,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "thin|empty_hist|none",
@@ -3771,6 +4019,14 @@
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "thin|fair|enrichment_review",
+    "num_reasons": 4,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "thin|fair|non_usd_amount",
     "num_reasons": 4,
     "score": 0.857,
     "verdict": "HOLD"
@@ -3896,6 +4152,14 @@
     "verdict": "STOP"
   },
   {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "thin|gouge|non_usd_amount",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "thin|gouge|none",
@@ -4011,6 +4275,14 @@
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "thin|moderate_anomaly|enrichment_review",
+    "num_reasons": 5,
+    "score": 0.571,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "thin|moderate_anomaly|non_usd_amount",
     "num_reasons": 5,
     "score": 0.571,
     "verdict": "HOLD"
@@ -4136,6 +4408,14 @@
     "verdict": "HOLD"
   },
   {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "thin|over_budget|non_usd_amount",
+    "num_reasons": 5,
+    "score": 0.857,
+    "verdict": "HOLD"
+  },
+  {
     "blast_radius": "unbounded",
     "hard_stop": false,
     "id": "thin|over_budget|none",
@@ -4251,6 +4531,14 @@
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "wash|empty_hist|enrichment_review",
+    "num_reasons": 5,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "wash|empty_hist|non_usd_amount",
     "num_reasons": 5,
     "score": 0.999,
     "verdict": "HOLD"
@@ -4376,6 +4664,14 @@
     "verdict": "HOLD"
   },
   {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "wash|fair|non_usd_amount",
+    "num_reasons": 5,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "wash|fair|none",
@@ -4491,6 +4787,14 @@
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "wash|gouge|enrichment_review",
+    "num_reasons": 3,
+    "score": 0.0,
+    "verdict": "STOP"
+  },
+  {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "wash|gouge|non_usd_amount",
     "num_reasons": 3,
     "score": 0.0,
     "verdict": "STOP"
@@ -4616,6 +4920,14 @@
     "verdict": "HOLD"
   },
   {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "wash|moderate_anomaly|non_usd_amount",
+    "num_reasons": 6,
+    "score": 0.666,
+    "verdict": "HOLD"
+  },
+  {
     "blast_radius": "bounded",
     "hard_stop": false,
     "id": "wash|moderate_anomaly|none",
@@ -4731,6 +5043,14 @@
     "blast_radius": "unbounded",
     "hard_stop": false,
     "id": "wash|over_budget|enrichment_review",
+    "num_reasons": 6,
+    "score": 0.999,
+    "verdict": "HOLD"
+  },
+  {
+    "blast_radius": "unknown",
+    "hard_stop": false,
+    "id": "wash|over_budget|non_usd_amount",
     "num_reasons": 6,
     "score": 0.999,
     "verdict": "HOLD"

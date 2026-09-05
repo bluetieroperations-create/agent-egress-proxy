@@ -229,6 +229,15 @@ KNOWN_DECIMALS_BY_CHAIN = {
     # under the reviewed procedure: read from EVERY public RPC chain 50 publishes.
     # 7 of 7 answered and all agreed -- the widest agreement of any entry here.
     ("eip155:50", "0xfa2958cb79b0491cc627c1557f441ef849ca8eb1"): 6,   # USDC  XDC (7 rpc)
+    # Added 2026-09-05, surfaced by the monthly asset_coverage run on
+    # api.lastlookdata.com. NOT 6, and not a stablecoin: wrapped SOL on Base, 9
+    # decimals. Same reviewed procedure -- 6 of the 10 public Base RPCs answered
+    # and all 6 agreed on decimals=9 / symbol=SOL / name=Solana, 0 disagreements.
+    # CORROBORATED BY THE CORPUS, which is what separates a read from a guess:
+    # the same host quotes the same resource at 0.5 USDC, and 4913039 at 9
+    # decimals is 0.004913 SOL -- the same half-dollar. Read at the corpus
+    # default of 6 it would be 4.91 SOL, ~1000x, for a $0.50 API call.
+    ("eip155:8453", "0x311935cd80b76769bf2ecc9d8ab7635b2139cf82"): 9,  # SOL  Base (6 rpc)
     # testnets -- present in the live corpus, so scored like any other asset
     ("eip155:84532", "0x036cbd53842c5426634e7929541ec2318f3dcf7e"): 6,  # USDC  Base Sepolia
     ("eip155:80002", "0x41e94eb019c0762f9bfcf9fb1e58725bfb0e7582"): 6,  # USDC  Polygon Amoy
@@ -263,6 +272,52 @@ _DECIMALS_NETWORKS = {
     "solana-devnet": "solana:etwtrabzayq6imfeykouru166vu2xqa1",
     "stellar": "stellar:pubnet",
 }
+
+
+# Assets in the live corpus that are NOT denominated in US dollars. Keyed and
+# normalized exactly like KNOWN_DECIMALS_BY_CHAIN so the two cannot drift.
+#
+# WHY THIS LIVES HERE, next to the scale table: knowing an asset's SCALE is not
+# knowing its PRICE, and the two mistakes have the same shape. `decide_payment`
+# compares the amount to a DOLLAR threshold (HOLD_AMOUNT_THRESHOLD, and whatever
+# a treasury deployment raises it to). For a non-dollar asset that comparison is
+# meaningless. Measured before this existed: 5.00 SOL -- roughly $500 -- returned
+# a clean GO, while 50.00 USDC (~$50) correctly escalated to HOLD. That is the
+# GUSD spending-cap bypass from docs/DECIMALS_AUDIT.md again, by CURRENCY rather
+# than by decimals.
+#
+# JPYC and EURC were already here and were harmless by luck: yen numbers are
+# large, so a JPYC amount over-states and errs toward HOLD, and EURC is near
+# parity. SOL is the first corpus asset where the error is large AND in the
+# unsafe direction (~100x understated), which is what made this worth closing.
+#
+# NOT a conversion. We decline to guess a rate -- a hardcoded one is stale the
+# day it is written. This only records WHICH assets a dollar threshold cannot
+# judge, so the engine can decline to auto-approve rather than approve wrongly.
+NON_USD_ASSETS = {
+    ("eip155:137", "0x431d5dff03120afa4bdf332c61a6e1766ef37bdb"),   # JPYC, yen
+    ("eip155:8453", "0x60a3e35cc302bfa44cb288bc5a4f316fdb1adb42"),  # EURC, euro
+    ("eip155:8453", "0x311935cd80b76769bf2ecc9d8ab7635b2139cf82"),  # SOL, not a currency
+}
+
+
+def is_non_usd(claim):
+    """True when the claim's asset is KNOWN not to be US dollars.
+
+    Tri-state by omission: False means "not known to be non-USD", which covers
+    both real USDC and an asset we have never seen. Only a KNOWN non-dollar
+    asset gates, so this can never block on a guess.
+    """
+    if not isinstance(claim, dict):
+        return False
+    asset = claim.get("asset")
+    network = claim.get("chain") or claim.get("network")
+    if not isinstance(asset, str) or not isinstance(network, str):
+        return False
+    net = to_caip2(network.strip())
+    net = net.lower() if isinstance(net, str) else ""
+    net = _DECIMALS_NETWORKS.get(net, net)
+    return (net, asset.strip().lower()) in NON_USD_ASSETS
 
 
 def _chain_decimals(claim):

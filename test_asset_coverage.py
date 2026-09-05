@@ -522,3 +522,26 @@ class TestTheArtifactIsDated(unittest.TestCase):
         # would silently reintroduce the undated snapshot.
         with open("data/asset_coverage.json") as handle:
             self.assertIn("generated_at", json.load(handle))
+
+
+class TestANonStablecoinIsNotPriceChecked(unittest.TestCase):
+    """Adding SOL on Base made the corpus's first non-stablecoin quote. The
+    plausibility window is DOLLARS, so a crypto-denominated amount would be
+    compared against dollar bounds -- the inverse of the failure NON_USD was
+    built for: not a false finding, but a real one reading as fine."""
+
+    SOL_BASE = "0x311935Cd80B76769bF2ecC9D8Ab7635b2139cf82"
+
+    def test_sol_is_reported_not_price_checked(self):
+        # Kills: dropping it from NON_USD. 0.5 SOL is ~$50 and would sail
+        # through a window that tops out at $1000 as if it were fifty cents.
+        self.assertIn(AC.asset_key("eip155:8453", self.SOL_BASE), AC.NON_USD)
+
+    def test_a_large_sol_quote_lands_in_non_usd_not_implausible(self):
+        # Kills: checking membership without the branch actually using it.
+        pairs = {AC.asset_key("eip155:8453", self.SOL_BASE): {
+            "network": "eip155:8453", "asset": self.SOL_BASE,
+            "amounts": ["500000000"], "hosts": ["example.test"], "quotes": 1}}
+        report = AC.assess(pairs, lambda net, asset: 9)
+        self.assertEqual(report["implausible"], [])
+        self.assertEqual(len(report["non_usd"]), 1)

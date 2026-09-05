@@ -27,7 +27,7 @@ class TestScorecard(unittest.TestCase):
         # from a loose floor to the ACTUAL count -- a weak floor guards nothing.
         # AUDIT: it had drifted back to being weak (floor 24, actual 30), which is
         # six gates' worth of regression the guard would not have noticed.
-        self.assertGreaterEqual(len(caught), 30)
+        self.assertGreaterEqual(len(caught), 31)
 
     def test_simulation_gates_are_represented_and_catch(self):
         """The newest gates (settlement / authorization / RWA simulation) fold in
@@ -36,7 +36,8 @@ class TestScorecard(unittest.TestCase):
         by_cat = {}
         for r in self.results:
             by_cat.setdefault(r["category"], []).append(r)
-        for cat in ("settlement-sim", "auth-sim", "rwa-sim", "payee-syntax"):
+        for cat in ("settlement-sim", "auth-sim", "rwa-sim", "payee-syntax",
+                    "currency"):
             self.assertIn(cat, by_cat, "simulation family missing from the scorecard")
             for r in by_cat[cat]:
                 if r["expect"] == "block":
@@ -57,7 +58,10 @@ class TestScorecard(unittest.TestCase):
                   # The payee-syntax gate is chain-agnostic on purpose: a raw
                   # base58 Solana payee must not be condemned for failing to be
                   # an EVM address.
-                  "non-EVM payee is not condemned"):
+                  "non-EVM payee is not condemned",
+                  # The currency gate is knowledge-based: an unfamiliar asset is
+                  # not a non-dollar one, and must not be gated on a guess.
+                  "an unrecognized asset is not gated on a guess"):
             self.assertIn(n, names, "restraint control missing: %s" % n)
             self.assertEqual(names[n]["disposition"], "CLEAN",
                              "simulation gate over-blocked: %s" % n)

@@ -93,6 +93,12 @@ OVERLAYS = [
                                           "reasons": ["scam-associated"]}}),
     ("enrichment_clean", {"enrichment": {"review": False}}),
     ("verified_floor", {"verified_floor": 0.6, "verified_grade": "B"}),
+    # A non-dollar amount, which the DOLLAR auto-approve threshold cannot judge.
+    # Added because the gate shipped without an overlay here: this grid is the
+    # frozen tripwire for `decide_payment`, and a new verdict-affecting branch
+    # that it does not exercise is a branch it cannot protect. It is also the
+    # only overlay that moves `blast_radius` off bounded/unbounded.
+    ("non_usd_amount", {"non_usd_amount": True}),
     ("secret_high", {"secret_findings": [{"type": "aws_access_key_id",
                                           "severity": "high", "field": "memo",
                                           "hint": "AKIA***"}]}),   # -> STOP

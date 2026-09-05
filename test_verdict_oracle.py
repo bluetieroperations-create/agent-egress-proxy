@@ -74,3 +74,50 @@ class TestVerdictOracle(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheNonDollarOverlayIsCovered(unittest.TestCase):
+    """AUDIT of the currency gate: it shipped without an overlay in this grid.
+
+    This file is the frozen tripwire for `decide_payment`. A verdict-affecting
+    branch it does not exercise is a branch it cannot protect -- the golden file
+    passed unchanged after the gate landed, because nothing in the grid set
+    `non_usd_amount`.
+    """
+
+    def _rows(self):
+        return [r for r in O.snapshot() if r["id"].endswith("|non_usd_amount")]
+
+    def test_the_overlay_is_present_in_the_grid(self):
+        # Kills: dropping the overlay, which silently returns the gate to
+        # being invisible to the oracle.
+        self.assertEqual(len(self._rows()), 40)
+
+    def test_a_non_dollar_amount_never_auto_approves_anywhere_in_the_grid(self):
+        # Kills: any path that lets a dollar threshold clear a non-dollar
+        # amount. Measured across every record x price combination: 24 HOLD,
+        # 16 STOP where a stronger gate already fired, and ZERO GO.
+        self.assertEqual([r for r in self._rows() if r["verdict"] == "GO"], [])
+
+    def test_it_never_downgrades_a_stop(self):
+        # Kills: the escalation table rewriting a STOP as HOLD. Sanctions,
+        # payload mismatch and a high-severity secret keep the STOP authority.
+        #
+        # The first version of this test also asserted every STOP here is a
+        # HARD stop. That was my assumption, not the behaviour: a price gouge
+        # STOPs on SCORE without setting hard_stop, and 78 of the grid's 328
+        # STOPs are soft for that reason. The test was wrong, not the code --
+        # so it asserts the property that actually matters, which is that the
+        # overlay adds caution and never subtracts it.
+        stops = [r for r in self._rows() if r["verdict"] == "STOP"]
+        self.assertEqual(len(stops), 16)
+        base = {r["id"].replace("|non_usd_amount", "|none"): r for r in O.snapshot()}
+        for row in stops:
+            plain = base.get(row["id"].replace("|non_usd_amount", "|none"))
+            if plain and plain["verdict"] == "STOP":
+                self.assertEqual(row["hard_stop"], plain["hard_stop"], row["id"])
+
+    def test_blast_radius_reports_unknown_not_bounded(self):
+        # Kills: claiming "bounded", which is a statement about the DOLLAR
+        # value -- exactly the thing that could not be computed.
+        self.assertTrue(all(r["blast_radius"] == "unknown" for r in self._rows()))
