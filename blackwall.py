@@ -2111,6 +2111,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._do_open_approval()
             elif self.path == "/v1/approvals/decide":
                 self._do_decide_approval()
+            elif self.path == "/v1/approvals/redeem":
+                self._do_redeem_approval()
             else:
                 self._send_json(404, {"error": "not found"})
         except Exception as e:
@@ -2145,6 +2147,20 @@ class _Handler(BaseHTTPRequestHandler):
         if not isinstance(verdict, dict) or not isinstance(claim, dict):
             self._send_json(400, {"error": "verdict and claim objects required"})
             return
+        # AUDIT FINDING (fixed): this accepted ANY caller-supplied verdict, so a
+        # caller could fabricate `{"verdict": "HOLD"}` for a payment the engine
+        # never scored and open an approval for it. `forecast` already returns a
+        # `report_token` HMAC over the receipt_id, so requiring it here proves
+        # the verdict is one WE issued. Optional only when the verdict carries
+        # no receipt_id at all (an offline/embedded caller with no server-side
+        # verdict to point at), which is stated rather than silently allowed.
+        receipt_id = verdict.get("receipt_id")
+        if receipt_id:
+            if not verify_report_token(receipt_id, payload.get("report_token")):
+                self._send_json(403, {
+                    "error": "report_token required and must match the "
+                             "receipt_id of a verdict this service issued"})
+                return
         record = approvals.open_approval(verdict, claim, ttl=payload.get("ttl")
                                          or approvals.DEFAULT_TTL)
         if record is None:
@@ -2156,7 +2172,14 @@ class _Handler(BaseHTTPRequestHandler):
                 "reason": "only a HOLD can be sent for human approval -- a STOP "
                           "is never approvable and a GO needs no approval"})
             return
-        self.approvals.put(record)
+        try:
+            self.approvals.put(record)
+        except approvals.ApprovalStoreFull as exc:
+            # 503, not 500: the caller should retry, and refusing is the SAFE
+            # branch -- the alternative was silently evicting someone's live
+            # pending approval.
+            self._send_json(503, {"error": str(exc)})
+            return
         out = approvals.public_view(record)
         out["approvable"] = True
         # The capability token goes to the OPENER once, and is required to
@@ -2188,6 +2211,45 @@ class _Handler(BaseHTTPRequestHandler):
                                    actor=payload.get("actor"))
         self.approvals.put(decided)
         self._send_json(200, approvals.public_view(decided))
+
+    def _do_redeem_approval(self):
+        """Spend an approval on ONE payment -> {"ok": bool, "reason": str}.
+
+        AUDIT FINDING, AND THE REASON THIS ENDPOINT EXISTS. `approvals.redeem`
+        was implemented, unit-tested, and called by NOTHING on the wire. So the
+        two properties that make an approval safe -- bound to the exact claim,
+        single-use -- were unreachable: a caller polled, saw "approved", and
+        proceeded, and an approval for $0.05 authorized anything. That is the
+        wired-and-inert pattern this repo documents, in a module written the
+        same hour as a test class about that hazard.
+
+        The token is required: redeeming is spending, and spending is a
+        privileged act, not a read.
+        """
+        payload, err = self._read_json_body()
+        if err is not None:
+            self._send_json(400, {"error": err})
+            return
+        import approvals
+        approval_id = payload.get("approval_id")
+        claim = payload.get("claim")
+        if not isinstance(approval_id, str) or not isinstance(claim, dict):
+            self._send_json(400, {"error": "approval_id and claim required"})
+            return
+        if not approvals.verify_approval_token(approval_id,
+                                               payload.get("approval_token")):
+            self._send_json(403, {"error": "invalid or missing approval_token"})
+            return
+        record = self.approvals.get(approval_id)
+        if record is None:
+            self._send_json(404, {"error": "no such approval"})
+            return
+        ok, reason, updated = approvals.redeem(record, claim)
+        self.approvals.put(updated)
+        out = approvals.public_view(updated)
+        out["ok"] = ok
+        out["reason"] = reason
+        self._send_json(200, out)
 
     def _do_poll_approval(self, approval_id):
         """Poll state. NO token required and nothing sensitive is returned --

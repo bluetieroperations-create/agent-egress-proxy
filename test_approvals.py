@@ -196,17 +196,35 @@ class TestTheStore(unittest.TestCase):
         # the API and it writes.
         store = A.MemoryApprovalStore(limit=5)
         for i in range(50):
-            store.put(A.open_approval(HOLD, CLAIM, now=1000 + i))
+            try:
+                store.put(A.open_approval(HOLD, CLAIM, now=1000 + i))
+            except A.ApprovalStoreFull:
+                break
         self.assertLessEqual(len(store), 5)
 
-    def test_eviction_drops_the_oldest_which_fails_safe(self):
-        # Kills: evicting the newest. A dropped approval cannot be redeemed,
-        # so losing the oldest is the safe direction.
+    def test_a_PENDING_approval_is_never_evicted_to_make_room(self):
+        # AUDIT FINDING. Kills: evicting by age regardless of state. Opening is
+        # the cheapest write in the API, so filling the store flushed a live
+        # pending approval out of it -- measured, six opens against a limit of
+        # three erased the victim. A refused open is a visible error the caller
+        # retries; a silently evicted approval is a payment that mysteriously
+        # cannot proceed.
         store = A.MemoryApprovalStore(limit=2)
-        first = store.put(A.open_approval(HOLD, CLAIM, now=1000))
+        victim = store.put(A.open_approval(HOLD, CLAIM, now=1000))
+        store.put(A.open_approval(HOLD, CLAIM, now=2000))
+        with self.assertRaises(A.ApprovalStoreFull):
+            store.put(A.open_approval(HOLD, CLAIM, now=3000))
+        self.assertIsNotNone(store.get(victim["approval_id"]))
+
+    def test_a_SPENT_row_is_evicted_before_the_store_refuses(self):
+        # Kills: refusing while terminal rows sit there. A consumed or declined
+        # approval is spent and free to drop; only live questions are protected.
+        store = A.MemoryApprovalStore(limit=2)
+        spent = store.put(A.decide(A.open_approval(HOLD, CLAIM, now=1000),
+                                   False, now=1001))
         store.put(A.open_approval(HOLD, CLAIM, now=2000))
         store.put(A.open_approval(HOLD, CLAIM, now=3000))
-        self.assertIsNone(store.get(first["approval_id"]))
+        self.assertIsNone(store.get(spent["approval_id"]))
 
     def test_sweep_expires_pending_rows(self):
         # Kills: a sweep that silently APPROVES or deletes rather than expiring.
@@ -288,9 +306,15 @@ class TestTheLiveHttpPath(unittest.TestCase):
     def test_the_whole_loop_works_over_http(self):
         # Kills: the seventh-edit binding omission. Every assertion here passes
         # in-process with the store unbound and 500s over HTTP.
+        # Supplies the report_token, as a legitimate caller holding a verdict
+        # from this service does. The first version of this test omitted it and
+        # the new provenance check correctly rejected it -- the control caught
+        # the test, which is the right way round.
+        import blackwall
         status, opened_ = self._post("/v1/approvals", {
             "verdict": {"verdict": "HOLD", "receipt_id": "r9",
                         "reasons": ["thin history"]},
+            "report_token": blackwall.sign_report_token("r9"),
             "claim": CLAIM})
         self.assertEqual(status, 200, opened_)
         self.assertTrue(opened_["approvable"])
@@ -347,6 +371,81 @@ class TestTheLiveHttpPath(unittest.TestCase):
         self.assertNotIn("approval_token", polled)
         self.assertNotIn("digest", polled)
 
+    def test_redemption_is_REACHABLE_over_http(self):
+        # AUDIT FINDING, the important one. `redeem` was implemented,
+        # unit-tested, and called by NOTHING on the wire -- so the claim binding
+        # and single-use were unreachable, and an approval for $0.05 authorized
+        # anything. Kills: removing the route, which returns the module to being
+        # correct and inert.
+        _, opened_ = self._post("/v1/approvals", {
+            "verdict": {"verdict": "HOLD"}, "claim": CLAIM})
+        aid, tok = opened_["approval_id"], opened_["approval_token"]
+        self._post("/v1/approvals/decide",
+                   {"approval_id": aid, "approval_token": tok, "approve": True})
+
+        _, wrong = self._post("/v1/approvals/redeem", {
+            "approval_id": aid, "approval_token": tok,
+            "claim": dict(CLAIM, amount="500")})
+        self.assertFalse(wrong["ok"])
+        self.assertIn("different payment", wrong["reason"])
+
+        _, right = self._post("/v1/approvals/redeem", {
+            "approval_id": aid, "approval_token": tok, "claim": CLAIM})
+        self.assertTrue(right["ok"])
+
+        _, again = self._post("/v1/approvals/redeem", {
+            "approval_id": aid, "approval_token": tok, "claim": CLAIM})
+        self.assertFalse(again["ok"])
+        self.assertIn("already used", again["reason"])
+
+    def test_redeeming_requires_the_token_because_redeeming_is_spending(self):
+        # Kills: treating redemption as a read. Spending an approval is
+        # privileged; polling is not.
+        _, opened_ = self._post("/v1/approvals", {
+            "verdict": {"verdict": "HOLD"}, "claim": CLAIM})
+        status, _ = self._post("/v1/approvals/redeem", {
+            "approval_id": opened_["approval_id"], "claim": CLAIM})
+        self.assertEqual(status, 403)
+
+    def test_a_verdict_this_service_never_issued_cannot_open_an_approval(self):
+        # AUDIT FINDING. Kills: trusting a caller-supplied verdict. `forecast`
+        # already returns a report_token HMAC over the receipt_id, so requiring
+        # it proves the verdict is one WE issued.
+        status, body = self._post("/v1/approvals", {
+            "verdict": {"verdict": "HOLD", "receipt_id": "i-made-this-up"},
+            "claim": CLAIM})
+        self.assertEqual(status, 403, body)
+
+    def test_a_real_receipt_with_its_token_is_accepted(self):
+        # Kills: a check so strict the legitimate flow breaks -- the caller who
+        # HAS a verdict from us must be able to act on it.
+        import blackwall
+        status, body = self._post("/v1/approvals", {
+            "verdict": {"verdict": "HOLD", "receipt_id": "r-real"},
+            "report_token": blackwall.sign_report_token("r-real"),
+            "claim": CLAIM})
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body["approvable"])
+
+    def test_a_flood_cannot_evict_someone_elses_pending_approval(self):
+        # AUDIT FINDING. Kills: evicting live pending rows under pressure. A
+        # 503 the caller retries is safe; a silently erased approval is a
+        # payment that mysteriously cannot proceed.
+        _, victim = self._post("/v1/approvals", {
+            "verdict": {"verdict": "HOLD"}, "claim": CLAIM})
+        original = self.server.approvals._limit
+        self.server.approvals._limit = len(self.server.approvals) + 1
+        try:
+            codes = [self._post("/v1/approvals",
+                                {"verdict": {"verdict": "HOLD"},
+                                 "claim": dict(CLAIM, amount=str(i))})[0]
+                     for i in range(5)]
+            self.assertIn(503, codes)
+            status, _ = self._get("/v1/approvals/" + victim["approval_id"])
+            self.assertEqual(status, 200, "a pending approval was evicted")
+        finally:
+            self.server.approvals._limit = original
+
     def test_the_routes_are_advertised_in_openapi(self):
         # Kills: shipping a feature no client can discover.
         #
@@ -359,6 +458,7 @@ class TestTheLiveHttpPath(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("/v1/approvals", spec.get("paths", {}))
         self.assertIn("/v1/approvals/decide", spec.get("paths", {}))
+        self.assertIn("/v1/approvals/redeem", spec.get("paths", {}))
 
 
 class TestTheBindingHazardIsGuardedForStoresToo(unittest.TestCase):

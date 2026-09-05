@@ -15,10 +15,24 @@ human resumes it. That is the one thing in their product this engine had no
 answer to, and it is a workflow gap rather than a detection gap, which is exactly
 the kind a detection-focused project fails to notice about itself.
 
-WHAT AN APPROVAL IS, precisely: a record that a human was asked about ONE
-specific payment and said yes. It is NOT an upgrade of the verdict. `redeem`
-returns "HOLD, approved by a human", never GO -- the engine's finding is
-unchanged and the human's override is recorded as theirs.
+WHAT AN APPROVAL IS, precisely: a record that THE TOKEN HOLDER was asked about
+ONE specific payment and said yes. It is NOT an upgrade of the verdict --
+`redeem` returns "HOLD, approved", never GO.
+
+AUDIT FINDING, AND THE MOST IMPORTANT LINE IN THIS FILE. An earlier version of
+this docstring said "a record that a HUMAN was asked". THE ENGINE CANNOT KNOW
+THAT. The capability token is returned to whoever opened the approval, and if
+that is the agent, the agent can approve itself in the next call -- measured, it
+takes 40ms. There is no human anywhere in "human-in-the-loop" unless the
+INTEGRATOR puts one there.
+
+So what this actually provides is narrower and worth stating plainly: a payment
+cannot proceed on a HOLD without a SECOND, EXPLICIT, AUDITED act naming an
+`actor`, bound to that exact payment, expiring, single-use. Whether a person
+performs that act is the integrator's job -- give the token to your approval UI,
+your Slack bot, your ops console; do NOT hand it to the agent that opened it.
+That separation cannot be enforced from here, and pretending otherwise is worse
+than saying so.
 
 FIVE SECURITY PROPERTIES, each of which is a way this could be turned into a
 bypass if it were skipped:
@@ -190,7 +204,7 @@ def redeem(record, claim, now=None):
     if record.get("state") == CONSUMED:
         return False, "approval already used", dict(record)
     if record.get("state") == DECLINED:
-        return False, "a human declined this payment", dict(record)
+        return False, "this payment was declined", dict(record)
     if record.get("state") != APPROVED:
         return False, "approval is still pending", dict(record)
     if is_expired(record, now):
@@ -203,7 +217,7 @@ def redeem(record, claim, now=None):
         return False, "approval was for a different payment", dict(record)
     out = dict(record)
     out["state"] = CONSUMED
-    return True, "HOLD, approved by a human", out
+    return True, "HOLD, approved by the approval-token holder", out
 
 
 def public_view(record):
@@ -221,6 +235,10 @@ def public_view(record):
              "created_at", "expires_at", "decided_at")}
 
 
+class ApprovalStoreFull(Exception):
+    """Raised rather than evicting a live pending approval. See put()."""
+
+
 class MemoryApprovalStore:
     """Reference store. Bounded, so an unauthenticated opener cannot grow it
     without limit; oldest pending records are dropped first, which fails SAFE
@@ -231,8 +249,25 @@ class MemoryApprovalStore:
         self._limit = max(1, int(limit))
 
     def put(self, record):
-        if len(self._rows) >= self._limit and record["approval_id"] not in self._rows:
-            oldest = min(self._rows.values(), key=lambda r: r.get("created_at", 0))
+        """AUDIT FINDING (fixed): this evicted the OLDEST row, pending or not.
+        Opening an approval is the cheapest write in the API, so filling the
+        store flushed a legitimate PENDING approval out of it -- measured, six
+        opens against a limit of three erased the victim. That is a denial of
+        the feature by anyone who can call it.
+
+        Terminal rows (consumed / declined / expired) are spent and free to
+        drop. A pending one is a live question someone is waiting on, so when
+        only pending rows remain the store REFUSES the new record instead. A
+        refused open is a visible error the caller retries; a silently evicted
+        approval is a payment that mysteriously cannot proceed.
+        """
+        if record["approval_id"] not in self._rows and len(self._rows) >= self._limit:
+            spent = [r for r in self._rows.values() if r.get("state") != PENDING]
+            if not spent:
+                raise ApprovalStoreFull(
+                    "approval store is full of pending requests -- decide or "
+                    "expire some before opening more")
+            oldest = min(spent, key=lambda r: r.get("created_at", 0))
             self._rows.pop(oldest["approval_id"], None)
         self._rows[record["approval_id"]] = dict(record)
         return record

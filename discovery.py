@@ -225,6 +225,7 @@ PUBLIC_POST_ROUTES = (
     # obvious way to try to grow the store.
     "/v1/approvals",
     "/v1/approvals/decide",
+    "/v1/approvals/redeem",
 )
 
 # Served ONLY when x402 billing is configured; the handler answers 404
@@ -249,6 +250,10 @@ _ROUTE_SUMMARY = {
     "/v1/approvals/decide": "Approve or decline a pending request (owner token "
                             "required). An approval is bound to the exact "
                             "payment, single-use, and expires.",
+    "/v1/approvals/redeem": "Spend an approval on ONE payment. Enforces that "
+                            "the approval was for THIS exact payment and has "
+                            "not been used -- without this call those two "
+                            "properties are unreachable.",
     "/openapi.json": "This document.",
     "/stats": "Request and verdict counters. No PII.",
     "/v1/verify-signer": "Stage-2 EIP-3009 signer recovery for a request that "

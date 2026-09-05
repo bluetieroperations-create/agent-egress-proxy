@@ -337,8 +337,30 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   STORE, not a `*_source`, so `test_honeypot`'s parity guard did NOT cover it --
   `test_approvals` widens the property to every PUBLIC attribute a handler
   method actually reads off `self`, which needs no naming convention.
-  Tests: `test_approvals.py`, 36 tests incl. a REAL server, 7 mutations verified
-  killed including the seventh-edit binding omission),
+  AUDIT FINDINGS, all four fixed, and the first is the one that matters:
+  (1) HIGH -- `redeem` was implemented, unit-tested and CALLED BY NOTHING on the
+  wire, so properties 2 and 3 were unreachable: a caller polled, saw "approved",
+  and proceeded, and an approval for $0.05 authorized anything. The
+  wired-and-inert pattern, in a module written the same hour as a test class
+  about that hazard. `POST /v1/approvals/redeem` makes it reachable, and
+  redeeming requires the token because spending is not a read. (2) HIGH, a CLAIM
+  rather than a code defect -- the docstring said "a record that a HUMAN was
+  asked". The engine CANNOT KNOW THAT: the token goes to whoever opened the
+  approval, and if that is the agent it can approve itself in the next call
+  (measured: 40ms). What this actually provides is a SECOND, EXPLICIT, AUDITED
+  act naming an `actor`, bound to the payment, expiring, single-use; whether a
+  person performs it is the INTEGRATOR's job -- give the token to the approval
+  UI, not to the agent. Said plainly instead of implied. (3) MEDIUM -- the store
+  evicted the OLDEST row regardless of state, so a flood flushed a live PENDING
+  approval out (measured: six opens against a limit of three erased the victim).
+  Terminal rows are evicted first and the store then REFUSES with 503 rather
+  than dropping a live question. (4) LOW->MED -- any caller-supplied verdict was
+  accepted, so an approval could be opened for a payment the engine never
+  scored; a `receipt_id` now requires the matching `report_token`, reusing the
+  existing HMAC.
+  Tests: `test_approvals.py`, 42 tests incl. a REAL server, 11 mutations
+  verified killed -- including the seventh-edit binding omission and the
+  removal of the redeem route),
   `confidence.py` (how much EVIDENCE backs a verdict -- `assess_confidence(record,
   signals)` -> {level high/medium/low, score 0..1, backed_by[], missing[]} across
   five weighted dimensions: history depth, payer breadth, cross-counterparty
