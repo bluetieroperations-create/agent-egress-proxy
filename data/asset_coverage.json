@@ -1,30 +1,29 @@
 {
- "generated_at": "2026-08-31T04:58:08Z",
- "hosts_answered": 176,
+ "generated_at": "2026-09-05T02:38:55Z",
+ "hosts_answered": 177,
  "hosts_probed": 195,
  "hosts_silent": [
-  "address-risk.hergertsynthora.com",
-  "agentattest.hergertsynthora.com",
+  "agentdatum.com",
   "agents.gedx402.com",
   "api-v3qhpbwutp.august.services",
+  "api.brazilayer.com",
   "api.certaindata.ai",
   "api.osf-master-server.com",
   "api.scanna.xyz",
   "api.tickersfeed.net",
   "app-production-23b4.up.railway.app",
   "app.heinrichstech.com",
+  "cdo-production.up.railway.app",
   "cloud.hyrule.host",
   "conc-exe.xyz",
-  "evm-canon-base.onrender.com",
   "gateway.stride20k.com",
   "innernetcorp.com",
   "nonvisceral-eloisa-mousily.ngrok-free.dev",
   "pmhxr44qn4qitobucm7ctgklbq0svqjb.lambda-url.ap-southeast-2.on.aws",
-  "scvd.store",
-  "vaaya.ai"
+  "scvd.store"
  ],
  "implausible": [],
- "known_pairs": 35,
+ "known_pairs": 36,
  "malformed": [
   {
    "asset": "0x8AC76a51cc950d9822D68b83fE43AD4843bA77E",
@@ -35,22 +34,7 @@
    "quotes": 1
   }
  ],
- "malformed_payees": [
-  {
-   "hosts": [
-    "apiwitchcraft.duckdns.org"
-   ],
-   "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
-   "pay_to": "2DgEL95L8DtaRb4ubYqrrnMbX7Zxgjxq7k8Ed9XAWYcpFACILITATOR_URL=https://x402.org/facilitator"
-  },
-  {
-   "hosts": [
-    "apiwitchcraft.duckdns.org"
-   ],
-   "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
-   "pay_to": "2DgEL95L8DtaRb4ubYqrrnMbX7Zxgjxq7k8Ed9XAWYcpFACILITATOR_URL=https://x402.org/facilitator"
-  }
- ],
+ "malformed_payees": [],
  "non_usd": [
   {
    "asset": "0x431D5dfF03120AFA4bDf332c61A6e1766eF37BDB",
@@ -61,6 +45,17 @@
    "max_price": "1",
    "min_price": "1",
    "network": "eip155:137",
+   "quotes": 1
+  },
+  {
+   "asset": "0x311935Cd80B76769bF2ecC9D8Ab7635b2139cf82",
+   "decimals": 9,
+   "hosts": [
+    "api.lastlookdata.com"
+   ],
+   "max_price": "0.004907252",
+   "min_price": "0.004907252",
+   "network": "eip155:8453",
    "quotes": 1
   },
   {
@@ -88,6 +83,13 @@
   {
    "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
    "host": "api.aidress.ai",
+   "method": "permit2",
+   "network": "eip155:8453",
+   "scheme": "exact"
+  },
+  {
+   "asset": "0x311935Cd80B76769bF2ecC9D8Ab7635b2139cf82",
+   "host": "api.lastlookdata.com",
    "method": "permit2",
    "network": "eip155:8453",
    "scheme": "exact"
@@ -163,18 +165,18 @@
    "scheme": "exact"
   }
  ],
- "priced_quotes": 367,
+ "priced_quotes": 370,
  "schemes": {
   "aggr_deferred": 1,
   "batch-settlement": 3,
-  "exact": 360,
+  "exact": 363,
   "upto": 4
  },
- "total_pairs": 36,
- "total_quotes": 368,
+ "total_pairs": 37,
+ "total_quotes": 371,
  "transfer_methods": {
   "eip3009": 8,
-  "permit2": 6,
+  "permit2": 7,
   "permit2-exact": 6
  },
  "unresolved": []

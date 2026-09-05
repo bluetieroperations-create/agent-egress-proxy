@@ -229,6 +229,15 @@ KNOWN_DECIMALS_BY_CHAIN = {
     # under the reviewed procedure: read from EVERY public RPC chain 50 publishes.
     # 7 of 7 answered and all agreed -- the widest agreement of any entry here.
     ("eip155:50", "0xfa2958cb79b0491cc627c1557f441ef849ca8eb1"): 6,   # USDC  XDC (7 rpc)
+    # Added 2026-09-05, surfaced by the monthly asset_coverage run on
+    # api.lastlookdata.com. NOT 6, and not a stablecoin: wrapped SOL on Base, 9
+    # decimals. Same reviewed procedure -- 6 of the 10 public Base RPCs answered
+    # and all 6 agreed on decimals=9 / symbol=SOL / name=Solana, 0 disagreements.
+    # CORROBORATED BY THE CORPUS, which is what separates a read from a guess:
+    # the same host quotes the same resource at 0.5 USDC, and 4913039 at 9
+    # decimals is 0.004913 SOL -- the same half-dollar. Read at the corpus
+    # default of 6 it would be 4.91 SOL, ~1000x, for a $0.50 API call.
+    ("eip155:8453", "0x311935cd80b76769bf2ecc9d8ab7635b2139cf82"): 9,  # SOL  Base (6 rpc)
     # testnets -- present in the live corpus, so scored like any other asset
     ("eip155:84532", "0x036cbd53842c5426634e7929541ec2318f3dcf7e"): 6,  # USDC  Base Sepolia
     ("eip155:80002", "0x41e94eb019c0762f9bfcf9fb1e58725bfb0e7582"): 6,  # USDC  Polygon Amoy

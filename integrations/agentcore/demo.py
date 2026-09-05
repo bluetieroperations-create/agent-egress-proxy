@@ -121,8 +121,8 @@ SCENARIOS = [
     ("$0.05 payment, approval over the ENTIRE wallet",
      "AWS's own docs offer granting an unlimited allowance as a normal option. "
      "An allowance is not a spend, so the $1.00 cap is still satisfied. Note the "
-     "scheme: `exact`, not `upto`. Permit2 is used with BOTH -- of the 12 live "
-     "x402 entries that require an allowance, 8 are on `exact` -- so this is the "
+     "scheme: `exact`, not `upto`. Permit2 is used with BOTH -- of the 13 live "
+     "x402 entries that require an allowance, 9 are on `exact` -- so this is the "
      "COMMON shape, not an exotic one, and a screen keyed off the scheme NAME "
      "would miss two thirds of it. That count is the one claim here that is not "
      "a live verdict; it comes from data/asset_coverage.json, which "
