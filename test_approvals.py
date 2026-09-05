@@ -183,6 +183,16 @@ class TestWhatAPollerCanSee(unittest.TestCase):
         # amounts and payees by brute force.
         self.assertNotIn("digest", A.public_view(A.decide(opened(), True, now=1010)))
 
+    def test_the_public_view_carries_WHO_decided(self):
+        # AUDIT FINDING, found on production not in a test. The record stored
+        # the actor and the view withheld it, so `decided_by` came back None
+        # over HTTP: the audit trail existed and nobody could read it. It is the
+        # whole of what this module offers in place of enforced human review, so
+        # withholding it removes the only evidence of who performed the second
+        # act. Kills: dropping it from the view again.
+        decided = A.decide(opened(), True, now=1010, actor="ops@example.test")
+        self.assertEqual(A.public_view(decided)["decided_by"], "ops@example.test")
+
     def test_the_public_view_carries_what_a_human_needs_to_decide(self):
         # Kills: redacting so hard the approver cannot see what they are approving.
         view = A.public_view(opened())
@@ -327,6 +337,9 @@ class TestTheLiveHttpPath(unittest.TestCase):
             "approval_id": approval_id, "approval_token": token,
             "approve": True, "actor": "ops@example.test"})
         self.assertEqual((status, decided["state"]), (200, A.APPROVED))
+        # The audit trail must survive the trip over HTTP, not just exist in
+        # the store -- that gap is exactly what production verification found.
+        self.assertEqual(decided["decided_by"], "ops@example.test")
 
         status, polled = self._get("/v1/approvals/" + approval_id)
         self.assertEqual(polled["state"], A.APPROVED)

@@ -230,9 +230,16 @@ def public_view(record):
     """
     if not isinstance(record, dict):
         return {}
+    # `decided_by` IS exposed. Found by verifying on production: the record
+    # stored the actor and the view withheld it, so the audit trail existed and
+    # nobody could read it -- which makes it not an audit trail. It is the whole
+    # of what this module offers in place of enforced human review (see the
+    # docstring), so hiding it removes the only evidence the second act happened
+    # and who performed it. The operator chooses what goes in the field and it
+    # is capped at 64 chars; put a role or a ticket id there, not a secret.
     return {k: record.get(k) for k in
             ("approval_id", "state", "verdict", "receipt_id", "reasons",
-             "created_at", "expires_at", "decided_at")}
+             "created_at", "expires_at", "decided_at", "decided_by")}
 
 
 class ApprovalStoreFull(Exception):
