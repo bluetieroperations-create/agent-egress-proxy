@@ -358,9 +358,25 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   accepted, so an approval could be opened for a payment the engine never
   scored; a `receipt_id` now requires the matching `report_token`, reusing the
   existing HMAC.
-  Tests: `test_approvals.py`, 42 tests incl. a REAL server, 11 mutations
-  verified killed -- including the seventh-edit binding omission and the
-  removal of the redeem route),
+  (5) MEDIUM, found while auditing the fix for the audit trail itself --
+  `decided_by` and `reasons` are BOTH caller-supplied and BOTH echoed to an
+  unauthenticated poller, and neither was sanitized. Newlines, carriage
+  returns, NUL and ANSI escapes passed straight through, so an ops console or
+  plain-text log rendering an approval could be made to show lines nobody
+  wrote, and the field whose whole job is to say WHO approved could claim to be
+  someone else (`"alice@corp\n  approved-by: security-team"`). THIRD instance
+  of this defect class here -- `payee_syntax` echoed a merchant-controlled hint
+  into `reasons[]` raw, and `secret_scan` exists because free-text fields reach
+  places that render them. `_safe_text` escapes both the same way (repr minus
+  its quotes: control characters become visible escapes, ordinary text stays
+  completely readable). And the audit trail was UNREADABLE before that: `decide`
+  stored the actor and `public_view` withheld it, so the mitigation this module
+  offers in place of enforced human review left no evidence it had happened --
+  found on PRODUCTION, because the tests asserted `decided_by` on the record and
+  never on the view.
+  Tests: `test_approvals.py`, 47 tests incl. a REAL server, 15 mutations
+  verified killed -- including the seventh-edit binding omission, the removal
+  of the redeem route, and un-sanitizing either echoed field),
   `confidence.py` (how much EVIDENCE backs a verdict -- `assess_confidence(record,
   signals)` -> {level high/medium/low, score 0..1, backed_by[], missing[]} across
   five weighted dimensions: history depth, payer breadth, cross-counterparty

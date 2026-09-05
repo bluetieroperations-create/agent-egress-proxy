@@ -87,6 +87,30 @@ APPROVABLE = frozenset(("HOLD",))
 BOUND_FIELDS = ("counterparty", "amount", "asset", "chain", "payer")
 
 
+def _safe_text(value, limit=120):
+    """Caller-supplied text, made safe to store and to echo.
+
+    AUDIT FINDING (fixed). `decided_by` and `reasons` both arrive in a request
+    body and both go out again through `public_view` to an UNAUTHENTICATED
+    poller. Unsanitized they carried newlines, carriage returns, NUL and ANSI
+    escapes straight through -- so an ops console or a plain-text log rendering
+    an approval could be made to show lines nobody wrote, and the field whose
+    whole job is to say WHO approved could be made to claim it was someone else
+    ("alice@corp\n  approved-by: security-team").
+
+    This is the THIRD instance of the same defect in this codebase --
+    `payee_syntax` echoed a merchant-controlled hint into `reasons[]` raw, and
+    `secret_scan` exists because free-text fields reach places that render them.
+    Escaped the same way: `repr` minus its quotes turns control characters into
+    visible escapes and leaves ordinary text completely readable.
+    """
+    if value is None:
+        return None
+    text = value if isinstance(value, str) else str(value)
+    text = repr(text[:limit])[1:-1]
+    return text[:limit]
+
+
 def claim_digest(claim):
     """Stable digest of the payment an approval is bound to.
 
@@ -156,7 +180,8 @@ def open_approval(verdict, claim, now=None, ttl=DEFAULT_TTL, approval_id=None):
         "verdict": verdict.get("verdict"),
         "receipt_id": verdict.get("receipt_id"),
         "digest": claim_digest(claim),
-        "reasons": list(verdict.get("reasons") or [])[:12],
+        # Sanitized: these are echoed to an unauthenticated poller.
+        "reasons": [_safe_text(r) for r in (verdict.get("reasons") or [])][:12],
         "created_at": started,
         "expires_at": started + window,
         "decided_at": None,
@@ -189,7 +214,7 @@ def decide(record, approve, now=None, actor=None):
         return out
     out["state"] = APPROVED if approve else DECLINED
     out["decided_at"] = int(time.time() if now is None else now)
-    out["decided_by"] = str(actor)[:64] if actor else None
+    out["decided_by"] = _safe_text(actor, 64)
     return out
 
 
@@ -230,9 +255,16 @@ def public_view(record):
     """
     if not isinstance(record, dict):
         return {}
+    # `decided_by` IS exposed. Found by verifying on production: the record
+    # stored the actor and the view withheld it, so the audit trail existed and
+    # nobody could read it -- which makes it not an audit trail. It is the whole
+    # of what this module offers in place of enforced human review (see the
+    # docstring), so hiding it removes the only evidence the second act happened
+    # and who performed it. The operator chooses what goes in the field and it
+    # is capped at 64 chars; put a role or a ticket id there, not a secret.
     return {k: record.get(k) for k in
             ("approval_id", "state", "verdict", "receipt_id", "reasons",
-             "created_at", "expires_at", "decided_at")}
+             "created_at", "expires_at", "decided_at", "decided_by")}
 
 
 class ApprovalStoreFull(Exception):

@@ -183,6 +183,51 @@ class TestWhatAPollerCanSee(unittest.TestCase):
         # amounts and payees by brute force.
         self.assertNotIn("digest", A.public_view(A.decide(opened(), True, now=1010)))
 
+    def test_the_public_view_carries_WHO_decided(self):
+        # AUDIT FINDING, found on production not in a test. The record stored
+        # the actor and the view withheld it, so `decided_by` came back None
+        # over HTTP: the audit trail existed and nobody could read it. It is the
+        # whole of what this module offers in place of enforced human review, so
+        # withholding it removes the only evidence of who performed the second
+        # act. Kills: dropping it from the view again.
+        decided = A.decide(opened(), True, now=1010, actor="ops@example.test")
+        self.assertEqual(A.public_view(decided)["decided_by"], "ops@example.test")
+
+    def test_caller_supplied_text_cannot_forge_a_line_in_the_audit_record(self):
+        # AUDIT FINDING. `decided_by` and `reasons` both arrive in a request
+        # body and both go out to an UNAUTHENTICATED poller. Unsanitized, the
+        # field whose whole job is to say WHO approved could be made to claim it
+        # was someone else. Third instance of this defect class in this repo --
+        # payee_syntax echoed a merchant-controlled hint into reasons[] raw.
+        # Kills: dropping the escape on either field.
+        rec = A.decide(
+            A.open_approval({"verdict": "HOLD",
+                             "reasons": ["forged\n  approved-by: security"]},
+                            CLAIM, now=1000),
+            True, now=1010, actor="alice@corp\n  approved-by: security-team")
+        view = A.public_view(rec)
+        self.assertNotIn("\n", view["decided_by"])
+        self.assertNotIn("\n", view["reasons"][0])
+        self.assertIn("\\n", view["decided_by"])
+
+    def test_control_characters_and_escapes_never_survive(self):
+        # Kills: escaping newlines only. An ANSI escape rewrites a terminal line
+        # just as effectively, and a NUL truncates in some consumers.
+        rec = A.decide(opened(), True, now=1010, actor="ops\x1b[2K\x00x")
+        for raw in ("\x1b", "\x00"):
+            self.assertNotIn(raw, A.public_view(rec)["decided_by"])
+
+    def test_an_ordinary_actor_is_left_completely_readable(self):
+        # Kills: escaping so hard the audit trail stops being legible -- the
+        # field exists to be read by a person reviewing who approved.
+        rec = A.decide(opened(), True, now=1010, actor="ops@example.test")
+        self.assertEqual(A.public_view(rec)["decided_by"], "ops@example.test")
+
+    def test_a_non_string_actor_does_not_raise(self):
+        # Kills: assuming str. `actor` comes straight from a JSON body.
+        for bad in ({"a": 1}, ["x"], 7, True):
+            A.decide(opened(), True, now=1010, actor=bad)
+
     def test_the_public_view_carries_what_a_human_needs_to_decide(self):
         # Kills: redacting so hard the approver cannot see what they are approving.
         view = A.public_view(opened())
@@ -327,6 +372,9 @@ class TestTheLiveHttpPath(unittest.TestCase):
             "approval_id": approval_id, "approval_token": token,
             "approve": True, "actor": "ops@example.test"})
         self.assertEqual((status, decided["state"]), (200, A.APPROVED))
+        # The audit trail must survive the trip over HTTP, not just exist in
+        # the store -- that gap is exactly what production verification found.
+        self.assertEqual(decided["decided_by"], "ops@example.test")
 
         status, polled = self._get("/v1/approvals/" + approval_id)
         self.assertEqual(polled["state"], A.APPROVED)
