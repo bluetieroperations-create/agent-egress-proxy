@@ -302,6 +302,65 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   since "not known to be USD" is not "known not to be USD". Blast radius
   measured at 5 of 371 live quotes. `asset_coverage.NON_USD` is the SAME object,
   not a second copy. Redteam: 1 attack + 1 restraint control),
+  `approvals.py` (the HUMAN-IN-THE-LOOP half of a HOLD. Every gate here is
+  HOLD-only by design -- it refuses to auto-approve and hands the question to a
+  person -- but the engine had nowhere to hand it TO, so every integration got
+  "HOLD" back and had to invent the workflow, which is how a HOLD ends up
+  configured away. FOUND BY COMPETITIVE RE-VERIFICATION, not imagination:
+  TollWarden's live spec (paysafe-agent.com/openapi.json v1.5.0, re-pulled
+  2026-09-05) ships `/v1/approvals/config` + `/v1/approvals/{id}`; it was the one
+  thing in their product this engine had no answer to, and it is a WORKFLOW gap
+  rather than a detection gap -- the kind a detection-focused project fails to
+  notice about itself. An approval is NOT an upgrade: `redeem` returns "HOLD,
+  approved by a human", never GO. FIVE SECURITY PROPERTIES, each a bypass if
+  skipped: (1) STOP IS NEVER APPROVABLE -- `APPROVABLE` is a frozenset of HOLD
+  alone, and a HOLD carrying `hard_stop` is also refused as incoherent; (2)
+  BOUND TO THE EXACT CLAIM via a digest over `BOUND_FIELDS` (counterparty,
+  amount, asset, chain, payer) -- without it, getting $0.05 approved authorizes
+  $500, i.e. the mechanism becomes a laundering step. Deliberately NOT the whole
+  claim, so extra context does not invalidate a human's answer; digest is
+  case/whitespace-normalized because a live 402 returns EIP-55 while crawls store
+  lowercase (the join that missed 64 of 69 endpoints in advertised_prices); (3)
+  SINGLE USE -- redeeming consumes it, and a FAILED redemption does not burn it;
+  (4) EXPIRES (`DEFAULT_TTL` 900s, matching the AgentCore session window),
+  compared with >= so it dies ON its expiry second; (5) OWNER-ONLY via the same
+  HMAC capability pattern as `sign_report_token`, domain-separated with
+  "approve:" so a report token can never authorize a payment. `public_view`
+  withholds the digest (BOUND_FIELDS is short and low-entropy, so publishing it
+  would let an id-holder brute-force amounts and payees) and the token. Terminal
+  states are final -- a retry loop cannot grind an approval out of a decline.
+  Store is injected; `MemoryApprovalStore` is bounded and evicts OLDEST first,
+  which fails safe; a restart loses pending approvals, which also fails safe.
+  Served at POST `/v1/approvals`, POST `/v1/approvals/decide`, GET
+  `/v1/approvals/{id}`; a wrong token gets 403 for a REAL id and an unknown one
+  alike, so the endpoint is not an enumeration oracle. BINDING HAZARD: this is a
+  STORE, not a `*_source`, so `test_honeypot`'s parity guard did NOT cover it --
+  `test_approvals` widens the property to every PUBLIC attribute a handler
+  method actually reads off `self`, which needs no naming convention.
+  AUDIT FINDINGS, all four fixed, and the first is the one that matters:
+  (1) HIGH -- `redeem` was implemented, unit-tested and CALLED BY NOTHING on the
+  wire, so properties 2 and 3 were unreachable: a caller polled, saw "approved",
+  and proceeded, and an approval for $0.05 authorized anything. The
+  wired-and-inert pattern, in a module written the same hour as a test class
+  about that hazard. `POST /v1/approvals/redeem` makes it reachable, and
+  redeeming requires the token because spending is not a read. (2) HIGH, a CLAIM
+  rather than a code defect -- the docstring said "a record that a HUMAN was
+  asked". The engine CANNOT KNOW THAT: the token goes to whoever opened the
+  approval, and if that is the agent it can approve itself in the next call
+  (measured: 40ms). What this actually provides is a SECOND, EXPLICIT, AUDITED
+  act naming an `actor`, bound to the payment, expiring, single-use; whether a
+  person performs it is the INTEGRATOR's job -- give the token to the approval
+  UI, not to the agent. Said plainly instead of implied. (3) MEDIUM -- the store
+  evicted the OLDEST row regardless of state, so a flood flushed a live PENDING
+  approval out (measured: six opens against a limit of three erased the victim).
+  Terminal rows are evicted first and the store then REFUSES with 503 rather
+  than dropping a live question. (4) LOW->MED -- any caller-supplied verdict was
+  accepted, so an approval could be opened for a payment the engine never
+  scored; a `receipt_id` now requires the matching `report_token`, reusing the
+  existing HMAC.
+  Tests: `test_approvals.py`, 42 tests incl. a REAL server, 11 mutations
+  verified killed -- including the seventh-edit binding omission and the
+  removal of the redeem route),
   `confidence.py` (how much EVIDENCE backs a verdict -- `assess_confidence(record,
   signals)` -> {level high/medium/low, score 0..1, backed_by[], missing[]} across
   five weighted dimensions: history depth, payer breadth, cross-counterparty

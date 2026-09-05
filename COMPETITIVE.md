@@ -1,6 +1,16 @@
 # Blackwall — competitive landscape
 
-**Re-verified 2026-08-25** (previous snapshot 2026-06-29). Each row carries a
+**Re-verified 2026-09-05** (previous snapshots 2026-08-25, 2026-06-29).
+TollWarden re-pulled live on 2026-09-05: still `1.5.0`, still 14 paths, term
+scan unchanged (`ofac`/`sanction`/`sybil`/`settlement`/`graph`/`simulate`/
+`permit2`/`allowance` all still ABSENT). Two things the August pass did not
+draw out: (a) their `/v1/approvals/*` pair is a real workflow we lacked, now
+built as `approvals.py`; (b) their `scan/outgoing` spec documents
+`asset_decimals` as *"default 6 = USDC"* -- the exact hardcoded-6 defect
+`docs/DECIMALS_AUDIT.md` proved both false-STOPs a valid 18-decimal payment and
+lets a 10^12 underpayment pass as a match; and every scan is a FLAT $0.01,
+which on the corpus median payment of ~$0.05 is 20% of the payment to check the
+payment (Blackwall: 10bps, free under $10 at risk). Each row carries a
 confidence level and how it was checked. The x402 trust layer moves weekly —
 re-verify before betting positioning on it, and check the LIVE service, not a
 README blurb. That mistake is recorded twice in this file now.

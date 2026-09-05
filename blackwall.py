@@ -1816,6 +1816,12 @@ class _Handler(BaseHTTPRequestHandler):
     # Injected by BlackwallServer.
     reputation_source = None
     ledger = None
+    # Human-in-the-loop approvals. ALWAYS bound (not opt-in): a HOLD with
+    # nowhere to send it is the gap this closes. Named `approvals` rather than
+    # `*_source` because it is a STORE the server writes to, not a signal source
+    # -- and test_honeypot's parity guard is extended to cover it, since the
+    # binding hazard is identical.
+    approvals = None
     billing = None  # x402.BillingGate, or None to disable billing
     readiness_source = None  # readiness.OntarioReadinessSource, or None
     hold_above = None  # amount above which the verdict escalates to HOLD (None = default)
@@ -1915,6 +1921,8 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             if path == "/healthz":
                 self._send_json(200, {"status": "ok"})
+            elif path.startswith("/v1/approvals/"):
+                self._do_poll_approval(path.rsplit("/", 1)[-1])
             elif path in ("/.well-known/x402", "/v1/discovery"):
                 self._send_json(200, self._descriptor())
             elif path in ("/jwks.json",
@@ -2099,6 +2107,12 @@ class _Handler(BaseHTTPRequestHandler):
                 self._do_session()
             elif self.path == "/v1/screen-payer":
                 self._do_screen_payer()
+            elif self.path == "/v1/approvals":
+                self._do_open_approval()
+            elif self.path == "/v1/approvals/decide":
+                self._do_decide_approval()
+            elif self.path == "/v1/approvals/redeem":
+                self._do_redeem_approval()
             else:
                 self._send_json(404, {"error": "not found"})
         except Exception as e:
@@ -2115,6 +2129,141 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(503, {"error": "verdict engine temporarily unavailable"})
             except Exception:
                 pass   # response may already be partly written; don't cascade
+
+    # ---- human-in-the-loop approvals -------------------------------------
+    # A HOLD is the engine declining to auto-approve and handing the question to
+    # a person. Until now it had nowhere to hand it TO: every integration got
+    # "HOLD" back and had to invent the workflow, which is how a HOLD ends up
+    # configured away. See approvals.py for the five security properties.
+
+    def _do_open_approval(self):
+        payload, err = self._read_json_body()
+        if err is not None:
+            self._send_json(400, {"error": err})
+            return
+        import approvals
+        verdict = payload.get("verdict")
+        claim = payload.get("claim")
+        if not isinstance(verdict, dict) or not isinstance(claim, dict):
+            self._send_json(400, {"error": "verdict and claim objects required"})
+            return
+        # AUDIT FINDING (fixed): this accepted ANY caller-supplied verdict, so a
+        # caller could fabricate `{"verdict": "HOLD"}` for a payment the engine
+        # never scored and open an approval for it. `forecast` already returns a
+        # `report_token` HMAC over the receipt_id, so requiring it here proves
+        # the verdict is one WE issued. Optional only when the verdict carries
+        # no receipt_id at all (an offline/embedded caller with no server-side
+        # verdict to point at), which is stated rather than silently allowed.
+        receipt_id = verdict.get("receipt_id")
+        if receipt_id:
+            if not verify_report_token(receipt_id, payload.get("report_token")):
+                self._send_json(403, {
+                    "error": "report_token required and must match the "
+                             "receipt_id of a verdict this service issued"})
+                return
+        record = approvals.open_approval(verdict, claim, ttl=payload.get("ttl")
+                                         or approvals.DEFAULT_TTL)
+        if record is None:
+            # NOT an error: a GO needs no approval and a STOP is not approvable.
+            # Saying so explicitly is better than a 400, because the caller
+            # should be able to open one unconditionally and read the answer.
+            self._send_json(200, {
+                "approvable": False,
+                "reason": "only a HOLD can be sent for human approval -- a STOP "
+                          "is never approvable and a GO needs no approval"})
+            return
+        try:
+            self.approvals.put(record)
+        except approvals.ApprovalStoreFull as exc:
+            # 503, not 500: the caller should retry, and refusing is the SAFE
+            # branch -- the alternative was silently evicting someone's live
+            # pending approval.
+            self._send_json(503, {"error": str(exc)})
+            return
+        out = approvals.public_view(record)
+        out["approvable"] = True
+        # The capability token goes to the OPENER once, and is required to
+        # decide. Seeing an approval id in a log must not authorize approving.
+        out["approval_token"] = approvals.sign_approval_token(record["approval_id"])
+        self._send_json(200, out)
+
+    def _do_decide_approval(self):
+        payload, err = self._read_json_body()
+        if err is not None:
+            self._send_json(400, {"error": err})
+            return
+        import approvals
+        approval_id = payload.get("approval_id")
+        if not isinstance(approval_id, str) or not approval_id:
+            self._send_json(400, {"error": "approval_id required"})
+            return
+        if not approvals.verify_approval_token(approval_id,
+                                               payload.get("approval_token")):
+            # 403 whether or not the id exists -- a different status for a real
+            # id would make this an oracle for enumerating pending approvals.
+            self._send_json(403, {"error": "invalid or missing approval_token"})
+            return
+        record = self.approvals.get(approval_id)
+        if record is None:
+            self._send_json(404, {"error": "no such approval"})
+            return
+        decided = approvals.decide(record, bool(payload.get("approve")),
+                                   actor=payload.get("actor"))
+        self.approvals.put(decided)
+        self._send_json(200, approvals.public_view(decided))
+
+    def _do_redeem_approval(self):
+        """Spend an approval on ONE payment -> {"ok": bool, "reason": str}.
+
+        AUDIT FINDING, AND THE REASON THIS ENDPOINT EXISTS. `approvals.redeem`
+        was implemented, unit-tested, and called by NOTHING on the wire. So the
+        two properties that make an approval safe -- bound to the exact claim,
+        single-use -- were unreachable: a caller polled, saw "approved", and
+        proceeded, and an approval for $0.05 authorized anything. That is the
+        wired-and-inert pattern this repo documents, in a module written the
+        same hour as a test class about that hazard.
+
+        The token is required: redeeming is spending, and spending is a
+        privileged act, not a read.
+        """
+        payload, err = self._read_json_body()
+        if err is not None:
+            self._send_json(400, {"error": err})
+            return
+        import approvals
+        approval_id = payload.get("approval_id")
+        claim = payload.get("claim")
+        if not isinstance(approval_id, str) or not isinstance(claim, dict):
+            self._send_json(400, {"error": "approval_id and claim required"})
+            return
+        if not approvals.verify_approval_token(approval_id,
+                                               payload.get("approval_token")):
+            self._send_json(403, {"error": "invalid or missing approval_token"})
+            return
+        record = self.approvals.get(approval_id)
+        if record is None:
+            self._send_json(404, {"error": "no such approval"})
+            return
+        ok, reason, updated = approvals.redeem(record, claim)
+        self.approvals.put(updated)
+        out = approvals.public_view(updated)
+        out["ok"] = ok
+        out["reason"] = reason
+        self._send_json(200, out)
+
+    def _do_poll_approval(self, approval_id):
+        """Poll state. NO token required and nothing sensitive is returned --
+        `public_view` withholds the digest, so this leaks only that an id exists
+        and what the engine already told the caller."""
+        import approvals
+        record = self.approvals.get(approval_id) if approval_id else None
+        if record is None:
+            self._send_json(404, {"error": "no such approval"})
+            return
+        if record.get("state") == approvals.PENDING and approvals.is_expired(record):
+            record["state"] = approvals.EXPIRED
+            self.approvals.put(record)
+        self._send_json(200, approvals.public_view(record))
 
     def _do_screen_payer(self):
         """Screen a PAYER over HTTP -- the buyer side of the graph.
@@ -2357,6 +2506,10 @@ class BlackwallServer:
         self.dex_source = dex_source
         self.holder_source = holder_source
         self.honeypot_source = honeypot_source
+        # ALWAYS on. Constructed here rather than injected because a HOLD with
+        # nowhere to send it is the defect, and an opt-in flag reproduces it.
+        import approvals as _approvals
+        self.approvals = _approvals.MemoryApprovalStore()
         self.aave_source = aave_source
         self.issuer_trust_source = issuer_trust_source
         self.settlement_sim_source = settlement_sim_source
@@ -2368,6 +2521,11 @@ class BlackwallServer:
         handler = type("_BoundHandler", (_Handler,),
                        {"reputation_source": self.reputation_source,
                         "ledger": self.ledger,
+                        # THE SEVENTH EDIT honeypot.py warns about. Omitting
+                        # this line raises nothing -- the handler keeps its None
+                        # default and every approval call 500s while the route
+                        # is still advertised in the descriptor.
+                        "approvals": self.approvals,
                         "billing": self.billing,
                         "readiness_source": self.readiness_source,
                         "hold_above": self.hold_above,
