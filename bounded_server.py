@@ -244,10 +244,8 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
                     if room:
                         self._exempt += 1
                 if room:
-                    try:
-                        self._serve_exempt(request, client_address)
-                    finally:
-                        pass          # _serve_exempt returns the slot
+                    # _serve_exempt returns the slot in its own finally.
+                    self._serve_exempt(request, client_address)
                     return
             self._refuse(request)
         finally:
