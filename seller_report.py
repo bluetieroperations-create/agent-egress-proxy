@@ -153,29 +153,56 @@ def find_rows(rows, key):
 # ---------------------------------------------------------------------------
 # Live probe: reach + parseability (rule 1)
 # ---------------------------------------------------------------------------
-def assess_reach(probe):
-    """Did the seller's endpoint answer us at all?
+def assess_reach(probe, history=None):
+    """Did the seller's endpoint answer us, and what happened the other times?
 
     Leads every report. A silent host and a healthy one produce the same absence
     of downstream findings, so saying which one we saw is what makes the rest of
     the report readable (rule 2).
+
+    `history` is a `reachability_ledger` summary, and it is what stops a single
+    timeout reading the same as a three-week silence. Without it this project
+    probed one host four times and told a different story every time, because
+    each probe overwrote the last -- so the honest answer to "is it down?" was
+    always "we cannot tell from one look", and now it does not have to be.
+
+    Still never a defect we ASSERT. Even a long silent run is reported as our
+    observations, because today's six timeouts came through a proxy while a
+    direct TLS handshake to the same host succeeded on the first try, and from
+    here those two are indistinguishable.
     """
+    import reachability_ledger as RL
+
+    state = (history or {}).get("state")
+    context = ""
+    if history and state and state != "unobserved":
+        context = " " + RL.describe(history)
+
     if probe is None:
         return finding("reach", UNKNOWN, "Reachability not checked",
                        "This report was produced without contacting your "
-                       "endpoint.", evidence="no probe performed")
+                       "endpoint." + context,
+                       evidence="no probe performed", history=state)
     if probe.get("error"):
-        return finding("reach", UNKNOWN, "We could not reach your endpoint",
-                       "We got no usable answer (%s). This is a statement about "
-                       "our probe, not a defect we observed in your service -- a "
-                       "host that is merely quiet and a healthy one look "
-                       "identical from here."
-                       % _safe(probe.get("error"), 80),
-                       evidence="live probe of %s" % _safe(probe.get("url"), 100))
-    return finding("reach", INFO, "Your endpoint answered",
-                   "HTTP %s." % _safe(probe.get("status"), 12),
+        title = "We could not reach your endpoint"
+        detail = ("We got no usable answer (%s). This is a statement about our "
+                  "probe, not a defect we observed in your service -- a host "
+                  "that is merely quiet and a healthy one look identical from "
+                  "here." % _safe(probe.get("error"), 80))
+        if state == "silent_run":
+            title = "We have not reached your endpoint in some time"
+        elif state == "flapping":
+            title = "Your endpoint answers intermittently"
+        return finding("reach", UNKNOWN, title, detail + context,
+                       evidence="live probe of %s" % _safe(probe.get("url"), 100),
+                       history=state)
+    title = "Your endpoint answered"
+    if state == "flapping":
+        title = "Your endpoint answered, but not always"
+    return finding("reach", INFO, title,
+                   ("HTTP %s." % _safe(probe.get("status"), 12)) + context,
                    evidence="live probe of %s" % _safe(probe.get("url"), 100),
-                   status=probe.get("status"))
+                   status=probe.get("status"), history=state)
 
 
 def assess_parseability(probe):
@@ -588,6 +615,18 @@ def build_report(key, rows, coverage=None, probe_fn=None, cross_fn=None,
     payee = row.get("payee")
 
     probe = probe_fn(row.get("resources") or []) if probe_fn else None
+    history = None
+    if hosts:
+        # Record what we just saw and read back what we saw before. Fail-soft in
+        # both directions: a report must never break because a log file is
+        # unwritable, and it must never be blocked because one is unreadable.
+        import reachability_ledger as RL
+        try:
+            if probe is not None:
+                RL.observe(hosts[0], probe, source="seller_report")
+            history = RL.summarize(RL.load(host=hosts[0]))
+        except Exception:
+            history = None
     cross, store_error = (None, None)
     if cross_fn:
         cross, store_error = cross_fn(payee)
@@ -595,7 +634,7 @@ def build_report(key, rows, coverage=None, probe_fn=None, cross_fn=None,
     if isinstance(category_index, dict):
         median = category_index.get(row.get("category"))
 
-    findings = [assess_reach(probe), assess_parseability(probe),
+    findings = [assess_reach(probe, history), assess_parseability(probe),
                 assess_payee_identifier(payee)]
     findings.extend(assess_identifiers(coverage, hosts))
     findings.append(assess_verdict(row, cross, decide=decide))

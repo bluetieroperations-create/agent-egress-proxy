@@ -574,6 +574,45 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   a precomputed graph. See `docs/SELLER_SIDE.md`. Tests:
   `test_seller_portal.py`, 32 tests incl. a real server, 19 mutations verified
   killed),
+  `reachability_ledger.py` (DID WE REACH THIS HOST, AND WHAT HAPPENED LAST TIME?
+  `apiwitchcraft.duckdns.org` has been probed by this project at least four times
+  and told a DIFFERENT STORY EVERY TIME -- "still live", "went quiet, never
+  fixed", "answers and the payTo is repaired", and on 2026-09-06 six consecutive
+  HTTP timeouts against a host whose TLS handshake completes on the first try.
+  The `payee_syntax` entry documents that confusion at length, which is the tell:
+  the confusion was never about the host, it was about US. Every probe OVERWRITES
+  the last -- `data/liveness.json` is an undated snapshot and `asset_coverage.json`
+  carries a single `generated_at` -- so "have we seen this before?" could only ever
+  be answered from memory. This is the memory: append-only, dated, one line per
+  observation.
+  THE DESIGN DECISION THAT MATTERS, because getting it wrong MANUFACTURES EVIDENCE
+  against innocent sellers: OUR OWN FAILURES ARE RECORDED SEPARATELY FROM THEIRS.
+  A probe we declined (the SSRF guard refused the URL) or one that died inside our
+  own network is `skipped` -- a fact about us -- and `summarize` EXCLUDES skips from
+  every judgement, so a broken proxy or an over-strict URL guard can never build a
+  case against a seller who was fine throughout. Only an attempt that reached the
+  wire and got nothing is `unreachable`, and even that is worded "we could not
+  reach you", NEVER "you were down": today's six timeouts came through the proxy
+  while a direct TLS handshake to the same host succeeded, and from here those two
+  are INDISTINGUISHABLE. The ledger records OBSERVATIONS, never uptime, and
+  `test_reachability_ledger` asserts that no wording claims a seller's state in
+  EITHER direction (claiming they are UP is the same error as claiming they are
+  down). FOUR STATES, and the one that resolves the whole mess is `flapping`:
+  answered before, silent now -- which is exactly what four sessions kept
+  mistaking for "fixed" or "dead" depending on the day they looked. A
+  `silent_run` needs BOTH >= RUN_FOR_CONCERN attempts AND >= DAYS_FOR_CONCERN
+  days, so three timeouts in ten minutes stays a blip rather than becoming a
+  condition; `never_answered` is checked BEFORE the run rule because it is the
+  more specific claim. Folded into `seller_report.assess_reach`, which is what
+  stops a single timeout reading identically to a three-week silence -- but NEVER
+  changes the severity: more observations make the STATEMENT stronger, not the
+  accusation, so reachability stays `unknown` however long the run. Fail-soft in
+  both directions (a report must not break because a log is unwritable, nor be
+  blocked because one is unreadable), and the path is `BLACKWALL_REACHABILITY` so
+  a deploy points it at the persistent disk -- the root `.gitignore` excludes
+  `*.jsonl`, so a container otherwise boots with no memory, and the memory is the
+  whole feature. CLI: `python reachability_ledger.py [host]`. Tests:
+  `test_reachability_ledger.py`, 29 tests, 18 mutations verified killed),
   `payee_syntax.py` (is the address the agent is about to PAY a possible address?
   Found in the wild by `asset_coverage` on 2026-08-30: a live seller advertised a
   Solana `payTo` with `FACILITATOR_URL=https://...` concatenated onto it -- almost
@@ -988,7 +1027,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_honeypot.py test_billing_preflight.py test_seller_report.py test_seller_portal.py
+ test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_honeypot.py test_billing_preflight.py test_seller_report.py test_seller_portal.py test_reachability_ledger.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop

@@ -29,6 +29,11 @@ services:
         value: "8402"
       - key: BLACKWALL_STORE
         value: /data/reputation.db
+      # Reachability history for the seller diagnostic. On the persistent
+      # disk so the record survives a restart -- a ledger that resets is a
+      # ledger that cannot answer "have we seen this before?".
+      - key: BLACKWALL_REACHABILITY
+        value: /data/reachability.jsonl
       - key: BLACKWALL_LEDGER
         value: /data/ledger.jsonl
       # 0: unknown counterparty -> instant cold-start HOLD. Lazy ingest (1) does a

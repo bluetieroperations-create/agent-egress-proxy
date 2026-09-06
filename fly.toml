@@ -30,6 +30,9 @@ primary_region = "iad"
   BLACKWALL_PORT = "8402"
   BLACKWALL_STORE = "/data/reputation.db"
   BLACKWALL_LEDGER = "/data/ledger.jsonl"
+  # Reachability history for the seller diagnostic -- on the volume so the
+  # record survives a restart.
+  BLACKWALL_REACHABILITY = "/data/reachability.jsonl"
   # 0: an unknown counterparty returns a cold-start HOLD INSTANTLY. Lazy ingest
   # (1) does a SYNCHRONOUS on-chain fetch on the hot path, which blocks the request
   # past the platform's timeout on a cold store -> 502. Pre-warm from the manifest
