@@ -429,6 +429,54 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   gap that reads as covered. CLI:
   `python asset_coverage.py data/liveness.json [--json report.json]`.
   Tests: `test_asset_coverage.py`),
+  `billing_preflight.py` (ANSWER "if I flip billing ON, what happens?" BEFORE the
+  deploy. Turning billing on is a one-line config change (`BLACKWALL_PAY_TO=0x...`)
+  and every way it fails is QUIET: a payee that is well-formed but wrong; an asset
+  the decimals table does not cover, quoted in units nobody agrees on; a 402 that is
+  well-formed to us and UNREADABLE to a real client (in which case we are not
+  charging, we are refusing); a facilitator that answers and does not settle our
+  network; and a pricing policy that is perfectly valid and collects NOTHING, which
+  looks exactly like success until the month ends. Nine checks, three of which exist
+  nowhere else. (1) CHALLENGE ROUND-TRIP -- emit the 402 we would serve and re-parse
+  it with our OWN `x402_challenge.parse_challenge`, through BOTH carriers
+  independently (the body path would otherwise shadow the header path, and 86 of 195
+  live hosts serve requirements ONLY in a header), comparing every field a payer
+  SIGNS against the config; the only check that proves a stranger can PAY us.
+  (2) REVENUE, projected against the committed corpus as an INTERVAL not a point --
+  `data/directory.json` stores the min/max HULL of each payee's price list, not the
+  list, the exact caveat `advertised_prices.py` documents, so collapsing it would
+  invent a distribution we never measured. Reproduces the hand-measured figure: value
+  pricing bills 1-19 of 265 corpus payees, $0.007-$0.314 for one forecast each.
+  (3) PROPORTIONALITY -- `x402.PricingPolicy` enforces a fee/amount bound whose own
+  comment names the reason ("the median live x402 quote is $0.005"), but
+  `BillingGate._price_for` consults a policy ONLY when one is configured, and the
+  SHIPPED DEFAULT is flat pricing with no policy. So the default path never applies
+  the bound its own module documents as necessary: measured on the corpus at the
+  shipped $0.001, the fee is a MEDIAN 20% of the payment being screened and exceeds
+  the 1% bound for 251 of 265 payees. Also `check_network`, found by this module's
+  own tests -- `default_billing_asset` falls back to Base MAINNET USDC for an
+  unrecognized network and `to_caip2` passes an unknown name through by design, and
+  those compose into an eip155 asset advertised on `solana`; `check_asset` CANNOT
+  catch it because `known_decimals` falls back to an address-only table that answers
+  6 whatever the chain says. And a NOTE, not a gate: value pricing derives the fee
+  from `payload["amount"]`, which the caller writes and nothing verifies -- declaring
+  a sub-threshold amount gets the counterparty screen free (the budget/blast-radius
+  half degrades, which is self-limiting). AUDIT FINDING (fixed): a facilitator's
+  `/supported` document is written by a THIRD PARTY and was echoed into the report
+  RAW -- a scheme containing a newline forges its own line in the report an operator
+  reads before deciding to send that facilitator money. FOURTH instance of this class
+  here (`payee_syntax`'s hint, `approvals`' `decided_by`, and `secret_scan`'s whole
+  reason for existing); sanitized at the trust boundary in `supported_kinds` so every
+  consumer is covered, and the echo is bounded. FIRST LIVE RUN falsified our own
+  docs: `DEPLOY.md` paired `BLACKWALL_FACILITATOR=https://facilitator.x402.rs` with
+  the default `BLACKWALL_NETWORK=base`, and that facilitator lists 31 kinds with NO
+  `eip155:8453` -- every EVM network it settles is a testnet, as is all of
+  `x402.org/facilitator`'s EVM support. The documented copy-paste mainnet deploy
+  would have had every payment rejected while looking healthy. Base mainnet needs the
+  authenticated CDP facilitator, which is also the only Bazaar-listing path. Pure
+  core; network and corpus injected; exits 0/1/2 (ready / a person should look / it
+  would not work) so a scheduled run is actionable. Tests:
+  `test_billing_preflight.py`, 66 tests, 30 mutations verified killed),
   `payee_syntax.py` (is the address the agent is about to PAY a possible address?
   Found in the wild by `asset_coverage` on 2026-08-30: a live seller advertised a
   Solana `payTo` with `FACILITATOR_URL=https://...` concatenated onto it -- almost
@@ -843,7 +891,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_honeypot.py
+ test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_honeypot.py test_billing_preflight.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop

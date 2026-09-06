@@ -30,7 +30,9 @@ has **no pip dependencies**.
 | `BLACKWALL_LEDGER` | verdict→outcome ledger path (`/data/ledger.jsonl`) |
 | `BLACKWALL_INGEST` | self-populate the store from chain on first sight |
 | `BLACKWALL_PAY_TO` | **your funded EVM wallet** — turns billing ON (you get paid here) |
-| `BLACKWALL_FACILITATOR` | real x402 facilitator base URL (verify/settle) |
+| `BLACKWALL_FACILITATOR` | real x402 facilitator base URL (verify/settle). **The public keyless facilitators are TESTNET-ONLY** — see the warning below |
+| `BLACKWALL_NETWORK` | billing network (default `base` = mainnet; `base-sepolia` for the dry run) |
+| `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET` | Coinbase CDP credentials — **required for Base MAINNET billing**, and the only path Bazaar catalogs |
 | `BLACKWALL_PRICE` | flat per-forecast price in USDC (default `0.001`) |
 | `BLACKWALL_VALUE_PRICING` | set to enable value-aligned pricing (fee tracks amount-at-risk; micro is free) |
 | `BLACKWALL_FREE_BELOW` / `BLACKWALL_PRICE_BPS` / `BLACKWALL_MIN_FEE` / `BLACKWALL_MAX_FEE` | value-pricing knobs (defaults `1.00` / `10`bps / `0.001` / `0.10`) |
@@ -39,15 +41,41 @@ has **no pip dependencies**.
 | `BLACKWALL_READINESS` | base URL of an EXTERNAL readiness oracle (e.g. `https://ontarioprotocol.com`); folds its grade in, but calls a third party per request and reveals your query stream. Prefer `BLACKWALL_READINESS_LOCAL`. |
 | `BLACKWALL_RECEIPT_KEY` | **secret** for signing receipts + report tokens (set a strong random value) |
 
+> ### ⚠️ Base MAINNET needs the CDP facilitator
+>
+> **Measured live 2026-09-06, not assumed.** Neither public keyless facilitator
+> settles on Base mainnet:
+>
+> | facilitator | kinds | `eip155:8453` (Base mainnet) |
+> |---|---|---|
+> | `https://facilitator.x402.rs` | 31 | **no** — every EVM network it lists is a testnet |
+> | `https://x402.org/facilitator` | 11 | **no** — EVM support is `eip155:84532` only |
+>
+> So `BLACKWALL_FACILITATOR=https://facilitator.x402.rs` with the default
+> `BLACKWALL_NETWORK=base` advertises a 402 no configured facilitator can
+> settle: **every payment is rejected**, and the service looks healthy the whole
+> time. Earlier revisions of this file showed exactly that pairing. For mainnet,
+> set `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET` and let `choose_facilitator` route
+> to the authenticated CDP endpoint (which is also the only one Bazaar catalogs);
+> use a keyless facilitator with `BLACKWALL_NETWORK=base-sepolia` for the dry run.
+>
+> `python billing_preflight.py --pay-to 0x... --facilitator ...` checks this, and
+> a facilitator that answers but does not list your (scheme, network) is a hard
+> FAIL — it is a config error that never starts working.
+
 ## Build & run (any container host)
 
 ```sh
 docker build -t blackwall .
+# Dry run first (testnet + keyless facilitator), per the runbook below.
 docker run -p 8402:8402 -v blackwall-data:/data \
   -e BLACKWALL_PAY_TO=0xYourFundedWallet \
+  -e BLACKWALL_NETWORK=base-sepolia \
   -e BLACKWALL_FACILITATOR=https://facilitator.x402.rs \
   -e BLACKWALL_RECEIPT_KEY="$(openssl rand -hex 32)" \
   blackwall
+# Mainnet: drop BLACKWALL_FACILITATOR and pass CDP creds instead (see the
+# warning above -- the keyless facilitators do not settle on Base mainnet).
 curl http://localhost:8402/healthz
 curl http://localhost:8402/.well-known/x402
 ```
@@ -61,8 +89,10 @@ their file and take the secrets at deploy time (never committed, never baked in)
   ```sh
   fly volume create blackwall_data --size 1 --region iad
   fly secrets set BLACKWALL_PAY_TO=0xYourFundedWallet \
-      BLACKWALL_FACILITATOR=https://facilitator.x402.rs \
+      CDP_API_KEY_ID=... CDP_API_KEY_SECRET=... \
       BLACKWALL_RECEIPT_KEY=$(openssl rand -hex 32)
+  # (dry run instead: BLACKWALL_NETWORK=base-sepolia +
+  #  BLACKWALL_FACILITATOR=https://facilitator.x402.rs, no CDP creds)
   fly deploy
   ```
   Defaults to scale-to-zero (idle cost ~$0); set `min_machines_running = 1` to
@@ -125,9 +155,21 @@ Neither is about coverage.
 2. **Endpoint.**
    - Fund a wallet (Blackwall's `payTo`) with Base ETH + USDC (start on
      Base-Sepolia testnet; see `TESTNET_DRYRUN.md`).
-   - Deploy the container with the env above. Point `BLACKWALL_FACILITATOR` at a
-     real facilitator (e.g. `https://facilitator.x402.rs`, which supports
-     `base-sepolia`).
+   - **Preflight the billing config BEFORE deploying it.** Turning billing on is
+     a one-line change and every way it fails is quiet — a payee that is
+     well-formed but wrong, an asset we cannot scale, a 402 a real client cannot
+     read, a facilitator that does not settle your network, or a price that
+     collects nothing. One command answers all of it:
+     ```sh
+     python3 billing_preflight.py --pay-to 0xYourFundedWallet \
+       --network base-sepolia --facilitator https://facilitator.x402.rs
+     ```
+     Exit 0 = ready, 1 = degraded (a person should look), 2 = it would not work.
+     It found the facilitator/network mismatch documented above.
+   - Deploy the container with the env above. For the dry run point
+     `BLACKWALL_FACILITATOR` at a keyless facilitator (e.g.
+     `https://facilitator.x402.rs`) **with `BLACKWALL_NETWORK=base-sepolia`**;
+     for mainnet use CDP creds instead.
    - **Pre-warm the store from the committed manifest** so the service boots warm
      (a known payee gets real history, not a cold-start HOLD), then set
      `BLACKWALL_STORE` to that path on the volume:
