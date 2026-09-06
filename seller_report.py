@@ -275,9 +275,21 @@ def assess_identifiers(coverage, hosts):
             % len(unresolved), evidence=dated, rows=len(unresolved)))
 
     if not out:
-        out.append(finding("asset_id", INFO, "Your asset identifiers resolve",
-                           "Nothing on your host(s) is malformed or unscalable.",
-                           evidence=dated))
+        # ABSENT ARTIFACT IS NOT A CLEAN BILL OF HEALTH. `load_json` fails soft to
+        # {}, so a missing census produced "your identifiers resolve" -- and the
+        # deploy image did not ship the file, which meant the host that carries
+        # the one genuinely broken identifier in the corpus would have been told
+        # it was fine. Same rule as reachability: missing evidence is a statement
+        # about us, never about them.
+        if not (coverage or {}).get("generated_at"):
+            out.append(finding(
+                "asset_id", UNKNOWN, "Asset identifiers not checked",
+                "The ecosystem census was not available to this report.",
+                evidence="no asset-coverage artifact loaded"))
+        else:
+            out.append(finding("asset_id", INFO, "Your asset identifiers resolve",
+                               "Nothing on your host(s) is malformed or "
+                               "unscalable.", evidence=dated))
     return out
 
 

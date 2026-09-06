@@ -211,8 +211,12 @@ class TestIdentifierAttribution(unittest.TestCase):
 
     def test_an_unattributable_row_is_dropped_not_assigned(self):
         # Mutation: defaulting to "attributable" when no host matches.
+        # The census is DATED here on purpose: "we read the census and nothing in
+        # it is yours" is INFO, while an absent census is UNKNOWN, and the two
+        # must not be confused -- that confusion is the bug the test below pins.
         out = sr.assess_identifiers(
-            {"malformed": [{"asset": "0xbad"}]}, ["mine.example"])
+            {"generated_at": "2026-09-05T00:00:00Z",
+             "malformed": [{"asset": "0xbad"}]}, ["mine.example"])
         self.assertEqual([f["severity"] for f in out], [sr.INFO])
 
     def test_a_seller_with_no_known_host_is_attributed_nothing(self):
@@ -224,6 +228,24 @@ class TestIdentifierAttribution(unittest.TestCase):
         out = sr.assess_identifiers(self.COVERAGE, [])
         self.assertEqual([f["severity"] for f in out], [sr.INFO])
 
+    def test_a_missing_census_is_not_a_clean_bill_of_health(self):
+        # Mutation: the shipped-and-fixed bug. `load_json` fails soft to {}, so a
+        # missing census reported "your asset identifiers resolve" -- and the
+        # DEPLOY IMAGE DID NOT SHIP THE FILE, so the host carrying the one
+        # genuinely broken identifier in the corpus would have been told it was
+        # fine, on the first page a seller ever sees.
+        out = sr.assess_identifiers({}, ["mine.example"])
+        self.assertEqual([f["severity"] for f in out], [sr.UNKNOWN])
+        self.assertIn("not available", out[0]["detail"])
+
+    def test_the_deploy_image_ships_the_census(self):
+        # Mutation: dropping it from the Dockerfile again. The finding above is
+        # honest but useless if the artifact never reaches production, and
+        # nothing else would notice -- it fails soft by design.
+        with open("Dockerfile", encoding="utf-8") as fh:
+            dockerfile = fh.read()
+        self.assertIn("data/asset_coverage.json", dockerfile)
+
     def test_the_evidence_carries_the_artifact_date(self):
         # Mutation: dropping generated_at. This report tells a business their
         # endpoint is broken from a dated snapshot; without the date a stale
@@ -231,8 +253,14 @@ class TestIdentifierAttribution(unittest.TestCase):
         out = sr.assess_identifiers(self.COVERAGE, ["mine.example"])
         self.assertIn("2026-09-05", out[0]["evidence"])
 
-    def test_a_missing_date_is_labelled_undated(self):
-        out = sr.assess_identifiers({"malformed": []}, ["mine.example"])
+    def test_an_undated_census_is_labelled_undated_when_it_does_report(self):
+        # Mutation: dropping the "undated" label. A census that HAS findings but
+        # no date still gets read; the reader must be able to see that its age is
+        # unknown rather than assume it is current.
+        out = sr.assess_identifiers(
+            {"malformed": [{"asset": "0xbad", "hosts": ["mine.example"]}]},
+            ["mine.example"])
+        self.assertEqual(out[0]["severity"], sr.BLOCKER)
         self.assertIn("undated", out[0]["evidence"])
 
 
