@@ -244,7 +244,12 @@ def crawl_and_backfill(store, sources, *, fetch=None, chain_fetch=None, max_page
 def _urllib_get_json(url, timeout=12):
     # retry/backoff on transient 429/5xx/timeout + size cap (see http_util); a
     # rate-limited Bazaar page is retried before crawl_bazaar treats it as the end.
-    return http_util.get_json(url, timeout=timeout, user_agent="Blackwall-discovery/0.1")
+    return http_util.get_json(
+        url, timeout=timeout,
+        # Browser-prefixed for the same reason as http_util.DEFAULT_UA: a bare
+        # token UA is challenged by a strict Cloudflare config, and the 403 is
+        # permanent -- it would look like "the Bazaar has no more pages".
+        user_agent="Mozilla/5.0 (compatible; Blackwall-discovery/0.1)")
 
 
 def _read_sources(args):

@@ -2,7 +2,7 @@
 """
 http_util.py -- hardened JSON GET for the live data path (stdlib only).
 
-Two guarantees the raw `urlopen` calls in the crawl/backfill path didn't give:
+Three guarantees the raw `urlopen` calls in the crawl/backfill path didn't give:
 
   * RETRY with exponential backoff on TRANSIENT failures (HTTP 429/5xx, timeouts,
     connection errors) so a rate-limited public API (Blockscout, the CDP Bazaar)
@@ -11,6 +11,10 @@ Two guarantees the raw `urlopen` calls in the crawl/backfill path didn't give:
   * a READ-SIZE CAP -- `urlopen().read()` is otherwise unbounded, so a hostile or
     runaway endpoint could exhaust memory. Reading past the cap is a hard error
     (`ResponseTooLarge`), and it is deterministic, so it is NOT retried.
+  * a BROWSER-PREFIXED User-Agent. Cloudflare-fronted endpoints (most public chain
+    explorers and RPCs) challenge non-browser agents with a 403 -- which this module
+    classifies as permanent, so the host fails hard instead of degrading. See
+    DEFAULT_UA below for what was measured.
 
 The transport (`opener`) and `sleep` are injectable, so the retry ladder is unit-
 tested with no network and no real waiting.
@@ -23,7 +27,15 @@ import urllib.error
 import urllib.request
 
 DEFAULT_TIMEOUT = 12
-DEFAULT_UA = "Blackwall/0.1"
+# Browser-PREFIXED, still self-identifying. A bare token UA ("Blackwall/0.1")
+# is enough for a permissive Cloudflare config but is challenged by a strict
+# one, and a 403 is a PERMANENT 4xx here -- never retried, so such a host
+# fails hard rather than degrading. Measured against two Blockscout instances
+# on the same day: base.blockscout.com served the bare UA 200 (only the raw
+# urllib UA drew Cloudflare error 1010), while robinhoodchain.blockscout.com
+# answered the bare UA with a 403 "Just a moment..." challenge and the UA
+# below with 200. Same fix x402.py applies to Cloudflare-fronted facilitators.
+DEFAULT_UA = "Mozilla/5.0 (compatible; Blackwall/0.1)"
 DEFAULT_MAX_BYTES = 8 * 1024 * 1024      # 8 MiB -- a Bazaar/Blockscout page is << this
 DEFAULT_RETRIES = 3                       # total attempts = retries + 1
 DEFAULT_BACKOFF = 0.5                     # seconds; doubles each retry

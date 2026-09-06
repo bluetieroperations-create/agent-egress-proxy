@@ -328,5 +328,37 @@ class CrawlReadsHeaderCarriedChallenges(unittest.TestCase):
         got = D.crawl(["https://x/bad", "https://x/good"], fetch=mixed)
         self.assertEqual(len(got), 1)
 
+
+class BazaarFetchSendsABrowserPrefixedUA(unittest.TestCase):
+    """The Bazaar is Cloudflare-fronted like the explorers. A bare token UA draws a
+    permanent 403, and http_util never retries a 403 -- so crawl_bazaar would read
+    the block as "no more pages" and silently return a short crawl."""
+
+    def _ua(self):
+        import http_util
+        seen = {}
+
+        def _fake_get_json(url, **kw):
+            seen.update(kw)
+            return {}
+
+        real = http_util.get_json
+        http_util.get_json = _fake_get_json
+        try:
+            D._urllib_get_json("https://api.example.test/x")
+        finally:
+            http_util.get_json = real
+        return seen.get("user_agent")
+
+    def test_ua_is_browser_prefixed(self):
+        # Mutation: drop the browser prefix -> a strict Cloudflare host 403s the crawl.
+        self.assertTrue(self._ua().startswith("Mozilla/5.0"), self._ua())
+
+    def test_ua_still_identifies_the_crawler(self):
+        # Mutation: a plain browser UA -> unattributable, and indistinguishable from
+        # the other Blackwall callers in the Bazaar's logs.
+        self.assertIn("Blackwall-discovery", self._ua())
+
+
 if __name__ == "__main__":
     unittest.main()
