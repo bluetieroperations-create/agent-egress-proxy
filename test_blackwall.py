@@ -1762,3 +1762,67 @@ class TestEnvFlag(unittest.TestCase):
             os.environ["BLACKWALL_TESTFLAG"] = v
             self.assertTrue(bw._env_flag("BLACKWALL_TESTFLAG"), "%r should be on" % v)
         os.environ.pop("BLACKWALL_TESTFLAG", None)
+
+
+class TestANonDollarAmountCannotClearADollarCap(unittest.TestCase):
+    """AUDIT FINDING. The auto-approve threshold is DOLLARS, and the amount was
+    compared to it with no currency check. Measured: 5.00 SOL -- roughly $500 --
+    returned a clean GO while 50.00 USDC (~$50) correctly escalated. That is the
+    GUSD spending-cap bypass from docs/DECIMALS_AUDIT.md again, by CURRENCY
+    rather than by decimals, and SOL is the first corpus asset where the error is
+    both large and in the unsafe direction.
+    """
+
+    SOL = "0x311935Cd80B76769bF2ecC9D8Ab7635b2139cf82"
+    USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+
+    def _forecast(self, asset, amount):
+        class _Rich:
+            def lookup(self, counterparty):
+                return {"settlement_count": 500, "dispute_rate": 0.0,
+                        "distinct_payers": 30, "age_days": 400,
+                        "price_history": [amount] * 20}
+        verdict, err = bw.forecast(
+            {"counterparty": "0x" + "1" * 40, "amount": amount,
+             "asset": asset, "chain": "eip155:8453"}, _Rich())
+        self.assertIsNone(err)
+        return verdict
+
+    def test_a_small_looking_sol_amount_does_not_auto_approve(self):
+        # Kills: comparing a raw amount to a dollar threshold. 5 SOL is ~$500 --
+        # ten times the USDC amount that correctly escalates below.
+        self.assertEqual(self._forecast(self.SOL, "5.00")["verdict"], "HOLD")
+
+    def test_the_reason_says_it_is_the_CURRENCY_not_the_size(self):
+        # Kills: reusing the over-budget wording. An operator told "exceeds the
+        # threshold" about a 0.09 amount would reasonably think it a bug.
+        reasons = self._forecast(self.SOL, "0.09")["reasons"]
+        self.assertTrue(any("non-dollar asset" in r for r in reasons), reasons)
+
+    def test_blast_radius_is_unknown_not_bounded(self):
+        # Kills: still claiming "bounded", which is a statement about the DOLLAR
+        # value and is exactly what could not be computed.
+        self.assertEqual(
+            self._forecast(self.SOL, "0.09")["signals"]["blast_radius"], "unknown")
+
+    def test_usdc_is_completely_unaffected(self):
+        # Kills: gating on every asset, which would HOLD the entire corpus. The
+        # rule is knowledge-based: only assets KNOWN not to be dollars.
+        self.assertEqual(self._forecast(self.USDC, "5.00")["verdict"], "GO")
+        self.assertEqual(self._forecast(self.USDC, "50.00")["verdict"], "HOLD")
+
+    def test_an_unrecognized_asset_is_not_blocked_on_a_guess(self):
+        # Kills: treating "not known to be USD" as "known not to be USD". An
+        # asset we have never seen must not be condemned for being unfamiliar.
+        self.assertEqual(
+            self._forecast("0x" + "9" * 40, "5.00")["verdict"], "GO")
+
+    def test_the_pure_fold_never_upgrades_or_stops(self):
+        # Kills: escalating to STOP. Every gate here except sanctions and payload
+        # mismatch is HOLD-only, and this one is an absence of evidence.
+        out = bw.decide_payment(
+            amount="0.09", record={"settlement_count": 500, "dispute_rate": 0.0,
+                                   "distinct_payers": 30, "age_days": 400},
+            price_history=["0.09"] * 20, counterparty="0x" + "1" * 40,
+            non_usd_amount=True)
+        self.assertEqual(out["verdict"], "HOLD")

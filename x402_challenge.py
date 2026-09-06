@@ -47,6 +47,8 @@ import re
 BODY_ACCEPTS = "body_accepts"
 HDR_ACCEPTS = "hdr_accepts"
 PAYMENT_REQUIRED = "payment_required_hdr"
+PAYMENT_SCHEME = "payment_scheme_hdr"
+MPP_ACCEPTS = "mpp_hdr"
 
 #: The scheme token that opens an x402 WWW-Authenticate challenge. Matched as a
 #: whole TOKEN, not a prefix: "X402Bearer" and "x402-evil" are different schemes
@@ -79,6 +81,43 @@ PAYMENT_REQUIRED_HEADER = "payment-required"
 #: through a raised HTTPError bypasses it, so the cap has to live here too.
 MAX_CHALLENGE_BYTES = 1024 * 1024
 
+#: The FOURTH carrier: `WWW-Authenticate: Payment id="..." realm="..."
+#: method="evm" request="<base64url json>"`.
+#:
+#: Measured 2026-08-29 across 133 live 402s: **12 hosts serve this scheme**, and
+#: `decode_requirements` reads none of them -- the scheme token is `Payment`, not
+#: `x402`, and the payload parameter is `request`, not `requirements`.
+#:
+#: MARGINAL VALUE TODAY IS ZERO, and that is worth stating plainly. Every one of
+#: those 12 ALSO sends `payment-required`, so `parse_challenge` already resolved
+#: all of them before this carrier existed. Measured: hosts readable ONLY via
+#: `Payment` or `MPP` = **0 of 133**.
+#:
+#: It is landed as INSURANCE, not as a fix. The format is real and in production
+#: use; if any of those 12 stops duplicating into `payment-required`, this is the
+#: difference between scoring it and going blind. It is checked LAST, only on a
+#: 402 that every earlier carrier already failed, so it costs nothing until then.
+#: An earlier estimate of "~15 hosts unlocked" was stale -- it compared against a
+#: parser that predated the `payment-required` carrier.
+#:
+#: Its payload is NOT an x402 document. There is no `accepts[]`; it is a FLAT
+#: object -- `{amount, currency, recipient, methodDetails:{chainId, decimals}}` --
+#: so it has to be MAPPED into an accepts entry rather than read out of one.
+#: That mapping is the only place in this module that constructs a payment
+#: option from attacker-controlled scalars, which is why it type-checks every
+#: field (see `_payment_accept`).
+_PAYMENT_SCHEME_RE = re.compile(r'^\s*Payment(?:\s|$)', re.IGNORECASE)
+_REQUEST_RE = re.compile(r'request="([^"]+)"')
+
+#: The FIFTH carrier: `WWW-Authenticate: MPP <base64>`. One host, found while
+#: auditing the others. Shape is `payment-required`'s -- a scheme token followed
+#: by a BARE base64 x402 document, with no `key="value"` parameter -- so it
+#: decodes through the same path once the token is stripped. Verified on
+#: store.agentexchange.work: a full accepts[] with payTo, Base USDC and
+#: network eip155:8453. That host also serves `payment-required`, so like the
+#: `Payment` carrier its marginal value today is zero -- insurance, not a fix.
+_MPP_SCHEME_RE = re.compile(r'^\s*MPP(?:\s|$)')
+
 
 def accepts_of(doc):
     """Return a non-empty accepts[] from an x402 challenge document, else None.
@@ -106,6 +145,115 @@ def _too_big(value):
         return len(value) > MAX_CHALLENGE_BYTES
     except TypeError:
         return False
+
+
+def _b64_any(blob):
+    """Decode standard OR url-safe base64, padded or not. None on failure.
+
+    The `Payment` carrier uses base64URL (`-`/`_`, unpadded). Feeding that to a
+    standard `b64decode` RAISES rather than returning junk, so a url-safe
+    challenge would be silently dropped by the standard decoder.
+    """
+    text = str(blob or "").strip().strip('"')
+    if not text:
+        return None
+    text = text.replace("-", "+").replace("_", "/")
+    try:
+        return base64.b64decode(text + "==").decode("utf-8", "replace")
+    except Exception:
+        return None
+
+
+def _is_evm_address(value):
+    """True for a syntactically valid 0x address. TYPE-checked deliberately: the
+    challenge is written by the seller, and a `recipient` of {"evil": 1} would
+    otherwise propagate a dict into the payTo slot."""
+    return (isinstance(value, str) and len(value) == 42
+            and value.startswith("0x")
+            and all(c in "0123456789abcdefABCDEF" for c in value[2:]))
+
+
+def _plain_int(value):
+    """An int that is genuinely an int. `bool` is excluded -- it is an int
+    subclass, so True would otherwise format as chain 1."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _payment_accept(req):
+    """Map a flat `Payment` payload into ONE accepts-shaped entry, or None.
+
+    Rejects the whole challenge on a bad recipient or amount rather than
+    emitting a half-formed option: an accepts entry with a None payTo looks like
+    a payable option to a caller that only checks for a non-empty list.
+    """
+    if not isinstance(req, dict):
+        return None
+    recipient = req.get("recipient")
+    amount = req.get("amount")
+    if not _is_evm_address(recipient):
+        return None
+    if not isinstance(amount, (str, int)) or isinstance(amount, bool):
+        return None
+
+    details = req.get("methodDetails")
+    details = details if isinstance(details, dict) else {}
+    chain_id = _plain_int(details.get("chainId"))
+
+    # One live host sends the SYMBOL in `currency` ("USDC") and the ADDRESS in
+    # `asset`. Reading `currency` blindly puts a symbol in the address slot and
+    # every downstream address comparison silently fails.
+    currency, asset = req.get("currency"), req.get("asset")
+    if isinstance(currency, str) and currency.startswith("0x"):
+        address = currency
+    elif isinstance(asset, str) and asset.startswith("0x"):
+        address = asset
+    else:
+        address = None
+
+    return {
+        "payTo": recipient,
+        "maxAmountRequired": str(amount),
+        "amount": str(amount),
+        "asset": address,
+        "network": ("eip155:%d" % chain_id) if chain_id is not None else None,
+        # `decimals` is often ABSENT here. It is carried through when present and
+        # left None when not -- never defaulted to 6, because guessing mis-scales
+        # the amount by 10^n (USDT is 6 decimals on Ethereum and 18 on BSC).
+        "decimals": _plain_int(details.get("decimals")),
+        "description": req.get("description"),
+    }
+
+
+def decode_payment_scheme(value):
+    """Decode `WWW-Authenticate: Payment ... request="<b64url>"` -> accepts[]."""
+    value = str(value or "")
+    if _too_big(value) or not _PAYMENT_SCHEME_RE.match(value):
+        return None
+    match = _REQUEST_RE.search(value)
+    if not match:
+        return None
+    raw = _b64_any(match.group(1))
+    if raw is None:
+        return None
+    try:
+        entry = _payment_accept(json.loads(raw))
+    except Exception:
+        return None
+    return [entry] if entry else None
+
+
+def decode_mpp(value):
+    """Decode `WWW-Authenticate: MPP <bare base64>` -> accepts[]."""
+    value = str(value or "")
+    if _too_big(value) or not _MPP_SCHEME_RE.match(value):
+        return None
+    raw = _b64_any(re.sub(r'^\s*MPP\s+', "", value))
+    if raw is None:
+        return None
+    try:
+        return accepts_of(json.loads(raw))
+    except Exception:
+        return None
 
 
 def decode_payment_required(value):
@@ -180,6 +328,22 @@ def parse_challenge(body, headers):
         accepts = decode_payment_required(value)
         if accepts:
             return accepts, PAYMENT_REQUIRED
+    # The two newest carriers are checked LAST, for the same reason the order
+    # above is fixed: adding a carrier must never change what an endpoint that
+    # already resolved resolves to. Nothing here can shadow an earlier one --
+    # each decoder matches on its own scheme token and returns None otherwise.
+    for key, value in items:
+        if str(key).lower() != "www-authenticate":
+            continue
+        accepts = decode_payment_scheme(value)
+        if accepts:
+            return accepts, PAYMENT_SCHEME
+    for key, value in items:
+        if str(key).lower() != "www-authenticate":
+            continue
+        accepts = decode_mpp(value)
+        if accepts:
+            return accepts, MPP_ACCEPTS
     return None, None
 
 

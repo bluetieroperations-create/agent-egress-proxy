@@ -289,6 +289,8 @@ class TestPricingPolicy(unittest.TestCase):
       - drop the free_below branch -> test_micro_is_free FAILS.
       - drop the max cap -> test_large_capped FAILS.
       - drop the min floor -> test_small_floored FAILS.
+      - drop the proportionality cap -> test_fee_never_exceeds_a_share_of_the_amount
+        FAILS.
     """
     def setUp(self):
         self.p = X.PricingPolicy(free_below="1.00", bps=10,
@@ -307,10 +309,111 @@ class TestPricingPolicy(unittest.TestCase):
         self.assertEqual(self.p.fee_atomic("5000"), 100000)
 
     def test_small_floored(self):
-        # With a low free threshold the min floor binds: $0.50 * 0.1% = $0.0005
-        # -> floored to min $0.01 = 10000 atomic.
-        p = X.PricingPolicy(free_below="0.10", bps=10, min_fee="0.01", max_fee="1.00")
+        """The min floor binds when the proportional fee falls below it.
+
+        NB the cap is explicitly DISABLED here. This case ($0.01 on $0.50) is a
+        2% fee, which the proportionality invariant now refuses -- so with the
+        cap on, this asserts the very behaviour the invariant exists to prevent.
+        Disabling it keeps the test's original intent (does the floor bind?)
+        while `test_fee_never_exceeds_a_share_of_the_amount` pins the new rule.
+        """
+        p = X.PricingPolicy(free_below="0.10", bps=10, min_fee="0.01",
+                            max_fee="1.00", max_fee_ratio_bps=0)
         self.assertEqual(p.fee_atomic("0.50"), 10000)
+
+    def test_fee_never_exceeds_a_share_of_the_amount(self):
+        """THE PROPORTIONALITY INVARIANT.
+
+        `min_fee` is an ABSOLUTE floor, so as the amount falls it becomes an
+        ever-larger fraction of the payment. Nothing bounded that; it was hidden
+        only because `free_below` sat above the range where the floor bites, which
+        is why the paid tier was unreachable (0 of 265 live payees billable at the
+        deployed $10.00).
+
+        kills: removing the ratio check, or ignoring an operator's request to
+        disable it. NOT killed by moving the check before quantization -- that
+        mutant survives, and a sweep of ~184k amounts finds no input where
+        rounding to the 1e-6 quantum crosses the bound. The post-quantization
+        order is kept as defence for coarser constants, not because a failing
+        case exists; saying otherwise would be a mutation note that cannot be
+        demonstrated.
+        """
+        p = X.PricingPolicy(free_below="0.005", bps=10, min_fee="0.001",
+                            max_fee="0.10", max_fee_ratio_bps=100)
+        # $0.001 on $0.01 would be 10%; on $0.028, 3.6%. Both refused -> free.
+        self.assertEqual(p.fee_atomic("0.01"), 0)
+        self.assertEqual(p.fee_atomic("0.028"), 0)
+        # At exactly 1% the fee stands -- the bound is a ceiling, not a strict <.
+        self.assertEqual(p.fee_atomic("0.10"), 1000)
+        # Above it, proportional pricing takes over normally.
+        self.assertEqual(p.fee_atomic("1.00"), 1000)
+
+    def test_cap_holds_across_the_whole_range(self):
+        # PROPERTY, not an example: no amount may ever be charged above the cap.
+        # kills: a cap that only fires in the band the examples happen to probe
+        from decimal import Decimal
+        p = X.PricingPolicy(free_below="0", bps=10, min_fee="0.0001",
+                            max_fee="0.10", max_fee_ratio_bps=100)
+        amt = Decimal("0.000001")
+        while amt < Decimal("100000"):
+            fee = Decimal(p.fee_atomic(amt)) / Decimal(10 ** 6)
+            self.assertLessEqual(fee, amt * Decimal("0.01") + Decimal("0.0000005"),
+                                 "fee %s exceeds 1%% of %s" % (fee, amt))
+            amt *= Decimal("1.7")
+
+    def test_bad_config_is_refused_at_boot_not_at_request_time(self):
+        """AUDIT 2026-08-30. Every pricing constant arrives from an env var, and
+        the policy used to accept values that failed later or not at all:
+
+          * `nan` parsed as a valid Decimal on free_below / bps / min_fee, then
+            raised InvalidOperation on EVERY priced request -- valid at boot,
+            fatal at runtime, so the banner reported a healthy service that 500s
+            the moment anyone is billed.
+          * negatives passed silently, and a NEGATIVE max_fee_ratio_bps failed the
+            `> 0` guard, SILENTLY DISABLING the proportionality invariant. Nobody
+            writes -100 meaning "off".
+
+        kills: dropping the finite/negative checks, or moving them out of the
+        constructor so a bad value survives to request time.
+        """
+        for field in ("free_below", "bps", "min_fee", "max_fee",
+                      "max_fee_ratio_bps"):
+            for bad in ("nan", "inf", "-1", "abc", ""):
+                kw = {"free_below": "0.01", "min_fee": "0.0001",
+                      "max_fee_ratio_bps": 100}
+                kw[field] = bad
+                with self.assertRaises(ValueError, msg="%s=%r accepted" % (field, bad)):
+                    X.PricingPolicy(**kw)
+
+    def test_zero_is_still_a_legal_disable(self):
+        # kills: over-tightening the validator so an operator cannot turn the cap
+        # off deliberately -- 0 is documented and must stay legal
+        X.PricingPolicy(max_fee_ratio_bps=0)
+        X.PricingPolicy(free_below="0")
+
+    def test_fee_is_monotonic_in_the_amount(self):
+        """PROPERTY: paying more must never cost less.
+
+        A non-monotonic curve would create an incentive to OVER-declare the
+        amount, which is the opposite of the under-declaration the docstring
+        already defends against.
+
+        kills: a cap that returns 0 for a band above a charged band
+        """
+        from decimal import Decimal
+        p = X.PricingPolicy(free_below="0.01", min_fee="0.0001",
+                            max_fee_ratio_bps=100)
+        amt, prev = Decimal("0.0001"), Decimal(-1)
+        while amt < Decimal("100000"):
+            fee = Decimal(p.fee_atomic(amt))
+            self.assertGreaterEqual(fee, prev, "fee fell as the amount rose at %s" % amt)
+            prev, amt = fee, amt * Decimal("1.09")
+
+    def test_cap_can_be_disabled(self):
+        # kills: hardcoding the cap so an operator cannot restore prior behaviour
+        p = X.PricingPolicy(free_below="0.005", bps=10, min_fee="0.001",
+                            max_fee="0.10", max_fee_ratio_bps=0)
+        self.assertEqual(p.fee_atomic("0.01"), 1000)
 
     def test_unknown_amount_charges_floor(self):
         self.assertEqual(self.p.fee_atomic(None), 1000)
@@ -623,3 +726,102 @@ class TestChooseFacilitator(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFacilitatorTimeouts(unittest.TestCase):
+    """`/verify` and `/settle` get DIFFERENT budgets, and the split is the point.
+
+    AUDIT 2026-08-30, pre-billing. Measured against a black-hole facilitator, a
+    paid request held a thread for the full 20s default. ThreadingHTTPServer is
+    thread-per-request and unbounded, so a facilitator DEGRADATION (not an
+    outage -- an outage fails fast at 0.07s) could starve the pool and take the
+    FREE tier down alongside the paid one.
+
+    The naive fix -- one shorter timeout -- is actively dangerous. `/settle` has a
+    SIDE EFFECT: time out after the facilitator has broadcast and the on-chain
+    EIP-3009 nonce is spent while we return a 402, so the agent has paid and got
+    nothing, and every retry with that authorization fails forever. Waiting longer
+    is the safe error there.
+    """
+
+    def test_defaults_are_split_and_settle_is_longer(self):
+        # kills: collapsing both back to one value, or shortening settle
+        f = X.HttpFacilitator("http://x")
+        self.assertEqual(f.timeout, 8.0)
+        self.assertGreater(f.settle_timeout, f.timeout)
+
+    def test_cdp_inherits_the_split(self):
+        # kills: fixing HttpFacilitator but leaving the CDP path on 20s -- CDP is
+        # the facilitator that actually gets used in production
+        f = X.CdpFacilitator("id", "secret")
+        self.assertEqual(f.timeout, 8.0)
+        self.assertEqual(f.settle_timeout, 25.0)
+
+    def test_settle_actually_gets_the_longer_budget(self):
+        """The wired-and-inert check: it is not enough for the attribute to
+        exist, the REAL `_post` must select it for /settle.
+
+        My first version of this test subclassed `_post` and reimplemented the
+        budget selection inside the test -- so it asserted the test's own copy of
+        the logic and passed under a mutant that made `_post` ignore
+        settle_timeout entirely. It is replaced with one that drives the real
+        `_post` and captures what urlopen is actually handed.
+
+        kills: adding settle_timeout but never reading it in _post
+        """
+        import io as _io
+        import urllib.request
+        seen = {}
+        real = urllib.request.urlopen
+
+        class _Resp:
+            def __enter__(self_):
+                return _io.BytesIO(b'{"isValid":true,"success":true}')
+
+            def __exit__(self_, *a):
+                return False
+
+        def fake(req, timeout=None):
+            seen[req.full_url.rsplit("/", 1)[-1]] = timeout
+            return _Resp()
+
+        urllib.request.urlopen = fake
+        try:
+            f = X.HttpFacilitator("http://x", timeout=3.0, settle_timeout=9.0)
+            f.verify({}, {})
+            f.settle({}, {})
+        finally:
+            urllib.request.urlopen = real
+        self.assertEqual(seen["verify"], 3.0)
+        self.assertEqual(seen["settle"], 9.0)
+
+    def test_choose_facilitator_threads_the_budgets_through(self):
+        # kills: adding the parameters but constructing with the defaults anyway
+        f, _ = X.choose_facilitator("http://x", None, None,
+                                    timeout=2.0, settle_timeout=7.0)
+        self.assertEqual(f.timeout, 2.0)
+        self.assertEqual(f.settle_timeout, 7.0)
+
+
+class TestFacilitatorTimeoutEnv(unittest.TestCase):
+    def test_bad_timeout_is_refused_at_boot(self):
+        # kills: dropping the validator so a bad value silently reverts to the
+        # default -- a silently-ignored timeout is how a protection ends up not
+        # applying while the banner reports health
+        import blackwall
+        import os
+        for bad in ("abc", "nan", "inf", "0", "-1"):
+            os.environ["BW_TEST_TIMEOUT"] = bad
+            with self.assertRaises(ValueError, msg="%r accepted" % bad):
+                blackwall._float_env("BW_TEST_TIMEOUT", 8.0)
+        os.environ.pop("BW_TEST_TIMEOUT", None)
+
+    def test_unset_and_empty_fall_back_to_the_default(self):
+        # kills: treating an unset var as an error and refusing to boot normally
+        import blackwall
+        import os
+        os.environ.pop("BW_TEST_TIMEOUT", None)
+        self.assertEqual(blackwall._float_env("BW_TEST_TIMEOUT", 8.0), 8.0)
+        os.environ["BW_TEST_TIMEOUT"] = ""
+        self.assertEqual(blackwall._float_env("BW_TEST_TIMEOUT", 8.0), 8.0)
+        os.environ.pop("BW_TEST_TIMEOUT", None)

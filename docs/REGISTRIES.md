@@ -25,6 +25,44 @@ installs the wrong one and hits an auth wall or the wrong scope.
 
 **The two discriminators to lead with in every description: auth and scope.**
 
+### A THIRD discriminator: METHOD (added 2026-08-30)
+
+Auth and scope are the right pair for someone choosing which server to *install*.
+They are not enough for someone *describing* us, and the difference cost us.
+
+**Measured.** A third-party AI comparison of "Black_Wall x402" against a
+competitor credited this engine with a **"remote safety LLM forecasting loop"** —
+the generalized product's architecture, and the exact **inverse** of this one's,
+which is deterministic, stdlib-only, and has no model anywhere in the verdict
+path. The same table rated our token safety "basic context checking" and awarded
+holder-density and liquidity checks to the competitor, both of which
+`holder_concentration.py` and `dex_price.py` implement.
+
+Every row was wrong in the same direction, and the mechanism is structural rather
+than unlucky: the engine's only prominent public surface is a Smithery listing
+that points at the **other** product, so a summarizer looking for "Black_Wall"
+finds the model-based one and nothing else. Nothing we publish stated the method,
+so there was no text to contradict the blend.
+
+| | generalized | x402 payments |
+|---|---|---|
+| **method** | model-as-judge (remote scoring API) | **deterministic — no model in the verdict path** |
+| verdict basis | LLM risk scoring over command text | auditable, mutation-tested checks |
+| dependencies | service call per verdict | stdlib-only, no third-party imports |
+
+**Lead with method wherever the two can be confused.** It is the discriminator a
+competitor comparison turns on, and the one that inverts if left unstated. The
+x402 service descriptor now carries it in prose *and* as machine-readable fields
+(`method: "deterministic"`, `modelInVerdictPath: false`) — a crawler reads fields
+before prose, and leaving method implicit is what let one be invented for us.
+
+The descriptor's `signals` list also advertised **2** of the ~25 gates actually
+implemented, which left a comparison-shopper with nothing to compare. It now
+advertises the eight that run in **every** verdict with no configuration
+(verified end to end, not asserted), plus any opt-in gate that actually
+constructed on the running deployment — read from the wired sources, never from
+the env flags, since a flag set with a missing RPC builds no source.
+
 ### Known naming inconsistency (deliberate, do not "fix")
 The x402 server carries three names: registry `blackwall-x402-guardrail`,
 runtime `serverInfo.name` `blackwall-x402-mcp`, Cloudflare Worker `blackwall-mcp`.

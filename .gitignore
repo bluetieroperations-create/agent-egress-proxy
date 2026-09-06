@@ -10,3 +10,32 @@ verify-*.log
 .blackwall-creds
 *.blackwall-creds
 *.env
+
+# Secret-adjacent files, and the BACKUP names tooling tends to write beside them.
+#
+# From the hook session's rotation incident (2026-08-30): a script wrote `.env`
+# backups as `.env.bak-<stamp>` beside the source, and that repo's `.gitignore`
+# listed `.env`, `.env.local` and `.env.*.local` -- none of which match. Three
+# untracked files holding the CURRENT LIVE key sat in a public working tree; one
+# `git add -A` would have published a working credential. Nothing reached GitHub.
+#
+# `.env.*` already covers that case here, verified with `git check-ignore`. These
+# add the shapes it does NOT cover: generic editor/tool backups, and key material
+# by extension. Latent rather than active -- nothing here generates them today --
+# which is the point of adding them before something does.
+#
+# Rule worth keeping: check `git check-ignore` on the BACKUP name, not the source.
+*.bak
+*.bak-*
+*.orig
+*.rej
+*~
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+*.keystore
+secrets.json
+credentials.json

@@ -561,7 +561,7 @@ def decide_payment(amount, record, price_history,
                    verified_floor=None, verified_grade=None,
                    payer_graph_signal=None, temporal_signal=None,
                    category=None, category_median=None, divergence_ratio=None,
-                   enrichment=None, secret_findings=None):
+                   enrichment=None, secret_findings=None, non_usd_amount=False):
     """
     The core verdict. Returns a dict:
         {verdict, score, reasons[], signals{...}}
@@ -740,8 +740,14 @@ def decide_payment(amount, record, price_history,
             "no price history for this counterparty/resource -- price anomaly unknown"
         )
     elif ratio <= 1.1:
+        # AUDIT: this said "within %.2fx of the median", which reads correctly at
+        # 0.95x or 1.05x and reads like a bug at 0.004x -- a real established
+        # merchant quoting well UNDER its own median printed "within 0.00x",
+        # which is what a reader sees in the AgentCore demo. The branch covers
+        # everything up to 1.1x, so the wording has to be true across all of it.
         reasons.append(
-            "quoted amount within %.2fx of the counterparty's median for this resource class"
+            "quoted amount is %.2fx the counterparty's median for this resource "
+            "class -- within the normal range"
             % ratio
         )
     else:
@@ -758,6 +764,17 @@ def decide_payment(amount, record, price_history,
     threshold = (HOLD_AMOUNT_THRESHOLD if hold_above is None
                  else Decimal(str(hold_above)))
     over_budget = amount_dec > threshold
+    # The threshold is DOLLARS. When the amount is denominated in something else
+    # the comparison above is meaningless, so a GO it produces is not evidence of
+    # anything. MEASURED before this existed: 5.00 SOL (~$500) returned a clean
+    # GO while 50.00 USDC (~$50) correctly escalated -- the GUSD spending-cap
+    # bypass from docs/DECIMALS_AUDIT.md, by CURRENCY instead of by decimals.
+    # HOLD-only and knowledge-based: `payload_sim.is_non_usd` names the assets we
+    # KNOW are not dollars, so an unrecognized asset is never blocked on a guess.
+    # No rate is applied -- a hardcoded one is stale the day it is written, and
+    # declining to auto-approve is the honest answer, exactly as an unverified
+    # decimals scale is reported rather than assumed.
+    budget_uncheckable = bool(non_usd_amount)
 
     # Peer-group cross-check: is this counterparty priced far above COMPARABLE
     # counterparties for the same resource class? Reference = its own class median
@@ -825,6 +842,9 @@ def decide_payment(amount, record, price_history,
         (a_score >= HOLD_ANOMALY, lambda: "price anomaly above the auto-approve ceiling"),
         (over_budget, lambda: "amount %s exceeds the auto-approve threshold %s -- hand to "
             "spending-cap layer" % (amount_dec, threshold)),
+        (budget_uncheckable, lambda: "amount %s is denominated in a non-dollar asset, so "
+            "the %s auto-approve threshold cannot be applied to it -- confirm the value "
+            "before releasing" % (amount_dec, threshold)),
         (peer_hold, lambda: "priced %.1fx the peer-group market rate for this class -- "
             "above comparable counterparties" % peer_ratio),
         (category_hold, lambda: "quoted %.1fx the on-chain median for the '%s' category "
@@ -908,7 +928,10 @@ def decide_payment(amount, record, price_history,
                         if secret_findings else None),
         # x402 settlement is on-chain and final.
         "reversibility": "irreversible",
-        "blast_radius": "bounded" if not over_budget else "unbounded",
+        # "bounded" is a claim about the DOLLAR value, so an amount whose currency
+        # we cannot judge is "unknown" -- not bounded, and not asserted unbounded.
+        "blast_radius": ("unknown" if budget_uncheckable
+                         else "bounded" if not over_budget else "unbounded"),
         # the merchant's Blackwall seller-audit grade, when it holds a valid badge
         # (None otherwise). Bounded/earned/revocable -- never a pay-to-whitelist.
         "seller_verified": verified_grade,
@@ -1195,6 +1218,38 @@ def default_billing_asset(network, explicit, base_usdc, sepolia_usdc):
     return sepolia_usdc if normalize_network(network) == "base-sepolia" else base_usdc
 
 
+
+def _upto_ceiling(payload, clean):
+    """The atomic ceiling an `upto` quote advertises.
+
+    Prefers the 402 challenge's own quoted amount -- what the payer's wallet
+    approves against -- then the request's `max_amount_required` if the caller
+    states it directly.
+
+    AUDIT FINDING (2026-08-29, MEDIUM): this read `accepts[0]["maxAmountRequired"]`
+    and nothing else. That is the **v1** field name; x402 **v2** carries the quote
+    in `amount`, which is why `x402._req_amount` tries `amount` first and falls
+    back. Live sellers use the v2 spelling **69 to 4** in the corpus, so on the
+    overwhelming majority of real challenges the ceiling came back None, the
+    assessment reported `unknown`, and the excessive-allowance ratio check never
+    ran at all. The gate looked wired up and was inert. Reuses `_req_amount` so
+    the two cannot drift on which field names a quote.
+
+    The docstring here used to say it would not guess from the human `amount`
+    "because that would need decimals we may not have". We now have them for the
+    whole live corpus, so `assess_upto` takes them -- but only ones we can VERIFY
+    (see parse_ceiling), never a scale the request asserted.
+    """
+    body = payload if isinstance(payload, dict) else {}
+    accepts = body.get("accepts")
+    if isinstance(accepts, list) and accepts and isinstance(accepts[0], dict):
+        from x402 import _req_amount
+        v = _req_amount(accepts[0])
+        if v is not None:
+            return v
+    return body.get("max_amount_required")
+
+
 def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              hold_above=None, peer_index=None, seller_registry=None, now=None,
              graph_source=None, velocity_source=None, category_index=None,
@@ -1202,6 +1257,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              rwa_source=None, stock_registry=None, pyth_source=None, rwa_ledger=None,
              balance_reader=None, backing_index=None, dex_source=None,
              holder_source=None, aave_source=None, issuer_trust_source=None,
+             honeypot_source=None,
              settlement_sim_source=None, auth_sim_source=None,
              receipt_signer=None):
     """
@@ -1246,6 +1302,8 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     # as a match. See docs/DECIMALS_AUDIT.md.
     _decimals = payload.get("decimals") if isinstance(payload, dict) else None
     from payload_sim import check_payment_authorization
+    from payload_sim import is_non_usd as _is_non_usd
+    from payload_sim import known_decimals as _known_decimals
     from calldata import screen_transaction
     # Phase 1 (recipient/amount/asset/chain field match) is cheap (~us) and stays inline
     # -- its mismatches are the highest-value hard STOP. Phase 2 (signer recovery) is
@@ -1258,8 +1316,30 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         sim_claim, clean.get("payment_authorization"), decimals=_decimals,
         now=_now, verify_signer=verify_signer)
     tx_check = screen_transaction(sim_claim, clean.get("transaction"))
-    sim_mismatches = pay_check["mismatches"] + tx_check["mismatches"]
-    sim_warnings = pay_check["warnings"] + tx_check["warnings"]
+    # `upto` (metered) settles through Permit2 `transferFrom`, so it needs an
+    # ERC-20 allowance -- a separate, longer-lived exposure than the payment, and
+    # one no spending cap can restrain: AWS AgentCore enforces maxSpendAmount plus
+    # an expiry and nothing else, and an allowance is not a spend. Its own docs
+    # offer granting an UNLIMITED allowance as a normal option, which is the
+    # drainer pattern calldata.py already hard-STOPs when it arrives as calldata.
+    # Screened here so following the platform's documentation cannot walk past the
+    # gate built to catch it. Reads the request's own field, including the
+    # AgentCore spelling. See upto_scheme.py.
+    import upto_scheme as _upto
+    upto_check = _upto.assess_upto(
+        _upto.scheme_from_request(payload),
+        max_amount=(_upto.scheme_from_request(payload) and
+                    _upto_ceiling(payload, clean)),
+        allowance=_upto.allowance_from_request(payload),
+        # VERIFIED decimals only -- deliberately not `_decimals` (the request's
+        # own assertion, used above where a conflict is itself reported). An
+        # inflated scale would enlarge the ceiling and suppress the very warning
+        # being applied to this payment.
+        decimals=_known_decimals(sim_claim))
+    sim_mismatches = (pay_check["mismatches"] + tx_check["mismatches"]
+                      + upto_check["mismatches"])
+    sim_warnings = (pay_check["warnings"] + tx_check["warnings"]
+                    + upto_check["warnings"])
     signer_status = pay_check.get("signer_status", "not_applicable")
 
     # Seller-audit tier: if the counterparty holds a VALID Blackwall "verified
@@ -1333,6 +1413,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         peer_median=(peer_index.get(clean["resource_class"])
                      if peer_index and clean.get("resource_class") else None),
         payload_mismatch_reasons=sim_mismatches,
+        non_usd_amount=_is_non_usd(sim_claim),
         verified_floor=verified_floor, verified_grade=verified_grade,
         payer_graph_signal=payer_graph_signal,
         temporal_signal=temporal_sig,
@@ -1345,6 +1426,11 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     # a bounded approval.
     if sim_warnings:
         verdict["reasons"].extend(sim_warnings)
+    # `excessive` is the one upto signal that can move a verdict, and only behind
+    # its reversibility lock (default OFF). Folded here rather than via
+    # sim_warnings because a warning only ever annotates -- which is precisely the
+    # bug this closes: the gate was documented as HOLD-only and did not hold.
+    verdict = _upto.apply_excessive(verdict, upto_check)
 
     # Make the Phase-2 signer state EXPLICIT in every response. When it was DEFERRED, a
     # non-STOP verdict is only PROVISIONAL w.r.t. signer authenticity -- say so, so a
@@ -1492,6 +1578,17 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
             _mp = None
         verdict = apply_market_peg(verdict, _mp)
 
+    # Payee syntax (payee_syntax.py): is the address the agent is about to pay a
+    # POSSIBLE address? Found in the wild -- a live seller advertises a Solana
+    # payTo with `FACILITATOR_URL=https://...` concatenated onto it, and until this
+    # fold the engine could not tell it from a clean one: both drew a cold-start
+    # HOLD because the payee was UNKNOWN, not because one was impossible. That
+    # HOLD clears once the payee has history, and a broken address does not get
+    # better with settlements. No network, no config; HOLD-only and fail-open, and
+    # `unknown` (any identifier we cannot cheaply validate) never escalates.
+    from payee_syntax import apply_payee_syntax, assess_payee
+    verdict = apply_payee_syntax(verdict, assess_payee(clean.get("counterparty")))
+
     # Holder-concentration rug-check (holder_concentration.py): a single non-contract
     # wallet holding a dominant share of the token supply -> dump/manipulation risk.
     # Keyless Blockscout; HOLD-only, fail-open, contract holders excluded (issuer custody).
@@ -1517,6 +1614,23 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
         except Exception:
             _av = None
         verdict = apply_aave(verdict, _av)
+
+    # Honeypot check (honeypot.py) -- can the agent SELL what it is buying? Every
+    # other acquisition gate asks whether the BUY clears; this asks whether the
+    # position can be EXITED. Simulates a transfer of the token to its OWN DEX pool
+    # with a fresh EOA as the control: pool blocked + control fine => the contract
+    # refuses the market specifically, which is a trap, not compliance. A
+    # permissioned security blocks both and is reported `restricted`, deferring to
+    # rwa_readiness rather than being called a scam. HOLD-only, never STOP,
+    # fail-open.
+    if honeypot_source is not None and clean.get("acquires"):
+        from honeypot import apply_honeypot
+        _acq = clean["acquires"]
+        try:
+            _hp = honeypot_source.check(_acq.get("token"), _acq.get("chain"))
+        except Exception:
+            _hp = None
+        verdict = apply_honeypot(verdict, _hp)
 
     # Earned ISSUER-TRUST grade (issuer_trust_gate.py) -- the payoff of the accumulation
     # corpus: an issuer's LABELED settlement/outcome history graded high/medium/low. O(1)
@@ -1702,6 +1816,12 @@ class _Handler(BaseHTTPRequestHandler):
     # Injected by BlackwallServer.
     reputation_source = None
     ledger = None
+    # Human-in-the-loop approvals. ALWAYS bound (not opt-in): a HOLD with
+    # nowhere to send it is the gap this closes. Named `approvals` rather than
+    # `*_source` because it is a STORE the server writes to, not a signal source
+    # -- and test_honeypot's parity guard is extended to cover it, since the
+    # binding hazard is identical.
+    approvals = None
     billing = None  # x402.BillingGate, or None to disable billing
     readiness_source = None  # readiness.OntarioReadinessSource, or None
     hold_above = None  # amount above which the verdict escalates to HOLD (None = default)
@@ -1717,6 +1837,7 @@ class _Handler(BaseHTTPRequestHandler):
     backing_index = None  # backed_oracle.BackedOracleIndex (proof-of-reserves), or None
     dex_source = None  # dex_price.DexPriceSource (market-vs-NAV peg), or None
     holder_source = None  # holder_concentration.HolderConcentrationSource (rug-check), or None
+    honeypot_source = None  # honeypot.HoneypotSource (sell-path / exit check), or None
     aave_source = None  # aave_reserve.AaveReserveSource (advisory quality), or None
     issuer_trust_source = None  # issuer_trust_gate.IssuerTrustSource (earned grade), or None
     settlement_sim_source = None  # settlement_sim.SettlementSimSource (pre-sig feasibility)
@@ -1800,6 +1921,8 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             if path == "/healthz":
                 self._send_json(200, {"status": "ok"})
+            elif path.startswith("/v1/approvals/"):
+                self._do_poll_approval(path.rsplit("/", 1)[-1])
             elif path in ("/.well-known/x402", "/v1/discovery"):
                 self._send_json(200, self._descriptor())
             elif path in ("/jwks.json",
@@ -1882,6 +2005,18 @@ class _Handler(BaseHTTPRequestHandler):
         screening = (isinstance(rs, SanctionsScreeningSource)
                      and sanctions_enabled(rs.sanctions))
         readiness = self.readiness_source is not None
+        # The CONFIGURED gates, read from what is actually wired on THIS handler
+        # rather than from the env flags -- a flag set with a missing RPC builds no
+        # source, and advertising a gate that did not construct is the same
+        # misdescription in the other direction. Same live-check discipline as
+        # `screening` above.
+        configured = {
+            "settlement_simulation": self.settlement_sim_source is not None,
+            "honeypot_check": self.honeypot_source is not None,
+            "rwa_readiness": self.rwa_source is not None,
+            "market_peg": self.dex_source is not None,
+            "holder_concentration": self.holder_source is not None,
+        }
         if self.billing is not None:
             cfg = self.billing.cfg
             return build_descriptor(
@@ -1892,9 +2027,9 @@ class _Handler(BaseHTTPRequestHandler):
                 price=str(cfg.price_atomic),
                 asset=cfg.asset, network=cfg.network,
                 mcp=True, sanctions_screening=screening,
-                endpoint_readiness=readiness)
+                endpoint_readiness=readiness, **configured)
         return build_descriptor(mcp=True, sanctions_screening=screening,
-                                endpoint_readiness=readiness)
+                                endpoint_readiness=readiness, **configured)
 
     def _openapi(self):
         """The x402scan OpenAPI discovery document for this origin.
@@ -1972,6 +2107,12 @@ class _Handler(BaseHTTPRequestHandler):
                 self._do_session()
             elif self.path == "/v1/screen-payer":
                 self._do_screen_payer()
+            elif self.path == "/v1/approvals":
+                self._do_open_approval()
+            elif self.path == "/v1/approvals/decide":
+                self._do_decide_approval()
+            elif self.path == "/v1/approvals/redeem":
+                self._do_redeem_approval()
             else:
                 self._send_json(404, {"error": "not found"})
         except Exception as e:
@@ -1988,6 +2129,141 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(503, {"error": "verdict engine temporarily unavailable"})
             except Exception:
                 pass   # response may already be partly written; don't cascade
+
+    # ---- human-in-the-loop approvals -------------------------------------
+    # A HOLD is the engine declining to auto-approve and handing the question to
+    # a person. Until now it had nowhere to hand it TO: every integration got
+    # "HOLD" back and had to invent the workflow, which is how a HOLD ends up
+    # configured away. See approvals.py for the five security properties.
+
+    def _do_open_approval(self):
+        payload, err = self._read_json_body()
+        if err is not None:
+            self._send_json(400, {"error": err})
+            return
+        import approvals
+        verdict = payload.get("verdict")
+        claim = payload.get("claim")
+        if not isinstance(verdict, dict) or not isinstance(claim, dict):
+            self._send_json(400, {"error": "verdict and claim objects required"})
+            return
+        # AUDIT FINDING (fixed): this accepted ANY caller-supplied verdict, so a
+        # caller could fabricate `{"verdict": "HOLD"}` for a payment the engine
+        # never scored and open an approval for it. `forecast` already returns a
+        # `report_token` HMAC over the receipt_id, so requiring it here proves
+        # the verdict is one WE issued. Optional only when the verdict carries
+        # no receipt_id at all (an offline/embedded caller with no server-side
+        # verdict to point at), which is stated rather than silently allowed.
+        receipt_id = verdict.get("receipt_id")
+        if receipt_id:
+            if not verify_report_token(receipt_id, payload.get("report_token")):
+                self._send_json(403, {
+                    "error": "report_token required and must match the "
+                             "receipt_id of a verdict this service issued"})
+                return
+        record = approvals.open_approval(verdict, claim, ttl=payload.get("ttl")
+                                         or approvals.DEFAULT_TTL)
+        if record is None:
+            # NOT an error: a GO needs no approval and a STOP is not approvable.
+            # Saying so explicitly is better than a 400, because the caller
+            # should be able to open one unconditionally and read the answer.
+            self._send_json(200, {
+                "approvable": False,
+                "reason": "only a HOLD can be sent for human approval -- a STOP "
+                          "is never approvable and a GO needs no approval"})
+            return
+        try:
+            self.approvals.put(record)
+        except approvals.ApprovalStoreFull as exc:
+            # 503, not 500: the caller should retry, and refusing is the SAFE
+            # branch -- the alternative was silently evicting someone's live
+            # pending approval.
+            self._send_json(503, {"error": str(exc)})
+            return
+        out = approvals.public_view(record)
+        out["approvable"] = True
+        # The capability token goes to the OPENER once, and is required to
+        # decide. Seeing an approval id in a log must not authorize approving.
+        out["approval_token"] = approvals.sign_approval_token(record["approval_id"])
+        self._send_json(200, out)
+
+    def _do_decide_approval(self):
+        payload, err = self._read_json_body()
+        if err is not None:
+            self._send_json(400, {"error": err})
+            return
+        import approvals
+        approval_id = payload.get("approval_id")
+        if not isinstance(approval_id, str) or not approval_id:
+            self._send_json(400, {"error": "approval_id required"})
+            return
+        if not approvals.verify_approval_token(approval_id,
+                                               payload.get("approval_token")):
+            # 403 whether or not the id exists -- a different status for a real
+            # id would make this an oracle for enumerating pending approvals.
+            self._send_json(403, {"error": "invalid or missing approval_token"})
+            return
+        record = self.approvals.get(approval_id)
+        if record is None:
+            self._send_json(404, {"error": "no such approval"})
+            return
+        decided = approvals.decide(record, bool(payload.get("approve")),
+                                   actor=payload.get("actor"))
+        self.approvals.put(decided)
+        self._send_json(200, approvals.public_view(decided))
+
+    def _do_redeem_approval(self):
+        """Spend an approval on ONE payment -> {"ok": bool, "reason": str}.
+
+        AUDIT FINDING, AND THE REASON THIS ENDPOINT EXISTS. `approvals.redeem`
+        was implemented, unit-tested, and called by NOTHING on the wire. So the
+        two properties that make an approval safe -- bound to the exact claim,
+        single-use -- were unreachable: a caller polled, saw "approved", and
+        proceeded, and an approval for $0.05 authorized anything. That is the
+        wired-and-inert pattern this repo documents, in a module written the
+        same hour as a test class about that hazard.
+
+        The token is required: redeeming is spending, and spending is a
+        privileged act, not a read.
+        """
+        payload, err = self._read_json_body()
+        if err is not None:
+            self._send_json(400, {"error": err})
+            return
+        import approvals
+        approval_id = payload.get("approval_id")
+        claim = payload.get("claim")
+        if not isinstance(approval_id, str) or not isinstance(claim, dict):
+            self._send_json(400, {"error": "approval_id and claim required"})
+            return
+        if not approvals.verify_approval_token(approval_id,
+                                               payload.get("approval_token")):
+            self._send_json(403, {"error": "invalid or missing approval_token"})
+            return
+        record = self.approvals.get(approval_id)
+        if record is None:
+            self._send_json(404, {"error": "no such approval"})
+            return
+        ok, reason, updated = approvals.redeem(record, claim)
+        self.approvals.put(updated)
+        out = approvals.public_view(updated)
+        out["ok"] = ok
+        out["reason"] = reason
+        self._send_json(200, out)
+
+    def _do_poll_approval(self, approval_id):
+        """Poll state. NO token required and nothing sensitive is returned --
+        `public_view` withholds the digest, so this leaks only that an id exists
+        and what the engine already told the caller."""
+        import approvals
+        record = self.approvals.get(approval_id) if approval_id else None
+        if record is None:
+            self._send_json(404, {"error": "no such approval"})
+            return
+        if record.get("state") == approvals.PENDING and approvals.is_expired(record):
+            record["state"] = approvals.EXPIRED
+            self.approvals.put(record)
+        self._send_json(200, approvals.public_view(record))
 
     def _do_screen_payer(self):
         """Screen a PAYER over HTTP -- the buyer side of the graph.
@@ -2104,6 +2380,7 @@ class _Handler(BaseHTTPRequestHandler):
                                  backing_index=self.backing_index,
                                  dex_source=self.dex_source,
                                  holder_source=self.holder_source,
+                                 honeypot_source=self.honeypot_source,
                                  aave_source=self.aave_source,
                                  issuer_trust_source=self.issuer_trust_source,
                                  settlement_sim_source=self.settlement_sim_source,
@@ -2198,6 +2475,7 @@ class BlackwallServer:
                  enrichment_source=None, rwa_source=None, stock_registry=None,
                  pyth_source=None, rwa_ledger=None, balance_reader=None,
                  backing_index=None, dex_source=None, holder_source=None,
+                 honeypot_source=None,
                  aave_source=None, issuer_trust_source=None,
                  settlement_sim_source=None, auth_sim_source=None):
         self.host = host
@@ -2227,6 +2505,11 @@ class BlackwallServer:
         self.backing_index = backing_index
         self.dex_source = dex_source
         self.holder_source = holder_source
+        self.honeypot_source = honeypot_source
+        # ALWAYS on. Constructed here rather than injected because a HOLD with
+        # nowhere to send it is the defect, and an opt-in flag reproduces it.
+        import approvals as _approvals
+        self.approvals = _approvals.MemoryApprovalStore()
         self.aave_source = aave_source
         self.issuer_trust_source = issuer_trust_source
         self.settlement_sim_source = settlement_sim_source
@@ -2238,6 +2521,11 @@ class BlackwallServer:
         handler = type("_BoundHandler", (_Handler,),
                        {"reputation_source": self.reputation_source,
                         "ledger": self.ledger,
+                        # THE SEVENTH EDIT honeypot.py warns about. Omitting
+                        # this line raises nothing -- the handler keeps its None
+                        # default and every approval call 500s while the route
+                        # is still advertised in the descriptor.
+                        "approvals": self.approvals,
                         "billing": self.billing,
                         "readiness_source": self.readiness_source,
                         "hold_above": self.hold_above,
@@ -2257,6 +2545,7 @@ class BlackwallServer:
                         "backing_index": self.backing_index,
                         "dex_source": self.dex_source,
                         "holder_source": self.holder_source,
+                        "honeypot_source": self.honeypot_source,
                         "aave_source": self.aave_source,
                         "issuer_trust_source": self.issuer_trust_source,
                         "settlement_sim_source": self.settlement_sim_source,
@@ -2298,6 +2587,27 @@ class BlackwallServer:
 # ===========================================================================
 # CLI
 # ===========================================================================
+def _float_env(name, default):
+    """A positive, finite float from the environment, or raise at BOOT.
+
+    Same fail-loud policy as the pricing constants: a set-but-invalid value means
+    the operator intended to configure this, and a silently-ignored timeout is
+    how a protection ends up not applying while the banner reports health.
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return float(default)
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError("%s=%r is not a number" % (name, raw))
+    if v != v or v in (float("inf"), float("-inf")):
+        raise ValueError("%s=%r is not finite" % (name, raw))
+    if v <= 0:
+        raise ValueError("%s=%r must be greater than 0" % (name, raw))
+    return v
+
+
 def _env_flag(name):
     """A BLACKWALL_* boolean env var. Truthy ONLY for 1/true/yes/on
     (case-insensitive); "0"/"false"/"no"/""/unset -> False. `bool(os.environ.get())`
@@ -2497,9 +2807,19 @@ def main(argv=None):
         # facilitators (keyless) settle on-chain but never list. The selection
         # (and the guard against misrouting a CDP token to a community URL) lives
         # in choose_facilitator so it can be unit-tested.
+        # Split timeouts (x402.HttpFacilitator): /verify is read-only so a hang
+        # costs only a held thread and wants a SHORT bound; /settle has a side
+        # effect, and timing out after the facilitator has broadcast leaves the
+        # agent paid-but-unserved with a spent on-chain nonce, so it keeps a
+        # LONGER one. Validated here rather than at request time -- a malformed
+        # value should stop the boot, not surface as a hung request later.
+        _fac_timeout = _float_env("BLACKWALL_FACILITATOR_TIMEOUT", 8.0)
+        _fac_settle_timeout = _float_env(
+            "BLACKWALL_FACILITATOR_SETTLE_TIMEOUT", 25.0)
         facilitator, fac_note = choose_facilitator(
             args.facilitator, os.environ.get("CDP_API_KEY_ID"),
-            os.environ.get("CDP_API_KEY_SECRET"))
+            os.environ.get("CDP_API_KEY_SECRET"),
+            timeout=_fac_timeout, settle_timeout=_fac_settle_timeout)
         sys.stderr.write("blackwall: %s\n" % fac_note)
         sys.stderr.flush()
         pricing = None
@@ -2508,7 +2828,14 @@ def main(argv=None):
                 free_below=os.environ.get("BLACKWALL_FREE_BELOW", "1.00"),
                 bps=os.environ.get("BLACKWALL_PRICE_BPS", "10"),
                 min_fee=os.environ.get("BLACKWALL_MIN_FEE", "0.001"),
-                max_fee=os.environ.get("BLACKWALL_MAX_FEE", "0.10"))
+                max_fee=os.environ.get("BLACKWALL_MAX_FEE", "0.10"),
+                # Proportionality invariant (x402.PricingPolicy): the fee may
+                # never exceed this fraction of the amount at risk; if it would,
+                # the verdict is free. 100 bps = 1%. Without it, `min_fee` is an
+                # absolute floor that becomes an ever-larger share of a shrinking
+                # payment -- and the median live x402 quote is $0.005.
+                max_fee_ratio_bps=os.environ.get(
+                    "BLACKWALL_MAX_FEE_RATIO_BPS", "100"))
         # Fail loud (don't silently advertise mainnet USDC) if the network isn't
         # one we know an asset for and the operator didn't pin --asset.
         if args.network not in ("base", "base-sepolia") and not args.asset:
@@ -2743,6 +3070,36 @@ def main(argv=None):
                          "Blockscout; dominant non-contract holder -> HOLD)\n")
         sys.stdout.flush()
 
+    # OPT-IN (BLACKWALL_HONEYPOT=1, needs an EVM RPC): the EXIT check. Simulates a
+    # transfer of the token to its own deepest USDC pool, with a fresh EOA as the
+    # control. Pool blocked while the control is permitted => the contract refuses
+    # the market specifically, and the position cannot be exited. Needs a real
+    # holder as the probe sender (an empty wallet reverts on BALANCE, which proves
+    # nothing) and the pool address, both looked up. HOLD-only, fail-open.
+    honeypot_source = None
+    if _env_flag("BLACKWALL_HONEYPOT"):
+        _hp_rpc = os.environ.get("BLACKWALL_RWA_RPC_URL", "")
+        if _hp_rpc:
+            from dex_price import DexPriceSource
+            from honeypot import HoneypotSource
+            from transfer_sim import BlockscoutHolderLookup, TransferSimulator
+            # Pool discovery costs one eth_call PER FEE TIER (3), and the sell
+            # simulation one or two more. MEASURED against a black-hole RPC: 7.53s
+            # end-to-end at the 2.5s default, versus 1.6ms for a payment with no
+            # `acquires` (which never reaches this source at all). A shorter
+            # timeout bounds a degraded RPC's cost on the hot path; the healthy-path
+            # figure is NOT measured here, because doing so honestly needs a real
+            # node rather than a loopback stand-in.
+            _hp_dex = dex_source or DexPriceSource(rpc_url=_hp_rpc, timeout=1.5)
+            honeypot_source = HoneypotSource(
+                simulator=TransferSimulator(rpc_url=_hp_rpc),
+                holder_lookup=BlockscoutHolderLookup(),
+                pool_lookup=_hp_dex.best_pool)
+            sys.stdout.write("blackwall: honeypot exit-check ON (transfer to the "
+                             "token's own pool, fresh-EOA control; unsellable -> "
+                             "HOLD, permissioned securities deferred)\n")
+            sys.stdout.flush()
+
     # OPT-IN (BLACKWALL_AAVE=1, needs an EVM RPC): Aave reserve quality (advisory). A
     # token Aave has frozen -> risk note (feeds the aggregate); listed -> positive note.
     aave_source = None
@@ -2890,6 +3247,7 @@ def main(argv=None):
                              backing_index=backing_index,
                              dex_source=dex_source,
                              holder_source=holder_source,
+                             honeypot_source=honeypot_source,
                              aave_source=aave_source,
                              issuer_trust_source=issuer_trust_source,
                              settlement_sim_source=settlement_sim_source,

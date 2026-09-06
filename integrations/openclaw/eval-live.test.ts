@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 BlueTier Operations. All rights reserved.
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it, vi } from "vitest";
 vi.mock("openclaw/plugin-sdk/plugin-entry", () => ({ definePluginEntry: (e: unknown) => e }));
 import { handleBeforeToolCall, resolveConfig } from "./index.ts";

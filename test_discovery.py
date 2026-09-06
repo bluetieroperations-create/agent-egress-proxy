@@ -582,3 +582,168 @@ class TestSanctionsAdvertisedDynamically(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestIdentityDiscriminators(unittest.TestCase):
+    """The descriptor must state METHOD, not just auth and scope.
+
+    WHY. Two products share the Blackwall name (docs/REGISTRIES.md, "The identity
+    split"). Measured 2026-08-30: a third-party AI summary credited THIS engine
+    with a "remote safety LLM forecasting loop" -- the other product's
+    architecture and the exact inverse of this one's -- and rated its token safety
+    as "basic context checking" while holder_concentration.py and dex_price.py
+    implement the checks it awarded to a competitor.
+
+    The blend was possible because nothing published stated the method, and the
+    signal list advertised 2 of the ~25 gates actually implemented. These pin both
+    halves.
+    """
+
+    def test_method_is_machine_readable(self):
+        # kills: dropping the method/modelInVerdictPath fields. A crawler reads
+        # fields before prose; leaving method implicit is what let one be invented.
+        d = D.build_descriptor()
+        self.assertEqual(d["method"], "deterministic")
+        self.assertIs(d["modelInVerdictPath"], False)
+
+    def test_description_leads_with_the_method(self):
+        # kills: reverting to a description that does not distinguish this engine
+        # from a model-as-judge product
+        text = D.build_descriptor()["description"].lower()
+        self.assertIn("deterministic", text)
+        self.assertIn("no model", text)
+
+    def test_always_on_signals_are_advertised(self):
+        """Each of these fires in a bare verdict with NO optional source wired --
+        verified end to end, not assumed. Advertising 2 of them understated the
+        engine by an order of magnitude and left a comparison-shopper nothing to
+        compare.
+
+        kills: trimming the always-on list back.
+        """
+        signals = D.build_descriptor()["signals"]
+        for s in ("counterparty-reputation", "price-anomaly", "sybil-structure",
+                  "payload-simulation", "permit2-allowance", "calldata-drainer",
+                  "secret-exfiltration", "payee-syntax", "evidence-confidence"):
+            self.assertIn(s, signals)
+
+    def test_every_advertised_always_on_gate_really_runs_unconfigured(self):
+        """The list above is hand-maintained, so it drifts the moment two branches
+        land in parallel -- which is exactly how `payee-syntax` came to be missing
+        from it. This derives the answer instead of restating it.
+
+        SCOPE, stated precisely because an earlier version of this test claimed
+        more than it checked. "Always-on" means the GATE RUNS with no optional
+        source wired. It does NOT mean a `signals` key always appears: measured,
+        only 4 of the 9 advertised labels emit a key unconditionally,
+        `evidence-confidence` lands in the top-level `confidence` field, and
+        `permit2-allowance` / `calldata-drainer` correctly say nothing at all on
+        a payment that carries neither an allowance nor a transaction. So each
+        label is checked by the evidence that actually exists for it: a key when
+        it always emits one, and a FIRED VERDICT when it only speaks up on input.
+
+        `sybil-structure` has no dedicated key or standalone trigger here -- it
+        is folded into the reputation gate -- and is covered by test_redteam's
+        "Sybil: <3 distinct payers" scenario instead.
+
+        kills: advertising a gate this deployment does not run, in either the
+        key-emitting or the input-triggered half.
+        """
+        import blackwall
+
+        class _Empty:
+            def lookup(self, counterparty):
+                return {}
+
+        class _Reputable:
+            def lookup(self, counterparty):
+                return {"settlement_count": 500, "dispute_rate": 0.0,
+                        "distinct_payers": 30, "price_history": ["0.05"] * 20}
+
+        def verdict(source, **extra):
+            payload = {"counterparty": "0x" + "1" * 40, "amount": "0.05",
+                       "asset": "USDC", "chain": "eip155:8453",
+                       "payer": "0x" + "2" * 40}
+            payload.update(extra)
+            resp, err = blackwall.forecast(payload, source)
+            self.assertIsNone(err)
+            return resp
+
+        advertised = D.build_descriptor()["signals"]
+        bare = verdict(_Empty())
+
+        # (a) the labels that emit a signal key on EVERY verdict.
+        for label, key in (("counterparty-reputation", "counterparty_reputation"),
+                           ("price-anomaly", "price_anomaly"),
+                           ("payload-simulation", "payload_signer_status"),
+                           ("secret-exfiltration", "secret_scan"),
+                           ("payee-syntax", "payee_syntax")):
+            self.assertIn(label, advertised)
+            self.assertIn(key, bare["signals"],
+                          "advertised always-on but absent from a bare verdict: %s"
+                          % label)
+
+        # (b) evidence-confidence is emitted, just not under `signals`.
+        self.assertIn("evidence-confidence", advertised)
+        self.assertIn("confidence", bare)
+
+        # (c) the two that correctly say nothing until given their input. A key
+        # check would pass vacuously here, so assert the gate FIRES instead --
+        # which is the property being advertised anyway.
+        approve = "0x095ea7b3" + "0" * 24 + "9" * 40 + "f" * 64
+        for label, extra in (
+                ("permit2-allowance",
+                 {"scheme": "exact", "permit2AllowanceLimit": str((1 << 256) - 1),
+                  "accepts": [{"scheme": "exact", "maxAmountRequired": "50000",
+                               "extra": {"assetTransferMethod": "permit2-exact"}}]}),
+                ("calldata-drainer",
+                 {"transaction": {"to": "0x" + "8" * 40, "data": approve,
+                                  "value": "0"}})):
+            self.assertIn(label, advertised)
+            fired = verdict(_Reputable(), **extra)
+            self.assertEqual(fired["verdict"], "STOP",
+                             "advertised always-on but inert unconfigured: %s" % label)
+
+    def test_configured_signals_are_not_claimed_when_off(self):
+        # The restraint half: claiming a gate this deployment does not run is the
+        # same defect in the other direction.
+        # kills: advertising opt-in gates unconditionally
+        off = D.build_descriptor()["signals"]
+        for s in ("settlement-simulation", "honeypot-exit-check",
+                  "transfer-restriction-readiness", "dex-market-peg",
+                  "holder-concentration"):
+            self.assertNotIn(s, off)
+
+    def test_configured_signals_appear_when_wired(self):
+        # kills: adding the parameters but never reading them -- the wired-and-inert
+        # shape that made honeypot.py's source silently do nothing
+        on = D.build_descriptor(settlement_simulation=True, honeypot_check=True,
+                                rwa_readiness=True, market_peg=True,
+                                holder_concentration=True)["signals"]
+        for s in ("settlement-simulation", "honeypot-exit-check",
+                  "transfer-restriction-readiness", "dex-market-peg",
+                  "holder-concentration"):
+            self.assertIn(s, on)
+
+    def test_handler_advertises_only_what_actually_constructed(self):
+        """The descriptor reads the wired SOURCES, not the env flags.
+
+        A flag set with a missing RPC builds no source; advertising the gate then
+        would be a claim about a check that cannot run.
+
+        kills: reading os.environ in _descriptor instead of the handler attributes.
+        """
+        import ast
+        import inspect
+
+        import blackwall
+        src = inspect.getsource(blackwall._Handler._descriptor)
+        self.assertNotIn("environ", src,
+                         "_descriptor must not read env flags -- a flag can be set "
+                         "while the source failed to construct")
+        tree = ast.parse(src.strip())
+        reads = {n.attr for n in ast.walk(tree)
+                 if isinstance(n, ast.Attribute) and n.attr.endswith("_source")}
+        for attr in ("settlement_sim_source", "honeypot_source", "rwa_source",
+                     "dex_source", "holder_source"):
+            self.assertIn(attr, reads)

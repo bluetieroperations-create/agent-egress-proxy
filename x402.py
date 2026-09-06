@@ -325,6 +325,19 @@ def _req_amount(req):
     return req.get("maxAmountRequired")
 
 
+
+def _is_upto_scheme(scheme):
+    """`upto` test, imported lazily.
+
+    upto_scheme -> calldata -> x402 is a cycle, and x402 is the module the other
+    two are built on, so the dependency has to be deferred to call time rather
+    than taken at import. Matches the function-level import style used across
+    blackwall.py for the same reason.
+    """
+    from upto_scheme import is_upto
+    return is_upto(scheme)
+
+
 def payment_satisfies(payment, req):
     """
     PURE: does this decoded v2 payment satisfy the requirements *at the protocol
@@ -371,6 +384,16 @@ def payment_satisfies(payment, req):
     if req.get("scheme") == "exact":
         if value != required:
             return False, "underpaid" if value < required else "overpaid"
+    elif _is_upto_scheme(req.get("scheme")):
+        # `upto` (metered): maxAmountRequired is a CEILING and the payer meters
+        # BELOW it, so anything up to and including the quote is valid and only an
+        # overpay is wrong. This branch previously demanded `value >= required` --
+        # inverted, and exactly backwards for the scheme it was standing in for.
+        # Unreachable in practice because we only ever issue `exact` requirements
+        # ourselves, which is why it survived; fixed now that CDP settles `upto` on
+        # six EVM networks and AWS AgentCore documents it end to end.
+        if value > required:
+            return False, "exceeds the quoted ceiling"
     elif value < required:
         return False, "underpaid"
 
@@ -421,9 +444,29 @@ class HttpFacilitator:
     Blackwall does not (spec 5.4).
     """
 
-    def __init__(self, base_url, timeout=20.0):
+    # SPLIT TIMEOUTS, and the split is the point (audit 2026-08-30, pre-billing).
+    #
+    # `/verify` is READ-ONLY and idempotent: a hang there costs only a held
+    # thread, so it wants a SHORT bound. Measured before this change, a
+    # black-hole facilitator held a paid request for the full 20s, and
+    # ThreadingHTTPServer is thread-per-request and unbounded -- so a facilitator
+    # DEGRADATION (not an outage; an outage fails fast at 0.07s) could starve the
+    # pool and take the FREE tier down alongside the paid one.
+    #
+    # `/settle` HAS A SIDE EFFECT, and shortening it is actively dangerous. Time
+    # out after the facilitator has already broadcast and the on-chain EIP-3009
+    # nonce is spent while we return a 402: the agent has paid and got nothing,
+    # and every retry with that authorization now fails forever because the nonce
+    # is used. Waiting longer is the safe error here, so settle keeps the longer
+    # bound.
+    #
+    # Worst case is NOT the sum: verify fails closed and short-circuits settle, so
+    # a wholly unresponsive facilitator costs `timeout`, not `timeout +
+    # settle_timeout`.
+    def __init__(self, base_url, timeout=8.0, settle_timeout=25.0):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.settle_timeout = settle_timeout
 
     def _auth_headers(self, path):
         """Per-request auth headers -- empty for a keyless facilitator. Subclasses
@@ -445,8 +488,11 @@ class HttpFacilitator:
         headers.update(self._auth_headers(path))
         req = urllib.request.Request(self.base_url + path, data=body,
                                      headers=headers)
+        # Side-effecting endpoint gets the longer bound -- see __init__.
+        budget = (getattr(self, "settle_timeout", self.timeout)
+                  if path == "/settle" else self.timeout)
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            with urllib.request.urlopen(req, timeout=budget) as r:
                 return json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             # Real facilitators return a STRUCTURED x402 error with a non-2xx
@@ -513,8 +559,9 @@ class CdpFacilitator(HttpFacilitator):
     """
 
     def __init__(self, key_id, key_secret, base_url=CDP_FACILITATOR_URL,
-                 timeout=20.0):
-        super().__init__(base_url, timeout=timeout)
+                 timeout=8.0, settle_timeout=25.0):
+        super().__init__(base_url, timeout=timeout,
+                         settle_timeout=settle_timeout)
         self.key_id = key_id
         self.key_secret = key_secret
 
@@ -527,7 +574,7 @@ class CdpFacilitator(HttpFacilitator):
         return {"Authorization": "Bearer " + token}
 
 
-def choose_facilitator(facilitator_url, cdp_id, cdp_secret):
+def choose_facilitator(facilitator_url, cdp_id, cdp_secret, timeout=8.0, settle_timeout=25.0):
     """
     Pick the facilitator from config, returning (facilitator_or_None, note).
 
@@ -549,9 +596,12 @@ def choose_facilitator(facilitator_url, cdp_id, cdp_secret):
                         "non-CDP BLACKWALL_FACILITATOR=%s" % (url, facilitator_url))
             else:
                 note = "CDP facilitator (authenticated) at %s -- Bazaar-eligible" % url
-        return CdpFacilitator(cdp_id, cdp_secret, base_url=url), note
+        return (CdpFacilitator(cdp_id, cdp_secret, base_url=url,
+                               timeout=timeout, settle_timeout=settle_timeout),
+                note)
     if facilitator_url:
-        return (HttpFacilitator(facilitator_url),
+        return (HttpFacilitator(facilitator_url, timeout=timeout,
+                                settle_timeout=settle_timeout),
                 "HTTP facilitator at %s (keyless -- settles but NOT Bazaar-listed)"
                 % facilitator_url)
     return None, "built-in mock facilitator (no --facilitator, no CDP creds)"
@@ -660,15 +710,83 @@ class PricingPolicy:
       * else  -> bps of the amount, clamped to [min_fee, max_fee]. A big payment
         carries a (still tiny) fee proportional to the loss being prevented.
       * unknown amount -> min_fee (can't assess value; charge the floor).
+      * ... UNLESS the resulting fee would exceed `max_fee_ratio` of the amount,
+        in which case it is FREE. See below -- this is the invariant that makes
+        the whole thing hold together.
+
+    THE PROPORTIONALITY INVARIANT (added 2026-08-30, from measurement).
+
+    `min_fee` is a floor in ABSOLUTE terms, so as the amount falls it becomes an
+    ever-larger FRACTION of the payment. Nothing bounded that. It was invisible
+    only because `free_below` happened to sit above the range where the floor
+    bites -- so the two knobs were secretly one knob, and the "free tier" was
+    load-bearing for fee sanity rather than being a pricing choice.
+
+    That coupling is why the paid tier was unreachable. Measured against our own
+    crawl of 266 live x402 payees (data/directory.json): median advertised entry
+    price $0.005, highest anywhere $6.99. At the deployed free_below of $10.00,
+    ZERO of 265 payees could ever be billed. At the $1.00 code default, exactly
+    one. And lowering `free_below` to reach the market un-hid the floor:
+
+        free_below=$0.01 -> a $0.028 payment pays 3.57%
+        free_below=$0.005 -> a $0.01 payment pays 10.00%
+
+    So the fix is not a new number, it is a bound the policy never had: THE FEE
+    MAY NEVER EXCEED `max_fee_ratio` OF THE AMOUNT AT RISK. If proportional
+    pricing cannot produce a sane fee at this size, the honest answer is that we
+    do not charge -- the free tier then EMERGES from "we cannot price this
+    proportionately" instead of being an arbitrary constant guarding a defect.
+
+    `free_below` survives as an explicit operator floor (always free below X,
+    whatever the ratio says). It is no longer what keeps the fee curve sane.
     """
 
+    @staticmethod
+    def _config(name, value):
+        """Parse a pricing constant, or raise at CONSTRUCTION.
+
+        Every one of these arrives from an env var. Audit 2026-08-30 found the
+        whole policy accepted values that fail LATER or not at all:
+
+          * `nan` parses as a valid Decimal on free_below / bps / min_fee, then
+            raises InvalidOperation on EVERY priced request -- a config that is
+            valid at boot and fatal at runtime, so the banner reports a healthy
+            service that 500s the moment anyone is billed.
+          * negative values pass silently. `bps=-1` and `min_fee=-1` both produce
+            a fee; and a negative `max_fee_ratio_bps` fails the `> 0` guard, which
+            SILENTLY DISABLES the proportionality invariant. Nobody writes -100
+            meaning "off" -- that is a typo or a sign error turning a protection
+            off with no signal, the exact shape this codebase keeps finding.
+
+        So: fail LOUD at boot. Same policy receipt_signer already uses for a
+        malformed signing seed -- a set-but-invalid value means the operator
+        intended the feature, and guessing what they meant is worse than stopping.
+        Exactly 0 stays a legal, documented disable for the ratio cap.
+        """
+        try:
+            d = Decimal(str(value))
+        except (InvalidOperation, ValueError, TypeError):
+            raise ValueError("pricing: %s=%r is not a number" % (name, value))
+        if not d.is_finite():
+            raise ValueError("pricing: %s=%r is not finite" % (name, value))
+        if d < 0:
+            hint = (" If you meant to disable the cap, set it to 0 explicitly."
+                    if name == "max_fee_ratio_bps" else "")
+            raise ValueError("pricing: %s=%r is negative.%s" % (name, value, hint))
+        return d
+
     def __init__(self, decimals=6, free_below="1.00", bps=10,
-                 min_fee="0.001", max_fee="0.10"):
+                 min_fee="0.001", max_fee="0.10", max_fee_ratio_bps=100):
         self.decimals = int(decimals)
-        self.free_below = Decimal(str(free_below))
-        self.bps = Decimal(str(bps))            # basis points: 10 = 0.1%
-        self.min_fee = Decimal(str(min_fee))
-        self.max_fee = Decimal(str(max_fee))
+        self.free_below = self._config("free_below", free_below)
+        self.bps = self._config("bps", bps)     # basis points: 10 = 0.1%
+        self.min_fee = self._config("min_fee", min_fee)
+        self.max_fee = self._config("max_fee", max_fee)
+        # Hard ceiling on the fee as a fraction of the amount at risk. 100 bps
+        # = 1%. Set to exactly 0 to disable (restores the unbounded
+        # pre-2026-08-30 behaviour; there is no good reason to).
+        self.max_fee_ratio_bps = self._config("max_fee_ratio_bps",
+                                              max_fee_ratio_bps)
         self._q = Decimal(1).scaleb(-self.decimals)  # quantization unit
 
     def fee_atomic(self, amount_at_risk):
@@ -690,6 +808,17 @@ class PricingPolicy:
             elif fee > self.max_fee:
                 fee = self.max_fee
         fee = fee.quantize(self._q, rounding=ROUND_HALF_UP)
+        # THE PROPORTIONALITY INVARIANT. Applied AFTER quantization so the bound
+        # holds on the value ACTUALLY CHARGED rather than a pre-rounding
+        # intermediate. Honest scope: at the shipped constants this ordering is
+        # DEFENSIVE, not load-bearing -- a sweep of ~184k amounts found zero cases
+        # where rounding to the 1e-6 quantum crosses the bound, and a mutant that
+        # checks before quantizing passes the suite. It would begin to matter with
+        # a coarser quantum or a min_fee sitting nearer the cap, so the order
+        # stays; the earlier claim here that it fixed a real case was wrong.
+        if amt is not None and amt > 0 and self.max_fee_ratio_bps > 0:
+            if fee > amt * self.max_fee_ratio_bps / Decimal(10000):
+                return 0
         return int(fee * (Decimal(10) ** self.decimals))
 
 

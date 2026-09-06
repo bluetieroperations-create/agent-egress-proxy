@@ -227,6 +227,23 @@ def _auth_source(used=False, execution=_OK, now=1000):
     return AuthorizationSimSource(simulator=_Sim(), now=now)
 
 
+def _honeypot_source(outcome, revert_class=None, retention=None):
+    """HoneypotSource pinned to a given sell-path attribution.
+
+    The attribution is injected rather than driven through a transport because the
+    property under test is the DISPOSITION -- which outcomes gate and which defer --
+    not the eth_call encoding, which transfer_sim's own suite covers.
+    """
+    from honeypot import assess_honeypot
+
+    class _Src:
+        def check(self, token, chain):
+            return assess_honeypot(
+                {"outcome": outcome, "reason": "reverted",
+                 "revert_class": revert_class}, retention)
+    return _Src()
+
+
 def _rwa_source(target, control=_OK):
     from transfer_sim import SimulationReadinessSource, TransferSimulator
     seen = []
@@ -257,8 +274,32 @@ def _signed(auth_over=None):
 
 
 # (name, category, expect, known_gap, payload, forecast-source kwargs)
+from transfer_sim import OK as TS_OK
+from transfer_sim import RECEIVER_BLOCKED as TS_RECEIVER_BLOCKED
+from transfer_sim import SENDER_BLOCKED as TS_SENDER_BLOCKED
+
 SIM_SCENARIOS = [
     # --- attacks the simulation gates MUST catch ---
+    # `upto` settles via Permit2 `transferFrom`, so it needs an ERC-20 allowance.
+    # AWS AgentCore's own docs offer granting an UNLIMITED one as a normal option,
+    # and no spending cap can restrain it -- an allowance is not a spend. Same
+    # exposure calldata.py hard-STOPs as raw calldata, arriving as a payment intent.
+    ("upto grants unlimited Permit2 allowance", "upto-scheme", "block", False,
+     _payload(scheme="upto",
+              permit2AllowanceLimit=str((1 << 256) - 1),
+              accepts=[{"scheme": "upto", "maxAmountRequired": "1000"}]),
+     lambda: {}),
+    # The SAME unlimited-approval exposure arriving on an `exact` payment. Permit2
+    # is used with `exact` too (sellers advertise `extra.assetTransferMethod:
+    # "permit2-exact"`), and the screen used to key off the scheme NAME, so this
+    # returned a clean GO while the `upto` spelling above hard-STOPped. The
+    # exposure is created by the allowance, not by what the scheme is called.
+    ("permit2 unlimited allowance on `exact`", "upto-scheme", "block", False,
+     _payload(scheme="exact",
+              permit2AllowanceLimit=str((1 << 256) - 1),
+              accepts=[{"scheme": "exact", "maxAmountRequired": "1000",
+                        "extra": {"assetTransferMethod": "permit2-exact"}}]),
+     lambda: {}),
     ("blacklisted PAYEE (USDC)", "settlement-sim", "block", False, _payload(),
      lambda: {"settlement_sim_source": _settlement_source(_revert(BLACKLIST_REVERT))}),
     ("blacklisted PAYER (USDC)", "settlement-sim", "block", False, _payload(),
@@ -278,8 +319,52 @@ SIM_SCENARIOS = [
      _payload(acquires={"token": "0x" + "9" * 40, "chain": "ethereum",
                         "holder": "0x" + "8" * 40}),
      lambda: {"rwa_source": _rwa_source(_revert(KYC_REVERT))}),
+    # HONEYPOT: the token buys perfectly and cannot be SOLD. It permits an
+    # arbitrary fresh wallet and blocks its own liquidity pool -- a restriction
+    # that allows anyone except the market is not compliance, it is a trap. The
+    # control simulation is what convicts it; without one this is
+    # indistinguishable from a permissioned security (see the control below).
+    ("honeypot: token blocks its own pool", "honeypot", "block", False,
+     _payload(acquires={"token": "0x" + "7" * 40, "chain": "base"}),
+     lambda: {"honeypot_source": _honeypot_source(TS_RECEIVER_BLOCKED)}),
+    # A payee that cannot possibly be an on-chain address -- an env var glued on
+    # by a missing newline in a `.env`, the exact string a live seller advertised.
+    # Before payee_syntax.py this and a clean payee returned BYTE-IDENTICAL
+    # verdicts: the engine never looked at the counterparty's SHAPE, and the
+    # cold-start HOLD that happened to cover it clears the moment the payee has
+    # history. This scenario carries full history, so nothing else can block it.
+    ("payee is an impossible address", "payee-syntax", "block", False,
+     _payload(counterparty=LEGIT + "FACILITATOR_URL=https://x402.org/facilitator"),
+     lambda: {}),
+    # The same defect with the whitespace an ASCII-only rule could not see. A
+    # non-breaking space is what a Windows `.env` or a copy-paste out of a
+    # rendered page produces, and it evaded the first version of the gate.
+    ("payee glued with a non-breaking space", "payee-syntax", "block", False,
+     _payload(counterparty=LEGIT + "\u00a0FACILITATOR_URL"),
+     lambda: {}),
+    # A spending cap denominated in DOLLARS, and an amount that is not dollars.
+    # 5.00 SOL is roughly $500 and sailed under a $10 auto-approve threshold as a
+    # clean GO, while 50.00 USDC (~$50) correctly escalated -- the GUSD bypass
+    # from docs/DECIMALS_AUDIT.md, by CURRENCY rather than by decimals. The
+    # amount is deliberately SMALL: the attack is that it looks small.
+    ("non-dollar amount under a dollar cap", "currency", "block", False,
+     _payload(amount="5.00", asset="0x311935Cd80B76769bF2ecC9D8Ab7635b2139cf82",
+              chain="eip155:8453", price_history=["5.00"] * 20),
+     lambda: {}),
 
     # --- controls: these must NOT be blocked (over-blocking is the real risk here) ---
+    # RESTRAINT for the widened screen: an ordinary `exact` payment with a
+    # proportionate allowance must stay clean. Widening what gets screened is only
+    # safe if it does not start blocking normal traffic.
+    ("`exact` with a proportionate allowance", "control", "allow", True,
+     _payload(scheme="exact", permit2AllowanceLimit="3000",
+              accepts=[{"scheme": "exact", "maxAmountRequired": "1000",
+                        "extra": {"assetTransferMethod": "permit2-exact"}}]),
+     lambda: {}),
+    ("upto with a sane allowance", "control", "allow", True,
+     _payload(scheme="upto", permit2AllowanceLimit="1000",
+              accepts=[{"scheme": "upto", "maxAmountRequired": "1000"}]),
+     lambda: {}),
     ("clean payment, sim ready", "control", "allow", False, _payload(),
      lambda: {"settlement_sim_source": _settlement_source(_OK)}),
     ("underfunded payer (must not gate)", "control", "allow", False, _payload(),
@@ -292,11 +377,39 @@ SIM_SCENARIOS = [
      # here would be a false positive. This guards the control-attribution property.
      lambda: {"rwa_source": _rwa_source(_revert(KYC_REVERT),
                                         control=_revert(KYC_REVERT))}),
+    # The honeypot gate's RESTRAINT property, and the one this repo has already
+    # got wrong once: revert_scan's axis tried to downgrade BlackRock because BUIDL
+    # rejects non-allowlisted wallets -- i.e. because it works as designed. A
+    # permissioned security blocks the pool AND the fresh control, which attributes
+    # to the SENDER and is reported `restricted`, deferring to rwa_readiness. If
+    # this ever blocks, the honeypot gate has become that mistake with a new name.
+    ("permissioned RWA is not a honeypot", "control", "allow", False,
+     _payload(acquires={"token": "0x" + "7" * 40, "chain": "base"}),
+     lambda: {"honeypot_source": _honeypot_source(
+         TS_SENDER_BLOCKED, revert_class="restriction")}),
+    ("high sell tax is advisory, not a gate", "control", "allow", False,
+     _payload(acquires={"token": "0x" + "7" * 40, "chain": "base"}),
+     lambda: {"honeypot_source": _honeypot_source(TS_OK, retention="0.03")}),
     ("RPC unreachable (fail-open)", "control", "allow", False, _payload(),
      lambda: {"settlement_sim_source": _settlement_source({}, control={})}),
     ("valid fresh authorization", "control", "allow", False,
      _payload(payment_authorization=_signed()),
      lambda: {"auth_sim_source": _auth_source(used=False)}),
+    # RESTRAINT for the payee-syntax gate, and the reason it is chain-agnostic:
+    # a raw base58 Solana payee is not an EVM address and must not be condemned
+    # for it. Any base58 or base32 guess sophisticated enough to "validate" this
+    # would eventually convict a real Solana, Stellar or Algorand seller.
+    ("non-EVM payee is not condemned", "control", "allow", False,
+     _payload(counterparty="2DgEL95L8DtaRb4ubYqrrnMbX7Zxgjxq7k8Ed9XAWYcp"),
+     lambda: {}),
+    # RESTRAINT for the currency gate, and the reason it is knowledge-based: an
+    # asset we have simply never seen must NOT be condemned for being unfamiliar.
+    # Only assets KNOWN not to be dollars gate; "not known to be USD" is not the
+    # same claim as "known not to be USD", and conflating them would HOLD every
+    # new token the ecosystem adds.
+    ("an unrecognized asset is not gated on a guess", "control", "allow", False,
+     _payload(asset="0x" + "9" * 40, chain="eip155:8453"),
+     lambda: {}),
 ]
 
 

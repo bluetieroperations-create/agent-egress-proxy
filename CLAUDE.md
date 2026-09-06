@@ -87,6 +87,20 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   ERC-20 transfers) with a runtime-toggleable FAIL_CLOSED/FAIL_OPEN availability
   policy; thin `turnkey_signer.py` / `privy_signer.py` shims map each provider's
   request. Stdlib; own tests run from that dir),
+  `integrations/agentcore/` (AWS Bedrock AgentCore Payments adapter -- gate
+  `ProcessPayment` with the verdict BEFORE it signs. AgentCore is GA, speaks x402
+  AND MPP, and connects to Coinbase and Stripe/Privy; a payment session constrains
+  exactly `limits.maxSpendAmount` + `expiryTimeInMinutes` and NOTHING else -- no
+  payee allowlist, no counterparty screening -- and the merchant's `payTo` is
+  forwarded VERBATIM into the signature. So it enforces HOW MUCH and never asks
+  WHO. GO calls through, HOLD asks a human (refuses by default), STOP withholds so
+  no proof is ever generated -- the only durable control, since a returned
+  `PROOF_GENERATED` puts the signed payload in the agent's hands. Reads both
+  payment types (`cryptoX402.payload`, and MPP's raw `WWW-Authenticate: Payment`
+  challenge via `x402_challenge`), and carries `permit2AllowanceLimit` through
+  under AWS's own spelling so `upto_scheme` sees the allowance a spend cap cannot.
+  Dependency-free core `agentcore_guard.py` + thin `strands_plugin.py` /
+  `langgraph_middleware.py`; own tests run from that dir),
   `integrations/openclaw/` (OpenClaw/NemoClaw plugin -- a `before_tool_call` hook
   that recognizes payment-shaped tool calls (flat payTo/amount, 402-challenge
   accepts[], or a signed X-PAYMENT header -> passed through for payload-sim),
@@ -112,6 +126,46 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   not FIPS SHA3), `secp256k1.py` (pure-Python secp256k1 ECDSA public-key recovery),
   `eip712.py` (EIP-712 typed-data hashing for transferWithAuthorization + address
   derivation) -- the stdlib crypto behind payload-sim Phase 2,
+  `upto_scheme.py` (the x402 `upto` (metered) scheme and the Permit2 allowance it
+  requires. `exact` moves a fixed amount via EIP-3009 and the signed authorization IS
+  the exposure; `upto` quotes a CEILING, meters below it, and settles through Permit2
+  `transferFrom` -- so the wallet must first grant an ERC-20 allowance, a SEPARATE and
+  LONGER-LIVED exposure that no spending control in this market can see. AWS Bedrock
+  AgentCore Payments (GA, x402+MPP) enforces `limits.maxSpendAmount` plus an expiry and
+  NOTHING else -- no payee allowlist, no counterparty check -- and an allowance is not a
+  spend, so a $1 session budget coexists with an approval over the whole balance. Its own
+  docs offer granting an UNLIMITED allowance as a normal option and note `approve` SETS
+  rather than adds. That is the drainer pattern `calldata.py` already hard-STOPs as
+  calldata, so this recognizes it arriving as a payment INTENT instead. UNLIMITED -> hard
+  STOP (reuses calldata's `UNLIMITED_MIN` so the two cannot drift on what "unlimited"
+  means); SCREEN SELECTION CORRECTED (2026-08-30, reported by the cold-start
+  session, confirmed here end to end before accepting): this keyed off
+  `is_upto(scheme)`, but PERMIT2 IS USED WITH `exact` TOO -- advertised as
+  `extra.assetTransferMethod: "permit2-exact"` -- so an UNLIMITED allowance on an
+  `exact` payment was screened NOT AT ALL: not gated, not warned, not recorded, and
+  measured returning a clean GO. The exposure is created by the ALLOWANCE, not the
+  scheme name, so the screen now runs whenever an allowance is actually stated,
+  whatever the scheme calls itself; absent stays `not_applicable` (`unknown` for
+  `upto`). THREE tests encoded the old behaviour and were replaced, one of them
+  asserting the opposite outcome on the wrong rationale that the field is
+  "meaningless for `exact`". Boundary re-measured: only genuinely unlimited
+  approvals STOP; 1x/3x/99x/101x/10^6x all stay GO with the ratio lock off, so the
+  widening adds no false-positive class. The GRADUATION RULE for `EXCESSIVE_GATES`
+  is also corrected: the shipped corpus can NEVER supply it, because an allowance is
+  PAYER-side -- it appears in a ProcessPayment request, never in a 402 challenge --
+  so the honest gate is N real requests through the API, not corpus observation.; >100x the ceiling -> `excessive`, which escalates GO->HOLD behind the
+  reversibility lock `EXCESSIVE_GATES` (DEFAULT OFF -- advisory until flipped;
+  approving once and metering many calls under an approval is normal use, so the
+  false-HOLD rate wants measuring on the shipped corpus first, the way sybil_ring
+  graduated. AUDIT: this line previously claimed "HOLD only" and the code did NOT
+  hold -- `excessive` went into `warnings`, and forecast only extends `reasons`
+  with warnings, so a 10^6x disproportionate allowance returned GO with a note.
+  Confirmed live before the fix); absent/unreadable -> no gate, FAIL-OPEN. Reads the AgentCore spelling
+  `permit2AllowanceLimit` (nested or top-level) as well as our own. Also FIXED a dormant
+  inversion in `x402.payment_satisfies`: the non-`exact` branch demanded `value >=
+  required`, exactly backwards for a ceiling. Unreachable because we only ever issue
+  `exact` ourselves -- which is why it survived. Pure+stdlib; imported lazily by x402 to
+  break the upto->calldata->x402 cycle. Tests: `test_upto_scheme.py`),
   `calldata.py` (payload-sim Phase 3: decode a contract-call payment's calldata and
   flag drainer patterns -- unlimited approval / setApprovalForAll / transfer to the
   wrong recipient/amount -- as a hard STOP; from the request-body `transaction`),
@@ -230,12 +284,208 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   a shared label would let a verifier trusting both issuers' keys accept one for the
   other. Post-quantum (ML-DSA-65 hybrid) is phase 2 -- see `docs/RECEIPT_SIGNING_SCOPE.md`.
   Tests: `test_receipt_signer.py`, incl. cross-verification under Node WebCrypto),
+  `payload_sim.NON_USD_ASSETS` / `is_non_usd` (WHICH corpus assets are not US
+  dollars -- the companion to the decimals table, because knowing an asset's
+  SCALE is not knowing its PRICE and the two mistakes have the same shape.
+  `decide_payment` compares the amount to a DOLLAR threshold
+  (`HOLD_AMOUNT_THRESHOLD`, and whatever a treasury deployment raises it to);
+  for a non-dollar asset that comparison is meaningless. MEASURED before the
+  fix: 5.00 SOL -- roughly $500 -- returned a clean GO while 50.00 USDC (~$50)
+  correctly escalated. That is the GUSD spending-cap bypass from
+  docs/DECIMALS_AUDIT.md again, by CURRENCY rather than by decimals. JPYC and
+  EURC were already in the corpus and harmless by luck (yen numbers are large so
+  they err toward HOLD; EURC is near parity); SOL, added 2026-09-05, is the
+  first where the error is large AND unsafe (~100x understated). NOT a
+  conversion -- a hardcoded rate is stale the day it is written -- so a known
+  non-dollar amount simply cannot auto-approve: HOLD-only, `blast_radius` reads
+  `unknown` rather than `bounded`, and an UNRECOGNIZED asset is never gated,
+  since "not known to be USD" is not "known not to be USD". Blast radius
+  measured at 5 of 371 live quotes. `asset_coverage.NON_USD` is the SAME object,
+  not a second copy. Redteam: 1 attack + 1 restraint control),
+  `approvals.py` (the HUMAN-IN-THE-LOOP half of a HOLD. Every gate here is
+  HOLD-only by design -- it refuses to auto-approve and hands the question to a
+  person -- but the engine had nowhere to hand it TO, so every integration got
+  "HOLD" back and had to invent the workflow, which is how a HOLD ends up
+  configured away. FOUND BY COMPETITIVE RE-VERIFICATION, not imagination:
+  TollWarden's live spec (paysafe-agent.com/openapi.json v1.5.0, re-pulled
+  2026-09-05) ships `/v1/approvals/config` + `/v1/approvals/{id}`; it was the one
+  thing in their product this engine had no answer to, and it is a WORKFLOW gap
+  rather than a detection gap -- the kind a detection-focused project fails to
+  notice about itself. An approval is NOT an upgrade: `redeem` returns "HOLD,
+  approved by a human", never GO. FIVE SECURITY PROPERTIES, each a bypass if
+  skipped: (1) STOP IS NEVER APPROVABLE -- `APPROVABLE` is a frozenset of HOLD
+  alone, and a HOLD carrying `hard_stop` is also refused as incoherent; (2)
+  BOUND TO THE EXACT CLAIM via a digest over `BOUND_FIELDS` (counterparty,
+  amount, asset, chain, payer) -- without it, getting $0.05 approved authorizes
+  $500, i.e. the mechanism becomes a laundering step. Deliberately NOT the whole
+  claim, so extra context does not invalidate a human's answer; digest is
+  case/whitespace-normalized because a live 402 returns EIP-55 while crawls store
+  lowercase (the join that missed 64 of 69 endpoints in advertised_prices); (3)
+  SINGLE USE -- redeeming consumes it, and a FAILED redemption does not burn it;
+  (4) EXPIRES (`DEFAULT_TTL` 900s, matching the AgentCore session window),
+  compared with >= so it dies ON its expiry second; (5) OWNER-ONLY via the same
+  HMAC capability pattern as `sign_report_token`, domain-separated with
+  "approve:" so a report token can never authorize a payment. `public_view`
+  withholds the digest (BOUND_FIELDS is short and low-entropy, so publishing it
+  would let an id-holder brute-force amounts and payees) and the token. Terminal
+  states are final -- a retry loop cannot grind an approval out of a decline.
+  Store is injected; `MemoryApprovalStore` is bounded and evicts OLDEST first,
+  which fails safe; a restart loses pending approvals, which also fails safe.
+  Served at POST `/v1/approvals`, POST `/v1/approvals/decide`, GET
+  `/v1/approvals/{id}`; a wrong token gets 403 for a REAL id and an unknown one
+  alike, so the endpoint is not an enumeration oracle. BINDING HAZARD: this is a
+  STORE, not a `*_source`, so `test_honeypot`'s parity guard did NOT cover it --
+  `test_approvals` widens the property to every PUBLIC attribute a handler
+  method actually reads off `self`, which needs no naming convention.
+  AUDIT FINDINGS, all four fixed, and the first is the one that matters:
+  (1) HIGH -- `redeem` was implemented, unit-tested and CALLED BY NOTHING on the
+  wire, so properties 2 and 3 were unreachable: a caller polled, saw "approved",
+  and proceeded, and an approval for $0.05 authorized anything. The
+  wired-and-inert pattern, in a module written the same hour as a test class
+  about that hazard. `POST /v1/approvals/redeem` makes it reachable, and
+  redeeming requires the token because spending is not a read. (2) HIGH, a CLAIM
+  rather than a code defect -- the docstring said "a record that a HUMAN was
+  asked". The engine CANNOT KNOW THAT: the token goes to whoever opened the
+  approval, and if that is the agent it can approve itself in the next call
+  (measured: 40ms). What this actually provides is a SECOND, EXPLICIT, AUDITED
+  act naming an `actor`, bound to the payment, expiring, single-use; whether a
+  person performs it is the INTEGRATOR's job -- give the token to the approval
+  UI, not to the agent. Said plainly instead of implied. (3) MEDIUM -- the store
+  evicted the OLDEST row regardless of state, so a flood flushed a live PENDING
+  approval out (measured: six opens against a limit of three erased the victim).
+  Terminal rows are evicted first and the store then REFUSES with 503 rather
+  than dropping a live question. (4) LOW->MED -- any caller-supplied verdict was
+  accepted, so an approval could be opened for a payment the engine never
+  scored; a `receipt_id` now requires the matching `report_token`, reusing the
+  existing HMAC.
+  (5) MEDIUM, found while auditing the fix for the audit trail itself --
+  `decided_by` and `reasons` are BOTH caller-supplied and BOTH echoed to an
+  unauthenticated poller, and neither was sanitized. Newlines, carriage
+  returns, NUL and ANSI escapes passed straight through, so an ops console or
+  plain-text log rendering an approval could be made to show lines nobody
+  wrote, and the field whose whole job is to say WHO approved could claim to be
+  someone else (`"alice@corp\n  approved-by: security-team"`). THIRD instance
+  of this defect class here -- `payee_syntax` echoed a merchant-controlled hint
+  into `reasons[]` raw, and `secret_scan` exists because free-text fields reach
+  places that render them. `_safe_text` escapes both the same way (repr minus
+  its quotes: control characters become visible escapes, ordinary text stays
+  completely readable). And the audit trail was UNREADABLE before that: `decide`
+  stored the actor and `public_view` withheld it, so the mitigation this module
+  offers in place of enforced human review left no evidence it had happened --
+  found on PRODUCTION, because the tests asserted `decided_by` on the record and
+  never on the view.
+  Tests: `test_approvals.py`, 47 tests incl. a REAL server, 15 mutations
+  verified killed -- including the seventh-edit binding omission, the removal
+  of the redeem route, and un-sanitizing either echoed field),
   `confidence.py` (how much EVIDENCE backs a verdict -- `assess_confidence(record,
   signals)` -> {level high/medium/low, score 0..1, backed_by[], missing[]} across
   five weighted dimensions: history depth, payer breadth, cross-counterparty
   corroboration, outcome/dispute depth, freshness. PURE + DESCRIPTIVE -- never
   changes the verdict; folded into every `decide_payment` response as `confidence`
   so a caller can tell a GO on real history from a cold-start default),
+  `asset_coverage.py` (writes `data/asset_coverage.json`, the COMMITTED census
+  behind every prevalence claim about the ecosystem -- added because the
+  AgentCore demo asserted "10 of 12 endpoints quote `exact`" from a number no
+  committed artifact could reproduce, in the most public place we make claims;
+  does the decimals table still cover what the ecosystem
+  QUOTES? `KNOWN_DECIMALS_BY_CHAIN` is a SNAPSHOT of one day's corpus; an asset
+  missing from it resolves to unknown -- safe, but the amount check is off for
+  that payment, and nothing told us when that started. One pass over the live
+  hosts answers three questions: COVERAGE (which (network, asset) pairs we cannot
+  scale, with the hosts that introduced them -- the work list), DRIFT (a BROKEN
+  identifier is separated from a merely unknown one), and SANITY (with the table
+  applied, does every quote land at a plausible price? a wrong entry shows up as
+  an absurd implied price -- this is how the corpus corroborated Stellar's 7).
+  Also CENSUSES the payment schemes and Permit2 transfer methods the corpus
+  advertises, with the rows behind the count -- added because a cross-session
+  prevalence claim could not be reproduced from any committed artifact and the
+  receiving session had to take it on trust. Measured 2026-09-05: `exact` 363,
+  `upto` 4, `batch-settlement` 3, `aggr_deferred` 1; and 13 entries on 7 hosts
+  (CoinMarketCap and Nansen among them) advertise a Permit2 transfer method, 9
+  of them on `exact` -- which is why `upto_scheme` screens the ALLOWANCE rather
+  than the scheme name. Those figures move: they are the LIVE ecosystem, so the
+  committed `data/asset_coverage.json` is dated and `test_agentcore_guard`
+  asserts the demo's copy of them against it -- a stale artifact fails as a
+  tripwire rather than passing as a fact.
+  DELIBERATELY does NOT resolve on-chain and write the table: that table gates
+  payments, and a scale from a single public RPC is a value that RPC's operator
+  chose, so resolution stays a REVIEWED step (read every public RPC the chain
+  lists, require agreement -- see docs/DECIMALS_AUDIT.md). Reuses
+  `payload_sim.known_decimals` as the injected resolver (so the report is the
+  ENGINE's answer, not a reimplementation) and `upto_scheme.parse_ceiling` for
+  the atomic-vs-human rule (load-bearing there, must not drift). Exits 1 when a
+  person should look, so a scheduled run is actionable without reading it. FIRST
+  LIVE RUN found two seller bugs on one host: a BSC asset truncated to 39 hex
+  chars, and a Solana `payTo` with `FACILITATOR_URL=https://...` concatenated
+  onto it -- the address an agent would PAY. Both fail safe today for INCIDENTAL
+  reasons, which is not the same as being detected: the truncated asset resolves
+  to unknown decimals, and the glued payee is simply an unknown counterparty, so
+  it draws a cold-start HOLD. Neither is recognised as malformed by the engine --
+  `normalize_address` is applied to `payer` ONLY, never the counterparty, which
+  gets `is_evm_address` purely to decide whether to lowercase. Measured: the glued
+  payee and a clean Solana payee return byte-identical verdicts. Stated precisely
+  because the earlier wording implied a validation layer stands between a
+  malformed payee and a signature, and the next person to rely on that inherits a
+  gap that reads as covered. CLI:
+  `python asset_coverage.py data/liveness.json [--json report.json]`.
+  Tests: `test_asset_coverage.py`),
+  `payee_syntax.py` (is the address the agent is about to PAY a possible address?
+  Found in the wild by `asset_coverage` on 2026-08-30: a live seller advertised a
+  Solana `payTo` with `FACILITATOR_URL=https://...` concatenated onto it -- almost
+  certainly a missing newline in a `.env` -- and a payment there cannot arrive.
+  SINCE FIXED BY THE SELLER (2026-09-05), and the three-step road there is the
+  point: probe 1 found 0 malformed among 175 answering (20 silent) -> "fixed or
+  gone quiet, unknown which"; probe 2 found the host, `apiwitchcraft.duckdns.org`,
+  back up and STILL advertising it -> "it went quiet, never fixed"; the monthly
+  run found 0 again, but this time the host ANSWERS and its `payTo` reads clean,
+  VERIFIED against the host rather than inferred from the count. What separates
+  fixed from silent: that seller had TWO defects and repaired one -- its 39-hex
+  BSC asset is still reported, on the same host in the same run, which is the
+  proof the host answered. A silent host and a healthy one produce the same
+  absence of findings, which is why every run leads with how many answered. The
+  gate is not weakened by its motivating case being repaired: one seller fixing a
+  `.env` does nothing about the next, and the corpus still carries a malformed
+  identifier today. In `data/asset_coverage.json`. The engine
+  could not tell it from a clean one: MEASURED, that payee and a clean Solana
+  payee returned BYTE-IDENTICAL verdicts, both HOLD because the counterparty was
+  UNKNOWN rather than impossible. That HOLD clears the moment the payee has
+  history, and a broken address does not get better with settlements. TWO GRADES,
+  split on EVIDENCE not taste: `malformed` (content that cannot appear in an
+  identifier on ANY chain -- `://`, `=`, and any whitespace or non-printable
+  character) GATES, because that is the
+  case found in the wild; `invalid_hex` (`0x` but not a valid EVM address) is
+  RECORDED and does NOT gate, because 0 of 292 real payees exhibit it, its only
+  real instance was an ASSET field, and gating it failed 15 tests across 8 modules
+  -- every one a synthetic placeholder like `0xKNOWNGOOD00...`. A rule whose only
+  hits are fixtures is not ready to refuse a payment. Chain-agnostic on purpose:
+  no base58/base32 guess that would condemn real Solana, Stellar and Algorand
+  payees. AUDIT FINDINGS (both fixed): the impossible-content rule was a literal
+  tuple of ASCII spaces, so it was ASCII-ONLY -- a NON-BREAKING space (a Windows
+  `.env`, a copy-paste out of a rendered page) or a ZERO-WIDTH space glued a URL
+  onto an address and graded `unknown`, which does not gate; the same shape as the
+  case found in the wild, walking straight through. Now `isspace() or not
+  isprintable()`, which also covers NUL, the bidi overrides (a lookalike-address
+  trick in its own right) and the zero-width characters, measured at 0 additional
+  corpus flags. And the redacted `hint` went into `reasons[]` RAW, so a payee
+  carrying a newline forged a line in any plain-text log printing a reason (JSON
+  escapes it; a terminal does not) -- now escaped. FALSE-FLAG RATE MEASURED BEFORE
+  SHIPPING IT ON, the way sybil_ring graduated: 0 of 292 DISTINCT real payees.
+  AUDIT CORRECTION: this first said "0 of 558" by ADDING directory.json (266) to
+  the seed manifest (292), two sets that are nearly the SAME set -- the union is
+  292, so the claim overstated its own evidence 1.9x. `test_payee_syntax.py` now
+  COMPUTES the union from committed artifacts rather than restating a number, on
+  the principle that a prevalence claim another session cannot reproduce is worth
+  nothing. HOLD-only, never STOP
+  (defensible but declined pending real request traffic), fail-open, pure, 1.5us.
+  Redteam: 2 attacks (the glued payee, the non-breaking-space evasion) + 1
+  restraint control (a raw base58 Solana payee must not be condemned). ALWAYS-ON,
+  so it is advertised in `discovery.py`'s signal list -- it was missing at first
+  because #42 and #43 landed in parallel, which is why `test_discovery.py` now
+  DERIVES that list from a bare verdict instead of restating it. Also the fifth
+  scenario in `integrations/agentcore/demo.py`, the sharpest form of that demo's
+  claim: AgentCore forwards `payTo` VERBATIM into the signature, so it never asks
+  whether the payee is an address at all.
+  Tests: `test_payee_syntax.py`),
   `http_util.py` (hardened JSON GET for the live data path: retry+backoff on
   transient 429/5xx/timeout -- honors `Retry-After`, permanent 4xx not retried --
   plus a read-size cap; transport+clock injectable. Used by `chain_backfill`'s
@@ -407,7 +657,50 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   / `assess_concentration` / `apply_concentration` pure; `HolderConcentrationSource` fetches.
   HOLD-only, fail-open, advisory (noisier for RWAs where issuer-EOA custody would false-flag).
   Folded via `holder_source`, opt-in `BLACKWALL_HOLDER_CONCENTRATION`),
-  `dex_price.py` (the token's REAL on-chain market price from a Uniswap-v3 pool + a
+  `honeypot.py` (the EXIT check -- can the agent SELL what it is about to buy? Every
+  other acquisition gate asks whether the BUY clears (`rwa_readiness`: may the receiver
+  hold it; `settlement_sim`: will the stablecoin leg settle; `holder_concentration`: can
+  one wallet dump on you; `dex_price`: is the price real). None asks whether the position
+  can be EXITED, which is the whole honeypot mechanic: buys perfectly, cannot be sold.
+  THE DISCRIMINATOR is the control simulation, and it is why this may gate where
+  `revert_scan`'s bare revert axis may not -- that axis tried to downgrade BLACKROCK
+  because BUIDL rejects non-allowlisted wallets, i.e. because it works AS DESIGNED, so
+  `REVERT_AXIS_GATES` stays off. A transfer revert alone cannot tell a trap from
+  compliance. The rule that can: A RESTRICTION THAT PERMITS AN ARBITRARY FRESH WALLET
+  AND FORBIDS THE MARKET IS NOT COMPLIANCE, IT IS A TRAP. So the flag requires
+  `RECEIVER_BLOCKED` from `transfer_sim.attribute` -- the token's own deepest USDC pool
+  reverts while a fresh control EOA succeeds. A permissioned security blocks BOTH
+  (nothing is allowlisted) -> `SENDER_BLOCKED` -> reported `restricted` and DEFERRED to
+  rwa_readiness, never called a scam; verified as a redteam CONTROL, not just a unit
+  test. The revert CLASS is deliberately not consulted on the receiver path: a honeypot
+  is free to borrow compliance-shaped wording, and "allowlisted only, except any wallet
+  at all, except the pool" is not a coherent posture. SECOND, SOFTER AXIS: round-trip
+  retention (quote buy then sell through the same pool) catches the token that IS
+  sellable but takes 95% on the way out -- behind the reversibility lock
+  `SELL_TAX_GATES`, DEFAULT OFF (legitimate fee-on-transfer tokens exist; the threshold
+  wants measuring on a real corpus first, the way `EXCESSIVE_GATES` and `SYBIL_RING_GATES`
+  graduated). HOLD-only, NEVER STOP (this is inference from a simulation, not proof --
+  sanctions and payload-mismatch keep the STOP authority), FAIL-OPEN everywhere: no pool,
+  no holder, or an unreachable RPC all return `unknown`, and an unlisted token is not a
+  honeypot, it just has no market to probe. Reuses `transfer_sim` (simulation +
+  control attribution) and `dex_price.best_pool` (deepest-pool discovery, made public for
+  this). Opt-in `BLACKWALL_HONEYPOT=1` + an EVM RPC; folded via `honeypot_source`.
+  Measured: baseline GO -> HOLD on a honeypot, GO preserved on a permissioned security.
+  HOT-PATH COST, measured not assumed: pool discovery is one eth_call PER FEE TIER plus
+  the simulation, so a DEGRADED (hanging) RPC cost 7.53s end-to-end at the 2.5s default
+  -- bounded to 1.5s per call for the source this constructs itself. A payment with no
+  `acquires` never reaches the source at all (1.6ms, unchanged). The HEALTHY-path cost is
+  NOT measured: doing that honestly needs a real node, not a loopback stand-in.
+  BINDING HAZARD found here and now guarded by a STRUCTURAL PARITY TEST: adding a source
+  takes SEVEN edits, six of them signatures and the seventh a DICT LITERAL in
+  `serve_forever`'s `_BoundHandler`. Omitting that seventh raises nothing -- the handler
+  keeps its `None` default, the check never runs, and the startup banner still announces
+  it as ON. That is exactly what happened here: unit tests passed, redteam passed, and
+  the live endpoint answered in 7ms because it was doing nothing. `test_honeypot.py`
+  asserts the PROPERTY (every `*_source` on `_Handler` is bound in `serve_forever`) so
+  the next source added cannot repeat it.
+  Tests: `test_honeypot.py`, 31 tests, 8 mutations verified killed),
+    `dex_price.py` (the token's REAL on-chain market price from a Uniswap-v3 pool + a
   market-vs-NAV peg gate -- the piece the oracle-managed Pyth peg can't see (the Backed
   oracle tracks the underlying by construction, so it misses the TOKEN trading off NAV on
   an actual pool: bait/manipulated pool, thin liquidity, market depeg). `dex_token_price`
@@ -550,7 +843,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py
+ test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_honeypot.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop
@@ -571,7 +864,7 @@ underfunded payer does not gate, and an unreachable RPC fails OPEN. `test_redtea
 guards it -- the caught set may not shrink, no control may become a false positive, and
 any attack that gets GO must be an EXPLICIT `known_gap`. MUTATION-VERIFIED: disabling the
 settlement escalation, the auth replay gate, or the control-attribution each makes the
-suite fail by name. Current: 24 attacks caught, 2 documented gaps, 0 false positives.
+suite fail by name. Current: 31 attacks caught, 2 documented gaps, 0 false positives.
 
 ## Standing working practice: ALWAYS deep audit → eval → verify
 

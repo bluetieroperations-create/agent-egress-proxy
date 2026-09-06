@@ -279,6 +279,22 @@ class DexPriceSource:
     def _pool_fee(self, pool):
         return decode_uint(self._call(pool, eth_call_data("fee()")))
 
+    def best_pool(self, token, chain):
+        """PUBLIC: the token's deepest USDC pool on `chain`, or None.
+
+        Exposed because honeypot.py needs the pool ADDRESS as a transfer target --
+        the sell path it probes is "can this token move to its own market". Reaching
+        into `_best_pool_and_fee` from another module would couple that module to a
+        private; this is the same discovery the price path already runs. FAIL-OPEN.
+        """
+        try:
+            cfg = DEX_CONFIG.get((chain or "").lower())
+            if not cfg or not is_evm_address(token):
+                return None
+            return self._best_pool_and_fee(cfg["factory"], token, cfg["usdc"])[0]
+        except Exception:
+            return None
+
     def _best_pool(self, factory, token, quote):
         return self._best_pool_and_fee(factory, token, quote)[0]
 

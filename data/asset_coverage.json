@@ -1,0 +1,183 @@
+{
+ "generated_at": "2026-09-05T02:38:55Z",
+ "hosts_answered": 177,
+ "hosts_probed": 195,
+ "hosts_silent": [
+  "agentdatum.com",
+  "agents.gedx402.com",
+  "api-v3qhpbwutp.august.services",
+  "api.brazilayer.com",
+  "api.certaindata.ai",
+  "api.osf-master-server.com",
+  "api.scanna.xyz",
+  "api.tickersfeed.net",
+  "app-production-23b4.up.railway.app",
+  "app.heinrichstech.com",
+  "cdo-production.up.railway.app",
+  "cloud.hyrule.host",
+  "conc-exe.xyz",
+  "gateway.stride20k.com",
+  "innernetcorp.com",
+  "nonvisceral-eloisa-mousily.ngrok-free.dev",
+  "pmhxr44qn4qitobucm7ctgklbq0svqjb.lambda-url.ap-southeast-2.on.aws",
+  "scvd.store"
+ ],
+ "implausible": [],
+ "known_pairs": 36,
+ "malformed": [
+  {
+   "asset": "0x8AC76a51cc950d9822D68b83fE43AD4843bA77E",
+   "hosts": [
+    "apiwitchcraft.duckdns.org"
+   ],
+   "network": "eip155:56",
+   "quotes": 1
+  }
+ ],
+ "malformed_payees": [],
+ "non_usd": [
+  {
+   "asset": "0x431D5dfF03120AFA4bDf332c61A6e1766eF37BDB",
+   "decimals": 18,
+   "hosts": [
+    "api.anchor-x402.com"
+   ],
+   "max_price": "1",
+   "min_price": "1",
+   "network": "eip155:137",
+   "quotes": 1
+  },
+  {
+   "asset": "0x311935Cd80B76769bF2ecC9D8Ab7635b2139cf82",
+   "decimals": 9,
+   "hosts": [
+    "api.lastlookdata.com"
+   ],
+   "max_price": "0.004907252",
+   "min_price": "0.004907252",
+   "network": "eip155:8453",
+   "quotes": 1
+  },
+  {
+   "asset": "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42",
+   "decimals": 6,
+   "hosts": [
+    "api.relaystation.ai",
+    "api.sirenic.eu",
+    "aviation.x402.press"
+   ],
+   "max_price": "0.056125",
+   "min_price": "0.01",
+   "network": "eip155:8453",
+   "quotes": 3
+  }
+ ],
+ "permit2_entries": [
+  {
+   "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+   "host": "agent402.tools",
+   "method": "permit2",
+   "network": "eip155:8453",
+   "scheme": "upto"
+  },
+  {
+   "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+   "host": "api.aidress.ai",
+   "method": "permit2",
+   "network": "eip155:8453",
+   "scheme": "exact"
+  },
+  {
+   "asset": "0x311935Cd80B76769bF2ecC9D8Ab7635b2139cf82",
+   "host": "api.lastlookdata.com",
+   "method": "permit2",
+   "network": "eip155:8453",
+   "scheme": "exact"
+  },
+  {
+   "asset": "0x55d398326f99059fF775485246999027B3197955",
+   "host": "api.nansen.ai",
+   "method": "permit2-exact",
+   "network": "eip155:56",
+   "scheme": "exact"
+  },
+  {
+   "asset": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
+   "host": "api.nansen.ai",
+   "method": "permit2-exact",
+   "network": "eip155:56",
+   "scheme": "exact"
+  },
+  {
+   "asset": "0x55d398326f99059fF775485246999027B3197955",
+   "host": "pro-api.coinmarketcap.com",
+   "method": "permit2-exact",
+   "network": "eip155:56",
+   "scheme": "exact"
+  },
+  {
+   "asset": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
+   "host": "pro-api.coinmarketcap.com",
+   "method": "permit2-exact",
+   "network": "eip155:56",
+   "scheme": "exact"
+  },
+  {
+   "asset": "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d",
+   "host": "pro-api.coinmarketcap.com",
+   "method": "permit2-exact",
+   "network": "eip155:56",
+   "scheme": "exact"
+  },
+  {
+   "asset": "0xcE24439F2D9C6a2289F741120FE202248B666666",
+   "host": "pro-api.coinmarketcap.com",
+   "method": "permit2-exact",
+   "network": "eip155:56",
+   "scheme": "exact"
+  },
+  {
+   "asset": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+   "host": "rpc.nodeflare.app",
+   "method": "permit2",
+   "network": "eip155:137",
+   "scheme": "upto"
+  },
+  {
+   "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+   "host": "rpc.nodeflare.app",
+   "method": "permit2",
+   "network": "eip155:8453",
+   "scheme": "upto"
+  },
+  {
+   "asset": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+   "host": "rpc.nodeflare.app",
+   "method": "permit2",
+   "network": "eip155:42161",
+   "scheme": "upto"
+  },
+  {
+   "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+   "host": "x402.ottoai.services",
+   "method": "permit2",
+   "network": "eip155:8453",
+   "scheme": "exact"
+  }
+ ],
+ "priced_quotes": 370,
+ "schemes": {
+  "aggr_deferred": 1,
+  "batch-settlement": 3,
+  "exact": 363,
+  "upto": 4
+ },
+ "total_pairs": 37,
+ "total_quotes": 371,
+ "transfer_methods": {
+  "eip3009": 8,
+  "permit2": 7,
+  "permit2-exact": 6
+ },
+ "unresolved": []
+}

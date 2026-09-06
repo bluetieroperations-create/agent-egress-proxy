@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 BlueTier Operations. All rights reserved.
+// SPDX-License-Identifier: MIT
+
 /**
  * Blackwall x402 payment gate — OpenClaw/NemoClaw plugin.
  *

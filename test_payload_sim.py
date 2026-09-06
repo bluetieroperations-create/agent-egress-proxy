@@ -690,3 +690,77 @@ class TestKnownAssetOnAForeignChain(unittest.TestCase):
         payment = _payment(value="90000", asset=USDC, network="base")
         r = PS.check_payment_authorization(_claim(chain="base"), _b64(payment))
         self.assertNotIn("network", " ".join(r["mismatches"]))
+
+
+class TestXdcUsdc(unittest.TestCase):
+    """Added 2026-08-30 after `asset_coverage` surfaced it as unresolved on
+    api.402rates.com -- the first asset the coverage probe found that the table
+    did not already cover, which is the whole reason that probe exists.
+
+    Resolved under the reviewed procedure in docs/DECIMALS_AUDIT.md: read
+    `decimals()` from every public RPC chain 50 publishes. 7 of 7 answered, all
+    returned 6, symbol USDC.
+    """
+
+    XDC_USDC = "0xfA2958CB79b0491CC627c1557F441eF849Ca8eb1"
+
+    def test_it_resolves_on_its_own_chain(self):
+        # Kills: dropping the entry, which returns this asset to "unverified" and
+        # switches the amount check off for every XDC payment.
+        self.assertEqual(PS.known_decimals(
+            {"asset": self.XDC_USDC, "chain": "eip155:50"}), 6)
+
+    def test_the_same_address_on_another_chain_does_not_match(self):
+        # Kills: adding it to the address-only table. Chain 50 is not Base.
+        self.assertIsNone(PS.known_decimals(
+            {"asset": self.XDC_USDC, "chain": "eip155:8453"}))
+
+    def test_a_caller_cannot_rescale_it(self):
+        # Kills: letting request-supplied decimals win for a newly added asset --
+        # the same HIGH finding the chain table was built to close.
+        claim = {"asset": self.XDC_USDC, "chain": "eip155:50"}
+        self.assertEqual(PS.resolve_decimals(claim, 18), 6)
+        self.assertTrue(PS.decimals_conflict(claim, 18))
+
+
+class TestWrappedSolOnBase(unittest.TestCase):
+    """`0x3119...cf82` on Base, surfaced by the monthly asset_coverage run on
+    api.lastlookdata.com -- the first NON-STABLECOIN in the corpus, and the first
+    Base asset that is not 6 decimals.
+
+    Resolved under the reviewed procedure in docs/DECIMALS_AUDIT.md: 6 of the 10
+    public Base RPCs answered, all 6 returned decimals=9, symbol=SOL,
+    name=Solana; 0 disagreements. Corroborated by the corpus -- the same host
+    quotes the same resource at 0.5 USDC, and 4913039 at 9 decimals is 0.004913
+    SOL, the same half-dollar.
+    """
+
+    SOL_BASE = "0x311935Cd80B76769bF2ecC9D8Ab7635b2139cf82"
+
+    def test_it_resolves_to_nine_not_six(self):
+        # Kills: dropping the entry OR assuming Base means 6. At the corpus
+        # default this $0.50 quote reads as 4.91 SOL -- roughly 1000x, and the
+        # exact mis-scaling the chain table exists to prevent.
+        self.assertEqual(PS.known_decimals(
+            {"asset": self.SOL_BASE, "chain": "eip155:8453"}), 9)
+
+    def test_the_live_quote_lands_at_the_price_the_seller_advertises(self):
+        # Kills: an off-by-a-power entry. This is the corroboration, not a
+        # restatement of the table: the host's USDC leg for the SAME resource is
+        # 0.5, so the SOL leg must land near it in dollars, not 1000x away.
+        decimals = PS.known_decimals(
+            {"asset": self.SOL_BASE, "chain": "eip155:8453"})
+        self.assertAlmostEqual(4913039 / (10 ** decimals), 0.004913039)
+
+    def test_the_same_address_on_another_chain_does_not_match(self):
+        # Kills: adding it to the address-only table, which would apply 9
+        # decimals to whatever happens to share this address elsewhere.
+        self.assertIsNone(PS.known_decimals(
+            {"asset": self.SOL_BASE, "chain": "eip155:137"}))
+
+    def test_a_caller_cannot_rescale_it(self):
+        # Kills: letting request-supplied decimals win -- the same HIGH finding
+        # the chain table was built to close.
+        claim = {"asset": self.SOL_BASE, "chain": "eip155:8453"}
+        self.assertEqual(PS.resolve_decimals(claim, 6), 9)
+        self.assertTrue(PS.decimals_conflict(claim, 6))
