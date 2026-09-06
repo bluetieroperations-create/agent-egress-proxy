@@ -282,6 +282,62 @@ class Backend(unittest.TestCase):
             b.append("x")
 
 
+class ResponseCap(unittest.TestCase):
+    """AUDIT FINDING. The KV is a THIRD PARTY, and _urllib_transport read its
+    response with an unbounded r.read() -- a compromised or merely broken store
+    answering with a huge body would be buffered straight into memory on a 512MB
+    box. http_util.py caps its reads for exactly this reason; this path did not.
+
+    Exercised against a REAL server because the injected fake transport in the
+    other tests bypasses _urllib_transport entirely -- the cap lives in the one
+    function those tests never call.
+    """
+
+    def serve(self, nbytes):
+        import threading as _t
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class H(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                blob = b'{"result":["' + b"A" * nbytes + b'"]}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(blob)))
+                self.end_headers()
+                self.wfile.write(blob)
+
+            def log_message(self, *a):
+                pass
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        _t.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        return "http://127.0.0.1:%d" % srv.server_address[1]
+
+    def test_oversized_response_is_refused_not_buffered(self):
+        """MUTATION: r.read() with no limit. The read succeeds, the process
+        balloons, and on a small instance the durability feature is what kills
+        the service it exists to protect."""
+        url = self.serve(200_000)
+        old = rl.MAX_RESPONSE_BYTES
+        rl.MAX_RESPONSE_BYTES = 50_000
+        try:
+            b = UpstashBackend(url, "tok")
+            with self.assertRaises(rl.RemoteLedgerError):
+                b.read_all()
+        finally:
+            rl.MAX_RESPONSE_BYTES = old
+
+    def test_normal_response_still_works_through_the_real_transport(self):
+        """RESTRAINT CONTROL: the cap must not break the ordinary path. Without
+        this, a cap set absurdly low would pass the test above and silently
+        disable mirroring entirely."""
+        url = self.serve(10)
+        b = UpstashBackend(url, "tok")
+        self.assertEqual(b.read_all(), ["A" * 10])
+
+
 # ===========================================================================
 # DurableEventLedger
 # ===========================================================================

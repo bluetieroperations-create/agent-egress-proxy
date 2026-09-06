@@ -99,6 +99,14 @@ MIRROR_BACKOFF = 0.25
 # full queue would eventually do.
 DEFAULT_QUEUE_MAX = 10000
 
+# Cap on a single KV response. The store is a THIRD PARTY: a compromised or
+# merely broken one answering with an unbounded body would be read straight into
+# memory on a 512MB box. http_util.py caps its reads for exactly this reason;
+# this path did not, which was an omission rather than a decision. 64MB is far
+# above a real ledger page (a record is a few hundred bytes) and far below what
+# would exhaust the instance.
+MAX_RESPONSE_BYTES = 64 * 1024 * 1024
+
 
 class RemoteLedgerError(Exception):
     """Any transport/protocol failure talking to the KV store. Callers on the
@@ -267,7 +275,14 @@ def unseal(key, blob):
 def _urllib_transport(url, headers, body, timeout):
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.status, r.read()
+        # Read ONE byte past the cap so an oversized body is detected rather
+        # than silently truncated into unparseable JSON.
+        raw = r.read(MAX_RESPONSE_BYTES + 1)
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise RemoteLedgerError(
+                "kv response exceeds %d bytes; refusing to buffer it"
+                % MAX_RESPONSE_BYTES)
+        return r.status, raw
 
 
 class UpstashBackend:

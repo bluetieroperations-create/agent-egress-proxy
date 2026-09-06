@@ -519,6 +519,21 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   in local socket buffers, so neither condition reproduces. Their evidence is
   the real-path measurement, and `test_every_client_gets_an_HTTP_RESPONSE_not_a_reset`
   says so in its docstring instead of implying coverage it does not have.
+  PRE-DEPLOY AUDIT found a HIGH one this had introduced: `/healthz` went through
+  the SAME ceiling, so under saturation a health check could be shed with 503 --
+  and a platform that restarts an instance on a failed health check turns
+  load-shedding into an OUTAGE, strictly worse than the 502s being replaced. It
+  measured clean live (25/25 while 34 verdicts shed) purely by timing luck, since
+  verdicts are 3.4ms and permits turned over between probes. Health is now exempt
+  via a NON-BLOCKING MSG_PEEK at bytes the kernel already holds (never waits --
+  blocking on the accept loop is the same mistake as the drain above), and the
+  exemption is ITSELF capped (`MAX_EXEMPT_INFLIGHT`) because an exemption is not
+  a bypass: a flood of GET /healthz would otherwise restore unbounded threads.
+  Verified under REAL saturation: ceiling=1 with 50 flooding threads (2391 shed,
+  2318 served) and 40/40 health probes returned 200.
+  Also fixed: `_refusing` leaked if `Thread.start()` raised, so after
+  MAX_REFUSE_THREADS such failures NO refusal would ever drain again and the
+  RSTs returned permanently.
   Ceiling via `BLACKWALL_MAX_INFLIGHT` (default 40, the last clean rung
   measured); always re-measure on the box you actually run on.
   Tests: `test_bounded_server.py`, 7 tests, 5 of 7 mutations killed (the 2
@@ -557,7 +572,18 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   across a full container wipe, with zero plaintext (not the counterparty, amount,
   asset, outcome, or even the JSON field names) visible to the provider. SHARP
   EDGE: lose `BLACKWALL_LEDGER_KEY` and the log is unreadable -- rows under an old
-  key are skipped, counted, and announced in the boot banner. See
+  key are skipped, counted, and announced in the boot banner.
+  PRE-DEPLOY AUDIT, two more: (1) `close()` was implemented, unit-tested and
+  CALLED BY NOTHING -- the wired-and-inert pattern again -- so every record still
+  queued at shutdown was lost, and a REDEPLOY is exactly when that queue is
+  non-empty; and the obvious fix would have been inert too, because it only ran
+  on KeyboardInterrupt while a platform stops a container with SIGTERM. Both
+  wired; verified 12/12 rows mirrored on a real SIGTERM. (2) the KV response was
+  read with an unbounded `r.read()` -- the store is a THIRD PARTY, and a broken
+  or hostile one could be buffered straight into a 512MB box; `http_util.py`
+  caps its reads for exactly this reason and this path did not. Capped at 64MB,
+  with a restraint control so an over-tight cap cannot silently disable
+  mirroring. See
   `docs/DURABLE_LEDGER.md`. Tests: `test_remote_ledger.py`, 36 tests, 23 mutations
   verified killed),
   `http_util.py` (hardened JSON GET for the live data path: retry+backoff on
