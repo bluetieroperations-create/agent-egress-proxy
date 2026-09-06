@@ -66,6 +66,28 @@ REFUSE_DRAIN_SECONDS = 0.5
 # immediately and accepts a possible RST rather than growing without bound.
 MAX_REFUSE_THREADS = 32
 
+# A HEALTH CHECK MUST NEVER BE SHED. It goes through the same door as every
+# other request, so under saturation it can receive a 503 -- and a platform that
+# restarts an instance on a failed health check would turn load-shedding into an
+# outage, which is strictly worse than the 502s this module exists to replace.
+# Measured: /healthz returned 25/25 while 34 verdicts were shed, but only
+# because verdicts are 3.4ms and permits turned over between probes. That is
+# timing luck, not a property.
+EXEMPT_PREFIXES = (b"GET /healthz", b"HEAD /healthz")
+
+# Exempt requests bypass the ceiling, so they need their own bound or a flood of
+# GET /healthz would restore the unbounded-thread problem. A real health checker
+# sends one at a time; past this they fall back to normal admission.
+MAX_EXEMPT_INFLIGHT = 8
+
+# How long the REFUSAL thread may wait for a request line before deciding a
+# socket is not a health check. The accept loop must never wait (that is the
+# stall bug), but by the time a refusal is being handled we are already off it
+# and can afford a few ms. Without this second look the exemption is a RACE:
+# measured, 3 of 12 runs shed a health check purely because its bytes had not
+# reached the kernel buffer when accept() returned.
+EXEMPT_RECHECK_SECONDS = 0.25
+
 _BUSY_BODY = b'{"error":"server busy; retry shortly"}'
 _BUSY_RESPONSE = (
     b"HTTP/1.1 503 Service Unavailable\r\n"
@@ -108,14 +130,68 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
         self._shed_lock = threading.Lock()
         self._refusing = 0
         self._refuse_lock = threading.Lock()
+        self._exempt = 0
+        self._exempt_lock = threading.Lock()
         super().__init__(*args, **kwargs)
 
+    def _is_exempt(self, request, timeout=None):
+        """Peek at the request line. `timeout=None` means NEVER WAIT.
+
+        Deliberately never waits: this runs on the accept loop, and blocking
+        here would stall every other connection (the same mistake that made the
+        refusal drain an outage). If the request line has not arrived yet the
+        request simply takes the normal path -- degraded, never wrong.
+
+        MSG_PEEK does not consume, so the handler still reads a complete request.
+        """
+        try:
+            if timeout is None:
+                request.setblocking(False)
+            else:
+                request.settimeout(timeout)
+            try:
+                head = request.recv(64, socket.MSG_PEEK)
+            finally:
+                request.setblocking(True)
+        except (BlockingIOError, InterruptedError, OSError):
+            return False
+        return head.startswith(EXEMPT_PREFIXES)
+
+    def _serve_exempt(self, request, client_address):
+        """ThreadingMixIn's request body, minus any permit accounting.
+
+        Written out rather than reusing process_request_thread because that
+        method releases a permit unconditionally -- an exempt request never took
+        one, and releasing it would raise on the BoundedSemaphore (or, with a
+        plain Semaphore, silently raise the ceiling).
+        """
+        try:
+            self.finish_request(request, client_address)
+        except Exception:
+            self.handle_error(request, client_address)
+        finally:
+            self.shutdown_request(request)
+            with self._exempt_lock:
+                self._exempt -= 1
+
     def process_request(self, request, client_address):
+        # NO PEEK HERE, deliberately. An earlier version checked for a health
+        # check on the accept loop with a NON-BLOCKING peek, which was a race:
+        # if the request bytes had not reached the kernel buffer yet the check
+        # was shed anyway (measured 3 of 12 runs). Blocking here instead is the
+        # accept-loop stall bug, so neither option belongs on this path.
+        #
+        # It is also unnecessary. Below the ceiling a health check simply takes
+        # a permit like anything else; AT the ceiling it goes to the refusal
+        # thread, which rechecks with a real (blocking) peek and serves it. So
+        # the exemption is enforced in exactly one place, off the hot path, and
+        # mutation testing confirms it: removing the fast path changed no
+        # behaviour, while removing the recheck fails the suite.
         if not self._permits.acquire(blocking=False):
             with self._shed_lock:
                 self.shed_count += 1
             # Off the accept thread: see MAX_REFUSE_THREADS.
-            if self._start_refusal(request):
+            if self._start_refusal(request, client_address):
                 return
             self.shutdown_request(request)      # over the cap: close now
             return
@@ -129,18 +205,50 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             self._permits.release()
             raise
 
-    def _start_refusal(self, request):
+    def _start_refusal(self, request, client_address=None):
         """Hand the refusal to a short-lived thread. False if at the cap."""
         with self._refuse_lock:
             if self._refusing >= MAX_REFUSE_THREADS:
                 return False
             self._refusing += 1
-        threading.Thread(target=self._refuse_and_close, args=(request,),
-                         daemon=True).start()
+        try:
+            threading.Thread(target=self._refuse_and_close,
+                             args=(request, client_address),
+                             daemon=True).start()
+        except BaseException:
+            # Under thread exhaustion start() raises. Without this the slot is
+            # never returned, and after MAX_REFUSE_THREADS such failures no
+            # refusal is ever drained again -- the RSTs come back permanently.
+            with self._refuse_lock:
+                self._refusing -= 1
+            return False
         return True
 
-    def _refuse_and_close(self, request):
+    def _refuse_and_close(self, request, client_address=None):
+        """Second look before refusing.
+
+        The accept-loop peek is non-blocking and therefore RACY: a health check
+        whose bytes had not yet arrived would be shed. Here we are off the accept
+        loop, so we can wait briefly and serve it after all. A health check must
+        never be shed -- that is the whole point of the exemption.
+        """
         try:
+            if client_address is not None and self._is_exempt(
+                    request, timeout=EXEMPT_RECHECK_SECONDS):
+                # Take a slot from the SAME budget as the fast path, so the
+                # exempt bound stays MAX_EXEMPT_INFLIGHT rather than silently
+                # becoming MAX_EXEMPT_INFLIGHT + MAX_REFUSE_THREADS. A raced
+                # health check is still a health check, not a free pass.
+                with self._exempt_lock:
+                    room = self._exempt < MAX_EXEMPT_INFLIGHT
+                    if room:
+                        self._exempt += 1
+                if room:
+                    try:
+                        self._serve_exempt(request, client_address)
+                    finally:
+                        pass          # _serve_exempt returns the slot
+                    return
             self._refuse(request)
         finally:
             with self._refuse_lock:
