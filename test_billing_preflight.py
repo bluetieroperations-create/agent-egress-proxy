@@ -536,6 +536,92 @@ class TestCorpusResolution(unittest.TestCase):
         self.assertIn("/nope/directory.json", row["detail"])
 
 
+class TestDeployBlueprints(unittest.TestCase):
+    """The three blueprints must agree on the pricing knobs.
+
+    They did not. render.yaml carried free_below $0.01 with a comment measuring
+    it at 46 of 265 payees billable, while fly.toml and render-free.yaml carried
+    $10.00 -- which that same comment calls UNREACHABLE. Measured with this
+    module: $10.00 bills 0-6 of 265, $0.01 bills 46-164. Two deploy targets shipped
+    the config a third documented as broken, and nothing compared them.
+    """
+
+    KEYS = ("BLACKWALL_VALUE_PRICING", "BLACKWALL_FREE_BELOW",
+            "BLACKWALL_MIN_FEE", "BLACKWALL_MAX_FEE_RATIO_BPS")
+
+    def _knobs(self, path):
+        """Pull key/value pairs without a YAML or TOML parser (stdlib-only)."""
+        import re
+        text = open(path, encoding="utf-8").read()
+        found = {}
+        for key in self.KEYS:
+            # render: `- key: NAME` then `value: "x"`. fly: `NAME = "x"`.
+            m = (re.search(r'key:\s*%s\s*\n\s*value:\s*"([^"]*)"' % key, text)
+                 or re.search(r'^\s*%s\s*=\s*"([^"]*)"' % key, text, re.M))
+            if m:
+                found[key] = m.group(1)
+        return found
+
+    def test_all_blueprints_agree_on_the_pricing_knobs(self):
+        # Mutation: reverting either blueprint to free_below 10.00. That config
+        # deploys a paid tier no live payee can reach, and the service looks
+        # healthy while collecting nothing -- the exact failure this whole module
+        # exists to surface.
+        paths = ["render.yaml", "render-free.yaml", "fly.toml"]
+        knobs = {p: self._knobs(p) for p in paths}
+        for key in self.KEYS:
+            values = {p: k.get(key) for p, k in knobs.items()}
+            self.assertEqual(len(set(values.values())), 1,
+                             "%s disagrees across blueprints: %s" % (key, values))
+
+    def test_the_shipped_pricing_actually_collects(self):
+        # Mutation: agreeing on a value that bills nobody. Agreement is not
+        # enough -- three blueprints can be consistently wrong.
+        from x402 import PricingPolicy
+        knobs = self._knobs("render.yaml")
+        policy = PricingPolicy(free_below=knobs["BLACKWALL_FREE_BELOW"],
+                               min_fee=knobs["BLACKWALL_MIN_FEE"],
+                               max_fee_ratio_bps=knobs["BLACKWALL_MAX_FEE_RATIO_BPS"])
+        points = bp.price_points(bp.load_corpus())
+        proj = bp.project_revenue(policy.fee_atomic, points)
+        self.assertEqual(bp.check_revenue(proj)["status"], bp.OK)
+        self.assertEqual(
+            bp.check_proportionality(policy.fee_atomic, points,
+                                     bound_bps=int(knobs["BLACKWALL_MAX_FEE_RATIO_BPS"])
+                                     )["status"], bp.OK)
+
+
+class TestEnvDefaults(unittest.TestCase):
+    def test_the_cli_reads_the_deploy_environment(self):
+        # Mutation: hardcoding the CLI defaults. A preflight that can only check
+        # its own defaults cannot check the config that is actually deployed --
+        # which is the only config anyone cares about.
+        import io
+        import os
+        from contextlib import redirect_stdout
+        saved = {k: os.environ.get(k) for k in
+                 ("BLACKWALL_PAY_TO", "BLACKWALL_VALUE_PRICING",
+                  "BLACKWALL_FREE_BELOW", "BLACKWALL_MIN_FEE")}
+        os.environ.update({"BLACKWALL_PAY_TO": GOOD,
+                           "BLACKWALL_VALUE_PRICING": "1",
+                           "BLACKWALL_FREE_BELOW": "0.01",
+                           "BLACKWALL_MIN_FEE": "0.0001"})
+        try:
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = bp.main(["--offline"])
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        text = out.getvalue()
+        self.assertIn("VALUE pricing", text)
+        self.assertIn("free at or below 0.01", text)
+        self.assertEqual(code, 0, text)
+
+
 class TestCommittedCorpus(unittest.TestCase):
     """Tripwire: the shipped numbers must stay reproducible from the artifact.
 

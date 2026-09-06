@@ -477,6 +477,56 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   core; network and corpus injected; exits 0/1/2 (ready / a person should look / it
   would not work) so a scheduled run is actionable. Tests:
   `test_billing_preflight.py`, 66 tests, 30 mutations verified killed),
+  `seller_report.py` (the SELLER side -- "why agents are not paying you". Every
+  other gate here serves the BUYER; this is the first thing that serves the party
+  being screened, and it needs no new data: one payee or host, the committed
+  corpus, and one live probe. THE HEADLINE is that the seller is run through the
+  REAL engine (`decide_payment`), so they learn the verdict a buyer's agent
+  actually gets and its reasons, not our opinion of their endpoint. The finding
+  they cannot get anywhere else is CROSS-PAYEE demand authenticity: a
+  receipt-window analysis can see that 200 addresses paid you, but only a
+  cross-payee graph can see that not one of them ever paid anybody else -- the
+  evidence lives in the OTHER payees, so no sample size fixes it. FOUR RULES, each
+  from a specific past mistake: (1) NEVER REPORT OUR OWN STALE ARTIFACT AS THE
+  SELLER'S BUG -- `data/liveness.json`'s `class` field predates the
+  `payment-required` carrier and still says 86 of 195 hosts serve an unreadable
+  402, so reading it would tell ~68 sellers their challenge is broken because OUR
+  parser was incomplete; parseability is derived LIVE or reported NOT CHECKED, and
+  the test asserts that against the source rather than trusting the docstring.
+  (2) SILENT IS NOT BROKEN -- an unreachable host yields `unknown`, never a
+  defect (the payee_syntax lesson). (3) A REPORT MUST NEVER BECOME AN INPUT TO THE
+  GATE THAT SCORES THE SAME SELLER, or the diagnostic is a laundering step;
+  structurally tested. (4) EVERYTHING ECHOED IS UNTRUSTED -- host, payee and
+  category are authored by the party being reported on and this text is mailed to
+  them; FIFTH instance of that class here. FOUR BUGS FOUND BY RUNNING IT LIVE, all
+  fixed, and all of the kind that only appears when a diagnostic is pointed at a
+  real business: (a) TWO BUSINESSES IN ONE REPORT -- blockrun.ai carries three
+  payees, and the CLI resolved the probe and payer graph from `matches[0]` while
+  the report described `max(settlement_count)`, so one payee's graph ("26 payers
+  corroborated") landed in another's report ("1 distinct payer, possible
+  wash-trading") with the numbers contradicting each other on the page; fixed
+  structurally, `select_subject` is the ONE selection site and callers pass
+  FUNCTIONS so nothing can resolve against a different row. (b) CONGRATULATED A
+  SELLER ON ABSENT EVIDENCE -- the engine's Sybil flags need a minimum payer count
+  to fire, so a payee with ONE payer tripped neither and fell into the positive
+  branch: "0 of your payers also pay other known endpoints, which is the
+  hard-to-fake half of a reputation", marked ok. Fixed with three MEASURED tiers:
+  zero corroboration is 11 of 266 endpoints (4.1%) against a median of 10, so it
+  is a real warning, and every tier now quotes that median -- which turns an
+  accusation into a measurement the seller can check. (c) ACCUSED A GIFT-CARD
+  MERCHANT OF GOUGING -- Bitrefill's dearest option is $1000 against a $0.25
+  commerce median, reported as "4000x your category". The hull hazard from
+  `advertised_prices.py`, compounded by the fact that the engine gates on the
+  AMOUNT PAID rather than the listing, so judging the listing was stricter than
+  the engine AND wrong about it; now stated as the engine's real consequence
+  (where the hold line sits, which of your options cross it). (d) THE FLAGSHIP
+  FINDING WAS UNREACHABLE -- `PayerReputationSource` takes EDGES, and passing the
+  store raised a TypeError the fail-soft turned into a benign "not assessed", so
+  the one unique finding never ran through the CLI while every test passed; the
+  wired-and-inert pattern, fourth time here. Descriptive only: nothing gates,
+  scores, or changes a verdict. Exits 0/1/2 so a batch run is actionable. See
+  `docs/SELLER_SIDE.md`. Tests: `test_seller_report.py`, 40 tests, 23 mutations
+  verified killed),
   `payee_syntax.py` (is the address the agent is about to PAY a possible address?
   Found in the wild by `asset_coverage` on 2026-08-30: a live seller advertised a
   Solana `payTo` with `FACILITATOR_URL=https://...` concatenated onto it -- almost
@@ -891,7 +941,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_honeypot.py test_billing_preflight.py
+ test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_honeypot.py test_billing_preflight.py test_seller_report.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop

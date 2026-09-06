@@ -740,17 +740,29 @@ def main(argv=None):
     import argparse
 
     p = argparse.ArgumentParser(description=__doc__.split("\n")[1])
-    p.add_argument("--pay-to", help="the funded EVM wallet billing would pay to")
-    p.add_argument("--facilitator", help="x402 facilitator base URL")
-    p.add_argument("--network", default="base")
-    p.add_argument("--asset", help="billing asset (default: USDC for the network)")
-    p.add_argument("--price", default="0.001", help="flat per-forecast price")
-    p.add_argument("--value-pricing", action="store_true")
-    p.add_argument("--free-below", default="1.00")
-    p.add_argument("--bps", default="10")
-    p.add_argument("--min-fee", default="0.001")
-    p.add_argument("--max-fee", default="0.10")
-    p.add_argument("--max-fee-ratio-bps", default="100")
+    # Every flag defaults to the env var the SERVER reads, so running this with a
+    # deploy's environment loaded checks THAT config rather than a set of
+    # defaults nothing is actually running. Two blueprints once carried a
+    # free_below a third documented as unreachable; a preflight that could only
+    # check its own defaults would not have caught it.
+    env = os.environ.get
+    p.add_argument("--pay-to", default=env("BLACKWALL_PAY_TO"),
+                   help="the funded EVM wallet billing would pay to")
+    p.add_argument("--facilitator", default=env("BLACKWALL_FACILITATOR"),
+                   help="x402 facilitator base URL")
+    p.add_argument("--network", default=env("BLACKWALL_NETWORK", "base"))
+    p.add_argument("--asset", default=env("BLACKWALL_ASSET"),
+                   help="billing asset (default: USDC for the network)")
+    p.add_argument("--price", default=env("BLACKWALL_PRICE", "0.001"),
+                   help="flat per-forecast price")
+    p.add_argument("--value-pricing", action="store_true",
+                   default=bool(env("BLACKWALL_VALUE_PRICING")))
+    p.add_argument("--free-below", default=env("BLACKWALL_FREE_BELOW", "1.00"))
+    p.add_argument("--bps", default=env("BLACKWALL_PRICE_BPS", "10"))
+    p.add_argument("--min-fee", default=env("BLACKWALL_MIN_FEE", "0.001"))
+    p.add_argument("--max-fee", default=env("BLACKWALL_MAX_FEE", "0.10"))
+    p.add_argument("--max-fee-ratio-bps",
+                   default=env("BLACKWALL_MAX_FEE_RATIO_BPS", "100"))
     p.add_argument("--corpus", default=None,
                    help="price corpus to project against (default: the "
                         "committed data/directory.json beside this script)")
@@ -759,11 +771,9 @@ def main(argv=None):
     p.add_argument("--json", metavar="PATH", help="also write the report as JSON")
     args = p.parse_args(argv)
 
-    import os
     report = preflight(
         args.pay_to, facilitator=args.facilitator, network=args.network,
-        cdp_id=os.environ.get("CDP_API_KEY_ID"),
-        cdp_secret=os.environ.get("CDP_API_KEY_SECRET"),
+        cdp_id=env("CDP_API_KEY_ID"), cdp_secret=env("CDP_API_KEY_SECRET"),
         asset=args.asset, price=args.price, value_pricing=args.value_pricing,
         knobs={"free_below": args.free_below, "bps": args.bps,
                "min_fee": args.min_fee, "max_fee": args.max_fee,
