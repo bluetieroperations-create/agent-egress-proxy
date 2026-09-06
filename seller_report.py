@@ -162,8 +162,8 @@ def assess_reach(probe):
     """
     if probe is None:
         return finding("reach", UNKNOWN, "Reachability not checked",
-                       "Run without --offline to probe the endpoint.",
-                       evidence="no probe performed")
+                       "This report was produced without contacting your "
+                       "endpoint.", evidence="no probe performed")
     if probe.get("error"):
         return finding("reach", UNKNOWN, "We could not reach your endpoint",
                        "We got no usable answer (%s). This is a statement about "
@@ -440,8 +440,8 @@ def assess_demand_authenticity(row, cross_signal, store_error=None):
                            "(%s)." % _safe(store_error, 160),
                            evidence="payer graph failed to load")
         return finding("demand", UNKNOWN, "Demand authenticity not assessed",
-                       "This needs the cross-payee payer graph; pass --store.",
-                       evidence="no payer graph supplied")
+                       "The cross-payee payer graph was not available for this "
+                       "report.", evidence="no payer graph supplied")
 
     established = cross_signal.get("established_payers") or 0
     payers = cross_signal.get("distinct_payers")
@@ -644,6 +644,78 @@ def load_json(path, default):
         return default
 
 
+# ---------------------------------------------------------------------------
+# Probe safety: where the URL we fetch actually comes from
+# ---------------------------------------------------------------------------
+# A resource URL is NOT our data. `discovery_crawl` harvests it from a stranger's
+# own x402 advertisement, so it is attacker-authored content that we store and
+# later FETCH. Today's corpus is clean -- measured 2026-09-06: 3827 resources,
+# all https, no IP literals, no private hosts -- but it is refreshed by crawling
+# third parties, and nothing stops the next crawl from picking up
+# `https://169.254.169.254/x402` or a hostname that resolves there. The report
+# then echoes the status and the error string, which is a usable oracle for
+# mapping whatever network this process runs in.
+#
+# So the probe validates its own target. Latent rather than live is the right
+# time to fix this: the fix is cheap, and the corpus refreshes on a schedule.
+#
+# RESIDUAL GAP, stated rather than implied: this resolves and then lets urllib
+# resolve again, so a name that answers differently on the second lookup (DNS
+# rebinding) is not covered. Closing that needs connecting to the pinned address
+# with the Host header preserved, which is a bigger change than this warrants
+# while every corpus host is a public CDN name.
+ALLOWED_SCHEMES = ("https", "http")
+
+
+def _resolve(hostname):
+    import socket
+    return [info[4][0] for info in socket.getaddrinfo(hostname, None)]
+
+
+def safe_probe_url(url, resolve=None):
+    """(ok, reason). False means: do not fetch this, and say why.
+
+    Refuses anything whose host resolves to an address that is not on the public
+    internet -- loopback, private, link-local (the cloud metadata range),
+    reserved or multicast -- plus non-HTTP schemes and embedded credentials.
+    """
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    if resolve is None:
+        resolve = _resolve
+    try:
+        parts = urlsplit(str(url))
+    except Exception:
+        return False, "unparseable url"
+    if parts.scheme.lower() not in ALLOWED_SCHEMES:
+        return False, "scheme %s is not http(s)" % _safe(parts.scheme, 20)
+    # `user@host` forms let a crafted URL disagree with what a human reads.
+    if "@" in (parts.netloc or ""):
+        return False, "url carries embedded credentials"
+    host = parts.hostname
+    if not host:
+        return False, "url has no host"
+    try:
+        addresses = resolve(host)
+    except Exception as e:
+        return False, "host does not resolve (%s)" % _safe(e, 60)
+    if not addresses:
+        return False, "host does not resolve"
+    for address in addresses:
+        try:
+            ip = ipaddress.ip_address(str(address).split("%")[0])
+        except ValueError:
+            return False, "unreadable address for host"
+        # EVERY resolved address must be public: a name answering with one
+        # public and one private address would otherwise pass and then connect
+        # to whichever the OS picked.
+        if not ip.is_global or ip.is_multicast:
+            return False, "host resolves to a non-public address"
+    return True, "ok"
+
+
+
 def probe_endpoint(url, timeout=12.0, fetch=None):
     """One GET, returning body+headers whatever the status.
 
@@ -652,6 +724,12 @@ def probe_endpoint(url, timeout=12.0, fetch=None):
     """
     if fetch is not None:
         return fetch(url)
+    ok, reason = safe_probe_url(url)
+    if not ok:
+        # Not an error to report as the seller's: it is us declining to fetch a
+        # URL we harvested. Surfaced as a probe error so it reads as "we did not
+        # look", which is exactly what happened.
+        return {"url": url, "error": "not probed: %s" % reason}
     req = urllib.request.Request(url, headers={"accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:

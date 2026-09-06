@@ -527,6 +527,53 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   scores, or changes a verdict. Exits 0/1/2 so a batch run is actionable. See
   `docs/SELLER_SIDE.md`. Tests: `test_seller_report.py`, 40 tests, 23 mutations
   verified killed),
+  `seller_portal.py` (the DELIVERY MECHANISM for the seller diagnostic --
+  `seller_report` ran on a laptop, which is not a product: a seller could not get
+  one without us mailing it, and the seller email has been blocked for weeks.
+  Serves it self-serve at `/r/<address-or-host>` (`?format=json` for machines),
+  so "why is nobody buying from me" is answered by a link rather than a campaign.
+  A SEPARATE PROCESS on purpose, for three reasons: (1) `seller_report`'s rule 3
+  says the engine must never import the report, and serving from `blackwall.py`
+  would make that structural test a lie; (2) the threat surfaces genuinely
+  differ -- the verdict API takes JSON from an agent, this takes a string from a
+  BROWSER and renders HTML back, which is an XSS surface the verdict API does not
+  have, and a defect in a public renderer must not reach the process holding the
+  signing keys; (3) it can be deployed, restarted or switched off without
+  touching the endpoint agents depend on. PUBLIC rather than per-seller
+  authenticated because every finding derives from public data and is the SAME
+  answer `/v1/forecast-payment` already returns to any anonymous caller about
+  that payee -- publishing it discloses nothing new, while withholding it would
+  only mean a seller cannot see what every buyer already can.
+  THE SECURITY FINDING, LATENT NOT LIVE: a resource URL is NOT our data --
+  `discovery_crawl` harvests it from a stranger's own x402 advertisement, so it
+  is attacker-authored content we store and later FETCH. Measured 2026-09-06 the
+  corpus is clean (3827 resources, all https, no IP literals, no private hosts),
+  but it is refreshed by crawling third parties and nothing stopped the next
+  crawl carrying `https://169.254.169.254/x402` or a name resolving there, after
+  which the report echoes the status and error string -- a usable oracle for
+  mapping whatever network this runs in. `seller_report.safe_probe_url` now
+  refuses non-HTTP schemes, embedded credentials (`https://trusted@evil/x` reads
+  as "trusted" to a human scanning the corpus), and any host where ANY resolved
+  address is loopback/private/link-local/reserved -- every address, because a
+  name answering with one public and one private would otherwise pass and let
+  the OS pick. RESIDUAL GAP stated rather than implied: resolve-then-connect is
+  a TOCTOU, so DNS rebinding is uncovered; closing it needs connecting to the
+  pinned address with the Host header preserved. OTHER PROPERTIES, each
+  mutation-tested: a caller's key can NEVER become the probe target (it is only
+  ever a corpus lookup, and an unknown key makes ZERO network calls); everything
+  echoed is HTML-escaped (SIXTH instance of the untrusted-echo class here and the
+  first that is XSS rather than a forged log line) under a `default-src 'none'`
+  CSP; reports are cached (TTL + bounded LRU) so a refresh does not re-hit the
+  seller and an enumeration flood stays cheap -- misses are cached too; the payer
+  graph is precomputed at BOOT, never per request, since building it takes
+  minutes over the real corpus (the `issuer_trust_gate` pattern); the form
+  redirects through `/go` into a shareable `/r/<key>` URL with the key
+  percent-encoded so `//evil.com` cannot become a protocol-relative open
+  redirect; and it is rate-limited per client because each report costs a
+  STRANGER a request. Verified live against the real corpus: 266 payees, 266 with
+  a precomputed graph. See `docs/SELLER_SIDE.md`. Tests:
+  `test_seller_portal.py`, 32 tests incl. a real server, 19 mutations verified
+  killed),
   `payee_syntax.py` (is the address the agent is about to PAY a possible address?
   Found in the wild by `asset_coverage` on 2026-08-30: a live seller advertised a
   Solana `payTo` with `FACILITATOR_URL=https://...` concatenated onto it -- almost
@@ -941,7 +988,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_honeypot.py test_billing_preflight.py test_seller_report.py
+ test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_honeypot.py test_billing_preflight.py test_seller_report.py test_seller_portal.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop

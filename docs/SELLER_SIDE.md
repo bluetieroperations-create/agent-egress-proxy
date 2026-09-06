@@ -62,6 +62,46 @@ only appears when a diagnostic is pointed at a real business:
 
 Guarded by `test_seller_report.py` — 40 tests, 23 mutations verified killed.
 
+**DELIVERED** — `seller_portal.py`. The report ran on a laptop, which is not a
+product: a seller could not get one without us mailing it, and the seller email
+has been blocked for weeks. `python3 seller_portal.py --store rep.db` serves it
+self-serve at `/r/<address-or-host>` (add `?format=json` for machines), so the
+answer to "why is nobody buying from me" is a link rather than a campaign.
+
+A **separate process** on purpose. `seller_report`'s rule 3 says the engine must
+never import the report; serving it from `blackwall.py` would make that
+structural test a lie. The threat surfaces also differ — the verdict API takes
+JSON from an agent, this takes a string from a browser and renders HTML back —
+and a defect in a public HTML renderer must not be able to reach the process
+holding the signing keys.
+
+Public rather than per-seller authenticated, because every finding is derived
+from public data and is the same answer `/v1/forecast-payment` already returns to
+any anonymous caller about that payee. Publishing it discloses nothing new.
+
+**The security finding, and it was latent rather than live.** A resource URL is
+not our data — `discovery_crawl` harvests it from a stranger's own x402
+advertisement, so it is attacker-authored content we store and later **fetch**.
+Measured 2026-09-06, today's corpus is clean: 3827 resources, all `https`, no IP
+literals, no private hosts. But the corpus is refreshed by crawling third
+parties, and nothing stopped the next crawl from picking up
+`https://169.254.169.254/x402` or a name resolving there — after which the report
+echoes the status and the error string, a usable oracle for mapping whatever
+network the process runs in. `safe_probe_url` now refuses non-HTTP schemes,
+embedded credentials, and any host where **any** resolved address is
+loopback/private/link-local/reserved. Residual gap stated rather than implied:
+resolve-then-connect is a TOCTOU, so DNS rebinding is not covered.
+
+Other properties, each mutation-tested: a caller's key can **never** become the
+probe target (it is only ever a corpus lookup; an unknown key makes zero network
+calls), everything echoed is HTML-escaped with a `default-src 'none'` CSP over
+it, reports are cached so a page refresh does not re-hit the seller, the payer
+graph is precomputed at boot rather than per request (it takes minutes), and the
+whole thing is rate limited because each report costs a stranger a request.
+
+Guarded by `test_seller_portal.py` — 32 tests incl. a real server, 19 mutations
+verified killed.
+
 ### 2. Reachability / discoverability check  *(build second)*
 
 Ontario's `coinbase-bazaar-readiness`. Narrower than the diagnostic and mostly a
