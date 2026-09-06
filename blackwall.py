@@ -41,6 +41,8 @@ import threading
 import time
 from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from bounded_server import (DEFAULT_MAX_INFLIGHT,
+                            BoundedThreadingHTTPServer)
 
 from addresses import addresses_equal, is_evm_address, normalize_address
 from categories import classify_resource
@@ -2477,7 +2479,8 @@ class BlackwallServer:
                  backing_index=None, dex_source=None, holder_source=None,
                  honeypot_source=None,
                  aave_source=None, issuer_trust_source=None,
-                 settlement_sim_source=None, auth_sim_source=None):
+                 settlement_sim_source=None, auth_sim_source=None,
+                 max_inflight=DEFAULT_MAX_INFLIGHT):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
@@ -2492,6 +2495,7 @@ class BlackwallServer:
         self.velocity_source = velocity_source
         self.openapi_server_url = openapi_server_url
         self.receipt_signer = receipt_signer
+        self.max_inflight = max_inflight
         self.verdict_anchor = verdict_anchor
         self.category_index = category_index
         self.divergence_index = divergence_index
@@ -2553,7 +2557,16 @@ class BlackwallServer:
                         "receipt_signer": self.receipt_signer,
                         "stats": self.stats,
                         "openapi_server_url": self.openapi_server_url})
-        self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
+        # ADMISSION CONTROL (bounded_server.py). ThreadingHTTPServer is
+        # thread-per-request with no cap, so overload does not slow down -- it
+        # DROPS. Measured on the free deploy: at 120 concurrent, 43% of verdicts
+        # failed while p50 stayed flat at ~2s, i.e. work was admitted, paid for,
+        # and then thrown away as an edge 502 the caller cannot tell from
+        # "broken". A ceiling turns that into an honest 503 + Retry-After.
+        # Measured on the same deploy, /healthz served 100/100 concurrent
+        # cleanly, so the limit belongs on WORK IN FLIGHT, not on connections.
+        self._httpd = BoundedThreadingHTTPServer(
+            (self.host, self.port), handler, max_inflight=self.max_inflight)
         self.port = self._httpd.server_address[1]
         sys.stdout.write(
             "blackwall verdict service on %s:%d  "
@@ -2605,6 +2618,24 @@ def _float_env(name, default):
         raise ValueError("%s=%r is not finite" % (name, raw))
     if v <= 0:
         raise ValueError("%s=%r must be greater than 0" % (name, raw))
+    return v
+
+
+def _int_env(name, default):
+    """A positive-integer BLACKWALL_* env var, validated AT BOOT.
+
+    Same posture as _float_env: a malformed value should stop the boot rather
+    than surface later as a mysteriously throttled (or unbounded) server.
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return int(default)
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError("%s=%r is not an integer" % (name, raw))
+    if v < 1:
+        raise ValueError("%s=%r must be >= 1" % (name, raw))
     return v
 
 
@@ -3264,7 +3295,14 @@ def main(argv=None):
                "" if anchor.pay else "; NO signer -> will 402/fail-open unsigned"))
         sys.stdout.flush()
 
-    server = BlackwallServer(host=args.host, port=args.port, ledger=led,
+    # Ceiling on requests IN FLIGHT. Measured on the free deploy: /healthz
+    # served 100/100 concurrent cleanly while verdicts shed 26% at 80, so the
+    # saturating resource is per-request COMPUTE, not connections -- and work
+    # admitted past the ceiling is not slow, it is discarded as an edge 502.
+    # The right value is always measured on the box you actually run on.
+    _max_inflight = _int_env("BLACKWALL_MAX_INFLIGHT", DEFAULT_MAX_INFLIGHT)
+    server = BlackwallServer(max_inflight=_max_inflight,
+                             host=args.host, port=args.port, ledger=led,
                              billing=billing, reputation_source=reputation_source,
                              readiness_source=readiness_source,
                              hold_above=hold_above,
