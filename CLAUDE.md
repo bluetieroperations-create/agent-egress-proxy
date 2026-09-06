@@ -486,6 +486,43 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   claim: AgentCore forwards `payTo` VERBATIM into the signature, so it never asks
   whether the payee is an address at all.
   Tests: `test_payee_syntax.py`),
+  `bounded_server.py` (ADMISSION CONTROL -- a ceiling on requests IN FLIGHT.
+  MEASURED on the live free deploy: at 120 concurrent, 43% of verdicts failed
+  while p50 stayed FLAT at ~2s. The service was not getting slow, it was
+  DROPPING work -- as an edge 502, which a caller cannot distinguish from
+  "broken". `ThreadingHTTPServer` is thread-per-request with no cap.
+  DIAGNOSIS, measured not assumed: `/healthz` served 100/100 concurrent cleanly
+  while verdicts shed 26% at 80, so the saturating resource is per-request
+  COMPUTE, not connections. But the verdict is only 3.4ms server-side (2.05ms
+  profiled locally) -- the real constraint is that a Render free instance is
+  ~0.1 CPU, so 3.4ms of work costs ~34ms of wall clock: ~29/s theoretical,
+  ~14/s measured. NOTHING IN OUR CODE CHANGES THAT ORDER OF MAGNITUDE, and this
+  module does NOT claim to: it adds ZERO throughput. What it changes is the
+  SHAPE of overload -- admitted requests keep their latency, excess ones get an
+  immediate honest `503` + `Retry-After` instead of being timed out into a 502.
+  For a PAID endpoint that is the difference between a caller retrying and a
+  caller concluding the service is down. BoundedSemaphore (not Semaphore) so an
+  unbalanced release raises instead of silently restoring the unbounded
+  behaviour; acquire BEFORE the thread is spawned; release in
+  `process_request_thread`'s finally, the one place that runs for every admitted
+  request. TWO BUGS FOUND BY RUNNING IT, both invisible to the unit tests:
+  (1) 50 concurrent POSTs produced 5 TRANSPORT ERRORS (3 broken pipe, 2 RST) --
+  socketserver's default listen backlog is 5, and closing a socket that still
+  holds unread inbound data makes the kernel RST away the 503 we just wrote;
+  fixed with `request_queue_size=256` + half-close-and-drain, measured 5 -> 0.
+  (2) that drain then ran ON THE ACCEPT-LOOP THREAD, so shedding stalled new
+  accepts by up to 0.5s EACH -- load-shedding as a self-inflicted outage; moved
+  to short-lived capped threads, measured /healthz at 1-2ms while 31 requests
+  shed. HONEST TEST LIMITATION, found by mutation testing and left documented
+  rather than papered over: the backlog and RST fixes are NOT killed by any unit
+  test -- loopback accepts too fast to overflow a backlog and a 200KB body fits
+  in local socket buffers, so neither condition reproduces. Their evidence is
+  the real-path measurement, and `test_every_client_gets_an_HTTP_RESPONSE_not_a_reset`
+  says so in its docstring instead of implying coverage it does not have.
+  Ceiling via `BLACKWALL_MAX_INFLIGHT` (default 40, the last clean rung
+  measured); always re-measure on the box you actually run on.
+  Tests: `test_bounded_server.py`, 7 tests, 5 of 7 mutations killed (the 2
+  unkillable ones named above)),
   `remote_ledger.py` (durable ENCRYPTED mirror of the append-only verdict ledger --
   the answer to "no persistent disk". MEASURED on the live free-tier deploy, not
   assumed: the SQLite reputation store needs NO durability (its only writer,
@@ -880,7 +917,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_honeypot.py test_remote_ledger.py
+ test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_honeypot.py test_remote_ledger.py test_bounded_server.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop
