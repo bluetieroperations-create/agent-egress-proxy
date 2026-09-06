@@ -1,5 +1,54 @@
 # Blackwall — competitive landscape
 
+**Re-verified 2026-09-06 — FULL SWEEP, every named competitor probed live.**
+
+| named | probed 2026-09-06 | change since 2026-08-25 |
+|---|---|---|
+| **TollWarden** | `1.5.0`, 14 paths, unchanged | none |
+| **Ontario Protocol** | `1.0.0`, 21 paths, live | none in the spec; see below for what we had not READ in it |
+| **Aegis** (agentzone.fun) | **`402 DEPLOYMENT_DISABLED`** on `/` and `/registry.json` | **DOWN.** The one entry called "the only competitor with a comparable data asset" (4,862 services) is not serving. Do not cite it as live; re-probe before relying on it either way. |
+| **Warden** | descriptor live; `sanction`/`approval`/`honeypot`/`calldata` present, `reputation`/`counterparty`/`settlement`/`sybil`/`median` ABSENT | none — still complementary, not a competitor. Worth treating as a PARTNER: their gap is our product and ours is theirs. |
+| **AgentRank** | `agentrank.info` timeout, `api.agentrank.info` connection reset | still nothing. Unreachable across two sweeps 12 days apart. |
+
+## What the August pass MISSED in Ontario, which matters more than the term scan
+
+The August entry checked Ontario for the signals it lacks (`ofac`, `sybil`,
+`median` — all still ABSENT today, so the counterparty-risk positioning holds).
+It did not read what Ontario actually SELLS, and that is the more useful finding:
+they have a **seller-side product line** and we have none.
+
+  * `POST /api/x402/list-service`, `/list-agent`, `/refresh-listing`,
+    `/refresh-listing/validate` — a PAID directory. Sellers pay to be listed and
+    pay again to refresh with current evidence. That is revenue from the other
+    side of the market.
+  * `POST /api/tools/agent-buyer-conversion-diagnostic` — "find why agents are
+    not buying an x402 endpoint."
+  * `POST /api/tools/coinbase-bazaar-readiness` — "can a paying-agent query find
+    this endpoint."
+  * `GET /api/intelligence/x402-tools-by-buyer-activity.json` — a FREE published
+    dataset, i.e. the corpus-as-artifact move, already shipped by them.
+
+WE BUILT THE MACHINERY FOR ALL OF THIS AND SHIPPED NONE OF IT.
+`ecosystem_scan.audit_candidates()` already produces the BD funnel of active,
+clean, not-yet-verified endpoints; `seller_audit.py` is the earned
+verified-merchant tier; `directory_liveness` knows which hosts do not answer and
+which serve an unparseable challenge; `category_pricing` and `price_integrity`
+know whether a seller is priced out of its category. Every input to "why is
+nobody paying you" exists and is not exposed to the seller who would pay for it.
+
+## Where we are STRICTLY stronger, on their own flagship seller tool
+
+`POST /api/x402/demand-authenticity-report` classifies **up to 20** Base USDC
+settlement receipts as self-payment / related-party / unattributed and measures
+payer concentration. Good tool, honest epistemics ("unattributed activity is not
+claimed as an independent customer" — the same posture as this repo).
+
+It is bounded by its sample. Ours is not: 37,943 settlements from 2,028 payers,
+and a CROSS-PAYEE graph. `payer_reputation.sybil_ring` can say *none of your
+payers pays anyone else* — a statement a 20-receipt window cannot make at all,
+because the evidence is in the other payees. Same question, strictly more
+evidence.
+
 **Re-verified 2026-09-05** (previous snapshots 2026-08-25, 2026-06-29).
 TollWarden re-pulled live on 2026-09-05: still `1.5.0`, still 14 paths, term
 scan unchanged (`ofac`/`sanction`/`sybil`/`settlement`/`graph`/`simulate`/
