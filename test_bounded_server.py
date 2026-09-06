@@ -17,13 +17,30 @@ import bounded_server
 from bounded_server import BoundedThreadingHTTPServer
 
 
-def make_handler(hold, started, release):
+def make_handler(hold, started, release, hold_health=False):
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
         def _serve(self):
+            # CONSUME THE BODY. Without this, keep-alive re-parses the unread
+            # remainder as the next request line (REQUEST_URI_TOO_LONG), which
+            # both spams the suite with tracebacks and means the RST path is
+            # never actually exercised.
+            n = int(self.headers.get("Content-Length") or 0)
+            if n:
+                remaining = n
+                while remaining > 0:
+                    chunk = self.rfile.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+            self.close_connection = True
             started.release()          # signal: this request is IN FLIGHT
-            if hold:
+            # A health check is CHEAP and must not occupy the slow path -- both
+            # realistic and necessary: exempt requests reach this same handler,
+            # so holding here made each /healthz probe wait the full 30s (the
+            # health test took 150s before this).
+            if hold and (hold_health or not self.path.startswith("/healthz")):
                 release.wait(30)       # occupy a permit until told otherwise
             body = b'{"ok":true}'
             self.send_response(200)
@@ -56,8 +73,8 @@ class Admission(unittest.TestCase):
             self.srv.shutdown()
             self.srv.server_close()
 
-    def serve(self, max_inflight, hold=True):
-        H = make_handler(hold, self.started, self.release)
+    def serve(self, max_inflight, hold=True, hold_health=False):
+        H = make_handler(hold, self.started, self.release, hold_health)
         self.srv = BoundedThreadingHTTPServer(("127.0.0.1", 0), H,
                                               max_inflight=max_inflight)
         self.srv.daemon_threads = True
@@ -174,6 +191,97 @@ class Admission(unittest.TestCase):
         self.assertEqual(len(out), 60)
         self.assertTrue(all("HTTP/1." in v for v in out.values()),
                         "statuses seen: %r" % (sorted(set(out.values()))[:6],))
+
+    def test_health_checks_are_NEVER_shed(self):
+        """AUDIT FINDING (high). /healthz went through the same ceiling as every
+        other request, so under saturation it could receive a 503 -- and a
+        platform that restarts an instance on a failed health check would turn
+        load-shedding into an OUTAGE, strictly worse than the 502s this module
+        replaces. It measured clean live (25/25 while 34 verdicts shed) only
+        because verdicts are 3.4ms and permits turned over between probes: that
+        is timing luck, not a property.
+        MUTATION: removing the _is_exempt() check -- health is then shed exactly
+        when the box is under the load that makes the check matter most."""
+        url = self.serve(max_inflight=1)          # 1 permit, held by the first
+        out = {}
+        blocker = threading.Thread(target=self.get, args=(url, out, "held"))
+        blocker.start()
+        self.assertTrue(self.started.acquire(timeout=10))   # permit occupied
+
+        # Ceiling is now fully saturated. A normal request must be shed...
+        self.get(url, out, "normal")
+        self.assertEqual(out["normal"][0], 503)
+        # ...but a health check must still be served.
+        for i in range(5):
+            self.get(url + "/healthz", out, "hc%d" % i)
+        self.release.set()
+        blocker.join(20)
+        hc = [out["hc%d" % i][0] for i in range(5)]
+        self.assertEqual(hc, [200] * 5, "a health check was shed: %r" % hc)
+
+    def test_exempt_path_is_itself_bounded(self):
+        """MUTATION: exempting without a cap -- a flood of GET /healthz would
+        then spawn unbounded threads and restore the very problem the ceiling
+        exists to prevent. An exemption is not a bypass.
+
+        `hold_health=True` is load-bearing: health checks must actually OCCUPY
+        the exempt path for the cap to be reachable. An earlier version used the
+        fast health handler, so every exempt request finished instantly, the cap
+        was never hit, and mutation testing showed removing it changed nothing.
+        """
+        url = self.serve(max_inflight=1, hold_health=True)
+        out = {}
+        n = bounded_server.MAX_EXEMPT_INFLIGHT + 5
+        th = [threading.Thread(target=self.get, args=(url + "/healthz", out, i))
+              for i in range(n)]
+        for t in th:
+            t.start()
+        # In flight at once = MAX_EXEMPT_INFLIGHT on the exempt path, PLUS the
+        # ceiling itself, because overflow falls through to normal admission
+        # rather than being dropped.
+        ceiling = 1
+        for _ in range(bounded_server.MAX_EXEMPT_INFLIGHT + ceiling):
+            self.assertTrue(self.started.acquire(timeout=15))
+        # ...and NOT ONE MORE. Without the cap every extra sails through the
+        # exempt path too, and this is the assertion that dies.
+        self.assertFalse(
+            self.started.acquire(timeout=2.0),
+            "more than MAX_EXEMPT_INFLIGHT + ceiling were served at once "
+            "-- the exempt path is unbounded")
+        self.release.set()
+        for t in th:
+            t.join(25)
+        self.assertEqual(len(out), n)
+        self.assertTrue(all(v[0] in (200, 503) for v in out.values()),
+                        sorted({v[0] for v in out.values()}))
+
+    def test_refusal_slot_is_returned_when_a_thread_cannot_start(self):
+        """MUTATION: incrementing _refusing before start() without a rollback.
+        Under thread exhaustion the slot is never returned, and after
+        MAX_REFUSE_THREADS such failures NO refusal is ever drained again -- the
+        connection resets come back permanently, long after the load that caused
+        them is gone."""
+        H = make_handler(False, self.started, self.release)
+        srv = BoundedThreadingHTTPServer(("127.0.0.1", 0), H, max_inflight=1)
+        try:
+            real = threading.Thread
+
+            class Boom:
+                def __init__(self, *a, **k):
+                    pass
+
+                def start(self):
+                    raise RuntimeError("can't start new thread")
+
+            threading.Thread = Boom
+            try:
+                ok = srv._start_refusal(object())
+            finally:
+                threading.Thread = real
+            self.assertFalse(ok)
+            self.assertEqual(srv._refusing, 0, "refusal slot leaked")
+        finally:
+            srv.server_close()
 
     def test_503_carries_retry_after_and_a_json_body(self):
         """A shed response must be ACTIONABLE. MUTATION: dropping Retry-After,

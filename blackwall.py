@@ -35,6 +35,7 @@ import hashlib
 import hmac
 import json
 import os
+import signal
 import re
 import sys
 import threading
@@ -3328,12 +3329,48 @@ def main(argv=None):
                              auth_sim_source=auth_sim_source,
                              openapi_server_url=origin,
                              receipt_signer=signer)
+    def _drain_ledger():
+        """Flush the durable ledger's mirror queue on the way out.
+
+        DurableEventLedger.close() was implemented and unit-tested and CALLED BY
+        NOTHING -- the wired-and-inert pattern (see approvals.redeem, and the
+        honeypot source). Without this, every record still queued at shutdown is
+        lost, and a redeploy is EXACTLY when that queue is non-empty. Fail-soft:
+        a shutdown must not hang or raise on the way out.
+        """
+        closer = getattr(led, "close", None)
+        if closer is None:
+            return
+        try:
+            closer()
+            st = getattr(led, "stats", None)
+            if st:
+                sys.stdout.write(
+                    "blackwall: ledger mirror drained (mirrored %d, failed %d, "
+                    "dropped %d)\n" % (st.get("mirrored", 0),
+                                       st.get("mirror_failures", 0),
+                                       st.get("dropped", 0)))
+                sys.stdout.flush()
+        except Exception as e:
+            sys.stderr.write("blackwall: ledger drain failed: %s\n" % e)
+
+    # SIGTERM is how a platform stops a container on redeploy -- Ctrl-C alone
+    # would only cover a local run, i.e. never the case that matters.
+    def _on_sigterm(_sig, _frm):
+        raise KeyboardInterrupt
+    try:
+        signal.signal(signal.SIGTERM, _on_sigterm)
+    except (ValueError, OSError, AttributeError):
+        pass                      # not the main thread / unsupported platform
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        sys.stdout.write("\nblackwall: shutting down (Ctrl-C)\n")
+        sys.stdout.write("\nblackwall: shutting down\n")
         server.shutdown()
+        _drain_ledger()
         return 0
+    _drain_ledger()
     return 0
 
 
