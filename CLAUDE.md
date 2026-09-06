@@ -486,6 +486,43 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   claim: AgentCore forwards `payTo` VERBATIM into the signature, so it never asks
   whether the payee is an address at all.
   Tests: `test_payee_syntax.py`),
+  `remote_ledger.py` (durable ENCRYPTED mirror of the append-only verdict ledger --
+  the answer to "no persistent disk". MEASURED on the live free-tier deploy, not
+  assumed: the SQLite reputation store needs NO durability (its only writer,
+  `reputation_store.ingest_from_chain`, is gated behind `BLACKWALL_INGEST=0`, and
+  five payees' settlement/distinct-payer counts came back byte-identical to the
+  baked 46,031-row seed), while the LEDGER is the only thing that accumulates --
+  and `aggregate_counterparties` folds it into the recency-weighted
+  `recent_dispute_rate` behind `going_bad`. So the problem is not "persist a
+  database", it is "persist an append-only log". Subclasses `EventLedger` and
+  overrides exactly TWO things -- the single write point (`_append`) and boot
+  (`hydrate`) -- so every reader keeps reading the LOCAL file unchanged.
+  AES-256-GCM per record with a random nonce and the envelope version bound as
+  AAD; key DERIVED (`HMAC-SHA256(secret, label)`) not used raw, and `load_key`
+  refuses a secret reused from the signing seed / receipt key. AT-LEAST-ONCE
+  DELIBERATELY: a duplicate row is harmless because settlements dedupe by tx hash
+  (`ledger.py:134`), while a LOST row erases an outcome and a missing dispute
+  makes a bad counterparty look BETTER than it is -- so a transient failure is
+  retried. FAIL-OPEN on the payment path (local write first and unconditional;
+  one serialized worker; failures counted, never raised; a bounded queue with
+  `put_nowait` so the durability feature cannot OOM or block the service it
+  protects). NO PLAINTEXT FALLBACK: AES-GCM is not stdlib and this does not
+  hand-roll one -- if the cipher is unusable the service REFUSES TO BOOT (exit 2).
+  AUDIT FINDING, found by RUNNING it against a genuinely broken `cryptography`
+  install rather than by reading the code: "installed" is not "working" -- a
+  broken native build imports fine then raises `pyo3_runtime.PanicException`,
+  which derives from `BaseException`, so `except Exception` did NOT catch it; it
+  escaped every fail-open guard and surfaced as a 500 on the payment path. Now
+  `_guard` converts it (passing KeyboardInterrupt/SystemExit through) and
+  `ensure_cipher()` proves the cipher round-trips AT BOOT. Restore is BYTE-EXACT
+  (`seal` serializes exactly as `_append`), so an operator can verify with `diff`.
+  Verified end to end against a real HTTP KV: 16 events restored byte-for-byte
+  across a full container wipe, with zero plaintext (not the counterparty, amount,
+  asset, outcome, or even the JSON field names) visible to the provider. SHARP
+  EDGE: lose `BLACKWALL_LEDGER_KEY` and the log is unreadable -- rows under an old
+  key are skipped, counted, and announced in the boot banner. See
+  `docs/DURABLE_LEDGER.md`. Tests: `test_remote_ledger.py`, 36 tests, 23 mutations
+  verified killed),
   `http_util.py` (hardened JSON GET for the live data path: retry+backoff on
   transient 429/5xx/timeout -- honors `Retry-After`, permanent 4xx not retried --
   plus a read-size cap; transport+clock injectable. Used by `chain_backfill`'s
@@ -843,7 +880,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_honeypot.py
+ test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_honeypot.py test_remote_ledger.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop

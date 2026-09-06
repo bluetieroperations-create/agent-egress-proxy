@@ -2702,6 +2702,42 @@ def main(argv=None):
     if args.ledger:
         from ledger import EventLedger
         led = EventLedger(args.ledger)
+        # OPT-IN durable mirror (remote_ledger.py). On a host with no persistent
+        # disk the container filesystem resets on every restart and spin-down,
+        # and the ledger is the ONLY thing the engine accumulates -- the SQLite
+        # store is read-only in production (its writer is behind BLACKWALL_INGEST).
+        # So without this, every restart discards the outcome history that
+        # recent_dispute_rate / going_bad are built from.
+        #
+        # FAIL LOUD on misconfiguration, like the signing seed below: an operator
+        # who set two of the three vars believes their data is durable, and a
+        # silent fallback to a local-only ledger would keep looking healthy right
+        # up until the restart that loses it.
+        try:
+            import remote_ledger
+            durable = remote_ledger.from_env(
+                args.ledger,
+                logger=lambda m: sys.stderr.write("blackwall: %s\n" % m),
+                # Domain separation: refuse to reuse another configured secret.
+                forbid=(os.environ.get("BLACKWALL_SIGNING_SEED"),
+                        os.environ.get("BLACKWALL_RECEIPT_KEY")))
+        except (ValueError, remote_ledger.RemoteLedgerError) as e:
+            # RemoteLedgerError covers the cipher self-test: a BROKEN (not
+            # merely absent) `cryptography` build must stop the boot, not
+            # degrade to a mirror that silently persists nothing while the
+            # startup banner still reports it as ON.
+            sys.stderr.write("blackwall: FATAL ledger mirror config: %s\n" % e)
+            sys.stderr.flush()
+            return 2
+        if durable is not None:
+            led = durable
+            n = led.hydrate()
+            sys.stdout.write(
+                "blackwall: durable ledger mirror ON (encrypted; restored %d "
+                "event(s)%s)\n"
+                % (n, "" if not led.stats["undecryptable"]
+                   else ", skipped %d undecryptable" % led.stats["undecryptable"]))
+            sys.stdout.flush()
 
     # Ed25519 receipt signing (receipt_signer.py). FAIL LOUD, not soft: if the
     # operator set BLACKWALL_SIGNING_SEED they intended verifiable receipts, so a

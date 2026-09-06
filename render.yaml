@@ -94,6 +94,20 @@ services:
         sync: false
       - key: BLACKWALL_RECEIPT_KEY
         sync: false
+      # DURABLE LEDGER MIRROR (remote_ledger.py). Only needed on a host with NO
+      # persistent disk -- with the disk above, the ledger already survives a
+      # restart and these should stay unset. All three are required together;
+      # setting some but not all is a FATAL config error, because an operator who
+      # set two of three believes their data is durable.
+      # BLACKWALL_LEDGER_KEY must be 32 bytes (64 hex) and must DIFFER from every
+      # other secret here -- load_key refuses a reused one. Lose it and the
+      # mirrored log is unreadable. See docs/DURABLE_LEDGER.md.
+      - key: BLACKWALL_LEDGER_KV_URL
+        sync: false
+      - key: BLACKWALL_LEDGER_KV_TOKEN
+        sync: false
+      - key: BLACKWALL_LEDGER_KEY
+        sync: false
       # CDP (Coinbase Developer Platform) facilitator credentials. When BOTH are
       # set, the service settles through the authenticated CDP facilitator --
       # required for Coinbase Bazaar to catalog the endpoint on its first settled

@@ -1,10 +1,15 @@
 # Render blueprint -- FREE variant (for testing, $0).
 #
 # Same as render.yaml but: plan `free` and NO persistent disk. State (the SQLite
-# store + JSONL ledger) is EPHEMERAL -- it lives in the container's /data dir and
-# resets on restart/redeploy, and the free instance spins down after ~15 min idle
-# (first request after that is a slow cold start). The reputation store re-populates
-# itself (BLACKWALL_INGEST=1), so a fresh instance is a cold start, not broken.
+# JSONL ledger) is EPHEMERAL -- it lives in the container's /data dir and resets on
+# restart/redeploy. The reputation STORE is fine either way: it is read-only in
+# production (BLACKWALL_INGEST=0 below) and baked into the image at
+# /app/data/reputation.db, so it is reproducible, not lost. The LEDGER is the part
+# that actually accumulates -- set the three BLACKWALL_LEDGER_KV_* vars below to
+# mirror it durably (encrypted) and it survives a restart.
+#
+# NOTE: the header used to claim the store re-populates via BLACKWALL_INGEST=1;
+# this file sets 0, and lazy ingest on the hot path is what causes cold-store 502s.
 #
 # Use this to prove the endpoint works for free; switch to render.yaml (paid disk)
 # when you want persistence + always-warm for real traffic.
@@ -68,8 +73,27 @@ services:
         value: "30"
       - key: BLACKWALL_VALUE_PRICING
         value: "1"
+      # MEASURED against data/directory.json (266 live x402 payees): median
+      # advertised entry price $0.005, highest anywhere $6.99. At the previous
+      # $10.00 the paid tier was UNREACHABLE -- 0 of 265 payees could ever be
+      # billed. This file kept "10.00" after render.yaml was corrected, so the
+      # free deploy silently shipped the unreachable tier.
       - key: BLACKWALL_FREE_BELOW
-        value: "10.00"
+        value: "0.01"
+      # An absolute floor becomes a huge SHARE of a small payment. $0.0001 is 100
+      # atomic units of 6-decimal USDC, so it is settleable on Base.
+      - key: BLACKWALL_MIN_FEE
+        value: "0.0001"
+      # THE INVARIANT: never charge more than 1% of the amount being protected.
+      - key: BLACKWALL_MAX_FEE_RATIO_BPS
+        value: "100"
+      # Split facilitator budgets: /verify is read-only and wants a SHORT bound;
+      # /settle has a side effect, and timing out after a broadcast leaves the
+      # agent paid-but-unserved with a spent nonce, so it keeps a longer one.
+      - key: BLACKWALL_FACILITATOR_TIMEOUT
+        value: "8"
+      - key: BLACKWALL_FACILITATOR_SETTLE_TIMEOUT
+        value: "25"
       # Secrets -- leave blank for a free public smoke test (billing OFF). Set them
       # later (Environment tab) to turn billing on for a real paid round-trip.
       - key: BLACKWALL_PAY_TO
@@ -77,6 +101,22 @@ services:
       - key: BLACKWALL_FACILITATOR
         sync: false
       - key: BLACKWALL_RECEIPT_KEY
+        sync: false
+      # DURABLE LEDGER MIRROR (remote_ledger.py) -- THIS is the variant that needs
+      # it. BLACKWALL_LEDGER above points at /data on a plan with NO disk, so the
+      # ledger resets on every restart, and the ledger is the ONLY thing the
+      # engine accumulates (the SQLite store is read-only in production and comes
+      # from the image). Records are AES-256-GCM sealed before they leave the
+      # process, so the KV provider stores opaque blobs.
+      # All three are required together; setting some but not all is a FATAL
+      # config error. BLACKWALL_LEDGER_KEY is 32 bytes (64 hex) and must DIFFER
+      # from every other secret here. Lose it and the mirrored log is unreadable.
+      # See docs/DURABLE_LEDGER.md.
+      - key: BLACKWALL_LEDGER_KV_URL
+        sync: false
+      - key: BLACKWALL_LEDGER_KV_TOKEN
+        sync: false
+      - key: BLACKWALL_LEDGER_KEY
         sync: false
       - key: CDP_API_KEY_ID
         sync: false
