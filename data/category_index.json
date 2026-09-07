@@ -1,9 +1,8 @@
 {
-  "ai-agents": "0.01449975",
-  "commerce": "0.25",
-  "content-media": "0.02",
-  "dev-tools": "0.005",
+  "ai-agents": "0.01",
+  "content-media": "0.0125",
+  "dev-tools": "0.0035",
   "finance": "0.005",
-  "onchain": "0.01",
-  "search-data": "0.01"
+  "onchain": "0.0065",
+  "search-data": "0.004"
 }
