@@ -67,9 +67,10 @@ import urllib.error
 import urllib.request
 
 import x402_challenge
+import user_agent as ua_policy
 
 TIMEOUT = 12
-USER_AGENT = "blackwall-liveness/1.0 (+x402 directory check)"
+USER_AGENT = ua_policy.bot("liveness", "x402 directory check")
 
 #: Re-exported from x402_challenge so this module keeps its public names while
 #: there is exactly ONE parser in the repo -- the survey, the crawler and the

@@ -32,13 +32,14 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 from addresses import is_evm_address
+import user_agent as ua_policy
 
 BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 DEFAULT_BASE_URL = "https://base.blockscout.com"
 # Browser-prefixed so Cloudflare-fronted explorers don't 403 a non-browser UA
 # (learned against sepolia.base.org / facilitator.x402.rs during the live
 # dry-run), while still identifying the caller.
-DEFAULT_UA = "Mozilla/5.0 (compatible; Blackwall-settlement-watch/0.1)"
+DEFAULT_UA = ua_policy.browser("settlement-watch")
 HTTP_TIMEOUT = 12.0
 _TX_HASH_RE = re.compile(r"\A0x[0-9a-fA-F]{64}\Z")  # 32-byte tx hash
 
