@@ -5,7 +5,7 @@ Two of these matter more than the rest. `test_single_buyer_is_never_synthetic`
 guards the fan-out gate: without it, every ordinary company funding its own
 agent wallet scores 3-of-3 and the module starts accusing real businesses.
 `test_x402_shape_is_clean` is the control -- the same code returned 0 of 92
-payees on the real x402 corpus while flagging 18.7% of MPP, and a detector that
+payees on the real x402 corpus while flagging ~18% of MPP, and a detector that
 fires everywhere is worthless.
 
 Each test names the mutation it kills.

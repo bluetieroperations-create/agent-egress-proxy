@@ -11,15 +11,20 @@ and all of them are funded by a single wallet that receives nothing itself. The
 sink never forwards. One operator, fanned out across ~1,300 wallets, paying its
 own endpoint. It has run continuously for at least 30 days.
 
-Its share is 18.7% of in-band machine payments (4,347 of 23,282), pooled across
-13 windows spanning 30 days.
+Its share is 18.3% of in-band machine payments (7,167 of 39,164), pooled across
+18 independent windows spanning 30 days. 95% CI 12.2%-27.4% (bootstrap,
+resampling whole windows). Two independent runs -- different offsets, different
+window sizes, separate RPC pulls -- returned 18.7% and 17.6%.
+
+QUOTE THE INTERVAL, NOT THE POINT. "Roughly one in five, 95% CI 12-27%" is what
+the sampling supports; "18.3%" implies a precision it does not have.
 
 MIND THE SAMPLING -- this module's own headline was wrong once. A single 14-hour
 window put the figure at 49.9%, and it was quoted that way before the follow-up
-ran. Per-window the cluster ranges from 8.9% to 51.3%, so ONE WINDOW MISLEADS BY
-ROUGHLY 2.5x IN EITHER DIRECTION. Pool several windows across weeks before
-quoting a share; `synthetic_share` cannot tell how its input was sampled and
-will faithfully report a number that means nothing.
+ran. Across 18 windows the per-window share runs 4.3% to 61.7%: A SINGLE WINDOW
+SPANS A 14x RANGE and is worthless on its own. Pool a dozen or more across
+weeks; `synthetic_share` cannot tell how its input was sampled and will
+faithfully report a number that means nothing.
 
 The same screen over the x402 corpus (46,031 settlements, 281 payees, 29 months)
 returns ZERO. That contrast is the point: a detector that fires everywhere is
@@ -211,9 +216,9 @@ def synthetic_share(results, amounts_by_payee=None):
     total while generating ~19% of traffic, so a value-weighted figure would have
     reported ~0% and hidden it completely.
 
-    The result is only as good as the sampling of `results`. Pool windows across
-    weeks; a single window put this cluster at 49.9% when its 30-day share is
-    18.7%. This function cannot detect that and will not warn you."""
+    The result is only as good as the sampling of `results`. Pool a dozen or more
+    windows across weeks: single windows of this cluster span 4.3%-61.7% against
+    a pooled 18.3%. This function cannot detect that and will not warn you."""
     total = sum(r["payments"] for r in results) if amounts_by_payee is None else \
         sum(len(v or []) for v in amounts_by_payee.values())
     if not total:
