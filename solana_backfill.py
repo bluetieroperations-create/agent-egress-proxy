@@ -76,6 +76,8 @@ import sys
 import time
 import urllib.request
 
+import user_agent as ua_policy
+
 #: Circulating USDC on Solana mainnet. Identified by MINT, so a lookalike token
 #: with the same symbol cannot contribute history -- the same rule
 #: `settlement_watch` applies by contract address on Base.
@@ -89,7 +91,11 @@ DEFAULT_ENDPOINTS = ("https://api.mainnet-beta.solana.com",
                      "https://solana-rpc.publicnode.com",
                      "https://api.mainnet.solana.com")
 
-DEFAULT_UA = "Mozilla/5.0 (compatible; Blackwall/0.1)"
+#: ONE owner for User-Agent policy (user_agent.py) -- a literal here is a
+#: lock violation, and four uncoordinated UA strings is what the lock exists
+#: to prevent. Browser-prefixed, like the other chain-RPC callers: public
+#: RPCs sit behind Cloudflare and 403 a bare urllib UA.
+DEFAULT_UA = ua_policy.browser("solana-backfill")
 HTTP_TIMEOUT = 45
 
 #: `getSignaturesForAddress` hard-caps at 1000 regardless of what is requested.
