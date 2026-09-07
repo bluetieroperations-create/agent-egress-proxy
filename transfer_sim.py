@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from revert_scan import classify_revert
 from rwa_readiness import eth_call_data
+import user_agent as ua_policy
 
 # Attribution outcomes.
 OK = "ok"
@@ -183,7 +184,7 @@ class TransferSimulator:
         req = urllib.request.Request(
             self.rpc_url, data=body,
             headers={"Content-Type": "application/json", "Accept": "application/json",
-                     "User-Agent": "blackwall/1.0"})
+                     "User-Agent": ua_policy.browser("transfer-sim")})
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
             return json.loads(r.read())
 

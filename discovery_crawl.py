@@ -30,6 +30,7 @@ from decimal import Decimal
 import http_util
 import x402_challenge
 from addresses import is_evm_address
+import user_agent as ua_policy
 
 _MAX_DEPTH = 6
 _NESTED_KEYS = ("items", "resources", "data", "results", "endpoints")
@@ -249,7 +250,7 @@ def _urllib_get_json(url, timeout=12):
         # Browser-prefixed for the same reason as http_util.DEFAULT_UA: a bare
         # token UA is challenged by a strict Cloudflare config, and the 403 is
         # permanent -- it would look like "the Bazaar has no more pages".
-        user_agent="Mozilla/5.0 (compatible; Blackwall-discovery/0.1)")
+        user_agent=ua_policy.browser("discovery"))
 
 
 def _read_sources(args):

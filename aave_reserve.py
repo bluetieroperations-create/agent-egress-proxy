@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from addresses import is_evm_address
 from rwa_readiness import eth_call_data, selector
+import user_agent as ua_policy
 
 # Aave v3 PoolDataProvider (AaveProtocolDataProvider) per chain (lowercased). VERIFY per
 # deployment -- these move across Aave releases; a wrong address just fails open (no signal).
@@ -131,7 +132,7 @@ class AaveReserveSource:
                 "params": [{"to": to, "data": data}, "latest"]}
         req = urllib.request.Request(
             self.rpc_url, data=json.dumps(body).encode("utf-8"),
-            headers={"content-type": "application/json", "user-agent": "Blackwall-aave/1"})
+            headers={"content-type": "application/json", "user-agent": ua_policy.browser("aave")})
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
             d = json.loads(r.read(1 << 16))
         res = d.get("result") if isinstance(d, dict) else None

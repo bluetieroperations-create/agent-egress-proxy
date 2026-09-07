@@ -25,6 +25,7 @@ import json
 import time
 import urllib.error
 import urllib.request
+import user_agent as ua_policy
 
 DEFAULT_TIMEOUT = 12
 # Browser-PREFIXED, still self-identifying. A bare token UA ("Blackwall/0.1")
@@ -35,7 +36,7 @@ DEFAULT_TIMEOUT = 12
 # urllib UA drew Cloudflare error 1010), while robinhoodchain.blockscout.com
 # answered the bare UA with a 403 "Just a moment..." challenge and the UA
 # below with 200. Same fix x402.py applies to Cloudflare-fronted facilitators.
-DEFAULT_UA = "Mozilla/5.0 (compatible; Blackwall/0.1)"
+DEFAULT_UA = ua_policy.browser()
 DEFAULT_MAX_BYTES = 8 * 1024 * 1024      # 8 MiB -- a Bazaar/Blockscout page is << this
 DEFAULT_RETRIES = 3                       # total attempts = retries + 1
 DEFAULT_BACKOFF = 0.5                     # seconds; doubles each retry

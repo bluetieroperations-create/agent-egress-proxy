@@ -61,7 +61,9 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal, InvalidOperation
 
-USER_AGENT = "blackwall-asset-coverage/1.0"
+import user_agent as ua_policy
+
+USER_AGENT = ua_policy.bot("asset-coverage")
 TIMEOUT = 12
 MAX_BODY = 200_000
 

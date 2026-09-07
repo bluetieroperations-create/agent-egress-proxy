@@ -22,6 +22,7 @@ import urllib.request
 from cdp_auth import build_cdp_jwt
 from creds_local import load_creds
 from x402 import CDP_FACILITATOR_URL
+import user_agent as ua_policy
 
 load_creds()  # auto-load ~/.blackwall-creds so setting env vars by hand is optional
 KEY_ID = os.environ.get("CDP_API_KEY_ID")
@@ -43,7 +44,7 @@ def _get(path):
         url, method="GET",
         headers={"Accept": "application/json",
                  "Authorization": "Bearer " + token,
-                 "User-Agent": "Mozilla/5.0 (Blackwall bazaar check)"})
+                 "User-Agent": ua_policy.browser("bazaar-check")})
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             return r.status, json.loads(r.read().decode("utf-8", "replace"))

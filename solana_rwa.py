@@ -36,6 +36,7 @@ LIMITATIONS (audited & accepted):
 from __future__ import annotations
 
 import base64
+import user_agent as ua_policy
 
 _B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
@@ -250,7 +251,7 @@ class SolanaRwaReadinessSource:
         req = urllib.request.Request(
             self.rpc_url, data=json.dumps(body).encode("utf-8"),
             headers={"content-type": "application/json",
-                     "user-agent": "Blackwall-solana-rwa/1"})
+                     "user-agent": ua_policy.browser("solana-rwa")})
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
             d = json.loads(r.read(1 << 17))
         return d.get("result") if isinstance(d, dict) else None
