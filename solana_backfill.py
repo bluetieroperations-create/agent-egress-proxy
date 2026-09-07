@@ -403,6 +403,63 @@ def to_graph(results, *, min_amount=None, max_amount=None):
     return amounts, buyers, pays_to
 
 
+def decimal_string(amount_raw, decimals):
+    """Base units -> an exact decimal string. No float ever touches this.
+
+    `str(raw / 10 ** decimals)` is the obvious version and it is wrong, though
+    not for the reason one expects -- Python's repr is shortest-round-trip, so
+    it does not emit "0.020000000000000004". It emits SCIENTIFIC NOTATION: of
+    the base-unit amounts 1..199999 at 6 decimals, 99 render as "1e-06",
+    "2e-06" and so on, and at 9 decimals essentially every small amount does.
+
+    These strings become the `amount` column and the dedup key. "1e-06" and
+    "0.000001" are two spellings of one price, which makes re-ingest
+    non-idempotent and makes `price_uniformity` read a fixed-price seller as
+    varied -- defeating the only signal in `volume_integrity` that a backfill
+    cannot fake. x402 sellers quote down to $0.0001, so this is the live range,
+    not a hypothetical one.
+    """
+    if decimals is None:
+        return None
+    sign = "-" if amount_raw < 0 else ""
+    digits = str(abs(int(amount_raw))).rjust(decimals + 1, "0")
+    if decimals == 0:
+        return sign + digits
+    whole, frac = digits[:-decimals], digits[-decimals:]
+    frac = frac.rstrip("0")
+    return sign + whole + ("." + frac if frac else "")
+
+
+def to_transfers(results):
+    """Payee results -> rows for `reputation_store.ingest_transfers`.
+
+    The counterparty is the OWNER, not the token account: the owner is what a
+    seller advertises as `payTo` and what every other part of the system keys
+    on, so storing the token account would make the corpus unjoinable to the
+    directory it came from.
+
+    Records with no signature, no amount or no payer-visible decimals are
+    dropped rather than stored with a hole -- `ingest_transfers` dedups on
+    `tx_hash` and SQLite treats NULLs as distinct, so a row with a null
+    signature would duplicate itself on every re-ingest.
+    """
+    out = []
+    for r in results or ():
+        owner = r.get("owner")
+        if not owner:
+            continue
+        for p in r.get("payments") or ():
+            amount = decimal_string(p.get("amount_raw"), p.get("decimals"))
+            if amount is None or not p.get("signature"):
+                continue
+            out.append({"to": owner,
+                        "from": p.get("payer"),
+                        "amount": amount,
+                        "tx_hash": p["signature"],
+                        "timestamp": p.get("block_time")})
+    return out
+
+
 def make_rpc(endpoints=DEFAULT_ENDPOINTS, *, user_agent=DEFAULT_UA,
              timeout=HTTP_TIMEOUT, tries=4, sleep=None, opener=None):
     """A transport over rotating public endpoints. The one impure part.

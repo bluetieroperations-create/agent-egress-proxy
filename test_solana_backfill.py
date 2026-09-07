@@ -328,6 +328,83 @@ class TestToGraph(unittest.TestCase):
         self.assertNotIn("p", buyers)
 
 
+class TestDecimalString(unittest.TestCase):
+    def test_exact_values(self):
+        self.assertEqual(S.decimal_string(20000, 6), "0.02")
+        self.assertEqual(S.decimal_string(1000000, 6), "1")
+        self.assertEqual(S.decimal_string(123456789, 6), "123.456789")
+        self.assertEqual(S.decimal_string(0, 6), "0")
+        self.assertEqual(S.decimal_string(42, 0), "42")
+
+    def test_small_amounts_never_go_scientific(self):
+        # THE REASON THIS FUNCTION EXISTS. str(1/10**6) is "1e-06", and x402
+        # sellers quote down to $0.0001, so this is the live range. Mutation:
+        # use str(raw / 10 ** decimals) -> one price gets two spellings, which
+        # breaks tx_hash dedup idempotence and makes price_uniformity read a
+        # fixed-price seller as varied.
+        for raw in (1, 2, 99, 100):
+            got = S.decimal_string(raw, 6)
+            self.assertNotIn("e", got)
+            self.assertEqual(float(got), raw / 10.0 ** 6)
+
+    def test_nine_decimal_mint(self):
+        self.assertEqual(S.decimal_string(5, 9), "0.000000005")
+
+    def test_unknown_decimals_is_none_not_a_guess(self):
+        # Mutation: default to 6 -> an unknown mint is silently mis-scaled, and
+        # a wrong price is worse than a missing one.
+        self.assertIsNone(S.decimal_string(1000, None))
+
+
+class TestToTransfers(unittest.TestCase):
+    def _results(self):
+        return [{"owner": "payeeA", "account": PAYEE_ACCT, "payments": [
+            {"signature": "sigX", "amount_raw": 20000, "decimals": 6,
+             "payer": "buyer1", "block_time": 1770000000},
+            {"signature": "sigY", "amount_raw": 1, "decimals": 6,
+             "payer": None, "block_time": 1770000001}]}]
+
+    def test_shape_matches_ingest_transfers(self):
+        rows = S.to_transfers(self._results())
+        self.assertEqual(rows[0], {"to": "payeeA", "from": "buyer1",
+                                   "amount": "0.02", "tx_hash": "sigX",
+                                   "timestamp": 1770000000})
+
+    def test_counterparty_is_the_owner_not_the_token_account(self):
+        # The owner is what a seller advertises as payTo and what the rest of
+        # the system keys on. Mutation: store the token account -> the corpus
+        # cannot be joined to the directory it was built from.
+        self.assertTrue(all(r["to"] == "payeeA" for r in S.to_transfers(self._results())))
+
+    def test_rows_without_a_signature_are_dropped(self):
+        # ingest_transfers dedups on tx_hash and SQLite treats NULLs as
+        # distinct, so a null-signature row duplicates on every re-ingest.
+        r = [{"owner": "p", "payments": [{"signature": None, "amount_raw": 1,
+                                          "decimals": 6, "payer": "b"}]}]
+        self.assertEqual(S.to_transfers(r), [])
+
+    def test_rows_without_decimals_are_dropped(self):
+        r = [{"owner": "p", "payments": [{"signature": "s", "amount_raw": 1,
+                                          "decimals": None, "payer": "b"}]}]
+        self.assertEqual(S.to_transfers(r), [])
+
+    def test_missing_payer_is_kept_as_null(self):
+        # A payment with an unattributable payer is still a payment; dropping it
+        # would understate a payee's volume.
+        rows = S.to_transfers(self._results())
+        self.assertEqual(len(rows), 2)
+        self.assertIsNone(rows[1]["from"])
+
+    def test_round_trips_through_the_real_store(self):
+        # The whole point: this must land in ReputationStore unmodified, and
+        # re-ingest must be idempotent.
+        from reputation_store import ReputationStore
+        store = ReputationStore(":memory:")
+        rows = S.to_transfers(self._results())
+        self.assertEqual(store.ingest_transfers(rows), 2)
+        self.assertEqual(store.ingest_transfers(rows), 0)
+
+
 class TestRPC(unittest.TestCase):
     class _Resp:
         def __init__(self, payload):
