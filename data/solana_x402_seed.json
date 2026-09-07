@@ -1,0 +1,16 @@
+{
+ "corpus": "solana-x402",
+ "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+ "payees_walked": 44,
+ "payees_with_history": 37,
+ "payees_never_paid": 7,
+ "signatures_examined": 93126,
+ "settlements": 44222,
+ "distinct_payers": 1762,
+ "fetch_failures": 0,
+ "first_settlement": "2025-01-10",
+ "last_settlement": "2026-09-07",
+ "built_at": "2026-09-07T19:58:15Z",
+ "method": "solana_backfill.py: getTokenAccountsByOwner -> getSignaturesForAddress -> getTransaction, public RPC",
+ "note": "Payee set comes from live 402 challenges and carries the same crawl bias as the Base corpus: a buyer's other counterparties are unseen, which inflates buyer_exclusivity in volume_integrity. One payee holds ~50% of all signatures; screen before aggregating."
+}
