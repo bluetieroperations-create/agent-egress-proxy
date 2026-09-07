@@ -76,18 +76,37 @@ jobs:
             test_rpc_node.py test_auth_sim.py \
             test_directory_liveness.py test_price_corroboration.py \
             test_advertised_prices.py test_deploy_manifest.py \
-            test_receipt_signer.py
+            test_receipt_signer.py \
+            test_approvals.py test_asset_coverage.py test_bounded_server.py \
+            test_honeypot.py test_mcp_http.py test_payee_syntax.py \
+            test_screen_payer.py test_token_decimals.py test_upto_scheme.py \
+            test_user_agent.py test_x402_challenge.py test_ci_coverage.py
 
       # The engine is stdlib-only and the suite above proves it runs that way.
       # Production installs a NATIVE Ed25519 backend (requirements-signing.txt),
       # which takes a different code path in receipt_signer -- and signatures from
       # the two backends must be byte-identical, or a receipt would verify or not
       # depending on which box signed it. Run the signer suite both ways.
-      - name: Receipt signer against the native backend (production path)
+      #
+      # remote_ledger rides along here because it REQUIRES the same package by
+      # design: it mirrors settlement records to a third-party KV under AES-GCM
+      # and refuses to boot rather than fall back to plaintext, so there is no
+      # stdlib path to test. Keeping it out of the stdlib job above is what keeps
+      # that job's "engine is stdlib-only" guarantee honest.
+      - name: Native-crypto suites (production path)
         run: |
           python3 -m pip install --quiet --only-binary :all: -r requirements-signing.txt
-          python3 -m unittest test_receipt_signer.py
+          python3 -m unittest test_receipt_signer.py test_remote_ledger.py
           python3 -m pip uninstall -y --quiet cryptography
+
+      # The funded-signer dry-run client is the only root-level module needing a
+      # third-party package (eth-account). It is how a real payment gets signed in
+      # a mainnet rehearsal, so a break here is silent until money is involved.
+      - name: x402 payment client (needs eth-account)
+        run: |
+          python3 -m pip install --quiet -r clients/requirements.txt
+          python3 -m unittest test_x402_pay.py
+          python3 -m pip uninstall -y --quiet eth-account
 
       - name: Adversarial scorecard (must have no false positives or misses)
         # redteam.py exits non-zero on a FALSE POSITIVE or an unmarked MISS, so this is
@@ -117,6 +136,12 @@ jobs:
       - name: Wallet signing guards (stdlib)
         working-directory: integrations/wallets
         run: python3 -m unittest test_wallet_guard.py test_turnkey_signer.py test_privy_signer.py
+
+      # Bedrock AgentCore gates a ProcessPayment call on a Blackwall verdict. Its
+      # 41 tests ran in no CI job at all until test_ci_coverage.py found them.
+      - name: Bedrock AgentCore guard (stdlib)
+        working-directory: integrations/agentcore
+        run: python3 -m unittest test_agentcore_guard.py
 
       # The thin adapter needs langchain-core; a failure here means the published plugin
       # is broken against the current langchain release.
