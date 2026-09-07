@@ -51,6 +51,7 @@ import time
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from addresses import addresses_equal, is_evm_address
+import user_agent as ua_policy
 
 X402_VERSION = 2
 DEFAULT_SCHEME = "exact"          # EIP-3009 transferWithAuthorization
@@ -484,7 +485,7 @@ class HttpFacilitator:
         # default Python-urllib UA (manifests as a timeout). Send a browser UA.
         headers = {"Content-Type": "application/json",
                    "Accept": "application/json",
-                   "User-Agent": "Mozilla/5.0 (Blackwall x402 facilitator client)"}
+                   "User-Agent": ua_policy.browser("x402")}
         headers.update(self._auth_headers(path))
         req = urllib.request.Request(self.base_url + path, data=body,
                                      headers=headers)

@@ -46,6 +46,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import x402_challenge          # noqa: E402
+import user_agent as ua_policy  # noqa: E402
 
 try:
     from eth_account import Account
@@ -128,7 +129,7 @@ def _rpc(rpc_url, method, params, timeout=20):
         rpc_url, data=json.dumps(payload).encode(),
         headers={"content-type": "application/json",
                  "accept": "application/json",
-                 "user-agent": "Mozilla/5.0 (x402-pay test client)"})
+                 "user-agent": ua_policy.browser("x402-pay")})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         out = json.loads(r.read())
     if "error" in out:
