@@ -4,16 +4,26 @@ volume_integrity.py -- how much of a payment network's volume is real?
 
 WHY THIS EXISTS
 ---------------
-Measured on MPP (Machine Payments Protocol, Tempo mainnet) over a 14-hour window:
-ONE address took 3,872 payments from 1,281 distinct buyers -- 49.8% of all
-machine-payment traffic on the network. It looked like the largest seller in the
-ecosystem. It is not a seller. Every payment was for exactly $0.01, every one of
-those 1,281 buyers paid that address and nothing else, and all 1,281 were funded
-by a single wallet that received nothing itself. One operator, fanned out across
-1,281 addresses, paying its own endpoint.
+Measured on MPP (Machine Payments Protocol, Tempo mainnet): ONE address presents
+as the largest seller on the network and is not a seller at all. Every payment
+to it is for exactly $0.01, every one of its buyers pays it and nothing else,
+and all of them are funded by a single wallet that receives nothing itself. The
+sink never forwards. One operator, fanned out across ~1,300 wallets, paying its
+own endpoint. It has run continuously for at least 30 days.
 
-The same screen over the x402 corpus (46,031 settlements, 281 payees) returns
-ZERO. That contrast is the point: a detector that fires everywhere is worthless.
+Its share is 18.7% of in-band machine payments (4,347 of 23,282), pooled across
+13 windows spanning 30 days.
+
+MIND THE SAMPLING -- this module's own headline was wrong once. A single 14-hour
+window put the figure at 49.9%, and it was quoted that way before the follow-up
+ran. Per-window the cluster ranges from 8.9% to 51.3%, so ONE WINDOW MISLEADS BY
+ROUGHLY 2.5x IN EITHER DIRECTION. Pool several windows across weeks before
+quoting a share; `synthetic_share` cannot tell how its input was sampled and
+will faithfully report a number that means nothing.
+
+The same screen over the x402 corpus (46,031 settlements, 281 payees, 29 months)
+returns ZERO. That contrast is the point: a detector that fires everywhere is
+worthless.
 
 WHAT THE SIGNATURE IS -- AND WHAT IT IS NOT
 --------------------------------------------
@@ -59,7 +69,7 @@ observed on Tempo.
 from __future__ import annotations
 
 #: Below this many distinct buyers, fabricated diversity is not what is being
-#: measured and the screen returns `unscreenable`. The MPP cluster had 1,281.
+#: measured and the screen returns `unscreenable`. The MPP cluster ran ~1,300.
 MIN_BUYERS = 20
 
 #: Below this many payments there is not enough history to characterise.
@@ -198,8 +208,12 @@ def synthetic_share(results, amounts_by_payee=None):
 
     This is the headline number -- 'X% of this network's volume is one operator
     paying itself'. Counts payments, not value: the MPP cluster moved $38.72 in
-    total while generating half the traffic, so a value-weighted figure would
-    have hidden it completely."""
+    total while generating ~19% of traffic, so a value-weighted figure would have
+    reported ~0% and hidden it completely.
+
+    The result is only as good as the sampling of `results`. Pool windows across
+    weeks; a single window put this cluster at 49.9% when its 30-day share is
+    18.7%. This function cannot detect that and will not warn you."""
     total = sum(r["payments"] for r in results) if amounts_by_payee is None else \
         sum(len(v or []) for v in amounts_by_payee.values())
     if not total:
