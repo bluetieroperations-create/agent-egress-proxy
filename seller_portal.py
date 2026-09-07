@@ -211,6 +211,40 @@ a{color:inherit}
 """
 
 
+# How many proxies sit in front of us. `ratelimit.client_ip_from` takes the
+# RIGHTMOST X-Forwarded-For entry, which is correct behind ONE trusted proxy --
+# and this service is meant to run behind Cloudflare in front of Render, which is
+# TWO. With depth 1 there, the rightmost entry is the CDN's address, so every
+# visitor in the world collapses into a single bucket and the limiter becomes a
+# GLOBAL 30/minute cap: not a bypass, a self-inflicted outage the first time the
+# page gets attention.
+#
+# Depth is the number of proxies you actually have. It must not be guessed
+# upward "to be safe": each hop you claim is one more attacker-supplied entry
+# treated as trustworthy, and an over-stated depth lets a client forge its own
+# identity and evade the limit entirely. Under-stating is the safe error.
+DEFAULT_PROXY_DEPTH = 1
+
+
+def client_key(xff, peer, depth=DEFAULT_PROXY_DEPTH):
+    """Rate-limit identity, counting `depth` trusted proxies from the right.
+
+    depth 1 -> rightmost entry (one proxy: Render alone)
+    depth 2 -> second from the right (Cloudflare in front of Render)
+    No XFF, or fewer entries than claimed -> the raw TCP peer, which cannot be
+    forged. Falling back to the peer is why under-stating depth is safe: it
+    groups more clients together rather than trusting a header they wrote.
+    """
+    try:
+        depth = max(1, int(depth))
+    except (TypeError, ValueError):
+        depth = DEFAULT_PROXY_DEPTH
+    parts = [p.strip() for p in str(xff or "").split(",") if p.strip()]
+    if len(parts) >= depth:
+        return parts[len(parts) - depth]
+    return peer or "unknown"
+
+
 def page(title, body):
     return ("<!doctype html><html><head><meta charset=utf-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
@@ -342,7 +376,8 @@ class Portal:
         report = SR.build_report(key, self.rows, coverage=self.coverage,
                                  probe_fn=self._probe_fn,
                                  cross_fn=self._cross_fn,
-                                 category_index=self.category_index)
+                                 category_index=self.category_index,
+                                 source="seller_portal")
         self.cache.put(key, report, now)
         return report
 
@@ -350,6 +385,7 @@ class Portal:
 class _Handler(BaseHTTPRequestHandler):
     portal = None
     limiter = None
+    proxy_depth = DEFAULT_PROXY_DEPTH
     server_version = "blackwall-seller-portal"
     sys_version = ""
 
@@ -375,9 +411,9 @@ class _Handler(BaseHTTPRequestHandler):
     def _limited(self):
         if self.limiter is None:
             return False
-        from ratelimit import client_ip_from
-        key = client_ip_from(self.headers.get("X-Forwarded-For"),
-                             self.client_address[0] if self.client_address else None)
+        key = client_key(self.headers.get("X-Forwarded-For"),
+                         self.client_address[0] if self.client_address else None,
+                         self.proxy_depth)
         allowed, retry = self.limiter.allow(key, time.monotonic())
         if allowed:
             return False
@@ -434,7 +470,8 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def serve_forever(host="127.0.0.1", port=8410, store=None, probe=True,
-                  rate=DEFAULT_RATE, window=DEFAULT_WINDOW, burst=DEFAULT_BURST):
+                  rate=DEFAULT_RATE, window=DEFAULT_WINDOW, burst=DEFAULT_BURST,
+                  proxy_depth=DEFAULT_PROXY_DEPTH):
     from ratelimit import RateLimiter
 
     portal = Portal(store_path=store, probe=probe)
@@ -443,7 +480,7 @@ def serve_forever(host="127.0.0.1", port=8410, store=None, probe=True,
     sys.stdout.flush()
 
     handler = type("_Bound", (_Handler,),
-                   {"portal": portal,
+                   {"portal": portal, "proxy_depth": proxy_depth,
                     "limiter": RateLimiter(rate, window, burst=burst)})
     httpd = ThreadingHTTPServer((host, port), handler)
     sys.stdout.write("seller-portal on http://%s:%d\n" % (host, port))
@@ -469,10 +506,18 @@ def main(argv=None):
     p.add_argument("--no-probe", action="store_true",
                    help="never make the live outbound request")
     p.add_argument("--rate", type=int, default=DEFAULT_RATE)
+    p.add_argument("--proxy-depth", type=int,
+                   default=int(os.environ.get("PORTAL_PROXY_DEPTH",
+                                              DEFAULT_PROXY_DEPTH)),
+                   help="number of trusted proxies in front of this service "
+                        "(1 = Render alone, 2 = Cloudflare in front of Render). "
+                        "Do not overstate it: each claimed hop is one more "
+                        "client-supplied header entry treated as trustworthy.")
     args = p.parse_args(argv)
 
     serve_forever(host=args.host, port=args.port, store=args.store,
-                  probe=not args.no_probe, rate=args.rate)
+                  probe=not args.no_probe, rate=args.rate,
+                  proxy_depth=args.proxy_depth)
     return 0
 
 

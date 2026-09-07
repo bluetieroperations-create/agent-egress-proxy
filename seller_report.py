@@ -599,7 +599,7 @@ def select_subject(matches):
 
 
 def build_report(key, rows, coverage=None, probe_fn=None, cross_fn=None,
-                 category_index=None, decide=None):
+                 category_index=None, decide=None, source="seller_report"):
     matches = find_rows(rows, key)
     if not matches:
         return {"key": key, "found": False, "severity": UNKNOWN, "findings": [
@@ -616,15 +616,24 @@ def build_report(key, rows, coverage=None, probe_fn=None, cross_fn=None,
 
     probe = probe_fn(row.get("resources") or []) if probe_fn else None
     history = None
-    if hosts:
-        # Record what we just saw and read back what we saw before. Fail-soft in
-        # both directions: a report must never break because a log file is
-        # unwritable, and it must never be blocked because one is unreadable.
+    # THE HOST WE ACTUALLY PROBED, not hosts[0]. 58 of 266 corpus payees
+    # advertise more than one host, and `probe_resources` returns the FIRST
+    # ANSWERING resource -- so on 24 of them the probe can land on a different
+    # host than the first one listed. Recording that against hosts[0] writes
+    # false evidence in BOTH directions: a silent host gets credited with a
+    # sibling's success, and a host nobody tried gets charged with a failure.
+    # That is the exact cross-attribution this ledger exists to prevent, and the
+    # same class as the two-businesses-in-one-report bug above.
+    probed_host = host_of((probe or {}).get("url")) if probe else None
+    subject_host = probed_host or (hosts[0] if hosts else None)
+    if subject_host:
+        # Fail-soft in both directions: a report must never break because a log
+        # file is unwritable, and never be blocked because one is unreadable.
         import reachability_ledger as RL
         try:
             if probe is not None:
-                RL.observe(hosts[0], probe, source="seller_report")
-            history = RL.summarize(RL.load(host=hosts[0]))
+                RL.observe(subject_host, probe, source=source)
+            history = RL.summarize(RL.load(host=subject_host))
         except Exception:
             history = None
     cross, store_error = (None, None)

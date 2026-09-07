@@ -46,6 +46,26 @@ RUN_FOR_CONCERN = 3
 DAYS_FOR_CONCERN = 3.0
 
 MAX_DETAIL = 200
+
+# BOUNDS. The portal is public, so this file grows from STRANGERS' traffic: 514
+# probeable corpus hosts against a 15-minute report cache is ~49k rows/day worst
+# case, about 16 MB, and `load` scans the whole file per report -- so an
+# uncapped ledger degrades the thing it exists to serve (measured: 0.09s at 50k
+# rows, and it only goes up). Keeping the most recent rows per host bounds both
+# the file and the read, and costs nothing that matters: `summarize` only needs
+# the recent tail to compute a run, and a year-old observation does not change
+# whether a host answered this week.
+# THE CONTRACT, stated precisely because the loose version misled its own test:
+# compaction is SIZE-triggered, so `KEEP_PER_HOST` is the retention floor
+# immediately AFTER a compaction, not a per-host ceiling that holds at every
+# instant. Between compactions rows accumulate normally. What is actually
+# guaranteed is the FILE bound -- roughly COMPACT_ABOVE_BYTES plus whatever
+# arrives before the next crossing -- and that is the property that matters,
+# since the risk was unbounded growth and a whole-file scan per report.
+KEEP_PER_HOST = 200
+COMPACT_ABOVE_BYTES = 4 * 1024 * 1024
+
+MAX_DETAIL = 200
 _LOCK = threading.Lock()
 
 # Operational data, not a committed artifact -- the root .gitignore excludes
@@ -97,6 +117,7 @@ def record(host, outcome, detail="", path=None, now=None, source="probe"):
              "detail": _safe(detail), "source": _safe(source, 40),
              "ts": float(now if now is not None else time.time())}
     line = json.dumps(event, sort_keys=True) + "\n"
+    oversize = False
     try:
         with _LOCK:
             directory = os.path.dirname(path)
@@ -104,9 +125,65 @@ def record(host, outcome, detail="", path=None, now=None, source="probe"):
                 os.makedirs(directory, exist_ok=True)
             with open(path, "a", encoding="utf-8") as fh:
                 fh.write(line)
+            oversize = os.path.getsize(path) > COMPACT_ABOVE_BYTES
     except Exception:
         return False
+    if oversize:
+        # Outside the lock -- compact() takes it itself, and holding it across
+        # a whole-file rewrite would stall every concurrent report.
+        compact(path)
     return True
+
+
+def compact(path=None, keep=None):
+    """Rewrite the ledger keeping only the most recent `keep` rows per host.
+
+    Called automatically once the file crosses COMPACT_ABOVE_BYTES. Written to a
+    temporary file and moved into place with `os.replace`, which is atomic on
+    POSIX, so a reader always sees a complete file.
+
+    HONEST LIMITATION: this is an append-only log written by more than one
+    process (the engine and the portal are separate services). A row appended by
+    another process during the rewrite is lost. That is acceptable HERE and would
+    not be in a ledger of record -- these are observations, the loss window is
+    milliseconds, and losing one probe result cannot change a run that needs
+    several observations over several days. It is called out rather than hidden
+    because the same shortcut in `rwa_ledger` would be a defect.
+    """
+    # Resolved at CALL time, not bound as a default argument: a default captures
+    # the constant when the function is DEFINED, so an operator (or a test)
+    # retuning the module constant would silently keep the original value. The
+    # same trap as any mutable-default bug, and here it would make a documented
+    # knob inert.
+    path = path or DEFAULT_PATH
+    keep = KEEP_PER_HOST if keep is None else keep
+    with _LOCK:
+        try:
+            if os.path.getsize(path) <= COMPACT_ABOVE_BYTES:
+                return 0
+        except OSError:
+            return 0
+        events = load(path)
+        per_host = {}
+        for event in events:
+            per_host.setdefault(event.get("host"), []).append(event)
+        kept = []
+        for host_events in per_host.values():
+            kept.extend(host_events[-keep:])
+        kept.sort(key=lambda e: e.get("ts") or 0.0)
+        tmp = path + ".compact"
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                for event in kept:
+                    fh.write(json.dumps(event, sort_keys=True) + "\n")
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            return 0
+        return len(events) - len(kept)
 
 
 def load(path=None, host=None):

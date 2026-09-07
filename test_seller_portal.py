@@ -164,6 +164,45 @@ class TestEscaping(unittest.TestCase):
         self.assertNotIn("'", SP.esc("a'b"))
 
 
+class TestRateLimitIdentity(unittest.TestCase):
+    """Who the limiter counts, once this sits behind a CDN."""
+
+    XFF = "203.0.113.9, 172.71.1.1"   # real client, then Cloudflare
+
+    def test_depth_two_finds_the_real_client_behind_a_cdn(self):
+        # Mutation: always taking the rightmost entry. That is correct behind ONE
+        # proxy and wrong behind Cloudflare-in-front-of-Render, where it is the
+        # CDN's address -- so every visitor in the world collapses into one
+        # bucket and the limiter becomes a GLOBAL 30/minute cap. Not a bypass; a
+        # self-inflicted outage the first time the page gets attention.
+        self.assertEqual(SP.client_key(self.XFF, "10.0.0.1", 2), "203.0.113.9")
+        self.assertEqual(SP.client_key(self.XFF, "10.0.0.1", 1), "172.71.1.1")
+
+    def test_a_shorter_chain_than_claimed_falls_back_to_the_raw_peer(self):
+        # Mutation: indexing anyway, or taking the leftmost. The leftmost entry
+        # is written by the CLIENT, so trusting it when the chain is shorter than
+        # claimed hands every visitor a forgeable identity and voids the limit.
+        self.assertEqual(SP.client_key("1.1.1.1", "10.0.0.1", 3), "10.0.0.1")
+        self.assertEqual(SP.client_key(None, "10.0.0.1", 2), "10.0.0.1")
+        self.assertEqual(SP.client_key("", "10.0.0.1", 1), "10.0.0.1")
+
+    def test_a_junk_depth_falls_back_to_the_safe_default(self):
+        for depth in (0, -5, None, "two"):
+            self.assertTrue(SP.client_key(self.XFF, "10.0.0.1", depth))
+
+    def test_the_default_is_the_under_stating_one(self):
+        # Under-stating groups clients together; over-stating trusts an extra
+        # attacker-written entry. The default must err the safe way.
+        self.assertEqual(SP.DEFAULT_PROXY_DEPTH, 1)
+
+    def test_the_depth_reaches_the_handler(self):
+        # Mutation: adding the flag and never binding it -- the wired-and-inert
+        # pattern, which this repo has now hit five times.
+        self.assertEqual(SP._Handler.proxy_depth, SP.DEFAULT_PROXY_DEPTH)
+        import inspect
+        self.assertIn("proxy_depth", inspect.getsource(SP.serve_forever))
+
+
 class TestCache(unittest.TestCase):
     def test_a_repeat_request_does_not_re_probe_the_seller(self):
         # Mutation: no cache. Every page refresh would hit a stranger's endpoint,

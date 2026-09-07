@@ -216,6 +216,91 @@ class TestPersistence(unittest.TestCase):
         self.assertFalse(RL.record(HOST, "probably-fine", path=self.path))
 
 
+class TestBounds(unittest.TestCase):
+    """The portal is public, so this file grows from strangers' traffic."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "reach.jsonl")
+        self.saved = (RL.COMPACT_ABOVE_BYTES, RL.KEEP_PER_HOST)
+        RL.COMPACT_ABOVE_BYTES, RL.KEEP_PER_HOST = 100_000, 40
+
+    def tearDown(self):
+        RL.COMPACT_ABOVE_BYTES, RL.KEEP_PER_HOST = self.saved
+
+    def test_the_file_does_not_grow_without_bound(self):
+        # Mutation: removing the compaction. 514 probeable corpus hosts against a
+        # 15-minute report cache is ~49k rows/day, about 16 MB, from public
+        # traffic alone -- and `load` scans the whole file per report, so an
+        # uncapped ledger degrades the thing it exists to serve.
+        for i in range(3000):
+            RL.record("h%d" % (i % 10), RL.ANSWERED, "x" * 150,
+                      path=self.path, now=float(i))
+        # The FILE bound is the guarantee. Compaction is size-triggered, so rows
+        # accumulate normally between crossings and a per-host count asserted at
+        # an arbitrary instant sits above KEEP_PER_HOST -- which is the contract
+        # working, not failing. Unbounded would be ~750 KB here and climbing
+        # forever; the point is that it stops.
+        self.assertLess(os.path.getsize(self.path), 400_000)
+        self.assertLess(len(RL.load(self.path, "h1")), 300)
+
+    def test_compaction_keeps_the_MOST_RECENT_rows(self):
+        # Mutation: keeping the oldest (`host_events[:keep]`). Asserting only the
+        # MAXIMUM timestamp does not catch it -- the newest row survives either
+        # way, because it is appended after the last compaction. The OLDEST
+        # retained row is what distinguishes them: keeping the head leaves ts=0
+        # sitting in the file forever while the recent tail is discarded, which
+        # bounds the file and destroys the entire signal.
+        for i in range(3000):
+            RL.record("h1", RL.ANSWERED, "x" * 150, path=self.path, now=float(i))
+        RL.COMPACT_ABOVE_BYTES = 0
+        RL.compact(self.path)
+        stamps = [e["ts"] for e in RL.load(self.path, "h1")]
+        self.assertEqual(max(stamps), 2999.0)
+        self.assertGreater(min(stamps), 2000.0)
+
+    def test_a_busy_host_cannot_evict_a_quiet_one(self):
+        # Mutation: capping globally instead of per host. Round-robin traffic
+        # does NOT catch that -- a global cap still leaves every host a few of
+        # the newest rows. The real failure needs the asymmetry it describes: one
+        # host observed constantly, another observed a few times long ago. Under
+        # a global cap the quiet host's history is evicted entirely, which is
+        # exactly the seller whose report then says "we have no record of you".
+        RL.record("quiet.example", RL.ANSWERED, "x", path=self.path, now=1.0)
+        RL.record("quiet.example", RL.UNREACHABLE, "x", path=self.path, now=2.0)
+        for i in range(3000):
+            RL.record("busy.example", RL.ANSWERED, "x" * 150,
+                      path=self.path, now=100.0 + i)
+        RL.COMPACT_ABOVE_BYTES = 0
+        RL.compact(self.path)
+        self.assertEqual(len(RL.load(self.path, "quiet.example")), 2)
+        self.assertLessEqual(len(RL.load(self.path, "busy.example")),
+                             RL.KEEP_PER_HOST)
+
+    def test_the_retention_knob_is_read_at_call_time(self):
+        # Mutation: `def compact(path=None, keep=KEEP_PER_HOST)`. A default
+        # argument captures the constant when the function is DEFINED, so
+        # retuning the module constant leaves the documented knob inert -- and
+        # it fails silently, which is how it got shipped that way for a minute.
+        RL.KEEP_PER_HOST = 5
+        for i in range(3000):
+            RL.record("h1", RL.ANSWERED, "x" * 150, path=self.path, now=float(i))
+        # Asserted right after an EXPLICIT compaction, which is the only moment
+        # the floor is exactly the floor. With the default-argument capture the
+        # constant is ignored entirely and this stays at 200.
+        RL.COMPACT_ABOVE_BYTES = 0
+        RL.compact(self.path)
+        self.assertLessEqual(len(RL.load(self.path, "h1")), 5)
+
+    def test_a_summary_survives_compaction(self):
+        # Restraint control: bounding the file must not change the answer.
+        for i in range(3000):
+            RL.record("h1", RL.ANSWERED, "x", path=self.path, now=float(i))
+        RL.record("h1", RL.UNREACHABLE, "x", path=self.path, now=3001.0)
+        summary = RL.summarize(RL.load(self.path, "h1"), now=3002.0)
+        self.assertEqual(summary["state"], "flapping")
+
+
 class TestDeployPath(unittest.TestCase):
     def test_the_path_is_configurable_for_a_persistent_disk(self):
         # Mutation: hardcoding the path beside the module. The root .gitignore
@@ -236,6 +321,62 @@ class TestDeployPath(unittest.TestCase):
             else:
                 os.environ["BLACKWALL_REACHABILITY"] = saved
             importlib.reload(RL)
+
+
+class TestProbedHostAttribution(unittest.TestCase):
+    """58 of 266 corpus payees advertise more than one host."""
+
+    ROW = {"payee": "0x" + "11" * 20, "settlement_count": 5,
+           "min_price": "0.01", "max_price": "0.02",
+           "resources": ["https://first.example/a", "https://second.example/b"]}
+
+    def _record_via_report(self, probe, path):
+        saved = RL.DEFAULT_PATH
+        RL.DEFAULT_PATH = path
+        try:
+            SR.build_report("first.example", [dict(self.ROW)],
+                            probe_fn=lambda r: probe)
+        finally:
+            RL.DEFAULT_PATH = saved
+        return RL.load(path)
+
+    def test_the_observation_is_recorded_against_the_host_we_PROBED(self):
+        # Mutation: recording against hosts[0]. `probe_resources` returns the
+        # first ANSWERING resource, so on 24 corpus payees it lands on a
+        # different host than the first one listed -- and recording that against
+        # hosts[0] writes false evidence in BOTH directions: a silent host
+        # credited with a sibling's success, and a host nobody tried charged
+        # with a failure. The exact cross-attribution this ledger exists to stop.
+        path = os.path.join(tempfile.mkdtemp(), "r.jsonl")
+        events = self._record_via_report(
+            {"url": "https://second.example/b", "status": 402}, path)
+        self.assertEqual([e["host"] for e in events], ["second.example"])
+
+    def test_it_falls_back_to_the_listed_host_when_nothing_was_probed(self):
+        path = os.path.join(tempfile.mkdtemp(), "r.jsonl")
+        saved = RL.DEFAULT_PATH
+        RL.DEFAULT_PATH = path
+        try:
+            SR.build_report("first.example", [dict(self.ROW)], probe_fn=None)
+        finally:
+            RL.DEFAULT_PATH = saved
+        self.assertEqual(RL.load(path), [])
+
+    def test_the_source_says_which_surface_observed_it(self):
+        # Mutation: hardcoding the source. A record that cannot distinguish a
+        # public portal visit from an operator's CLI run is much harder to read
+        # back -- and the portal is the one that fires from strangers' traffic.
+        path = os.path.join(tempfile.mkdtemp(), "r.jsonl")
+        saved = RL.DEFAULT_PATH
+        RL.DEFAULT_PATH = path
+        try:
+            SR.build_report("first.example", [dict(self.ROW)],
+                            probe_fn=lambda r: {"url": "https://first.example/a",
+                                                "status": 402},
+                            source="seller_portal")
+        finally:
+            RL.DEFAULT_PATH = saved
+        self.assertEqual(RL.load(path)[0]["source"], "seller_portal")
 
 
 class TestReportIntegration(unittest.TestCase):
