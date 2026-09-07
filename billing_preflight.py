@@ -36,6 +36,7 @@ CLI:
 import json
 import os
 import sys
+import urllib.error
 import urllib.request
 from decimal import Decimal, InvalidOperation
 
@@ -370,7 +371,7 @@ def supported_kinds(doc):
 
 
 def check_facilitator(url, scheme, network, fetch=None,
-                      cdp_id=None, cdp_secret=None):
+                      cdp_id=None, cdp_secret=None, authed_fetch=None):
     """Does the facilitator answer, and does it support what we QUOTE?
 
     The two failure modes are deliberately graded differently:
@@ -390,11 +391,38 @@ def check_facilitator(url, scheme, network, fetch=None,
         # silently IGNORED (deliberately -- sending a CDP Bearer JWT to a
         # community facilitator would leak an auth token).
         from x402 import choose_facilitator
-        _, note = choose_facilitator(url, cdp_id, cdp_secret)
-        status = WARN if "IGNORING" in note else NOTE
-        return _check("facilitator", status,
-                      _safe_text(note, 200) + " -- /supported is authenticated, "
-                      "so it was NOT probed here")
+        facilitator, note = choose_facilitator(url, cdp_id, cdp_secret)
+        base = getattr(facilitator, "base_url", "") or ""
+        # PROBE IT. This used to return NOTE with "/supported is authenticated,
+        # so it was NOT probed here" -- which meant the single most likely way a
+        # mainnet deploy fails, a mistyped or wrong-scoped CDP credential, PASSED
+        # the preflight whose entire job is to answer "what happens if I flip
+        # billing on?". A rejected credential is not transient and no amount of
+        # waiting fixes it: it presents in production as every settlement
+        # failing while the service reports healthy. Authenticated is a reason to
+        # MINT A TOKEN, not a reason to skip the check.
+        authed = _cdp_get_json if authed_fetch is None else authed_fetch
+        try:
+            doc = authed(base.rstrip("/") + "/supported", cdp_id, cdp_secret)
+        except _CredentialsRejected as e:
+            return _check("facilitator", FAIL,
+                          "CDP rejected the credentials (%s) -- billing would be "
+                          "ON and every settlement would fail. Check "
+                          "CDP_API_KEY_ID / CDP_API_KEY_SECRET and that the key "
+                          "is enabled for x402." % _safe_text(e, 120))
+        except Exception as e:
+            return _check("facilitator", WARN,
+                          "%s -- but /supported did not answer (%s); could be "
+                          "transient, support for %s was NOT confirmed"
+                          % (_safe_text(note, 200), _safe_text(e, 120), scheme))
+        result = _grade_kinds(base, doc, scheme, network)
+        if "IGNORING" in note and result["status"] == OK:
+            # The credentials work AND a non-CDP facilitator_url is being
+            # silently dropped -- the operator should know their setting is inert.
+            return _check("facilitator", WARN,
+                          _safe_text(note, 200) + " -- credentials accepted and "
+                          + result["detail"], kinds=result.get("kinds"))
+        return result
     if not url:
         return _check("facilitator", WARN,
                       "no facilitator configured -- BillingGate falls back to "
@@ -403,7 +431,6 @@ def check_facilitator(url, scheme, network, fetch=None,
     if fetch is None:
         fetch = _http_get_json
 
-    caip2 = to_caip2(network)
     try:
         doc = fetch(url.rstrip("/") + "/supported")
     except Exception as e:
@@ -413,6 +440,15 @@ def check_facilitator(url, scheme, network, fetch=None,
                       "facilitator %s did not answer /supported (%s) -- could be "
                       "transient; it was NOT confirmed to speak the protocol"
                       % (_safe_text(url), _safe_text(e)))
+    return _grade_kinds(url, doc, scheme, network)
+
+
+def _grade_kinds(url, doc, scheme, network):
+    """Grade a /supported document. Shared by the keyless and the CDP path so
+    the two cannot drift on what "supports what we quote" means."""
+    from x402 import to_caip2
+
+    caip2 = to_caip2(network)
     kinds = supported_kinds(doc)
     if not kinds:
         return _check("facilitator", WARN,
@@ -434,6 +470,31 @@ def check_facilitator(url, scheme, network, fetch=None,
                   "facilitator %s does NOT support %s on %s (it lists: %s) -- "
                   "every payment would be rejected"
                   % (_safe_text(url), scheme, caip2, shown), kinds=listed)
+
+
+class _CredentialsRejected(Exception):
+    """The facilitator answered and refused the credentials -- never transient."""
+
+
+def _cdp_get_json(url, key_id, key_secret, timeout=8.0):
+    """GET an authenticated CDP endpoint with a freshly minted Bearer JWT.
+
+    401/403 is raised as `_CredentialsRejected` rather than a generic error
+    because the two grade differently: unreachable is transient and warns,
+    rejected is a configuration error that fails.
+    """
+    from cdp_auth import build_cdp_jwt
+
+    token = build_cdp_jwt(key_id, key_secret, "GET", url)
+    req = urllib.request.Request(url, headers={
+        "accept": "application/json", "Authorization": "Bearer " + token})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read(1 << 20).decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            raise _CredentialsRejected("HTTP %s" % e.code)
+        raise
 
 
 def _http_get_json(url, timeout=8.0):

@@ -296,36 +296,98 @@ class TestFacilitator(unittest.TestCase):
 
 
 class TestCdpSelection(unittest.TestCase):
-    """With CDP creds the server does NOT use the mock -- nor the URL you set."""
+    """With CDP creds the server does NOT use the mock -- nor the URL you set --
+    and the authenticated endpoint IS probed.
+
+    A previous version of this class asserted the opposite: `check_facilitator`
+    returned NOTE with "/supported is authenticated, so it was NOT probed here",
+    and a test named test_cdp_does_not_probe_the_network PINNED that. Measured
+    2026-09-07 against a real payout config: invalid CDP credentials PASSED the
+    preflight (overall NOTE, exit 1) -- so the single most likely way a mainnet
+    deploy fails silently was the one thing the check whose whole job is "what
+    happens if I flip billing on?" declined to look at. Authenticated is a
+    reason to mint a token, not a reason to skip. The three tests below replace
+    the three that encoded the old behaviour.
+    """
+
+    KINDS = {"kinds": [{"scheme": "exact", "network": "eip155:8453"}]}
+
+    def _authed(self, result):
+        """An injected authenticated fetch; raising is how a caller signals a
+        rejected credential or an unreachable endpoint."""
+        def fetch(url, key_id, key_secret, **kw):
+            if isinstance(result, Exception):
+                raise result
+            return result
+        return fetch
 
     def test_cdp_creds_are_not_reported_as_the_mock(self):
         # Mutation: keeping the no-URL branch first. An operator with a CORRECT
         # mainnet config (CDP creds, no BLACKWALL_FACILITATOR) would be told
         # their service runs on the mock facilitator, which is a false finding
         # on the one configuration that actually works on Base mainnet.
-        row = bp.check_facilitator(None, "exact", "base",
-                                   cdp_id="id", cdp_secret="secret")
+        row = bp.check_facilitator(None, "exact", "base", cdp_id="id",
+                                   cdp_secret="secret",
+                                   authed_fetch=self._authed(self.KINDS))
         self.assertNotIn("MOCK", row["detail"])
-        self.assertEqual(row["status"], bp.NOTE)
+        self.assertEqual(row["status"], bp.OK)
+
+    def test_rejected_credentials_fail(self):
+        # THE POINT OF THIS CLASS. Mutation: grading a rejected credential as
+        # WARN, or not probing at all. A 401/403 is not transient -- no amount
+        # of waiting fixes a wrong key -- and it presents in production as every
+        # settlement failing while the service reports healthy. Verified live
+        # against api.cdp.coinbase.com, which 401s a bad token and accepts GET
+        # (no header and a garbage bearer both 401, so a 401 with a properly
+        # minted JWT really does mean the credential was refused; a POST-only
+        # endpoint would answer 405, which routes to the WARN branch below).
+        row = bp.check_facilitator(
+            None, "exact", "base", cdp_id="id", cdp_secret="secret",
+            authed_fetch=self._authed(bp._CredentialsRejected("HTTP 401")))
+        self.assertEqual(row["status"], bp.FAIL)
+        self.assertIn("rejected the credentials", row["detail"])
+
+    def test_an_unreachable_cdp_endpoint_only_warns(self):
+        # Mutation: grading every failure FAIL. A blip at deploy time must not
+        # block a correct config -- the same grading the keyless path uses.
+        row = bp.check_facilitator(
+            None, "exact", "base", cdp_id="id", cdp_secret="secret",
+            authed_fetch=self._authed(OSError("timed out")))
+        self.assertEqual(row["status"], bp.WARN)
+        self.assertIn("NOT confirmed", row["detail"])
+
+    def test_cdp_is_graded_by_the_same_rule_as_the_keyless_path(self):
+        # Mutation: a CDP path that reports OK whatever /supported lists. The
+        # network check is the reason the keyless facilitator FAILS on mainnet;
+        # CDP must not be exempt from it just because it is authenticated.
+        row = bp.check_facilitator(
+            None, "exact", "base", cdp_id="id", cdp_secret="secret",
+            authed_fetch=self._authed(
+                {"kinds": [{"scheme": "exact", "network": "base-sepolia"}]}))
+        self.assertEqual(row["status"], bp.FAIL)
+        self.assertIn("does NOT support", row["detail"])
 
     def test_a_community_url_alongside_cdp_creds_warns(self):
-        # Mutation: reporting NOTE unconditionally. choose_facilitator silently
+        # Mutation: reporting OK unconditionally. choose_facilitator silently
         # IGNORES a non-CDP URL when CDP creds are present -- correct (it would
         # leak a Bearer JWT) and surprising, so the operator whose stale
-        # BLACKWALL_FACILITATOR is doing nothing should be told.
+        # BLACKWALL_FACILITATOR is doing nothing should be told, even when the
+        # credentials themselves are fine.
         row = bp.check_facilitator("https://facilitator.x402.rs", "exact", "base",
-                                   cdp_id="id", cdp_secret="secret")
+                                   cdp_id="id", cdp_secret="secret",
+                                   authed_fetch=self._authed(self.KINDS))
         self.assertEqual(row["status"], bp.WARN)
         self.assertIn("IGNORING", row["detail"])
 
-    def test_cdp_does_not_probe_the_network(self):
-        # Mutation: probing anyway. /supported on CDP is authenticated; an
-        # unauthenticated probe returns an error and would misreport a correct
-        # config as unreachable.
+    def test_the_keyless_fetch_is_never_used_on_the_cdp_path(self):
+        # Mutation: probing CDP with the unauthenticated fetch. That returns 401
+        # and would misreport a CORRECT config as unreachable -- the original
+        # reason the probe was skipped in the first place.
         def boom(url, **kw):
-            raise AssertionError("network touched on the CDP path")
-        bp.check_facilitator(None, "exact", "base", fetch=boom,
-                             cdp_id="id", cdp_secret="secret")
+            raise AssertionError("unauthenticated fetch used on the CDP path")
+        bp.check_facilitator(None, "exact", "base", fetch=boom, cdp_id="id",
+                             cdp_secret="secret",
+                             authed_fetch=self._authed(self.KINDS))
 
     def test_partial_creds_fall_back_to_the_url_path(self):
         # Mutation: `cdp_id or cdp_secret`. choose_facilitator requires BOTH;
@@ -335,6 +397,88 @@ class TestCdpSelection(unittest.TestCase):
         row = bp.check_facilitator("https://f.example", "exact", "base",
                                    fetch=fetch, cdp_id="id")
         self.assertEqual(row["status"], bp.OK)
+
+
+class TestCdpAuthenticatedGet(unittest.TestCase):
+    """The HTTP-status -> exception mapping, which decides FAIL vs WARN.
+
+    Reached by no other test (they all inject `authed_fetch`), so two mutations
+    survived until this class existed: treating 401 as a generic error, and
+    swallowing the rejection entirely. Both turn a wrong CDP key back into a
+    WARN an operator ships past.
+    """
+
+    def _run(self, raiser):
+        import urllib.error
+        real_open, real_jwt = urllib.request.urlopen, None
+        import cdp_auth
+        real_jwt = cdp_auth.build_cdp_jwt
+        cdp_auth.build_cdp_jwt = lambda *a, **k: "token"
+        urllib.request.urlopen = raiser
+        try:
+            return bp._cdp_get_json("https://cdp.example/supported", "id", "sec")
+        finally:
+            urllib.request.urlopen = real_open
+            cdp_auth.build_cdp_jwt = real_jwt
+
+    def _http_error(self, code):
+        import urllib.error
+
+        def raiser(req, timeout=None):
+            raise urllib.error.HTTPError(req.full_url, code, "no", {}, None)
+        return raiser
+
+    def test_401_is_a_rejected_credential(self):
+        # Mutation: `if e.code in (403,)`. 401 is the status CDP actually
+        # returns -- verified live against api.cdp.coinbase.com.
+        with self.assertRaises(bp._CredentialsRejected):
+            self._run(self._http_error(401))
+
+    def test_403_is_a_rejected_credential(self):
+        # A key that authenticates but is not enabled for x402.
+        with self.assertRaises(bp._CredentialsRejected):
+            self._run(self._http_error(403))
+
+    def test_other_statuses_are_not_rejections(self):
+        # Mutation: raising _CredentialsRejected for everything. A 405 (the
+        # shape a POST-only endpoint would take) or a 429 must reach the WARN
+        # branch, not fail a correct config.
+        import urllib.error
+        for code in (404, 405, 429, 500, 503):
+            with self.assertRaises(urllib.error.HTTPError):
+                self._run(self._http_error(code))
+
+    def test_the_rejection_is_never_swallowed(self):
+        # Mutation: `pass` in the 401 branch, which falls through and returns
+        # None -- graded as an empty /supported document, i.e. a WARN.
+        try:
+            result = self._run(self._http_error(401))
+        except bp._CredentialsRejected:
+            return
+        self.fail("a rejected credential returned %r instead of raising" % result)
+
+    def test_the_request_carries_a_bearer_token(self):
+        # Mutation: dropping the Authorization header. The endpoint 401s without
+        # it, so every CDP preflight would report rejected credentials.
+        seen = {}
+
+        class _Resp:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *a):
+                return False
+
+            def read(self_inner, n):
+                return b'{"kinds": []}'
+
+        def capture(req, timeout=None):
+            seen.update(req.headers)
+            return _Resp()
+
+        self._run(capture)
+        auth = [v for k, v in seen.items() if k.lower() == "authorization"]
+        self.assertEqual(auth, ["Bearer token"])
 
 
 class TestPricePoints(unittest.TestCase):

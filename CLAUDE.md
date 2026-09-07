@@ -486,10 +486,26 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `eip155:8453` -- every EVM network it settles is a testnet, as is all of
   `x402.org/facilitator`'s EVM support. The documented copy-paste mainnet deploy
   would have had every payment rejected while looking healthy. Base mainnet needs the
-  authenticated CDP facilitator, which is also the only Bazaar-listing path. Pure
+  authenticated CDP facilitator, which is also the only Bazaar-listing path. SECOND LIVE-RUN FINDING (2026-09-07, against a real payout address): with CDP
+  creds set the facilitator check returned NOTE and the text "/supported is
+  authenticated, so it was NOT probed here" -- so INVALID CDP CREDENTIALS PASSED
+  the preflight, and the single most likely way a mainnet deploy fails silently
+  was the one thing the check declined to look at. Authenticated is a reason to
+  MINT A TOKEN, not a reason to skip. `_cdp_get_json` now GETs `/supported` with
+  a freshly minted Bearer JWT and grades the answer through the SAME
+  `_grade_kinds` the keyless path uses, so CDP is not exempt from the network
+  check that makes the keyless facilitator FAIL on mainnet. 401/403 -> FAIL
+  ("rejected the credentials"), because a wrong key is never transient and
+  presents in production as every settlement failing while the service reports
+  healthy; anything else -> WARN, so a blip cannot block a correct config.
+  Verified live against api.cdp.coinbase.com: it 401s a bad token and accepts
+  GET (no header and a garbage bearer both 401), so a 401 with a properly minted
+  JWT really does mean refused -- a POST-only endpoint would answer 405, which
+  routes to WARN. THREE TESTS encoded the old behaviour and were replaced, one
+  of them (`test_cdp_does_not_probe_the_network`) PINNING the skip. Pure
   core; network and corpus injected; exits 0/1/2 (ready / a person should look / it
   would not work) so a scheduled run is actionable. Tests:
-  `test_billing_preflight.py`, 66 tests, 30 mutations verified killed),
+  `test_billing_preflight.py`, 83 tests, 36 mutations verified killed),
   `seller_report.py` (the SELLER side -- "why agents are not paying you". Every
   other gate here serves the BUYER; this is the first thing that serves the party
   being screened, and it needs no new data: one payee or host, the committed
