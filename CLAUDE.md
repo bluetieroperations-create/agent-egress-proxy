@@ -572,8 +572,19 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   redirect; and it is rate-limited per client because each report costs a
   STRANGER a request. Verified live against the real corpus: 266 payees, 266 with
   a precomputed graph. See `docs/SELLER_SIDE.md`. Tests:
-  `test_seller_portal.py`, 32 tests incl. a real server, 19 mutations verified
-  killed),
+  `test_seller_portal.py`, 37 tests incl. a real server, 21 mutations verified
+  killed). PRE-MERGE AUDIT (2026-09-07): the rate-limit identity was wrong for
+  the topology this is meant to run in. `ratelimit.client_ip_from` takes the
+  RIGHTMOST X-Forwarded-For entry, correct behind ONE proxy -- but Cloudflare in
+  front of Render is TWO, so the rightmost entry is the CDN and every visitor
+  collapses into a single bucket, making the limiter a GLOBAL 30/minute cap: not
+  a bypass, a self-inflicted outage the first time the page gets attention.
+  `client_key(xff, peer, depth)` counts trusted proxies from the right,
+  `--proxy-depth` / `PORTAL_PROXY_DEPTH` configures it, and the DEFAULT
+  UNDER-STATES (1) on purpose -- a short chain falls back to the raw TCP peer,
+  which cannot be forged, whereas each overstated hop treats one more
+  client-written entry as trustworthy and hands every visitor a forgeable
+  identity),
   `reachability_ledger.py` (DID WE REACH THIS HOST, AND WHAT HAPPENED LAST TIME?
   `apiwitchcraft.duckdns.org` has been probed by this project at least four times
   and told a DIFFERENT STORY EVERY TIME -- "still live", "went quiet, never
@@ -603,7 +614,27 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `silent_run` needs BOTH >= RUN_FOR_CONCERN attempts AND >= DAYS_FOR_CONCERN
   days, so three timeouts in ten minutes stays a blip rather than becoming a
   condition; `never_answered` is checked BEFORE the run rule because it is the
-  more specific claim. Folded into `seller_report.assess_reach`, which is what
+  more specific claim.
+  PRE-MERGE AUDIT FINDINGS (2026-09-07), all fixed, and the first is the one this
+  module exists to prevent: (1) HIGH -- observations were recorded against
+  `hosts[0]` rather than the host actually PROBED. 58 of 266 corpus payees
+  advertise more than one host, `probe_resources` returns the FIRST ANSWERING
+  resource, and on 24 of them the probe can land on a different host than the
+  first listed -- writing false evidence in BOTH directions: a silent host
+  credited with a sibling's success, and a host nobody tried charged with a
+  failure. The same cross-attribution class as the two-businesses-in-one-report
+  bug, committed INSIDE the module built to stop it. (2) MEDIUM -- UNBOUNDED
+  GROWTH from public traffic: 514 probeable corpus hosts against the portal's
+  15-minute cache is ~49k rows/day (~16 MB), with no cap, and `load` scans the
+  whole file per report -- so it degrades the thing it serves (measured 0.09s at
+  50k rows, climbing). Now size-triggered per-host compaction keeping the recent
+  tail; the CONTRACT is a FILE bound, NOT an instantaneous per-host ceiling,
+  stated precisely because the loose version misled its own test. (3) LOW --
+  `keep=KEEP_PER_HOST` as a DEFAULT ARGUMENT captured the constant at definition
+  time, leaving the documented retention knob silently inert. (4) LOW -- `source`
+  was hardcoded, so the record could not distinguish a public portal visit from
+  an operator CLI run, the exact distinction needed to read it back.
+  Folded into `seller_report.assess_reach`, which is what
   stops a single timeout reading identically to a three-week silence -- but NEVER
   changes the severity: more observations make the STATEMENT stronger, not the
   accusation, so reachability stays `unknown` however long the run. Fail-soft in
@@ -612,7 +643,7 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   a deploy points it at the persistent disk -- the root `.gitignore` excludes
   `*.jsonl`, so a container otherwise boots with no memory, and the memory is the
   whole feature. CLI: `python reachability_ledger.py [host]`. Tests:
-  `test_reachability_ledger.py`, 29 tests, 18 mutations verified killed),
+  `test_reachability_ledger.py`, 37 tests, 20 mutations verified killed),
   `payee_syntax.py` (is the address the agent is about to PAY a possible address?
   Found in the wild by `asset_coverage` on 2026-08-30: a live seller advertised a
   Solana `payTo` with `FACILITATOR_URL=https://...` concatenated onto it -- almost
