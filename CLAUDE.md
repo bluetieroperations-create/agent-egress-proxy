@@ -11,6 +11,19 @@ Guidance for working in this repo.
 > `local HEAD == remote HEAD` (a same-branch overwrite already happened once). The
 > `traceipt_*.py` files are a shared seam — coordinate schema changes.
 >
+> **MCP / ecosystem-history research lives on `research/mcp-and-ecosystem-history`,
+> not here.** `mcp_trust.py`, `mcp_history/`, `ecosystem_history/`, their data
+> (`data/mcp_descriptions.json`, `data/mcp_snapshots/`, `data/snapshots/`) and the
+> six docs that describe them were split off before merge. They were never
+> reachable from any entrypoint -- no import path from `blackwall.py`,
+> `mcp_server.py`, `seller_portal.py` or `seller_report.py` reaches them, and the
+> Dockerfile's `COPY *.py` never shipped the two directories -- so this removes
+> unaudited code from the deploy, not a working feature. Two docs deliberately
+> STAYED because they are not MCP research: `docs/X402_CANNOT_PRICE.md` (measured
+> from 298 `accepts[]` entries in the payee directory) and
+> `docs/COMPETITOR_COVERAGE.md` (no MCP content). Audit that branch before
+> anything imports it back.
+>
 > Session handoffs are **not kept in this repo** — it is public. They are delivered
 > to the operator directly. Ask for the current one rather than looking for a file.
 
