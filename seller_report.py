@@ -732,8 +732,15 @@ def _resolve(hostname):
     return [info[4][0] for info in socket.getaddrinfo(hostname, None)]
 
 
-def safe_probe_url(url, resolve=None):
-    """(ok, reason). False means: do not fetch this, and say why.
+def pinned_address(url, resolve=None):
+    """(ok, reason, ip) -- validate the URL AND return the address to connect to.
+
+    Returning the address is what closes the rebinding window. `safe_probe_url`
+    checked the name and then let urllib resolve it a SECOND time, so a name that
+    answered public on the check and private on the connect walked straight
+    through -- the classic DNS-rebinding TOCTOU, and a live one here because the
+    names come from strangers' advertisements that we store and later fetch.
+    Handing the caller the exact address we approved removes the second lookup.
 
     Refuses anything whose host resolves to an address that is not on the public
     internet -- loopback, private, link-local (the cloud metadata range),
@@ -747,33 +754,95 @@ def safe_probe_url(url, resolve=None):
     try:
         parts = urlsplit(str(url))
     except Exception:
-        return False, "unparseable url"
+        return False, "unparseable url", None
     if parts.scheme.lower() not in ALLOWED_SCHEMES:
-        return False, "scheme %s is not http(s)" % _safe(parts.scheme, 20)
+        return False, "scheme %s is not http(s)" % _safe(parts.scheme, 20), None
     # `user@host` forms let a crafted URL disagree with what a human reads.
     if "@" in (parts.netloc or ""):
-        return False, "url carries embedded credentials"
+        return False, "url carries embedded credentials", None
     host = parts.hostname
     if not host:
-        return False, "url has no host"
+        return False, "url has no host", None
     try:
         addresses = resolve(host)
     except Exception as e:
-        return False, "host does not resolve (%s)" % _safe(e, 60)
+        return False, "host does not resolve (%s)" % _safe(e, 60), None
     if not addresses:
-        return False, "host does not resolve"
+        return False, "host does not resolve", None
+    chosen = None
     for address in addresses:
         try:
             ip = ipaddress.ip_address(str(address).split("%")[0])
         except ValueError:
-            return False, "unreadable address for host"
+            return False, "unreadable address for host", None
         # EVERY resolved address must be public: a name answering with one
         # public and one private address would otherwise pass and then connect
         # to whichever the OS picked.
         if not ip.is_global or ip.is_multicast:
-            return False, "host resolves to a non-public address"
-    return True, "ok"
+            return False, "host resolves to a non-public address", None
+        if chosen is None:
+            chosen = str(ip)
+    return True, "ok", chosen
 
+
+def safe_probe_url(url, resolve=None):
+    """(ok, reason). The boolean half of `pinned_address`, kept for callers and
+    tests that only ask whether a URL may be fetched at all."""
+    ok, reason, _ = pinned_address(url, resolve=resolve)
+    return ok, reason
+
+
+
+def _fetch_pinned(url, ip, timeout=12.0):
+    """GET `url` by connecting to `ip`, the address we already validated.
+
+    The name is still what gets presented -- SNI, certificate verification and
+    the `Host` header all use the hostname -- so this is not certificate
+    pinning and it does not weaken TLS. The only thing pinned is WHICH ADDRESS
+    the socket goes to, which is precisely the value a second DNS lookup could
+    have changed underneath us.
+
+    A 402 is the SUCCESS case here; every status is returned rather than raised.
+    """
+    import http.client
+    import ssl
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(url)
+    secure = parts.scheme.lower() == "https"
+    port = parts.port or (443 if secure else 80)
+    path = urlunsplit(("", "", parts.path or "/", parts.query, "")) or "/"
+
+    if secure:
+        context = ssl.create_default_context()
+        conn = http.client.HTTPSConnection(ip, port, timeout=timeout,
+                                           context=context)
+        # SNI + hostname verification must use the NAME, not the address we dial.
+        conn._pinned_server_hostname = parts.hostname
+        _patch_sni(conn, parts.hostname)
+    else:
+        conn = http.client.HTTPConnection(ip, port, timeout=timeout)
+    try:
+        conn.request("GET", path, headers={"Host": parts.netloc,
+                                           "accept": "application/json"})
+        response = conn.getresponse()
+        return response.status, response.read(1 << 20), dict(response.getheaders())
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _patch_sni(conn, hostname):
+    """Make an HTTPSConnection dialling an IP present `hostname` for TLS."""
+    import socket as _socket
+
+    def connect():
+        sock = _socket.create_connection((conn.host, conn.port), conn.timeout)
+        conn.sock = conn._context.wrap_socket(sock, server_hostname=hostname)
+
+    conn.connect = connect
 
 
 def probe_endpoint(url, timeout=12.0, fetch=None):
@@ -784,22 +853,15 @@ def probe_endpoint(url, timeout=12.0, fetch=None):
     """
     if fetch is not None:
         return fetch(url)
-    ok, reason = safe_probe_url(url)
+    ok, reason, ip = pinned_address(url)
     if not ok:
         # Not an error to report as the seller's: it is us declining to fetch a
         # URL we harvested. Surfaced as a probe error so it reads as "we did not
         # look", which is exactly what happened.
         return {"url": url, "error": "not probed: %s" % reason}
-    req = urllib.request.Request(url, headers={"accept": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return {"url": url, "status": r.status,
-                    "body": r.read(1 << 20), "headers": dict(r.headers)}
-    except urllib.error.HTTPError as e:
-        # Read the body ONCE: HTTPError wraps a stream, and a second read
-        # silently downgrades a real challenge to "unreadable".
-        return {"url": url, "status": e.code, "body": e.read(1 << 20),
-                "headers": dict(e.headers or {})}
+        status, body, headers = _fetch_pinned(url, ip, timeout)
+        return {"url": url, "status": status, "body": body, "headers": headers}
     except Exception as e:
         return {"url": url, "error": "%s: %s" % (type(e).__name__, e)}
 

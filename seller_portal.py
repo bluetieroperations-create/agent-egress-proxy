@@ -61,6 +61,17 @@ MAX_KEY = 260
 CACHE_TTL = 900.0
 CACHE_MAX = 512
 
+# HOW OFTEN WE WILL TOUCH ONE SELLER, regardless of how many people ask.
+# The report cache is keyed by the KEY a visitor typed, and a payee can be
+# reached by its ADDRESS or by any of its HOSTS -- so the same seller has several
+# cache entries, and each one probes them independently. 58 of 266 corpus payees
+# advertise more than one host, so that is not a corner case. This is a second,
+# narrower bound keyed by the thing we are actually protecting: the stranger's
+# endpoint. It is what makes "a public URL cannot be used to aim traffic at a
+# third party" true rather than approximately true.
+PROBE_COOLDOWN = 600.0
+COOLDOWN_MAX = 4096
+
 DEFAULT_RATE = 30          # reports per window, per client
 DEFAULT_WINDOW = 60.0
 DEFAULT_BURST = 10
@@ -332,6 +343,7 @@ class Portal:
         self.clock = clock
         self.graph = {}
         self.graph_error = None
+        self._cooldown = {}
         if store_path:
             self._build_graph(store_path)
 
@@ -356,16 +368,47 @@ class Portal:
         return self.graph.get(str(payee or "").lower()), self.graph_error
 
     def _probe_fn(self, resources):
-        """THE SSRF BOUNDARY.
+        """THE SSRF BOUNDARY, plus the per-host cooldown.
 
         `resources` comes from the corpus row we selected, never from the
         caller: `build_report` looks the key up first and hands US the row's own
         resource list. A key that matches no row never reaches this function at
         all, because `build_report` returns the not-found report before probing.
+
+        Hosts touched recently are dropped from the list before probing. Every
+        host is in the corpus either way -- the cooldown does not change WHO we
+        can reach, only HOW OFTEN -- and when every candidate is cooling down we
+        return None, which the report states as "not checked" and pairs with the
+        ledger's history line. That is a more honest answer than re-probing a
+        stranger to tell a visitor something we already know.
         """
         if not self.probe:
             return None
-        return SR.probe_resources(resources)
+        now = self.clock()
+        allowed = [r for r in (resources or [])
+                   if self._host_ready(SR.host_of(r), now)]
+        if not allowed:
+            return None
+        result = SR.probe_resources(allowed)
+        for resource in allowed:
+            self._mark_probed(SR.host_of(resource), now)
+        return result
+
+    def _host_ready(self, host, now):
+        if not host:
+            return False
+        last = self._cooldown.get(host)
+        return last is None or (now - last) >= PROBE_COOLDOWN
+
+    def _mark_probed(self, host, now):
+        if not host:
+            return
+        if len(self._cooldown) >= COOLDOWN_MAX:
+            # Bounded like every other attacker-influenced map here: the key
+            # space is the corpus, but a corpus refresh could grow it.
+            oldest = min(self._cooldown, key=self._cooldown.get)
+            self._cooldown.pop(oldest, None)
+        self._cooldown[host] = now
 
     def report(self, key):
         """Cached report for `key`. Returns the report dict."""

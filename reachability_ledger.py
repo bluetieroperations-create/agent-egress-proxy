@@ -33,6 +33,11 @@ import os
 import threading
 import time
 
+try:                      # POSIX only; absent on Windows
+    import fcntl
+except ImportError:       # pragma: no cover - not exercised on Linux CI
+    fcntl = None
+
 # Outcome classes. The split is on WHOSE failure it is, not on severity.
 ANSWERED = "answered"        # a response came back (any HTTP status)
 UNREACHABLE = "unreachable"  # we tried, nothing came back -- cause unknown
@@ -119,7 +124,7 @@ def record(host, outcome, detail="", path=None, now=None, source="probe"):
     line = json.dumps(event, sort_keys=True) + "\n"
     oversize = False
     try:
-        with _LOCK:
+        with _LOCK, _FileLock(path):
             directory = os.path.dirname(path)
             if directory:
                 os.makedirs(directory, exist_ok=True)
@@ -135,6 +140,56 @@ def record(host, outcome, detail="", path=None, now=None, source="probe"):
     return True
 
 
+class _FileLock:
+    """CROSS-PROCESS exclusion around the ledger file.
+
+    `_LOCK` is a threading lock, which is exactly nothing here: the engine and
+    the portal are SEPARATE PROCESSES appending to the same file, so an
+    in-process lock cannot order them. The compaction docstring used to admit
+    that a row appended during a rewrite is lost and call it acceptable. It is
+    cheap to actually close, so it is closed: `flock` is advisory but every
+    writer here takes it, which is all advisory locking requires.
+
+    Degrades to a no-op where `fcntl` is unavailable, which restores exactly the
+    previous behaviour rather than failing to write at all.
+    """
+
+    def __init__(self, path):
+        self.path = str(path) + ".lock"
+        self._fh = None
+
+    def __enter__(self):
+        if fcntl is None:
+            return self
+        try:
+            directory = os.path.dirname(self.path)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            self._fh = open(self.path, "a+")
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+        except Exception:
+            # Never let locking be the reason an observation is dropped.
+            if self._fh is not None:
+                try:
+                    self._fh.close()
+                except Exception:
+                    pass
+            self._fh = None
+        return self
+
+    def __exit__(self, *exc):
+        if self._fh is not None:
+            try:
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+            finally:
+                try:
+                    self._fh.close()
+                except Exception:
+                    pass
+                self._fh = None
+        return False
+
+
 def compact(path=None, keep=None):
     """Rewrite the ledger keeping only the most recent `keep` rows per host.
 
@@ -142,13 +197,13 @@ def compact(path=None, keep=None):
     temporary file and moved into place with `os.replace`, which is atomic on
     POSIX, so a reader always sees a complete file.
 
-    HONEST LIMITATION: this is an append-only log written by more than one
-    process (the engine and the portal are separate services). A row appended by
-    another process during the rewrite is lost. That is acceptable HERE and would
-    not be in a ledger of record -- these are observations, the loss window is
-    milliseconds, and losing one probe result cannot change a run that needs
-    several observations over several days. It is called out rather than hidden
-    because the same shortcut in `rwa_ledger` would be a defect.
+    CROSS-PROCESS SAFE. An earlier revision admitted that a row appended by
+    another process during the rewrite is lost, and argued it was acceptable
+    because observations are cheap. That was true and still lazy: the engine and
+    the portal are separate services writing one file, and `_LOCK` is a THREADING
+    lock, which cannot order two processes at all. `_FileLock` (flock) does, both
+    writers take it, and the loss window is gone. Where `fcntl` is unavailable it
+    degrades to the previous behaviour rather than refusing to write.
     """
     # Resolved at CALL time, not bound as a default argument: a default captures
     # the constant when the function is DEFINED, so an operator (or a test)
@@ -157,7 +212,7 @@ def compact(path=None, keep=None):
     # knob inert.
     path = path or DEFAULT_PATH
     keep = KEEP_PER_HOST if keep is None else keep
-    with _LOCK:
+    with _LOCK, _FileLock(path):
         try:
             if os.path.getsize(path) <= COMPACT_ABOVE_BYTES:
                 return 0

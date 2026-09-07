@@ -133,6 +133,188 @@ class TestSsrf(unittest.TestCase):
         self.assertEqual(row["severity"], SR.UNKNOWN)
 
 
+class TestRebindingIsPinned(unittest.TestCase):
+    """The address we validated is the address we dial."""
+
+    def test_the_validated_address_is_returned_for_pinning(self):
+        # Mutation: validating and discarding the address. safe_probe_url checked
+        # the name and then let urllib resolve it a SECOND time, so a name that
+        # answered public on the check and private on the connect walked
+        # through -- the classic rebinding TOCTOU, live here because these names
+        # come from strangers' advertisements we store and later fetch.
+        ok, _, ip = SR.pinned_address("https://pub/x",
+                                      resolve=lambda h: ["93.184.216.34"])
+        self.assertTrue(ok)
+        self.assertEqual(ip, "93.184.216.34")
+
+    def test_a_refused_url_yields_no_address(self):
+        for url in ("file:///etc/passwd", "https://priv/x"):
+            ok, _, ip = SR.pinned_address(
+                url, resolve=lambda h: ["10.0.0.5"])
+            self.assertFalse(ok)
+            self.assertIsNone(ip)
+
+    def test_the_fetch_dials_the_pinned_address_and_never_re_resolves(self):
+        # Mutation: passing the URL to urllib instead of connecting to the IP.
+        # Dialling an address that cannot serve the name proves the socket goes
+        # where we said -- a re-resolving implementation would succeed here,
+        # which is exactly the bug.
+        result = SR.probe_endpoint("https://blockrun.ai/x")
+        self.assertIsInstance(result, dict)
+        import socket
+        real = socket.create_connection
+        seen = []
+
+        def spy(address, *a, **kw):
+            seen.append(address)
+            raise OSError("blocked by test")
+
+        socket.create_connection = spy
+        try:
+            SR.probe_endpoint("https://blockrun.ai/x")
+        finally:
+            socket.create_connection = real
+        self.assertTrue(seen, "no connection attempted")
+        host, port = seen[0]
+        self.assertNotEqual(host, "blockrun.ai",
+                            "connected by NAME -- the address was re-resolved")
+        self.assertEqual(port, 443)
+
+    def test_tls_presents_the_HOSTNAME_not_the_pinned_ip(self):
+        # Mutation: `server_hostname=conn.host`, i.e. the IP we dialled. Grepping
+        # the source for "server_hostname" does NOT catch that -- the string is
+        # still there. The VALUE is the whole point: presenting the IP fails
+        # certificate verification against every real host, and the tempting
+        # "fix" for that is disabling verification, which is far worse than the
+        # rebinding bug this was closing. So intercept the handshake and read it.
+        import socket
+        import ssl
+        seen = {}
+        real_conn, real_wrap = socket.create_connection, ssl.SSLContext.wrap_socket
+
+        class _Sock:
+            def close(self):
+                pass
+
+        def fake_conn(address, *a, **kw):
+            seen["dialled"] = address[0]
+            return _Sock()
+
+        def fake_wrap(self, sock, *a, **kw):
+            seen["sni"] = kw.get("server_hostname")
+            # The context itself, captured at the handshake -- see the
+            # verification test below for why grepping the source is not enough.
+            seen["verify_mode"] = self.verify_mode
+            seen["check_hostname"] = self.check_hostname
+            raise OSError("stop here")
+
+        socket.create_connection = fake_conn
+        ssl.SSLContext.wrap_socket = fake_wrap
+        try:
+            SR.probe_endpoint("https://blockrun.ai/x")
+        finally:
+            socket.create_connection = real_conn
+            ssl.SSLContext.wrap_socket = real_wrap
+        self.assertEqual(seen.get("sni"), "blockrun.ai")
+        self.assertNotEqual(seen.get("dialled"), "blockrun.ai")
+
+    def test_tls_verification_is_never_weakened(self):
+        # Mutation: `ssl._create_unverified_context()`. Grepping the source for
+        # CERT_NONE and `check_hostname = False` does NOT catch that -- it
+        # spells the same thing a third way, and there are more spellings. So
+        # assert the STATE of the context that actually reaches the handshake,
+        # which is true regardless of how it was built. This is the tempting bad
+        # fix for a hostname-verification failure, and it is worse than the
+        # rebinding bug it would appear to solve.
+        import socket
+        import ssl
+        seen = {}
+        real_conn, real_wrap = socket.create_connection, ssl.SSLContext.wrap_socket
+
+        class _Sock:
+            def close(self):
+                pass
+
+        def fake_wrap(self, sock, *a, **kw):
+            seen["verify_mode"] = self.verify_mode
+            seen["check_hostname"] = self.check_hostname
+            raise OSError("stop here")
+
+        socket.create_connection = lambda *a, **kw: _Sock()
+        ssl.SSLContext.wrap_socket = fake_wrap
+        try:
+            SR.probe_endpoint("https://blockrun.ai/x")
+        finally:
+            socket.create_connection = real_conn
+            ssl.SSLContext.wrap_socket = real_wrap
+        self.assertEqual(seen.get("verify_mode"), ssl.CERT_REQUIRED)
+        self.assertIs(seen.get("check_hostname"), True)
+
+
+class TestProbeCooldown(unittest.TestCase):
+    """How often we will touch one seller, however many people ask."""
+
+    ROWS = [{"payee": PAYEE, "settlement_count": 5, "min_price": "0.01",
+             "max_price": "0.02",
+             "resources": ["https://one.example/a", "https://two.example/b"]}]
+
+    def _portal(self, clock):
+        return SP.Portal(rows=[dict(r) for r in self.ROWS], coverage={},
+                         category_index={}, clock=clock)
+
+    def test_two_keys_for_one_seller_probe_it_once(self):
+        # Mutation: no cooldown. The report cache is keyed by what the VISITOR
+        # typed, and a payee is reachable by its address or any of its hosts --
+        # 58 of 266 corpus payees have more than one -- so each spelling probes
+        # the same stranger independently. This is the bound keyed by the thing
+        # actually being protected.
+        calls = []
+        original = SR.probe_resources
+        SR.probe_resources = lambda res: (calls.append(list(res))
+                                          or {"url": res[0], "status": 402})
+        now = [1000.0]
+        try:
+            portal = self._portal(lambda: now[0])
+            portal.report("one.example")
+            now[0] += 1
+            portal.report(PAYEE)
+        finally:
+            SR.probe_resources = original
+        self.assertEqual(len(calls), 1)
+
+    def test_the_cooldown_expires(self):
+        calls = []
+        original = SR.probe_resources
+        SR.probe_resources = lambda res: (calls.append(1)
+                                          or {"url": res[0], "status": 402})
+        now = [1000.0]
+        try:
+            portal = self._portal(lambda: now[0])
+            portal.report("one.example")
+            now[0] += SP.PROBE_COOLDOWN + 1
+            portal.report("two.example")
+        finally:
+            SR.probe_resources = original
+        self.assertEqual(len(calls), 2)
+
+    def test_a_fully_cooled_seller_is_reported_not_checked(self):
+        # Mutation: probing anyway when every host is cooling. Re-hitting a
+        # stranger to tell a visitor something we already know is the behaviour
+        # the cooldown exists to stop.
+        portal = self._portal(lambda: 1000.0)
+        for host in ("one.example", "two.example"):
+            portal._mark_probed(host, 1000.0)
+        self.assertIsNone(portal._probe_fn(self.ROWS[0]["resources"]))
+
+    def test_the_cooldown_map_is_bounded(self):
+        # Mutation: unbounded. The key space is the corpus today, but a refresh
+        # grows it, and every other attacker-influenced map here is bounded.
+        portal = self._portal(lambda: 1000.0)
+        for i in range(SP.COOLDOWN_MAX + 50):
+            portal._mark_probed("h%d.example" % i, 1000.0 + i)
+        self.assertLessEqual(len(portal._cooldown), SP.COOLDOWN_MAX)
+
+
 class TestEscaping(unittest.TestCase):
     def test_the_key_is_html_escaped_in_the_report(self):
         # Mutation: interpolating raw. SIXTH instance of the untrusted-echo

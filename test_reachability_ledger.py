@@ -301,6 +301,37 @@ class TestBounds(unittest.TestCase):
         self.assertEqual(summary["state"], "flapping")
 
 
+class TestCrossProcessSafety(unittest.TestCase):
+    def test_compaction_does_not_lose_rows_appended_by_another_process(self):
+        # Mutation: dropping _FileLock. `_LOCK` is a THREADING lock and the
+        # engine and portal are SEPARATE PROCESSES, so it cannot order them at
+        # all. Measured with the lock disabled: 372 of 1500 rows lost, 25% --
+        # this was never the "milliseconds" edge case the docstring claimed.
+        import subprocess
+        import sys
+        directory = tempfile.mkdtemp()
+        path = os.path.join(directory, "race.jsonl")
+        writer = os.path.join(directory, "w.py")
+        compactor = os.path.join(directory, "c.py")
+        with open(writer, "w") as fh:
+            fh.write("import sys, reachability_ledger as RL\n"
+                     "RL.COMPACT_ABOVE_BYTES=10**9\n"
+                     "for i in range(600):\n"
+                     "    RL.record('h%d'%(i%5), RL.ANSWERED, 'x'*120,"
+                     " path=sys.argv[1], now=float(i))\n")
+        with open(compactor, "w") as fh:
+            fh.write("import sys, time, reachability_ledger as RL\n"
+                     "RL.COMPACT_ABOVE_BYTES=0; RL.KEEP_PER_HOST=100000\n"
+                     "for _ in range(25):\n"
+                     "    RL.compact(sys.argv[1]); time.sleep(0.004)\n")
+        env = dict(os.environ, PYTHONPATH=os.getcwd())
+        a = subprocess.Popen([sys.executable, writer, path], env=env)
+        b = subprocess.Popen([sys.executable, compactor, path], env=env)
+        a.wait()
+        b.wait()
+        self.assertEqual(len(RL.load(path)), 600)
+
+
 class TestDeployPath(unittest.TestCase):
     def test_the_path_is_configurable_for_a_persistent_disk(self):
         # Mutation: hardcoding the path beside the module. The root .gitignore

@@ -556,9 +556,16 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   as "trusted" to a human scanning the corpus), and any host where ANY resolved
   address is loopback/private/link-local/reserved -- every address, because a
   name answering with one public and one private would otherwise pass and let
-  the OS pick. RESIDUAL GAP stated rather than implied: resolve-then-connect is
-  a TOCTOU, so DNS rebinding is uncovered; closing it needs connecting to the
-  pinned address with the Host header preserved. OTHER PROPERTIES, each
+  the OS pick. DNS REBINDING IS NOW CLOSED, having first been written off as a residual gap:
+  `pinned_address` returns the address it approved and `_fetch_pinned` DIALS
+  THAT ADDRESS, so there is no second lookup to poison. The NAME is still what is
+  presented -- SNI, certificate verification and the `Host` header all use the
+  hostname -- so this pins the route, not the certificate, and does not weaken
+  TLS. The tempting bad fix (an unverified context, when presenting an IP breaks
+  hostname verification) is worse than the bug it appears to solve, so the test
+  asserts the STATE of the context reaching the handshake rather than grepping
+  the source for known-bad spellings: `_create_unverified_context()` is a third
+  spelling that a grep misses. OTHER PROPERTIES, each
   mutation-tested: a caller's key can NEVER become the probe target (it is only
   ever a corpus lookup, and an unknown key makes ZERO network calls); everything
   echoed is HTML-escaped (SIXTH instance of the untrusted-echo class here and the
@@ -570,9 +577,16 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   redirects through `/go` into a shareable `/r/<key>` URL with the key
   percent-encoded so `//evil.com` cannot become a protocol-relative open
   redirect; and it is rate-limited per client because each report costs a
-  STRANGER a request. Verified live against the real corpus: 266 payees, 266 with
+  STRANGER a request. A SECOND, NARROWER BOUND keyed to the party actually being
+  protected: `PROBE_COOLDOWN` caps how often ONE HOST is touched however many
+  people ask. The report cache is keyed by what the visitor TYPED, and a payee is
+  reachable by its address or any of its hosts -- 58 of 266 corpus payees have
+  more than one -- so each spelling probed the same stranger independently. When
+  every candidate host is cooling down the probe is skipped and the report says
+  "not checked" beside the ledger's history, which is more honest than re-hitting
+  a stranger to repeat something we already know. Verified live against the real corpus: 266 payees, 266 with
   a precomputed graph. See `docs/SELLER_SIDE.md`. Tests:
-  `test_seller_portal.py`, 37 tests incl. a real server, 21 mutations verified
+  `test_seller_portal.py`, 46 tests incl. a real server, 27 mutations verified
   killed). PRE-MERGE AUDIT (2026-09-07): the rate-limit identity was wrong for
   the topology this is meant to run in. `ratelimit.client_ip_from` takes the
   RIGHTMOST X-Forwarded-For entry, correct behind ONE proxy -- but Cloudflare in
@@ -643,7 +657,13 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   a deploy points it at the persistent disk -- the root `.gitignore` excludes
   `*.jsonl`, so a container otherwise boots with no memory, and the memory is the
   whole feature. CLI: `python reachability_ledger.py [host]`. Tests:
-  `test_reachability_ledger.py`, 37 tests, 20 mutations verified killed),
+  (5) MEDIUM, closed after being written off as acceptable -- compaction could
+  lose a row appended by another PROCESS mid-rewrite, and the docstring argued
+  that away as a milliseconds-wide window. `_LOCK` is a THREADING lock and the
+  engine and portal are separate processes, so it never ordered them at all.
+  MEASURED with locking disabled: 372 of 1500 rows lost, 25%. Now an advisory
+  `flock` taken by every writer; measured 1500 of 1500 survive the same race.
+  Tests: `test_reachability_ledger.py`, 38 tests, 22 mutations verified killed),
   `payee_syntax.py` (is the address the agent is about to PAY a possible address?
   Found in the wild by `asset_coverage` on 2026-08-30: a live seller advertised a
   Solana `payTo` with `FACILITATOR_URL=https://...` concatenated onto it -- almost
