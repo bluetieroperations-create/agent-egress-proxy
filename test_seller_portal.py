@@ -9,6 +9,8 @@ shape: SSRF (what URL do we actually fetch, and who chose it) and injection
 
 import json
 import threading
+import os
+import tempfile
 import unittest
 import urllib.error
 import urllib.request
@@ -16,6 +18,29 @@ from http.server import ThreadingHTTPServer
 
 import seller_portal as SP
 import seller_report as SR
+
+
+# `build_report` records every probe in the reachability ledger, and the ledger's
+# DEFAULT_PATH is the OPERATOR's real file. Left alone, running this suite writes
+# fixture hosts ("tools.example") into the memory the module exists to be, where
+# they then show up in `python reachability_ledger.py`. MEASURED before this
+# guard: 5 fixture rows per suite run. Redirect the whole module at a temp file.
+_LEDGER_TMP = None
+
+
+def setUpModule():
+    global _LEDGER_TMP
+    import reachability_ledger as RL
+    _LEDGER_TMP = (RL.DEFAULT_PATH, tempfile.mkdtemp())
+    RL.DEFAULT_PATH = os.path.join(_LEDGER_TMP[1], "reach.jsonl")
+
+
+def tearDownModule():
+    import reachability_ledger as RL
+    import shutil
+    RL.DEFAULT_PATH = _LEDGER_TMP[0]
+    shutil.rmtree(_LEDGER_TMP[1], ignore_errors=True)
+
 
 PAYEE = "0x480cd46e6fade651a0437deadda53d5c8e7d846a"
 
@@ -262,16 +287,41 @@ class TestProbeCooldown(unittest.TestCase):
         return SP.Portal(rows=[dict(r) for r in self.ROWS], coverage={},
                          category_index={}, clock=clock)
 
-    def test_two_keys_for_one_seller_probe_it_once(self):
-        # Mutation: no cooldown. The report cache is keyed by what the VISITOR
-        # typed, and a payee is reachable by its address or any of its hosts --
-        # 58 of 266 corpus payees have more than one -- so each spelling probes
-        # the same stranger independently. This is the bound keyed by the thing
-        # actually being protected.
+    def _spy(self):
         calls = []
-        original = SR.probe_resources
+        self._original = SR.probe_resources
         SR.probe_resources = lambda res: (calls.append(list(res))
                                           or {"url": res[0], "status": 402})
+        return calls
+
+    def test_two_spellings_of_one_host_probe_it_once(self):
+        # Mutation: no cooldown. The report cache is keyed by what the VISITOR
+        # typed, so each spelling would otherwise probe the same stranger
+        # independently. The bound is PER HOST -- that is what `_mark_probed`
+        # keys on and what the docs claim -- so this pins the host, not the
+        # payee. See the sibling test below for what that deliberately allows.
+        calls = self._spy()
+        now = [1000.0]
+        try:
+            portal = self._portal(lambda: now[0])
+            portal.report("one.example")
+            now[0] += 1
+            portal.report("one.example/")          # a different cache key
+            now[0] += 1
+            portal.report("ONE.example")
+        finally:
+            SR.probe_resources = self._original
+        self.assertEqual(len(calls), 1)
+
+    def test_an_address_key_may_still_reach_an_untouched_sibling_host(self):
+        # NOT a hole -- the documented bound is per host, and a payee's second
+        # host is a second server that nobody has touched. Pinned explicitly
+        # because a per-PAYEE reading of the cooldown is the tempting one, and
+        # `seller_report.resources_for_key` (which scopes a host-keyed report to
+        # that host alone) is what makes the difference visible. Mutation:
+        # marking the whole payee cooled would silence a host we never probed
+        # and report it as "not checked".
+        calls = self._spy()
         now = [1000.0]
         try:
             portal = self._portal(lambda: now[0])
@@ -279,8 +329,56 @@ class TestProbeCooldown(unittest.TestCase):
             now[0] += 1
             portal.report(PAYEE)
         finally:
-            SR.probe_resources = original
-        self.assertEqual(len(calls), 1)
+            SR.probe_resources = self._original
+        self.assertEqual([c[0] for c in calls],
+                         ["https://one.example/a", "https://two.example/b"])
+
+    def test_only_the_hosts_actually_contacted_are_cooled(self):
+        # Mutation: marking every candidate (the original), or only the first.
+        # `probe_resources` stops at the first ANSWER, so a later host was never
+        # touched -- cooling it would tell a visitor asking about THAT host
+        # "not checked" because a sibling was busy, which is the cross-host
+        # attribution resources_for_key exists to stop.
+        self._original = SR.probe_resources
+        # one.example answers, so two.example is never contacted.
+        SR.probe_resources = lambda res: {"url": res[0], "status": 402}
+        try:
+            portal = self._portal(lambda: 1000.0)
+            portal.report(PAYEE)
+            self.assertFalse(portal._host_ready("one.example", 1000.0))
+            self.assertTrue(portal._host_ready("two.example", 1000.0))
+        finally:
+            SR.probe_resources = self._original
+
+    def test_a_host_tried_and_failed_before_the_winner_is_cooled(self):
+        # Mutation: marking only the resource that answered. A host we contacted
+        # and that failed WAS touched, and the cooldown protects strangers from
+        # being touched, not from answering.
+        self._original = SR.probe_resources
+        SR.probe_resources = lambda res: {"url": res[-1], "status": 402}
+        try:
+            portal = self._portal(lambda: 1000.0)
+            portal.report(PAYEE)
+            self.assertFalse(portal._host_ready("one.example", 1000.0))
+            self.assertFalse(portal._host_ready("two.example", 1000.0))
+        finally:
+            SR.probe_resources = self._original
+
+    def test_a_seller_that_answered_nothing_is_still_cooled(self):
+        # Mutation: cooling nothing when the probe returns no recognisable url.
+        # A host that FAILS was still contacted, and this is the case that
+        # repeats most -- a dead seller would otherwise be re-probed on every
+        # request that misses the report cache, which is precisely the traffic
+        # the cooldown exists to keep off a stranger.
+        self._original = SR.probe_resources
+        SR.probe_resources = lambda res: None
+        try:
+            portal = self._portal(lambda: 1000.0)
+            portal.report(PAYEE)
+            self.assertFalse(portal._host_ready("one.example", 1000.0))
+            self.assertFalse(portal._host_ready("two.example", 1000.0))
+        finally:
+            SR.probe_resources = self._original
 
     def test_the_cooldown_expires(self):
         calls = []

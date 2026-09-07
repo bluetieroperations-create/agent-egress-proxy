@@ -127,6 +127,35 @@ def hosts_of(row):
     return seen
 
 
+def resources_for_key(row, key):
+    """The resources a report keyed on `key` may probe.
+
+    A payee address covers the whole row, so every resource is fair game. A HOST
+    does not: 58 of 266 corpus payees advertise more than one host, and
+    `probe_resources` returns the FIRST ANSWERING resource, so a report asked
+    about one host would otherwise be written from a SIBLING host's answer. On
+    this corpus that is not a subtlety -- the payee behind `payanagent.com` also
+    carries `api.anchor-x402.com`, and the one behind `x402.ottoai.services`
+    also carries `api.aidress.ai`. Those are different businesses sharing a
+    payment address, so a blocker found on one would be reported to the other as
+    "an agent cannot pay you today".
+
+    Third instance of the same cross-attribution class here (the
+    two-businesses-in-one-report bug in `select_subject`, then the ledger
+    recording against `hosts[0]`), this time at host granularity inside one row.
+    NO FALLBACK to the siblings: a host whose own resources all fail IS
+    unreachable, and answering with a neighbour's success would be the bug.
+    """
+    resources = list(row.get("resources") or [])
+    needle = str(key or "").strip().lower()
+    # A payee address needs no special case: it never equals a hostname, so
+    # `scoped` is empty and the fallback hands back the whole row. An explicit
+    # address branch was written first and removed -- it could not be killed by
+    # any mutation, which is the tell that it was doing nothing.
+    scoped = [r for r in resources if needle and host_of(r) == needle]
+    return scoped or resources
+
+
 def find_rows(rows, key):
     """Corpus rows matching `key`, which may be a payee address OR a host.
 
@@ -614,7 +643,7 @@ def build_report(key, rows, coverage=None, probe_fn=None, cross_fn=None,
     hosts = hosts_of(row)
     payee = row.get("payee")
 
-    probe = probe_fn(row.get("resources") or []) if probe_fn else None
+    probe = probe_fn(resources_for_key(row, key)) if probe_fn else None
     history = None
     # THE HOST WE ACTUALLY PROBED, not hosts[0]. 58 of 266 corpus payees
     # advertise more than one host, and `probe_resources` returns the FIRST

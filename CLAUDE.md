@@ -536,7 +536,17 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   FINDING WAS UNREACHABLE -- `PayerReputationSource` takes EDGES, and passing the
   store raised a TypeError the fail-soft turned into a benign "not assessed", so
   the one unique finding never ran through the CLI while every test passed; the
-  wired-and-inert pattern, fourth time here. Descriptive only: nothing gates,
+  wired-and-inert pattern, fourth time here. A FIFTH bug found by the pre-merge pass, same class as (a) and one
+  level down: a report keyed on a HOST probed the payee's WHOLE resource list,
+  so `probe_resources`' first-answer rule could write it from a SIBLING host.
+  Measured on the corpus: 58 of 266 payees are multi-host and EVERY one has a
+  host key that would start elsewhere -- payanagent.com from api.anchor-x402.com,
+  x402.ottoai.services from api.aidress.ai, which are different businesses
+  sharing a payment address. `resources_for_key` scopes a host-keyed report to
+  that host, EXACT-match not substring (a lookalike host must not become the
+  probe target), with NO sibling fallback: a host whose own resources all fail
+  IS unreachable, and answering with a neighbour's success is the bug.
+  Descriptive only: nothing gates,
   scores, or changes a verdict. Exits 0/1/2 so a batch run is actionable. See
   `docs/SELLER_SIDE.md`. Tests: `test_seller_report.py`, 40 tests, 23 mutations
   verified killed),
@@ -592,7 +602,15 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   redirect; and it is rate-limited per client because each report costs a
   STRANGER a request. A SECOND, NARROWER BOUND keyed to the party actually being
   protected: `PROBE_COOLDOWN` caps how often ONE HOST is touched however many
-  people ask. The report cache is keyed by what the visitor TYPED, and a payee is
+  people ask -- PER HOST, which is what `_mark_probed` keys on; a test asserted
+  a stricter per-PAYEE bound the design never provided, and was corrected to the
+  real property rather than the code loosened to a claim nobody had made. It
+  cools only the hosts ACTUALLY CONTACTED: `probe_resources` stops at the first
+  answer, so the ones reached are those up to and including the resource it
+  returns, and cooling the rest would tell a visitor asking about a host nobody
+  probed that it was "not checked" -- the cross-host attribution again. A probe
+  that answers nothing still cools every candidate, since a dead seller is the
+  case that would otherwise be re-probed on every cache miss. The report cache is keyed by what the visitor TYPED, and a payee is
   reachable by its address or any of its hosts -- 58 of 266 corpus payees have
   more than one -- so each spelling probed the same stranger independently. When
   every candidate host is cooling down the probe is skipped and the report says
@@ -1077,6 +1095,15 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `test_discovery.py`, `test_sanctions.py`, `test_readiness.py`,
   `test_ap_gate.py`.
 
+> **The command above must list EVERY root `test_*.py`.** Found 2026-09-07 during
+> a pre-merge audit: `test_approvals.py` (47 tests, the approval-binding /
+> single-use / expiry / STOP-is-never-approvable properties) and
+> `test_token_decimals.py` (47) existed on disk, were named in the prose above,
+> and were NOT in this command -- so 94 tests, including the whole approvals
+> security suite, never ran in the documented check. `test_deploy_manifest.py`
+> now asserts the list matches the directory, because a canonical command that
+> silently skips files is worse than no canonical command.
+
 Convention: the security/decision-critical logic lives in small **pure functions**
 at the top of each module, unit-tested TDD-first with **mutation notes** (each
 test states the mutation it kills). Keep new code stdlib-only and match this style.
@@ -1091,7 +1118,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_honeypot.py test_billing_preflight.py test_seller_report.py test_seller_portal.py test_reachability_ledger.py
+ test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_honeypot.py test_billing_preflight.py test_seller_report.py test_seller_portal.py test_reachability_ledger.py test_approvals.py test_token_decimals.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop

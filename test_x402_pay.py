@@ -19,7 +19,19 @@ import urllib.request
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "clients"))
 
 import x402_challenge                       # noqa: E402
-import x402_pay                             # noqa: E402
+
+# x402_pay raises SystemExit(2) at import when `eth-account` is absent -- it is
+# the one module here with a dependency. Left bare, that exit does not fail ONE
+# test, it aborts the whole `python -m unittest ...` run before a single test
+# executes, and prints an install hint instead of a test summary. That is how a
+# rebuilt container silently zeroes the canonical suite. Skip this module
+# instead, loudly, so the other 90+ files still run.
+try:
+    import x402_pay                         # noqa: E402
+    _MISSING_DEP = ""
+except SystemExit as exc:                   # pragma: no cover - env-dependent
+    x402_pay = None
+    _MISSING_DEP = "x402_pay needs eth-account: %s" % (exc,)
 
 
 ACCEPT = {"payTo": "0x" + "ab" * 20, "amount": "25000",
@@ -49,6 +61,7 @@ class _Resp:
         return False
 
 
+@unittest.skipIf(x402_pay is None, _MISSING_DEP or "eth-account absent")
 class HttpJsonSurfacesHeaders(unittest.TestCase):
     def setUp(self):
         self._real = urllib.request.urlopen

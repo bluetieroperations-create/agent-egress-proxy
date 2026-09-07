@@ -9,9 +9,34 @@ someone else -- so the restraint tests here matter as much as the detection ones
 """
 
 import json
+import os
+import tempfile
 import unittest
 
 import seller_report as sr
+
+
+# `build_report` records every probe in the reachability ledger, and the ledger's
+# DEFAULT_PATH is the OPERATOR's real file. Left alone, running this suite writes
+# fixture hosts ("tools.example") into the memory the module exists to be, where
+# they then show up in `python reachability_ledger.py`. MEASURED before this
+# guard: 5 fixture rows per suite run. Redirect the whole module at a temp file.
+_LEDGER_TMP = None
+
+
+def setUpModule():
+    global _LEDGER_TMP
+    import reachability_ledger as RL
+    _LEDGER_TMP = (RL.DEFAULT_PATH, tempfile.mkdtemp())
+    RL.DEFAULT_PATH = os.path.join(_LEDGER_TMP[1], "reach.jsonl")
+
+
+def tearDownModule():
+    import reachability_ledger as RL
+    import shutil
+    RL.DEFAULT_PATH = _LEDGER_TMP[0]
+    shutil.rmtree(_LEDGER_TMP[1], ignore_errors=True)
+
 
 PAYEE = "0x480cd46e6fade651a0437deadda53d5c8e7d846a"
 OTHER = "0x" + "11" * 20
@@ -465,6 +490,66 @@ class TestLiveCorpus(unittest.TestCase):
                                  coverage=coverage)
         blockers = [f for f in report["findings"] if f["severity"] == sr.BLOCKER]
         self.assertTrue(any(f["code"] == "asset_id" for f in blockers), blockers)
+
+
+
+
+class ResourcesForKey(unittest.TestCase):
+    """A host-keyed report may only probe that host (cross-attribution, 3rd time)."""
+
+    ROW = {"payee": "0xAB", "resources": ["https://sat.example/a",
+                                          "https://tools.example/b",
+                                          "https://tools.example/c"]}
+
+    def test_a_host_key_probes_only_that_host(self):
+        # Mutation: probing row["resources"] wholesale. MEASURED on the shipped
+        # corpus: 58 of 266 payees are multi-host and EVERY one of them has a
+        # host key whose probe would start on a different host -- including
+        # payanagent.com -> api.anchor-x402.com, two different businesses behind
+        # one payment address.
+        self.assertEqual(sr.resources_for_key(self.ROW, "tools.example"),
+                         ["https://tools.example/b", "https://tools.example/c"])
+
+    def test_the_sibling_host_is_not_a_fallback(self):
+        # Mutation: `scoped + rest` instead of `scoped or resources`. A host
+        # whose own resources all fail IS unreachable; answering with a
+        # neighbour's success is the bug this exists to stop.
+        got = sr.resources_for_key(self.ROW, "sat.example")
+        self.assertEqual(got, ["https://sat.example/a"])
+        self.assertNotIn("https://tools.example/b", got)
+
+    def test_the_host_match_is_exact_not_a_substring(self):
+        # Mutation: `needle in host_of(r)`. The same hazard find_rows documents
+        # -- "tools.example" must not select "tools.example.evil.net", or a
+        # lookalike host a stranger controls becomes the probe target of the
+        # report we publish about the real seller.
+        row = {"payee": "0xAB", "resources": ["https://tools.example/b",
+                                              "https://tools.example.evil.net/x"]}
+        self.assertEqual(sr.resources_for_key(row, "tools.example"),
+                         ["https://tools.example/b"])
+
+    def test_a_payee_key_still_covers_every_host(self):
+        # Mutation: scoping unconditionally would shrink an address-keyed report
+        # to nothing, since no resource host equals the address.
+        self.assertEqual(sr.resources_for_key(self.ROW, "0xab"),
+                         self.ROW["resources"])
+
+    def test_an_unknown_host_falls_back_rather_than_probing_nothing(self):
+        # Mutation: returning [] for a key that matched the row some other way.
+        self.assertEqual(sr.resources_for_key(self.ROW, "other.example"),
+                         self.ROW["resources"])
+
+    def test_build_report_probes_the_asked_about_host(self):
+        # The end-to-end binding: the wiring is what the corpus bug was, not the
+        # helper. Mutation: reverting build_report to row["resources"].
+        seen = []
+
+        def probe_fn(resources):
+            seen.append(list(resources))
+            return {"url": resources[0], "status": 200, "accepts": [{"payTo": "0xAB"}]}
+
+        sr.build_report("tools.example", [self.ROW], probe_fn=probe_fn)
+        self.assertEqual(seen, [["https://tools.example/b", "https://tools.example/c"]])
 
 
 if __name__ == "__main__":

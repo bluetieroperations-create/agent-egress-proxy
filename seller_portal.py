@@ -390,7 +390,20 @@ class Portal:
         if not allowed:
             return None
         result = SR.probe_resources(allowed)
-        for resource in allowed:
+        # Mark the hosts we ACTUALLY CONTACTED, not every candidate.
+        # `probe_resources` walks the list and stops at the first ANSWER, so the
+        # ones it reached are those up to and including the resource it returns;
+        # anything after it was never touched. Marking those too would put a
+        # host that nobody probed into cooldown, and a visitor asking about THAT
+        # host would then be told "not checked" because a sibling was busy --
+        # the same cross-host attribution `seller_report.resources_for_key`
+        # exists to stop. When the probe answers with a url we do not recognise
+        # (or none at all), every candidate was tried, so mark them all.
+        reached = allowed
+        url = (result or {}).get("url")
+        if url in allowed:
+            reached = allowed[:allowed.index(url) + 1]
+        for resource in reached:
             self._mark_probed(SR.host_of(resource), now)
         return result
 

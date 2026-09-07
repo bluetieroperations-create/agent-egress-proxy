@@ -234,3 +234,38 @@ class RestoreBlueprintKeepsTheOriginalHostname(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCanonicalTestCommand(unittest.TestCase):
+    """The run-all command in CLAUDE.md must actually run all of them."""
+
+    def _listed(self):
+        import re
+        with open("CLAUDE.md", encoding="utf-8") as fh:
+            doc = fh.read()
+        block = re.search(r"```sh\n(python -m unittest.*?)\n```", doc, re.S)
+        self.assertIsNotNone(block, "run-all command not found in CLAUDE.md")
+        return set(re.findall(r"test_[A-Za-z0-9_]+\.py", block.group(1)))
+
+    def test_every_root_test_file_is_in_the_command(self):
+        # Mutation: dropping a file from the command. Found for real on
+        # 2026-09-07: test_approvals.py (47 tests -- the approval-binding,
+        # single-use, expiry and STOP-is-never-approvable properties) and
+        # test_token_decimals.py (47) were on disk, named in the prose, and
+        # absent from the command. 94 tests, including a whole security suite,
+        # never ran in the check every session is told to run. A canonical
+        # command that silently skips files is worse than none, because people
+        # trust it.
+        import os
+        on_disk = {f for f in os.listdir(".")
+                   if f.startswith("test_") and f.endswith(".py")}
+        missing = sorted(on_disk - self._listed())
+        self.assertEqual(missing, [], "not in CLAUDE.md's run-all command: %s" % missing)
+
+    def test_the_command_lists_nothing_that_does_not_exist(self):
+        # The other direction: a renamed or removed file left in the command
+        # makes the documented check fail outright, which at least is loud --
+        # but it still means nobody has run it.
+        import os
+        ghosts = sorted(f for f in self._listed() if not os.path.exists(f))
+        self.assertEqual(ghosts, [], "listed but absent: %s" % ghosts)
