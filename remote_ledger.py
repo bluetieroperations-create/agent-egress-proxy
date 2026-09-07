@@ -285,6 +285,12 @@ def _urllib_transport(url, headers, body, timeout):
         return r.status, raw
 
 
+# Lifetime of the boot write-probe key. Long enough to survive its own read-back
+# on a slow link, short enough that it is gone before anyone browsing the store
+# wonders what it is.
+PROBE_TTL_SECONDS = 60
+
+
 class UpstashBackend:
     """Append-only log over a Redis-REST KV (RPUSH / LRANGE).
 
@@ -319,12 +325,46 @@ class UpstashBackend:
         if not (200 <= int(status) < 300):
             raise RemoteLedgerError("kv store returned HTTP %s" % status)
         try:
-            return json.loads(raw.decode("utf-8")).get("result")
+            payload = json.loads(raw.decode("utf-8"))
+            # AUDIT FINDING. A Redis-REST store reports a COMMAND-level failure
+            # in the body, with HTTP 200: a READ-ONLY token, NOPERM, WRONGTYPE,
+            # a quota refusal. Reading only `result` turned every one of those
+            # into `None`, and `append` ignores its return value -- so _mirror
+            # counted the record MIRRORED and the banner kept saying ON while
+            # the store held nothing. Silent total data loss is precisely the
+            # failure this module exists to prevent, so an error body raises.
+            if isinstance(payload, dict) and payload.get("error"):
+                raise RemoteLedgerError(
+                    "kv store rejected %s: %s" % (args[0], payload["error"]))
+            return payload.get("result")
+        except RemoteLedgerError:
+            raise
         except (ValueError, AttributeError, UnicodeDecodeError) as e:
             raise RemoteLedgerError("unparseable kv response") from e
 
     def append(self, blob):
         self._cmd("RPUSH", self.list_key, blob)
+
+    def probe(self):
+        """Prove the credential can WRITE. Raises RemoteLedgerError if it cannot.
+
+        `hydrate` only READS, so a read-only token, a wrong database or a
+        revoked write permission all boot perfectly cleanly and then mirror
+        nothing -- the operator sees "mirror ON" and has no durability at all.
+        One round trip on boot turns that into a loud, specific message.
+
+        Deliberately a SEPARATE key with an expiry, never the log itself: a
+        probe must not add a row an operator would later have to explain, and
+        it must clean up after itself without a delete.
+        """
+        key = self.list_key + ":probe"
+        token = base64.b64encode(os.urandom(9)).decode()
+        self._cmd("SET", key, token, "EX", PROBE_TTL_SECONDS)
+        got = self._cmd("GET", key)
+        if got != token:
+            # A store that accepts the write and cannot read it back is not one
+            # to trust with the only durable copy of the ledger.
+            raise RemoteLedgerError("kv write probe did not read back")
 
     def read_all(self, limit=None):
         """Oldest-to-newest. `limit` keeps the NEWEST `limit` rows via a negative
@@ -461,6 +501,27 @@ class DurableEventLedger(EventLedger):
             self._log("ledger hydrate skipped %d undecryptable row(s)"
                       % self.stats["undecryptable"])
         return len(recs)
+
+    def verify_writable(self):
+        """Is the mirror actually able to persist? None if yes, else the reason.
+
+        NEVER RAISES and never refuses the boot. A write probe failing may be a
+        misconfigured token (permanent) or the KV being briefly down
+        (transient), and one probe cannot tell them apart -- taking the payment
+        path down over a third party's outage would be the worse error. So this
+        REPORTS, loudly, and the caller decides what to print.
+
+        A backend with no `probe` is not a failure: the injected fakes in tests
+        and any future backend without a cheap round trip simply go unverified.
+        """
+        probe = getattr(self.backend, "probe", None)
+        if probe is None:
+            return None
+        try:
+            probe()
+        except Exception as e:
+            return str(e)
+        return None
 
     # -- shutdown ---------------------------------------------------------
     def close(self, timeout=10.0):
