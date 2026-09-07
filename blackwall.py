@@ -2764,10 +2764,24 @@ def main(argv=None):
         if durable is not None:
             led = durable
             n = led.hydrate()
+            # hydrate only READS. A read-only token, a wrong database or a
+            # revoked permission all boot perfectly cleanly and then persist
+            # NOTHING, while this banner says ON -- so prove a write before
+            # claiming one. Not fatal: a KV outage is a third party's problem
+            # and must not take the payment path down with it.
+            why = led.verify_writable()
+            if why:
+                sys.stderr.write(
+                    "blackwall: WARNING durable ledger mirror CANNOT WRITE: %s\n"
+                    "blackwall: verdicts are being recorded LOCALLY ONLY and "
+                    "WILL BE LOST on restart -- check BLACKWALL_LEDGER_KV_TOKEN "
+                    "is a WRITE token and the URL is the right database\n" % why)
+                sys.stderr.flush()
             sys.stdout.write(
-                "blackwall: durable ledger mirror ON (encrypted; restored %d "
+                "blackwall: durable ledger mirror %s (encrypted; restored %d "
                 "event(s)%s)\n"
-                % (n, "" if not led.stats["undecryptable"]
+                % ("ON" if not why else "DEGRADED -- NOT WRITABLE", n,
+                   "" if not led.stats["undecryptable"]
                    else ", skipped %d undecryptable" % led.stats["undecryptable"]))
             sys.stdout.flush()
 
