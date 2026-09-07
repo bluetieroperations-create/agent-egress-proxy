@@ -16,6 +16,17 @@ Its share is 18.3% of in-band machine payments (7,167 of 39,164), pooled across
 resampling whole windows). Two independent runs -- different offsets, different
 window sizes, separate RPC pulls -- returned 18.7% and 17.6%.
 
+MIND THE DENOMINATOR TOO. "In-band machine payments" means USDC.e
+(0x20c0...b9537d11c60e8b50) between $0.0001 and $20 -- not all of Tempo. USDC.e
+is only 67.6% of the chain's ERC-20 transfers; the rest is pathUSD, USDT0 and a
+dozen smaller stablecoins. That is the right scope rather than an oversight:
+all 140 tempo-method services in the MPP directory declare USDC.e as their
+settlement asset and no other, and the other tokens carry treasury-scale value
+(pathUSD p99 $5,913, USDT0 p99 $380,000), not per-request payments. Screening
+every Tempo token pooled moves the share from 20.3% to 17.7% on the same sample
+-- inside the interval, so the scoping does not carry the result. State the
+token anyway; a reader who assumes "all of Tempo" is reading a 68% slice.
+
 QUOTE THE INTERVAL, NOT THE POINT. "Roughly one in five, 95% CI 12-27%" is what
 the sampling supports; "18.3%" implies a precision it does not have.
 
@@ -69,7 +80,8 @@ about someone's business. The thresholds are set to under-report.
 Pure functions given their inputs; no network, no chain coupling. The caller
 supplies the graph and is responsible for excluding protocol addresses (fee
 collectors, burn addresses) -- see `SYSTEM_ADDRESS_PREFIXES` for the ones
-observed on Tempo.
+observed on Tempo -- and for deciding which token(s) the graph covers, which
+this module cannot see and will not mention in its output.
 """
 from __future__ import annotations
 
