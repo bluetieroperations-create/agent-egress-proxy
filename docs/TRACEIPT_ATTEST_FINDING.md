@@ -4,7 +4,7 @@
 **Environment:** Traceipt live API `https://api.traceipt.xyz`, x402 on Base Sepolia (`eip155:84532`)
 **Payer:** funded testnet burner `0x7Fe6…9794` → payTo `0x3ec5e0ec1e1cb8e2afa36f3b40eed9057d9004e1`
 **Severity:** High (paid-for deliverable lost) — testnet only, no real funds at risk
-**Status:** Reproduced; reported here. This is a defect in the *external* Traceipt service, not in Blackwall.
+**Status:** **RESOLVED — re-verified live on Base MAINNET 2026-09-07** (see *Retest* at the bottom). The original defect was a defect in the *external* Traceipt service, not in Blackwall.
 
 ## Summary
 
@@ -147,3 +147,64 @@ python3 clients/traceipt_anchor.py \
 #   409 pending -> not yet
 #   404 unknown -> LOST (paid, dropped)  <-- the bug
 ```
+
+---
+
+## Retest, 2026-09-07 — the loss is fixed
+
+Traceipt has since moved from Base Sepolia to **Base mainnet**, and the price rose from
+0.002 to **0.01 USDC** per anchor. Three fresh paid `POST /attest` calls, three distinct
+digests, polled immediately:
+
+| attestation_id | status at create | proof poll | tree_size | anchor_id |
+|---|---|---|---|---|
+| `att_7a094b2e1047b2c6b984` | `anchored` | **200 sealed** | 1 | 1 |
+| `att_6f041bb3d8a049dafb3a` | `anchored` | **200 sealed** | 1 | 2 |
+| `att_0b0392aa7e644e26c43d` | `anchored` | **200 sealed** | 1 | 3 |
+
+**3 of 3 sealed. Nothing vanished.** Two things changed from the original run: `/attest`
+now returns `status: "anchored"` rather than `"pending"`, and the proof resolves
+immediately instead of waiting on a batch that never came. The `409 pending → 404 unknown`
+transition that lost four paid attestations did not occur.
+
+### The on-chain anchor is real — verified independently
+
+The proof carries `onchain_tx`, and that transaction exists on Base mainnet:
+
+```
+tx        0x3c7e8b96d819f5dc85691c917ec7f88a2f7f401ab9c9e62a1bc99f0cc463a80f
+block     51009803
+from/to   0x3aec6fb2279d7dd261482cc8ba9f2830f73a1a77  (self-send, value 0)
+calldata  "TRACEIPT-ANCHOR" || 0x01 || <32-byte merkle root>   (48 bytes)
+```
+
+The `root` from the proof response appears verbatim in that calldata, checked against the
+chain rather than taken from the API's own answer. So the timestamp is anchored to Base,
+not merely asserted by the service.
+
+### Still true: batches do not aggregate
+
+Every anchor sealed into `tree_size: 1` with an empty `audit_path` and its own
+`anchor_id` — the degenerate case flagged for attestation #5 in the original run. The
+endpoint still advertises "the next Merkle batch", and there is no batch; each digest gets
+its own tree and its own on-chain transaction.
+
+**This is not a defect for our use case, and arguably better.** A size-1 tree is a valid
+inclusion proof (root = H(leaf)), tamper-evidence holds, and sealing is immediate — the
+original failure was precisely that pending items waited for a batch that never filled.
+Aggregation is Traceipt's cost problem (one Base tx per anchor), not a correctness problem
+for a consumer.
+
+### Maturity caveat, stated plainly
+
+`anchor_id` ran 1, 2, 3 across our three calls — meaning these were the first three anchors
+under the current counter. Traceipt is our own sibling product with effectively no external
+traffic. It is fine to depend on for notarization, but it is not a battle-tested
+third-party notary and should not be described as one.
+
+### Consequence for anchoring policy
+
+At 0.01 USDC per anchor against a 0.005 USDC verdict fee (10 bps on a $5 forecast),
+anchoring **every verdict costs twice what the verdict earns**. Anchor rare, long-lived,
+high-value claims — a 90-day seller attestation is a penny per merchant per quarter —
+and leave `BLACKWALL_ANCHOR` off on the per-call path.
