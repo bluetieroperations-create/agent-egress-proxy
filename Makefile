@@ -52,13 +52,13 @@ test:
 	   test_secp256k1.py test_secret_scan.py test_seller_audit.py \
 	   test_seller_intel.py test_seller_portal.py test_seller_report.py \
 	   test_settlement_sim.py test_settlement_velocity.py \
-	   test_settlement_watch.py test_solana_rwa.py test_token_decimals.py \
-	   test_tokenized_stock_registry.py test_traceipt_attest.py \
-	   test_traceipt_ingest.py test_traceipt_pull.py test_traceipt_verify.py \
-	   test_transfer_sim.py test_two_stage_signer.py test_upto_scheme.py \
-	   test_user_agent.py test_verdict_anchor.py test_verdict_oracle.py \
-	   test_volume_integrity.py test_x402.py test_x402_challenge.py \
-	   test_x402_pay.py
+	   test_settlement_watch.py test_solana_backfill.py test_solana_rwa.py \
+	   test_token_decimals.py test_tokenized_stock_registry.py \
+	   test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_pull.py \
+	   test_traceipt_verify.py test_transfer_sim.py test_two_stage_signer.py \
+	   test_upto_scheme.py test_user_agent.py test_verdict_anchor.py \
+	   test_verdict_oracle.py test_volume_integrity.py test_x402.py \
+	   test_x402_challenge.py test_x402_pay.py
 
 # Suites that need a third-party package, kept SEPARATE so the stdlib guarantee
 # above stays honest. receipt_signer runs in BOTH -- signatures from its pure
