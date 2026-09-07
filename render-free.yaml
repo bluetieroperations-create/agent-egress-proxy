@@ -88,6 +88,16 @@ services:
         sync: false
       - key: BLACKWALL_RECEIPT_KEY
         sync: false
+      # Ed25519 seed for INDEPENDENTLY-VERIFIABLE receipts (base64url, 32 bytes):
+      #   python -c "import os,base64;print(base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip('='))"
+      # Absent -> verdicts carry no `receipt` field, which is honest but means the
+      # "independently-verifiable Ed25519 receipt" the product advertises is off.
+      # MUST NOT equal BLACKWALL_RECEIPT_KEY (the HMAC secret has different
+      # exposure); the service refuses to boot if they match. The image installs
+      # requirements-signing.txt, so the backend is native constant-time -- without
+      # it a public bind refuses to boot rather than leak the nonce by timing.
+      - key: BLACKWALL_SIGNING_SEED
+        sync: false
       - key: CDP_API_KEY_ID
         sync: false
       - key: CDP_API_KEY_SECRET

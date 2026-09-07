@@ -182,6 +182,59 @@ class NativeSigningBackendIsInstalled(unittest.TestCase):
         self.assertEqual(len(sign(bytes(range(32)), b"m")), 64)
 
 
+class BillingSecretsAreDeclaredInTheBlueprints(unittest.TestCase):
+    """A blueprint deploy can only set what the blueprint DECLARES.
+
+    Found 2026-09-07 while turning billing on: `BLACKWALL_SIGNING_SEED` was in no
+    blueprint at all. Render prompts only for the `sync: false` keys it finds, so a
+    blueprint deploy never asked for it, `load_seed` read an unset variable, and the
+    service came up healthy with the "independently-verifiable Ed25519 receipt" the
+    product advertises silently switched OFF. Absent-means-off is the right default
+    IN CODE (`receipt_signer` documents it) and exactly the wrong default in a
+    deploy manifest, because nothing surfaces the difference.
+    """
+
+    RENDER = ("render.yaml", "render-free.yaml")
+    # Every key an operator must supply to run billing + signed receipts. Each is
+    # a SECRET, so each must be `sync: false` -- a literal `value:` would commit it.
+    REQUIRED = ("BLACKWALL_PAY_TO", "BLACKWALL_RECEIPT_KEY",
+                "BLACKWALL_SIGNING_SEED", "CDP_API_KEY_ID", "CDP_API_KEY_SECRET")
+
+    def test_every_billing_secret_is_declared(self):
+        # MUTATION: dropping any one key -> a deploy that looks configured and has
+        # that feature off. Nothing else in the suite would notice.
+        for name in self.RENDER:
+            with open(os.path.join(ROOT, name)) as handle:
+                text = handle.read()
+            for key in self.REQUIRED:
+                self.assertIn(key, text, "%s does not declare %s" % (name, key))
+
+    def test_no_billing_secret_carries_a_committed_value(self):
+        # MUTATION: `value: 0x...` instead of `sync: false`. A blueprint is public
+        # repo content; a literal here is a leaked key, and for BLACKWALL_PAY_TO it
+        # is worse than a leak -- it is someone else's payout address in our deploy.
+        for name in self.RENDER:
+            with open(os.path.join(ROOT, name)) as handle:
+                text = handle.read()
+            for key in self.REQUIRED:
+                declared = re.search(
+                    r"- key: %s\s*\n\s*(\S+):" % re.escape(key), text)
+                self.assertIsNotNone(declared, "%s: %s unparseable" % (name, key))
+                self.assertEqual(declared.group(1), "sync",
+                                 "%s declares %s with a committed value, not "
+                                 "sync: false" % (name, key))
+
+    def test_the_seed_is_not_the_hmac_secret(self):
+        # receipt_signer REFUSES a seed equal to BLACKWALL_RECEIPT_KEY. Pin that
+        # the two stay separate keys in the manifest as well, so an operator is
+        # never invited to paste one value into both prompts.
+        self.assertNotEqual("BLACKWALL_SIGNING_SEED", "BLACKWALL_RECEIPT_KEY")
+        import receipt_signer
+        with self.assertRaises(ValueError):
+            receipt_signer.load_seed({"BLACKWALL_SIGNING_SEED": "x" * 43,
+                                      "BLACKWALL_RECEIPT_KEY": "x" * 43})
+
+
 class RestoreBlueprintKeepsTheOriginalHostname(unittest.TestCase):
     """On Render the service `name` IS the hostname: name X -> X.onrender.com.
 

@@ -40,6 +40,7 @@ has **no pip dependencies**.
 | `BLACKWALL_READINESS_LOCAL` | set to score endpoint readiness **ourselves** from public signals (no third-party call, no query-stream leak). Preferred over `BLACKWALL_READINESS`. |
 | `BLACKWALL_READINESS` | base URL of an EXTERNAL readiness oracle (e.g. `https://ontarioprotocol.com`); folds its grade in, but calls a third party per request and reveals your query stream. Prefer `BLACKWALL_READINESS_LOCAL`. |
 | `BLACKWALL_RECEIPT_KEY` | **secret** for signing receipts + report tokens (set a strong random value) |
+| `BLACKWALL_SIGNING_SEED` | **secret**, base64url 32 bytes — turns on the INDEPENDENTLY-VERIFIABLE Ed25519 receipt. Absent, verdicts carry no `receipt` field and the claim the product advertises is simply off. Must NOT equal `BLACKWALL_RECEIPT_KEY` (the service refuses to boot if they match). Generate: `python -c "import os,base64;print(base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip('='))"` |
 
 > ### ⚠️ Base MAINNET needs the CDP facilitator
 >
@@ -73,6 +74,7 @@ docker run -p 8402:8402 -v blackwall-data:/data \
   -e BLACKWALL_NETWORK=base-sepolia \
   -e BLACKWALL_FACILITATOR=https://facilitator.x402.rs \
   -e BLACKWALL_RECEIPT_KEY="$(openssl rand -hex 32)" \
+  -e BLACKWALL_SIGNING_SEED="$(python3 -c 'import os,base64;print(base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("="))')" \
   blackwall
 # Mainnet: drop BLACKWALL_FACILITATOR and pass CDP creds instead (see the
 # warning above -- the keyless facilitators do not settle on Base mainnet).
@@ -90,7 +92,8 @@ their file and take the secrets at deploy time (never committed, never baked in)
   fly volume create blackwall_data --size 1 --region iad
   fly secrets set BLACKWALL_PAY_TO=0xYourFundedWallet \
       CDP_API_KEY_ID=... CDP_API_KEY_SECRET=... \
-      BLACKWALL_RECEIPT_KEY=$(openssl rand -hex 32)
+      BLACKWALL_RECEIPT_KEY=$(openssl rand -hex 32) \
+      BLACKWALL_SIGNING_SEED=$(python3 -c 'import os,base64;print(base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("="))')
   # (dry run instead: BLACKWALL_NETWORK=base-sepolia +
   #  BLACKWALL_FACILITATOR=https://facilitator.x402.rs, no CDP creds)
   fly deploy
