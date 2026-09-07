@@ -55,7 +55,8 @@ test:
 	  test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_pull.py \
 	  test_traceipt_verify.py test_transfer_sim.py test_two_stage_signer.py \
 	  test_upto_scheme.py test_verdict_anchor.py test_verdict_oracle.py \
-	  test_x402.py test_x402_challenge.py test_x402_pay.py
+	  test_x402.py test_x402_challenge.py test_x402_pay.py \
+	  test_bounded_server.py test_ci_coverage.py test_user_agent.py
 
 # Suites that need a third-party package, kept SEPARATE so the stdlib guarantee
 # above stays honest. receipt_signer runs in BOTH -- signatures from its pure
@@ -63,7 +64,7 @@ test:
 # of that. x402_pay runs for real here rather than skipping.
 test-native:
 	python3 -m pip install --quiet --only-binary :all: -r requirements-signing.txt
-	python3 -m unittest test_receipt_signer.py
+	python3 -m unittest test_receipt_signer.py test_remote_ledger.py
 
 test-client:
 	python3 -m pip install --quiet -r clients/requirements.txt
