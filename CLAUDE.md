@@ -573,6 +573,23 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   asset, outcome, or even the JSON field names) visible to the provider. SHARP
   EDGE: lose `BLACKWALL_LEDGER_KEY` and the log is unreadable -- rows under an old
   key are skipped, counted, and announced in the boot banner.
+  LIVE AUDIT (2026-09-07), found by the mirror writing NOTHING while every log
+  line looked healthy: (1) a Redis-REST store reports a COMMAND-level failure in
+  the response BODY with HTTP 200 -- a READ-ONLY token, NOPERM, WRONGTYPE, a
+  quota refusal -- and `_cmd` read only `result`, so each became `None`; `append`
+  ignores its return, so `_mirror` counted the record MIRRORED. Silent total data
+  loss with the banner still reading ON, which is exactly the failure this module
+  exists to prevent. An `error` body now raises, naming the command and quoting
+  the store. (2) the banner asserted a capability it never tested: `hydrate` only
+  READS, so a read-only token / wrong database / revoked permission all boot
+  clean. `verify_writable()` probes a real write at boot (`SET <list_key>:probe
+  ... EX 60` then `GET` -- a separate self-expiring key, never the log) and the
+  banner reports DEGRADED -- NOT WRITABLE instead of ON. NOT fatal: one probe
+  cannot separate a bad token from a KV outage, and taking the payment path down
+  over a third party is the worse error, so it warns and keeps serving. Verified
+  end to end against a read-only stub (DEGRADED banner + named cause + verdict
+  still served + local row kept) and a healthy one (ON, 3 local == 3 mirrored,
+  probe key absent from the log).
   PRE-DEPLOY AUDIT, two more: (1) `close()` was implemented, unit-tested and
   CALLED BY NOTHING -- the wired-and-inert pattern again -- so every record still
   queued at shutdown was lost, and a REDEPLOY is exactly when that queue is
@@ -584,7 +601,7 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   caps its reads for exactly this reason and this path did not. Capped at 64MB,
   with a restraint control so an over-tight cap cannot silently disable
   mirroring. See
-  `docs/DURABLE_LEDGER.md`. Tests: `test_remote_ledger.py`, 36 tests, 23 mutations
+  `docs/DURABLE_LEDGER.md`. Tests: `test_remote_ledger.py`, 48 tests, 31 mutations
   verified killed),
   `http_util.py` (hardened JSON GET for the live data path: retry+backoff on
   transient 429/5xx/timeout -- honors `Retry-After`, permanent 4xx not retried --

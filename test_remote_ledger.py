@@ -19,6 +19,10 @@ from remote_ledger import (DurableEventLedger, LedgerCryptoError, UpstashBackend
 KEY_HEX = "a" * 64
 KEY = derive_key(bytes.fromhex(KEY_HEX))
 
+
+def _tmp_ledger():
+    return os.path.join(tempfile.mkdtemp(), "l.jsonl")
+
 REC = {"kind": "verdict", "ts": "2026-09-06T00:00:00Z", "receipt_id": "r1",
        "counterparty": "0xF00d", "payer": "0xBeef", "amount": "5.00",
        "asset": "USDC", "chain": "base", "verdict": "GO", "score": 0.9}
@@ -208,6 +212,7 @@ class FakeTransport:
         self.calls = []
         self.responses = list(responses or [])
         self.list = []
+        self.kv = {}
 
     def __call__(self, url, headers, body, timeout):
         self.calls.append({"url": url, "headers": headers,
@@ -230,6 +235,11 @@ class FakeTransport:
                 stop = n + stop
             return 200, json.dumps(
                 {"result": self.list[start:stop + 1]}).encode()
+        if cmd[0] == "SET":
+            self.kv[cmd[1]] = cmd[2]
+            return 200, json.dumps({"result": "OK"}).encode()
+        if cmd[0] == "GET":
+            return 200, json.dumps({"result": self.kv.get(cmd[1])}).encode()
         return 200, json.dumps({"result": None}).encode()
 
 
@@ -280,6 +290,133 @@ class Backend(unittest.TestCase):
         b = UpstashBackend("https://kv.example.com", "tok", transport=boom)
         with self.assertRaises(rl.RemoteLedgerError):
             b.append("x")
+
+
+class ErrorBody(unittest.TestCase):
+    """AUDIT FINDING, found while diagnosing a live mirror that wrote NOTHING.
+
+    A Redis-REST store answers a COMMAND-level failure with HTTP 200 and an
+    `error` field: a READ-ONLY token, NOPERM, WRONGTYPE, a quota refusal. The
+    backend read only `result`, so every one of those became `None` -- and
+    `append` ignores its return value, so `_mirror` counted the record MIRRORED
+    and the startup banner kept saying ON while the store held nothing.
+    """
+
+    def test_error_body_raises_even_on_HTTP_200(self):
+        """MUTATION: dropping the `error` check, or checking `in payload`
+        instead of truthiness. This is the read-only-token case verbatim."""
+        t = FakeTransport(responses=[(200, json.dumps(
+            {"error": "ERR this instance is read-only"}).encode())])
+        b = UpstashBackend("https://kv.example.com", "tok", transport=t)
+        with self.assertRaises(rl.RemoteLedgerError) as cm:
+            b.append("BLOB")
+        # The message must name the command AND carry the store's own words --
+        # "mirroring failed" without them sends an operator to the wrong place.
+        self.assertIn("RPUSH", str(cm.exception))
+        self.assertIn("read-only", str(cm.exception))
+
+    def test_a_rejected_write_is_COUNTED_not_swallowed(self):
+        """The property the finding is really about: the ledger must KNOW it
+        did not persist. MUTATION: any path where a rejected RPUSH still lands
+        in stats['mirrored']."""
+        t = FakeTransport(responses=[(200, json.dumps({"error": "NOPERM"}).encode())
+                                     for _ in range(rl.MIRROR_ATTEMPTS)])
+        led = DurableEventLedger(_tmp_ledger(),
+                                 UpstashBackend("https://k", "t", transport=t),
+                                 KEY, mirror_async=False)
+        led.record_verdict("r1", "0xA", "1.00", "GO")
+        self.assertEqual(led.stats["mirrored"], 0)
+        self.assertEqual(led.stats["mirror_failures"], 1)
+
+    def test_an_error_body_does_NOT_break_the_payment_path(self):
+        """RESTRAINT CONTROL. Raising harder must not become raising THROUGH:
+        the verdict is already written locally and a KV refusal is not the
+        payment path's problem. MUTATION: letting RemoteLedgerError escape
+        _append."""
+        t = FakeTransport(responses=[(200, json.dumps({"error": "NOPERM"}).encode())
+                                     for _ in range(rl.MIRROR_ATTEMPTS)])
+        path = _tmp_ledger()
+        led = DurableEventLedger(path, UpstashBackend("https://k", "t", transport=t),
+                                 KEY, mirror_async=False)
+        led.record_verdict("r1", "0xA", "1.00", "GO")   # must not raise
+        with open(path) as f:
+            self.assertEqual(len(f.read().strip().splitlines()), 1)
+
+    def test_a_result_of_null_is_still_a_valid_answer(self):
+        """RESTRAINT CONTROL: GET on a missing key legitimately returns
+        {"result": null}. MUTATION: treating a falsy `result` as an error,
+        which would make every empty read look like a broken store."""
+        t = FakeTransport(responses=[(200, json.dumps({"result": None}).encode())])
+        b = UpstashBackend("https://kv.example.com", "tok", transport=t)
+        self.assertEqual(b.read_all(), [])
+
+
+class WriteProbe(unittest.TestCase):
+    """`hydrate` only READS, so a read-only token boots clean and mirrors
+    nothing. The probe is what turns that silent state into a message."""
+
+    def test_probe_writes_to_a_SEPARATE_key_with_an_expiry(self):
+        """MUTATION: probing by RPUSHing the log itself, which adds a row an
+        operator has to explain and which never expires."""
+        t = FakeTransport()
+        b = UpstashBackend("https://k", "t", list_key="bw:ledger", transport=t)
+        b.probe()
+        cmds = [c["body"] for c in t.calls]
+        self.assertEqual(cmds[0][0], "SET")
+        self.assertEqual(cmds[0][1], "bw:ledger:probe")
+        self.assertEqual(cmds[0][3:], ["EX", str(rl.PROBE_TTL_SECONDS)])
+        self.assertNotIn("RPUSH", [c[0] for c in cmds])
+        self.assertEqual(t.list, [])          # the log is untouched
+
+    def test_probe_raises_when_the_store_refuses_the_write(self):
+        """MUTATION: probing with a read command, which a read-only token
+        passes -- the exact hole being closed."""
+        t = FakeTransport(responses=[(200, json.dumps(
+            {"error": "ERR read-only"}).encode())])
+        with self.assertRaises(rl.RemoteLedgerError):
+            UpstashBackend("https://k", "t", transport=t).probe()
+
+    def test_probe_raises_when_the_value_does_not_read_back(self):
+        """A store that accepts a write it cannot return is not one to trust
+        with the only durable copy. MUTATION: dropping the read-back."""
+        t = FakeTransport(responses=[(200, json.dumps({"result": "OK"}).encode()),
+                                     (200, json.dumps({"result": "other"}).encode())])
+        with self.assertRaises(rl.RemoteLedgerError):
+            UpstashBackend("https://k", "t", transport=t).probe()
+
+    def test_verify_writable_returns_the_reason_and_never_raises(self):
+        """MUTATION: letting the probe's exception escape verify_writable, which
+        would make a KV outage at boot crash the service -- strictly worse than
+        the silent mirror it replaces."""
+        t = FakeTransport(responses=[(200, json.dumps(
+            {"error": "ERR read-only"}).encode())])
+        led = DurableEventLedger(_tmp_ledger(),
+                                 UpstashBackend("https://k", "t", transport=t),
+                                 KEY, mirror_async=False)
+        self.assertIn("read-only", led.verify_writable())
+
+    def test_verify_writable_is_None_on_a_healthy_store(self):
+        """MUTATION: returning a truthy value on success, which would print the
+        NOT-WRITABLE warning on every healthy boot and train operators to
+        ignore it."""
+        led = DurableEventLedger(_tmp_ledger(),
+                                 UpstashBackend("https://k", "t",
+                                                transport=FakeTransport()),
+                                 KEY, mirror_async=False)
+        self.assertIsNone(led.verify_writable())
+
+    def test_an_unprobeable_backend_is_not_a_failure(self):
+        """The backend is duck-typed and injected. MUTATION: raising or
+        returning a reason when `probe` is simply absent, which would warn on
+        every test double and every future backend."""
+        class Bare:
+            def append(self, blob):
+                pass
+
+            def read_all(self, limit=None):
+                return []
+        led = DurableEventLedger(_tmp_ledger(), Bare(), KEY, mirror_async=False)
+        self.assertIsNone(led.verify_writable())
 
 
 class ResponseCap(unittest.TestCase):
