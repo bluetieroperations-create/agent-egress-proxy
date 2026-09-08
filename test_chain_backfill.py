@@ -148,17 +148,32 @@ class TestCliExitCode(unittest.TestCase):
         self.assertEqual(self._run({PAYEE.lower(): [
             ([_item(PAYEE, "0x" + "b" * 40, tx="0x" + "1" * 64)], None)]}), 0)
 
-    def test_truncated_run_exits_nonzero(self):
-        """MUTATION: dropping the exit-code branch, which is how a nightly
-        refresh silently ships a windowed corpus."""
+    def test_truncated_run_exits_ZERO_by_default(self):
+        """REGRESSION GUARD, and the bug was mine. Returning 1 on truncation read
+        as rigour and broke `scripts/refresh_seed.sh`, which runs `set -eu` and
+        invokes this at --max-pages 4 -- so the bounded walk that script ASKS FOR
+        killed the scheduled refresh at that line, every run. That refresh is what
+        keeps the corpus off the 90-day `stale` cliff, so the safety change
+        disabled the safety mechanism. Reproduced before fixing.
+        MUTATION: `return 1 if incomplete else 0` -- the original defect."""
         self.assertEqual(self._run({PAYEE.lower(): [
-            ([_item(PAYEE, "0x" + "b" * 40, tx="0x" + "1" * 64)], {"c": 1})]}), 1)
+            ([_item(PAYEE, "0x" + "b" * 40, tx="0x" + "1" * 64)], {"c": 1})]}), 0)
 
-    def test_a_run_that_could_not_FETCH_also_exits_nonzero(self):
+    def test_truncated_run_exits_nonzero_WHEN_ASKED(self):
+        """The actionable exit is opt-in, so a caller that wants a hard failure
+        can have one without imposing it on every existing invocation.
+        MUTATION: ignoring --fail-on-incomplete, which makes the flag a lie."""
+        self.assertEqual(self._run({PAYEE.lower(): [
+            ([_item(PAYEE, "0x" + "b" * 40, tx="0x" + "1" * 64)], {"c": 1})]},
+            extra=("--fail-on-incomplete",)), 1)
+
+    def test_a_run_that_could_not_FETCH_is_reported_and_opt_in_fatal(self):
         """Found by running the CLI, not by reading it: backfill is fail-soft per
-        payee, so an all-429 run returned errors=N and exited 0 -- a corpus with
-        no data, reported as success. Downstream that reads as a payee with no
-        settlements, not as a failed crawl.
+        payee, so an all-429 run returns errors=N and otherwise looks normal --
+        downstream that reads as a payee with no settlements, not a failed crawl.
+        It is WARNED about always and fatal only on request, because
+        refresh_seed.sh deliberately tolerates a failed fetch ("costs FRESHNESS,
+        never COVERAGE" -- it merges onto the committed store first).
         MUTATION: checking only `truncated` and ignoring `errors`."""
         def boom(address, params):
             raise OSError("429 Too Many Requests")
@@ -172,15 +187,53 @@ class TestCliExitCode(unittest.TestCase):
                 self.fetch = boom
         B.BlockscoutPager = _Stub
         try:
-            rc = B.main(["--payees-file", d + "/payees.txt", "--store", d + "/s.db"])
+            soft = B.main(["--payees-file", d + "/payees.txt", "--store", d + "/s.db"])
+            hard = B.main(["--payees-file", d + "/payees.txt", "--store", d + "/s.db",
+                           "--fail-on-incomplete"])
         finally:
             B.BlockscoutPager = real
-        self.assertEqual(rc, 1)
+        self.assertEqual(soft, 0)
+        self.assertEqual(hard, 1)
+
+    def test_strict_also_refuses_a_run_that_could_not_FETCH(self):
+        """AUDIT FINDING. --strict raised on the page cap but not on a transport
+        error, because `backfill` is fail-soft there -- so a full-depth pull where
+        payees 429'd reported SUCCESS while contributing nothing. An unfetched
+        payee is more incomplete than a truncated one: downstream it reads as a
+        counterparty with no settlements, not one we failed to reach.
+        MUTATION: dropping the `args.strict and summary["errors"]` check, which
+        restores a --strict that enforces only the cheaper half of its promise."""
+        def boom(address, params):
+            raise OSError("429 Too Many Requests")
+        import tempfile
+        d = tempfile.mkdtemp()
+        with open(d + "/payees.txt", "w") as f:
+            f.write(PAYEE + "\n")
+        real = B.BlockscoutPager
+        class _Stub:
+            def __init__(self, **kw):
+                self.fetch = boom
+        B.BlockscoutPager = _Stub
+        try:
+            rc = B.main(["--payees-file", d + "/payees.txt",
+                         "--store", d + "/s.db", "--strict"])
+        finally:
+            B.BlockscoutPager = real
+        self.assertEqual(rc, 3)
+
+    def test_strict_does_NOT_fire_on_a_clean_complete_run(self):
+        """RESTRAINT CONTROL. MUTATION: returning 3 whenever --strict is passed,
+        which would make a full-depth pull impossible to ever complete."""
+        self.assertEqual(self._run({PAYEE.lower(): [
+            ([_item(PAYEE, "0x" + "b" * 40, tx="0x" + "1" * 64)], None)]},
+            extra=("--strict",)), 0)
 
     def test_strict_exits_3_distinctly(self):
-        """A DIFFERENT code from the soft warning: 1 means 'shipped, but partial',
-        3 means 'refused to ship'. A caller automating a full-depth pull needs to
-        tell those apart. MUTATION: collapsing both onto 1."""
+        """THREE distinct codes: 0 shipped (possibly bounded, which is normal),
+        1 shipped-but-incomplete AND the caller asked to be told, 3 refused to
+        ship. A caller automating a full-depth pull needs to tell those apart.
+        MUTATION: collapsing 3 onto 1, which would make --strict indistinguishable
+        from an opt-in warning."""
         self.assertEqual(self._run({PAYEE.lower(): [
             ([_item(PAYEE, "0x" + "b" * 40, tx="0x" + "1" * 64)], {"c": 1})]},
             extra=("--strict",)), 3)

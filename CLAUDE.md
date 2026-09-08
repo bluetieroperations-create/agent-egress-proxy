@@ -41,11 +41,23 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   reads as a 4-day-old merchant -- and `burst_sybil` was calibrated on the
   artifact. `strict=True` / `--strict` raises `IncompleteHistory` for a deliberate
   full-depth pull, where a capped payee means the run is wrong rather than merely
-  bounded; the CLI exits 3 for that, 1 for a soft truncation OR a fail-soft fetch
-  error (an all-429 run used to exit 0 with no data), 0 only when the corpus is
-  genuinely complete. `rwa_backfill.collect_paged` still has the old shape and
-  says so in its docstring. Tests: `test_chain_backfill.py`, 29 tests, 13
-  mutations verified killed),
+  bounded -- and it covers a payee that FAILED TO FETCH too, which is more
+  incomplete than a truncated one (audit finding: it originally enforced only the
+  page-cap half of its own promise). EXIT CODES: 3 = refused to ship (--strict),
+  1 = incomplete AND the caller passed `--fail-on-incomplete`, 0 otherwise. The
+  non-zero exit is OPT-IN because making it the default was a REGRESSION, caught
+  by audit and reproduced before fixing: `scripts/refresh_seed.sh` runs `set -eu`
+  at `--max-pages 4`, so the bounded walk that script ASKS FOR killed the
+  scheduled refresh at that line every run -- and that refresh is what keeps the
+  corpus off the 90-day `stale` cliff, so the safety change disabled the safety
+  mechanism. A cap you passed being reached is not a failure; the warning and the
+  `truncated` field print either way. `rwa_backfill.collect_paged` still has the
+  old shape and says so in its docstring. Tests: `test_chain_backfill.py`, 32
+  tests, 17 mutations verified killed (incl. a guard for that regression).
+  MUTATION-TESTING HAZARD found here: restoring a SAME-SIZE mutation lets CPython
+  reuse the MUTANT's `.pyc` (invalidation is mtime+size, and `cp` preserves mtime
+  within the second), which can report a phantom failure or a phantom SURVIVAL --
+  clear `__pycache__` between mutations),
   `addresses.py` (EVM address validation/normalization),
   `x402.py` (Blackwall's own x402 billing: 402 challenge, facilitator seam,
   replay guard, sessions),

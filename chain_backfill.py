@@ -211,6 +211,15 @@ def main(argv=None):
                    help="pages per payee (~50 transfers/page; default 5)")
     p.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Blockscout base URL")
     p.add_argument("--usdc", default=BASE_USDC, help="USDC contract address")
+    p.add_argument("--fail-on-incomplete", action="store_true",
+                   help="exit 1 when the corpus came back incomplete (page cap "
+                        "hit, or a payee failed to fetch). OFF by default: a "
+                        "bounded walk is the DESIGNED behaviour of a run that "
+                        "passes --max-pages, and `scripts/refresh_seed.sh` runs "
+                        "under `set -e` at --max-pages 4, so a non-zero exit "
+                        "there kills the scheduled refresh on every run. The "
+                        "warning and the `truncated` field are printed either "
+                        "way -- this only changes the exit code.")
     p.add_argument("--strict", action="store_true",
                    help="FAIL the run if any payee hits the page cap, instead of "
                         "recording a flagged partial. Use for a deliberate "
@@ -236,6 +245,19 @@ def main(argv=None):
     sys.stdout.write(json.dumps(summary, indent=2) + "\n")
     sys.stdout.write("Seeded %d payee(s): %d transfers, %d new settlements.\n"
                      % (summary["payees"], summary["fetched"], summary["ingested"]))
+    # AUDIT FINDING. --strict raises IncompleteHistory from the page cap, but
+    # `backfill` is fail-soft on TRANSPORT errors, so a payee that could not be
+    # fetched at all fell straight through and the run exited 0. That payee is
+    # MORE incomplete than a truncated one -- it contributes nothing, and
+    # downstream that reads as a counterparty with no settlements rather than
+    # one we failed to reach. A flag that promises to refuse a window has to
+    # refuse this too, or it is only enforcing the cheaper half of its promise.
+    if args.strict and summary["errors"]:
+        sys.stderr.write(
+            "chain_backfill: INCOMPLETE -- %d payee(s) could not be fetched; "
+            "--strict will not ship a corpus that is missing them.\n"
+            % summary["errors"])
+        return 3
     # LOUD, on stderr, and it sets the exit code: the shipped seed captured 0.8%
     # of its top payee while reporting a healthy-looking total, because nothing
     # ever said this. A run that silently truncates must not exit 0.
@@ -249,11 +271,10 @@ def main(argv=None):
             "--max-pages for full depth.\n"
             % (summary["truncated"], summary["payees"], args.max_pages))
         incomplete = True
-    # SAME DEFECT CLASS as the page cap, found by running the CLI: `backfill` is
-    # fail-soft per payee, so a run where every payee 429s returns errors=N and
-    # otherwise looks like a normal result. It must not exit 0 either -- a
-    # scheduled run that fetched nothing should be actionable without reading
-    # its stdout.
+    # SAME CLASS as the page cap: `backfill` is fail-soft per payee, so a run
+    # where every payee 429s returns errors=N and otherwise looks like a normal
+    # result. Reported, for the same reason -- but see the exit-code note below
+    # for why reporting is where it stops by default.
     if summary["errors"]:
         sys.stderr.write(
             "chain_backfill: WARNING %d payee(s) FAILED to fetch (transport "
@@ -261,7 +282,19 @@ def main(argv=None):
             "reads downstream as a payee with no settlements.\n"
             % summary["errors"])
         incomplete = True
-    return 1 if incomplete else 0
+    # EXIT CODE, and the default is deliberate. An earlier version of this
+    # returned 1 whenever the corpus was incomplete, which read as rigour and was
+    # a REGRESSION: `scripts/refresh_seed.sh` runs `set -eu` and invokes this at
+    # --max-pages 4, so a bounded walk -- the behaviour that script ASKS FOR --
+    # killed the scheduled refresh at that line every time. Reproduced before
+    # fixing. That refresh is what keeps the corpus off the 90-day `stale` cliff,
+    # so the "safety" change disabled the safety mechanism.
+    #
+    # A cap you passed on the command line being reached is not a failure, and a
+    # warning that fires on every healthy run is one operators learn to ignore.
+    # The diagnosis is in stderr and in the `truncated` field regardless; only
+    # the exit code is opt-in.
+    return 1 if (incomplete and args.fail_on_incomplete) else 0
 
 
 if __name__ == "__main__":
