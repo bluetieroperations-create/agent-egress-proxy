@@ -42,7 +42,23 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `settlement_watch.py` (trustless on-chain settlement confirmation),
   `chain_backfill.py` (seed reputation from PUBLIC Base USDC history with zero
   customers -- paginate a KNOWN x402 payee's inbound USDC via Blockscout and ingest;
-  targeted not firehose; idempotent),
+  targeted not firehose; idempotent. TRUNCATION IS REPORTED, NOT SWALLOWED:
+  `collect_paged` returns `(items, truncated)` and `backfill`'s summary carries a
+  `truncated` count plus a per-payee flag, because the bare list it used to return
+  let a capped walk read as a complete history. MEASURED COST of that: the shipped
+  `data/reputation_seed.db.gz` holds 239 of Bitrefill's 29,231 Base transfers
+  (0.8%) and 70 of 281 payees (25%) sit on an exact 50-multiple >= 100 -- the page
+  cap, not the ecosystem. No verdict flips on it (the thin/Sybil gates need >= 20
+  and >= 3, and a capped payee has >= 100; `stale` reads `last_seen`, which is
+  exact because the pager walks newest-first), but `age_days` INVERTS -- Bitrefill
+  reads as a 4-day-old merchant -- and `burst_sybil` was calibrated on the
+  artifact. `strict=True` / `--strict` raises `IncompleteHistory` for a deliberate
+  full-depth pull, where a capped payee means the run is wrong rather than merely
+  bounded; the CLI exits 3 for that, 1 for a soft truncation OR a fail-soft fetch
+  error (an all-429 run used to exit 0 with no data), 0 only when the corpus is
+  genuinely complete. `rwa_backfill.collect_paged` still has the old shape and
+  says so in its docstring. Tests: `test_chain_backfill.py`, 29 tests, 13
+  mutations verified killed),
   `addresses.py` (EVM address validation/normalization),
   `x402.py` (Blackwall's own x402 billing: 402 challenge, facilitator seam,
   replay guard, sessions),
