@@ -300,8 +300,15 @@ def main(argv=None):
     rc = collections.Counter(r["payTo"] for r in resources if r.get("payTo"))
     sample = [a for a, _ in rc.most_common(args.backfill_top)]
     store = ReputationStore(args.backfill_store)                       # <- the #1 corpus
-    chain_backfill.backfill(store, sample, chain_backfill.BlockscoutPager().fetch,
-                            max_pages=args.backfill_max_pages)
+    _bf = chain_backfill.backfill(store, sample, chain_backfill.BlockscoutPager().fetch,
+                                  max_pages=args.backfill_max_pages)
+    if _bf.get("truncated"):
+        # This store is the shipped reputation corpus. A truncated build is what
+        # produced a seed holding 0.8% of its top payee while looking complete.
+        sys.stderr.write("WARNING: %d of %d payee(s) hit the %d-page cap -- the "
+                         "corpus is a crawl WINDOW, not full history; age/first_seen "
+                         "and burst statistics derived from it are artifacts.\n"
+                         % (_bf["truncated"], _bf["payees"], args.backfill_max_pages))
     sanc, screened = _load_sanctioned()
     if not screened:
         sys.stderr.write("WARNING: sanctions list unavailable -- 'sanctioned: 0' means "

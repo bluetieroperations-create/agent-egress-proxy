@@ -56,7 +56,18 @@ def _to_unix(ts):
 
 
 def collect_paged(fetch, token, max_pages):
-    """Walk up to `max_pages` of `fetch(token, page_params) -> (items, next_params)`."""
+    """Walk up to `max_pages` of `fetch(token, page_params) -> (items, next_params)`.
+
+    KNOWN LIMITATION, documented rather than silently inherited: like
+    `chain_backfill.collect_paged` before it was fixed, this returns a bare list
+    and cannot tell its caller "I stopped at the cap, there is more". On the Base
+    reputation corpus that defect shipped a seed holding 0.8% of its top payee
+    while every summary read as healthy. It is LESS acute here -- this module
+    also carries a deliberate `cap=DEFAULT_PER_TOKEN_CAP`, so a bounded walk is
+    partly by design, and no full-depth RWA re-pull is planned -- but the shape
+    is identical. If this corpus is ever re-pulled for depth, port
+    `chain_backfill`'s (items, truncated) contract and `IncompleteHistory` first.
+    """
     items, params, pages = [], None, 0
     while pages < max_pages:
         page_items, params = fetch(token, params)

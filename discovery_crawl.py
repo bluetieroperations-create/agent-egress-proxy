@@ -238,8 +238,12 @@ def crawl_and_backfill(store, sources, *, fetch=None, chain_fetch=None, max_page
     ps = payees(resources)
     cf = chain_fetch or chain_backfill.BlockscoutPager().fetch
     summary = chain_backfill.backfill(store, ps, cf, max_pages=max_pages)
+    # Carry `truncated` up. Dropping it here would re-create the defect one level
+    # higher: a caller reads a healthy fetched/ingested pair and cannot tell that
+    # every payee stopped at the page cap.
     return {"resources": len(resources), "payees": len(ps),
-            "fetched": summary["fetched"], "ingested": summary["ingested"]}
+            "fetched": summary["fetched"], "ingested": summary["ingested"],
+            "truncated": summary.get("truncated", 0)}
 
 
 def _urllib_get_json(url, timeout=12):
@@ -299,7 +303,11 @@ def main(argv=None):
                                      max_pages=args.backfill_max_pages)
         sys.stdout.write(json.dumps(
             {"resources": len(resources), "payees": len(ps),
-             "fetched": bf["fetched"], "ingested": bf["ingested"]}, indent=2) + "\n")
+             "fetched": bf["fetched"], "ingested": bf["ingested"],
+             "truncated": bf.get("truncated", 0)}, indent=2) + "\n")
+        if bf.get("truncated"):
+            sys.stderr.write("discovery_crawl: WARNING %d payee(s) hit the page "
+                             "cap -- seeded history is truncated.\n" % bf["truncated"])
     return 0
 
 

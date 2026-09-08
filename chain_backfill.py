@@ -35,26 +35,68 @@ from settlement_watch import (BASE_USDC, DEFAULT_BASE_URL, DEFAULT_UA, HTTP_TIME
                               extract_usdc_transfers)
 
 
-def collect_paged(fetch, address, max_pages):
+class IncompleteHistory(Exception):
+    """The walk stopped at its page cap, so the result is a WINDOW, not a history.
+
+    Deliberately an exception (in `strict` mode) rather than a partial return: a
+    truncated corpus that presents as complete silently corrupts every statistic
+    computed from it. Same reasoning, and the same name, as
+    `solana_backfill.IncompleteHistory` -- that module raises rather than
+    truncating, which is why the Solana corpus is exhaustive and this one was not.
+    """
+
+
+def collect_paged(fetch, address, max_pages, *, strict=False):
     """Walk up to `max_pages` of `fetch(address, page_params) -> (items,
-    next_params)` and return all raw items. Stops when `next_params` is falsy or
-    the page cap is hit (the cap also bounds a misbehaving pager)."""
+    next_params)`. Returns **(items, truncated)**.
+
+    TRUNCATION IS REPORTED, NOT SWALLOWED -- and the tuple is the point. This
+    used to return a bare list and stop at the cap with no signal, so a caller
+    could not tell "history exhausted" from "there is much more and I quit".
+    MEASURED CONSEQUENCE: the committed Base seed captured 0.8% of its
+    highest-value payee (239 of 29,231 transfers) and looked complete; 70 of 281
+    payees (25%) sit on an exact 50-multiple >= 100, which is the page cap, not
+    the ecosystem. Returning a tuple forces every caller to acknowledge the
+    question, which is what a bare list let everyone skip.
+
+    `strict=True` raises `IncompleteHistory` instead. Off by default because
+    `backfill` is fail-soft per payee: raising there would discard the window we
+    DID fetch and record the payee as an error, which is strictly worse than a
+    flagged partial. Turn it on for a deliberate full-depth pull, where hitting
+    the cap means the run is wrong rather than merely bounded.
+    """
+    # `exhausted` is set ONLY when the pager itself says there is no more. Every
+    # other way out -- the cap, or `max_pages=0` -- leaves it False, so the
+    # default answer is "I did not confirm this is complete". Deriving it the
+    # other way round (from the page count, or by returning early on the last
+    # page) makes the completeness claim unreachable in exactly the cases worth
+    # testing; mutation testing caught three surviving mutants on that shape.
     items, params, pages = [], None, 0
+    exhausted = False
     while pages < max_pages:
         page_items, params = fetch(address, params)
         items.extend(page_items or [])
         pages += 1
         if not params:
+            exhausted = True              # the pager said there is no more
             break
-    return items
+    truncated = not exhausted
+    if truncated and strict:
+        raise IncompleteHistory(
+            "%s: stopped at the %d-page cap with more history available"
+            % (address, max_pages))
+    return items, truncated
 
 
-def payee_transfers(fetch, address, *, usdc=BASE_USDC, max_pages=5):
+def payee_transfers(fetch, address, *, usdc=BASE_USDC, max_pages=5, strict=False):
     """Inbound USDC transfers to `address`, paged + normalized + inbound-only, and
-    DEDUPED. A pager that re-serves a page (non-advancing, or Blockscout offset
+    DEDUPED. Returns **(transfers, truncated)** -- see `collect_paged` for why the
+    truncation flag is carried rather than dropped.
+
+    A pager that re-serves a page (non-advancing, or Blockscout offset
     overlap as new txs land) would otherwise double-count `fetched`; the store's
     idempotent key protects `ingested` but not the reported transfer count."""
-    raw = collect_paged(fetch, address, max_pages)
+    raw, truncated = collect_paged(fetch, address, max_pages, strict=strict)
     inbound = [t for t in extract_usdc_transfers(raw, usdc)
                if t.get("to") and addresses_equal(t["to"], address)]
     seen, out = set(), []
@@ -66,16 +108,24 @@ def payee_transfers(fetch, address, *, usdc=BASE_USDC, max_pages=5):
             continue
         seen.add(key)
         out.append(t)
-    return out
+    return out, truncated
 
 
-def backfill(store, payees, fetch, *, usdc=BASE_USDC, max_pages=5):
+def backfill(store, payees, fetch, *, usdc=BASE_USDC, max_pages=5, strict=False):
     """Ingest inbound USDC for each valid payee. Returns a stage summary
-    {payees, fetched, ingested, errors, per_payee}. Invalid addresses are skipped
-    (not silently ingested); a duplicate payee is processed once; a transport error
-    on one payee is recorded and the run CONTINUES (fail-soft), so one 429/timeout
-    can't abort the whole scan."""
+    {payees, fetched, ingested, errors, truncated, per_payee}. Invalid addresses
+    are skipped (not silently ingested); a duplicate payee is processed once; a
+    transport error on one payee is recorded and the run CONTINUES (fail-soft),
+    so one 429/timeout can't abort the whole scan.
+
+    `truncated` is the COUNT of payees that hit the page cap, and each such
+    per-payee entry carries `truncated: True`. Without it a run reports
+    "281 payees, 46,031 settlements" and reads as a complete corpus when it is a
+    250-row window per payee -- the defect that produced the shipped seed.
+    `strict=True` propagates `IncompleteHistory` instead, for a full-depth pull
+    where a capped payee means the run is wrong rather than merely bounded."""
     per, total_fetched, total_ingested, ok, errors, seen = {}, 0, 0, 0, 0, set()
+    truncated_payees = 0
     for p in payees or []:
         if not is_evm_address(p):
             per[str(p)] = {"skipped": "not a valid EVM address"}
@@ -85,18 +135,26 @@ def backfill(store, payees, fetch, *, usdc=BASE_USDC, max_pages=5):
             continue
         seen.add(low)
         try:
-            xfers = payee_transfers(fetch, p, usdc=usdc, max_pages=max_pages)
+            xfers, was_truncated = payee_transfers(fetch, p, usdc=usdc,
+                                                   max_pages=max_pages, strict=strict)
+        except IncompleteHistory:
+            # strict mode: a capped payee invalidates the RUN, so do not bury it
+            # in per_payee alongside ordinary transport errors.
+            raise
         except Exception as e:                # fail-soft: one bad payee != dead scan
             per[low] = {"error": type(e).__name__}
             errors += 1
             continue
         ingested = store.ingest_transfers(xfers) if xfers else 0
         per[low] = {"fetched": len(xfers), "ingested": ingested}
+        if was_truncated:
+            per[low]["truncated"] = True
+            truncated_payees += 1
         total_fetched += len(xfers)
         total_ingested += ingested
         ok += 1
     return {"payees": ok, "fetched": total_fetched, "ingested": total_ingested,
-            "errors": errors, "per_payee": per}
+            "errors": errors, "truncated": truncated_payees, "per_payee": per}
 
 
 class BlockscoutPager:
@@ -153,6 +211,11 @@ def main(argv=None):
                    help="pages per payee (~50 transfers/page; default 5)")
     p.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Blockscout base URL")
     p.add_argument("--usdc", default=BASE_USDC, help="USDC contract address")
+    p.add_argument("--strict", action="store_true",
+                   help="FAIL the run if any payee hits the page cap, instead of "
+                        "recording a flagged partial. Use for a deliberate "
+                        "full-depth pull, where a capped payee means the corpus "
+                        "is a window and every statistic from it is wrong.")
     args = p.parse_args(argv)
 
     payees = _read_payees(args)
@@ -162,12 +225,43 @@ def main(argv=None):
     from reputation_store import ReputationStore
     store = ReputationStore(args.store)
     pager = BlockscoutPager(base_url=args.base_url, usdc=args.usdc)
-    summary = backfill(store, payees, pager.fetch, usdc=args.usdc,
-                       max_pages=args.max_pages)
+    try:
+        summary = backfill(store, payees, pager.fetch, usdc=args.usdc,
+                           max_pages=args.max_pages, strict=args.strict)
+    except IncompleteHistory as e:
+        sys.stderr.write("chain_backfill: INCOMPLETE -- %s\n"
+                         "Raise --max-pages or drop --strict; the corpus this "
+                         "would have written is a window, not a history.\n" % e)
+        return 3
     sys.stdout.write(json.dumps(summary, indent=2) + "\n")
     sys.stdout.write("Seeded %d payee(s): %d transfers, %d new settlements.\n"
                      % (summary["payees"], summary["fetched"], summary["ingested"]))
-    return 0
+    # LOUD, on stderr, and it sets the exit code: the shipped seed captured 0.8%
+    # of its top payee while reporting a healthy-looking total, because nothing
+    # ever said this. A run that silently truncates must not exit 0.
+    incomplete = False
+    if summary["truncated"]:
+        sys.stderr.write(
+            "chain_backfill: WARNING %d of %d payee(s) hit the %d-page cap -- "
+            "their history is TRUNCATED, not complete. Statistics derived from "
+            "this corpus (age_days, first_seen, burst detection, medians) "
+            "describe the crawl window, not the ecosystem. Re-run with a higher "
+            "--max-pages for full depth.\n"
+            % (summary["truncated"], summary["payees"], args.max_pages))
+        incomplete = True
+    # SAME DEFECT CLASS as the page cap, found by running the CLI: `backfill` is
+    # fail-soft per payee, so a run where every payee 429s returns errors=N and
+    # otherwise looks like a normal result. It must not exit 0 either -- a
+    # scheduled run that fetched nothing should be actionable without reading
+    # its stdout.
+    if summary["errors"]:
+        sys.stderr.write(
+            "chain_backfill: WARNING %d payee(s) FAILED to fetch (transport "
+            "errors); their history is missing from this corpus entirely, which "
+            "reads downstream as a payee with no settlements.\n"
+            % summary["errors"])
+        incomplete = True
+    return 1 if incomplete else 0
 
 
 if __name__ == "__main__":
