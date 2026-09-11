@@ -42,16 +42,16 @@ test:
 	  test_mcp_server.py test_payee_syntax.py test_payer_graph.py \
 	  test_payer_reputation.py test_payload_sim.py test_price_corroboration.py \
 	  test_price_integrity.py test_pyth_price.py test_rams_readiness.py \
-	   test_bounded_server.py test_ci_coverage.py test_ratelimit.py \
-	   test_reachability_ledger.py test_readiness.py test_receipt_signer.py \
-	   test_redteam.py test_refresh_guard.py test_reputation_onchain.py \
-	   test_reputation_store.py test_revert_scan.py test_rpc_node.py \
-	   test_rwa_aggregate.py test_rwa_backfill.py test_rwa_balance.py \
-	   test_rwa_ledger.py test_rwa_outcomes.py test_rwa_readiness.py \
-	   test_rwa_report.py test_sanctions.py test_screen_payer.py \
-	   test_secp256k1.py test_secret_scan.py test_seller_audit.py \
-	   test_seller_intel.py test_seller_portal.py test_seller_report.py \
-	   test_settlement_sim.py test_settlement_velocity.py \
+	   test_billing_preflight.py test_bounded_server.py test_ci_coverage.py \
+	   test_ratelimit.py test_reachability_ledger.py test_readiness.py \
+	   test_receipt_signer.py test_redteam.py test_refresh_guard.py \
+	   test_reputation_onchain.py test_reputation_store.py test_revert_scan.py \
+	   test_rpc_node.py test_rwa_aggregate.py test_rwa_backfill.py \
+	   test_rwa_balance.py test_rwa_ledger.py test_rwa_outcomes.py \
+	   test_rwa_readiness.py test_rwa_report.py test_sanctions.py \
+	   test_screen_payer.py test_secp256k1.py test_secret_scan.py \
+	   test_seller_audit.py test_seller_intel.py test_seller_portal.py \
+	   test_seller_report.py test_settlement_sim.py test_settlement_velocity.py \
 	   test_settlement_watch.py test_solana_backfill.py test_solana_rwa.py \
 	   test_token_decimals.py test_tokenized_stock_registry.py \
 	   test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_pull.py \
