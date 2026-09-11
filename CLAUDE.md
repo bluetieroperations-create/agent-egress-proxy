@@ -65,12 +65,35 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   corpus off the 90-day `stale` cliff, so the safety change disabled the safety
   mechanism. A cap you passed being reached is not a failure; the warning and the
   `truncated` field print either way. `rwa_backfill.collect_paged` still has the
-  old shape and says so in its docstring. Tests: `test_chain_backfill.py`, 32
-  tests, 17 mutations verified killed (incl. a guard for that regression).
-  MUTATION-TESTING HAZARD found here: restoring a SAME-SIZE mutation lets CPython
-  reuse the MUTANT's `.pyc` (invalidation is mtime+size, and `cp` preserves mtime
-  within the second), which can report a phantom failure or a phantom SURVIVAL --
-  clear `__pycache__` between mutations),
+  old shape and says so in its docstring. Tests: `test_chain_backfill.py`, 41
+  tests, 30 mutations verified killed (incl. guards for that regression and for
+  the discarded-partial defect).
+  A TRANSPORT FAILURE MID-WALK IS ALSO TRUNCATION, not an error: the
+  exception used to unwind `collect_paged` and DISCARD every page already
+  fetched -- measured, 3 good pages became 0 rows ingested and the payee was
+  filed as `{"error": ...}`, which downstream is indistinguishable from "this
+  payee has no history". Reported by the corpus-depth session against 4add6e6.
+  Now the partial is KEPT and marked truncated; only a failure on page ONE
+  re-raises, because then there is no partial to label and it is a genuine
+  fetch failure. Plus a bounded per-PAGE retry (`--retries`, default 2,
+  exponential backoff) on top of `http_util`'s own transient retries: the
+  indexer fails ~2% of page fetches when healthy (n=45), so a 5-page walk
+  completes only 0.98^5 = 90.4% of the time -- ~27 of 281 payees fetching
+  NOTHING per run. Invisible in the shipped corpus because runs accumulate and
+  ingest is idempotent; fatal for the ONE-SHOT full-depth pull, which has no
+  next run to fill the gap. The retry lives in `_fetch_page`, separate from the
+  walk, so it can never advance the cursor past a page it did not read --
+  retrying with `params` already rebound would skip history and call the result
+  complete. MUTATION-TESTING HAZARD found here: restoring a SAME-SIZE mutation
+  lets CPython reuse the MUTANT's `.pyc` (invalidation is mtime+size, and `cp`
+  preserves mtime within the second), which can report a phantom failure or a
+  phantom SURVIVAL -- clear `__pycache__` between mutations. A second hazard
+  found the same way: three mutants survived because no test asserted the
+  BACKOFF DELAY -- the guard only gates the sleep, so removing it left retries
+  working and every test green, while retrying instantly against a
+  rate-limited indexer is what produces the 429s. And a retry with no injected
+  clock quietly turned this suite from 0.1s into 12s via one PRE-EXISTING test
+  that had no sleep seam),
   `addresses.py` (EVM address validation/normalization),
   `x402.py` (Blackwall's own x402 billing: 402 challenge, facilitator seam,
   replay guard, sessions),

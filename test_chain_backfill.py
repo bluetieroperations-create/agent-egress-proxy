@@ -91,6 +91,161 @@ class TestCollectPaged(unittest.TestCase):
                          ([1], False))
 
 
+class TestMidWalkFailure(unittest.TestCase):
+    """A transport failure PART WAY through a walk.
+
+    Reported by the corpus-depth session against 4add6e6 and reproduced before
+    fixing: the exception unwound `collect_paged` and threw away every page
+    already fetched, so 3 good pages became 0 rows ingested and the payee was
+    filed as `{"error": ...}` -- which downstream is indistinguishable from
+    "this payee has no history". Runs accumulate and ingest is idempotent, so
+    this never showed up in the shipped corpus; a ONE-SHOT full-depth pull has
+    no next run to fill the gap.
+    """
+
+    def _dying(self, die_on):
+        n = {"c": 0}
+        def fetch(address, params):
+            n["c"] += 1
+            if n["c"] >= die_on:
+                raise OSError("HTTP 500 from indexer")
+            return ([n["c"]], {"page": n["c"] + 1})
+        return fetch
+
+    def test_pages_already_fetched_are_KEPT_and_marked_truncated(self):
+        """MUTATION: removing the try/except around the fetch, which restores the
+        unwind that discarded 3 good pages."""
+        items, truncated = B.collect_paged(self._dying(4), PAYEE, max_pages=20,
+                                           sleep=lambda _s: None)
+        self.assertEqual(items, [1, 2, 3])
+        self.assertTrue(truncated)
+
+    def test_a_failure_on_page_ONE_still_raises(self):
+        """There is no partial to keep and nothing to label, so this is a genuine
+        fetch FAILURE, not a window -- `backfill` must record it in `errors`
+        rather than report a payee with zero rows as merely capped.
+        MUTATION: returning ([], True) here, which would turn every unreachable
+        payee into a 'truncated' one with no rows and hide it from `errors`."""
+        with self.assertRaises(OSError):
+            B.collect_paged(self._dying(1), PAYEE, max_pages=20,
+                            sleep=lambda _s: None)
+
+    def test_strict_reports_the_TRANSPORT_cause_not_the_page_cap(self):
+        """An operator reading `--strict` output needs to know whether to raise
+        --max-pages or retry the run. MUTATION: a single message for both
+        causes, which sends them to the wrong fix."""
+        with self.assertRaises(B.IncompleteHistory) as cm:
+            B.collect_paged(self._dying(3), PAYEE, max_pages=20, strict=True,
+                            sleep=lambda _s: None)
+        msg = str(cm.exception)
+        self.assertIn("transport failed mid-walk", msg)
+        self.assertNotIn("page cap", msg)
+
+    def test_backfill_keeps_the_partial_and_does_NOT_call_it_an_error(self):
+        """The property that matters end to end. MUTATION: any path where a
+        mid-walk failure lands in `errors` with zero rows again."""
+        import tempfile
+        from reputation_store import ReputationStore
+        n = {"c": 0}
+        def fetch(address, params):
+            n["c"] += 1
+            if n["c"] >= 3:
+                raise OSError("HTTP 500")
+            return ([_item(PAYEE, "0x" + ("b%039d" % n["c"])[:40],
+                           tx="0x" + str(n["c"]) * 64)], {"page": n["c"] + 1})
+        store = ReputationStore(tempfile.mkdtemp() + "/r.db")
+        s = B.backfill(store, [PAYEE], fetch, max_pages=20, sleep=lambda _x: None)
+        self.assertEqual(s["errors"], 0)
+        self.assertEqual(s["truncated"], 1)
+        self.assertEqual(s["ingested"], 2)          # both good pages kept
+        self.assertTrue(s["per_payee"][PAYEE.lower()]["truncated"])
+
+
+class TestPageRetry(unittest.TestCase):
+    """~2% of page fetches fail even when the indexer is healthy (n=45,
+    measured), so a 5-page walk completes only 0.98^5 = 90.4% of the time --
+    ~27 of 281 payees fetching nothing per run. Two extra attempts take one
+    page's odds of failing from 2% to 0.0008%."""
+
+    def test_a_page_that_fails_once_then_succeeds_completes_the_walk(self):
+        """MUTATION: retries=0, i.e. no retry loop at all -- the walk truncates
+        on the first blip and ~1 payee in 10 comes back short."""
+        n = {"c": 0}
+        def flaky(address, params):
+            n["c"] += 1
+            if n["c"] == 2:
+                raise OSError("transient 500")
+            return ([n["c"]], {"page": 2} if n["c"] == 1 else None)
+        items, truncated = B.collect_paged(flaky, PAYEE, max_pages=5,
+                                           sleep=lambda _s: None)
+        self.assertEqual(items, [1, 3])             # page 2 retried, then ended
+        self.assertFalse(truncated)                 # a retried walk is COMPLETE
+
+    def test_retry_does_NOT_advance_the_cursor(self):
+        """The reason the retry lives in its own function. Retrying inside the
+        loop body with `params` already reassigned would skip the page it failed
+        to read and then call the result complete -- silent history loss dressed
+        as success.
+        MUTATION: inlining the retry after `params` is rebound."""
+        seen = []
+        n = {"c": 0}
+        def fetch(address, params):
+            seen.append(params)
+            n["c"] += 1
+            if n["c"] == 1:
+                raise OSError("transient")
+            return ([n["c"]], None)
+        B.collect_paged(fetch, PAYEE, max_pages=5, sleep=lambda _s: None)
+        self.assertEqual(seen, [None, None])        # same cursor, twice
+
+    def test_retries_are_BOUNDED_and_then_it_gives_up(self):
+        """MUTATION: an unbounded retry loop, which turns one dead payee into a
+        hung backfill."""
+        n = {"c": 0}
+        def dead(address, params):
+            n["c"] += 1
+            raise OSError("permanently down")
+        with self.assertRaises(OSError):
+            B.collect_paged(dead, PAYEE, max_pages=5, retries=2,
+                            sleep=lambda _s: None)
+        self.assertEqual(n["c"], 3)                 # 1 attempt + 2 retries
+
+    def test_backoff_is_EXPONENTIAL_and_not_slept_after_the_last_attempt(self):
+        """Found by mutation testing: three mutants survived because no test
+        asserted the DELAY. Removing the backoff entirely left retries working
+        and every test green -- but retrying instantly against a rate-limited
+        indexer is what produced the 429s in the first place, so the delay is
+        the part that makes the retry useful.
+        Also pins that we do NOT sleep after the final attempt: that would add
+        PAGE_RETRY_BACKOFF * 2^retries of dead time to every payee we give up
+        on, for no benefit.
+        MUTATIONS: dropping the sleep; `if True` (sleeping past the last
+        attempt); a constant instead of an exponential backoff."""
+        slept = []
+        def dead(address, params):
+            raise OSError("permanently down")
+        with self.assertRaises(OSError):
+            B.collect_paged(dead, PAYEE, max_pages=5, retries=3,
+                            sleep=slept.append)
+        # 4 attempts -> 3 sleeps, doubling, and none after the last attempt.
+        self.assertEqual(slept, [B.PAGE_RETRY_BACKOFF,
+                                 B.PAGE_RETRY_BACKOFF * 2,
+                                 B.PAGE_RETRY_BACKOFF * 4])
+
+    def test_a_healthy_page_is_never_retried_or_slept_on(self):
+        """RESTRAINT CONTROL. MUTATION: retrying unconditionally, or sleeping
+        before the first attempt -- 281 payees x a 1s backoff would add minutes
+        to every clean run."""
+        slept = []
+        n = {"c": 0}
+        def ok(address, params):
+            n["c"] += 1
+            return ([n["c"]], None)
+        B.collect_paged(ok, PAYEE, max_pages=5, sleep=slept.append)
+        self.assertEqual(n["c"], 1)
+        self.assertEqual(slept, [])
+
+
 class TestPayeeTransfers(unittest.TestCase):
     """Mutation notes: not filtering inbound -> an outbound row sneaks in; not
     normalizing USDC-by-contract -> a lookalike token pollutes."""
@@ -138,7 +293,8 @@ class TestCliExitCode(unittest.TestCase):
         B.BlockscoutPager = _Stub
         try:
             return B.main(["--payees-file", d + "/payees.txt",
-                           "--store", d + "/s.db", "--max-pages", "1", *extra])
+                           "--store", d + "/s.db", "--max-pages", "1",
+                           "--retries", "0", *extra])
         finally:
             B.BlockscoutPager = real
 
@@ -187,9 +343,10 @@ class TestCliExitCode(unittest.TestCase):
                 self.fetch = boom
         B.BlockscoutPager = _Stub
         try:
-            soft = B.main(["--payees-file", d + "/payees.txt", "--store", d + "/s.db"])
+            soft = B.main(["--payees-file", d + "/payees.txt", "--store", d + "/s.db",
+                           "--retries", "0"])
             hard = B.main(["--payees-file", d + "/payees.txt", "--store", d + "/s.db",
-                           "--fail-on-incomplete"])
+                           "--retries", "0", "--fail-on-incomplete"])
         finally:
             B.BlockscoutPager = real
         self.assertEqual(soft, 0)
@@ -215,8 +372,8 @@ class TestCliExitCode(unittest.TestCase):
                 self.fetch = boom
         B.BlockscoutPager = _Stub
         try:
-            rc = B.main(["--payees-file", d + "/payees.txt",
-                         "--store", d + "/s.db", "--strict"])
+            rc = B.main(["--payees-file", d + "/payees.txt", "--store", d + "/s.db",
+                         "--retries", "0", "--strict"])
         finally:
             B.BlockscoutPager = real
         self.assertEqual(rc, 3)
@@ -354,6 +511,9 @@ class TestBackfill(unittest.TestCase):
 
     def test_backfill_failsoft_on_transport_error(self):
         # one payee's pager raising must NOT abort the whole scan.
+        # retries=0: this pins FAIL-SOFT, not the retry loop -- left at the
+        # default it paid 3s of real backoff per run, which is how a retry with
+        # no injected clock quietly turns a 0.1s suite into a 12s one.
         p2 = "0x" + "f" * 40
 
         def fetch(address, params):
@@ -361,7 +521,7 @@ class TestBackfill(unittest.TestCase):
                 raise ConnectionError("429 slow down")
             return ([_item(p2, "0x" + "c" * 40, tx="0x" + "2" * 64)], None)
         store = self._store()
-        summary = B.backfill(store, [PAYEE, p2], fetch)
+        summary = B.backfill(store, [PAYEE, p2], fetch, retries=0)
         self.assertEqual(summary["errors"], 1)
         self.assertEqual(summary["per_payee"][PAYEE.lower()]["error"], "ConnectionError")
         self.assertEqual(summary["ingested"], 1)      # p2 still processed

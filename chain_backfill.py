@@ -27,12 +27,24 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 import urllib.parse
 
 import http_util
 from addresses import addresses_equal, is_evm_address
 from settlement_watch import (BASE_USDC, DEFAULT_BASE_URL, DEFAULT_UA, HTTP_TIMEOUT,
                               extract_usdc_transfers)
+
+
+# Retries for ONE page, on top of `http_util`'s own transient retries. The
+# indexer's measured per-page failure rate is ~2% when healthy (n=45), and a
+# 5-page walk therefore completes only 0.98^5 = 90.4% of the time -- about 27 of
+# 281 payees fetching nothing per run. Runs accumulate and ingest is idempotent,
+# so that has never shown up in the shipped corpus; a ONE-SHOT full-depth pull
+# has no next run to fill the gap. Two extra attempts take a page's failure odds
+# from 2% to 0.0008%.
+PAGE_RETRIES = 2
+PAGE_RETRY_BACKOFF = 1.0          # seconds, doubled per attempt
 
 
 class IncompleteHistory(Exception):
@@ -46,7 +58,8 @@ class IncompleteHistory(Exception):
     """
 
 
-def collect_paged(fetch, address, max_pages, *, strict=False):
+def collect_paged(fetch, address, max_pages, *, strict=False,
+                  retries=PAGE_RETRIES, sleep=time.sleep):
     """Walk up to `max_pages` of `fetch(address, page_params) -> (items,
     next_params)`. Returns **(items, truncated)**.
 
@@ -73,22 +86,60 @@ def collect_paged(fetch, address, max_pages, *, strict=False):
     # testing; mutation testing caught three surviving mutants on that shape.
     items, params, pages = [], None, 0
     exhausted = False
+    failure = None
     while pages < max_pages:
-        page_items, params = fetch(address, params)
+        try:
+            page_items, params = _fetch_page(fetch, address, params, retries, sleep)
+        except Exception as e:
+            # TRANSPORT DIED MID-WALK. Keep the pages already fetched: this is a
+            # TRUNCATED walk, not a failed one. Letting the exception unwind
+            # discarded everything -- measured, 3 good pages became 0 rows
+            # ingested, and the payee was filed as an error, which downstream is
+            # indistinguishable from "this payee has no history". A labelled
+            # partial is strictly better than a silent nothing.
+            failure = e
+            break
         items.extend(page_items or [])
         pages += 1
         if not params:
             exhausted = True              # the pager said there is no more
             break
     truncated = not exhausted
+    # Page ONE died, so there is no partial to keep and nothing to label. That
+    # is a genuine fetch FAILURE, not a window: re-raise so `backfill` records it
+    # in `errors` rather than reporting a payee with zero rows as merely capped.
+    if failure is not None and not items:
+        raise failure
     if truncated and strict:
         raise IncompleteHistory(
-            "%s: stopped at the %d-page cap with more history available"
-            % (address, max_pages))
+            "%s: %s" % (address,
+                        "transport failed mid-walk after %d page(s): %s"
+                        % (pages, failure) if failure is not None
+                        else "stopped at the %d-page cap with more history "
+                             "available" % max_pages))
     return items, truncated
 
 
-def payee_transfers(fetch, address, *, usdc=BASE_USDC, max_pages=5, strict=False):
+def _fetch_page(fetch, address, params, retries, sleep):
+    """One page, retried. Raises the LAST exception if every attempt fails.
+
+    Separate from the walk so a retry can never advance `params` past a page it
+    did not actually read -- retrying inside the loop body with the cursor
+    already reassigned would skip history and call the result complete.
+    """
+    last = None
+    for attempt in range(int(retries) + 1):
+        try:
+            return fetch(address, params)
+        except Exception as e:
+            last = e
+            if attempt < int(retries):
+                sleep(PAGE_RETRY_BACKOFF * (2 ** attempt))
+    raise last
+
+
+def payee_transfers(fetch, address, *, usdc=BASE_USDC, max_pages=5, strict=False,
+                    retries=PAGE_RETRIES, sleep=time.sleep):
     """Inbound USDC transfers to `address`, paged + normalized + inbound-only, and
     DEDUPED. Returns **(transfers, truncated)** -- see `collect_paged` for why the
     truncation flag is carried rather than dropped.
@@ -96,7 +147,8 @@ def payee_transfers(fetch, address, *, usdc=BASE_USDC, max_pages=5, strict=False
     A pager that re-serves a page (non-advancing, or Blockscout offset
     overlap as new txs land) would otherwise double-count `fetched`; the store's
     idempotent key protects `ingested` but not the reported transfer count."""
-    raw, truncated = collect_paged(fetch, address, max_pages, strict=strict)
+    raw, truncated = collect_paged(fetch, address, max_pages, strict=strict,
+                                   retries=retries, sleep=sleep)
     inbound = [t for t in extract_usdc_transfers(raw, usdc)
                if t.get("to") and addresses_equal(t["to"], address)]
     seen, out = set(), []
@@ -111,7 +163,8 @@ def payee_transfers(fetch, address, *, usdc=BASE_USDC, max_pages=5, strict=False
     return out, truncated
 
 
-def backfill(store, payees, fetch, *, usdc=BASE_USDC, max_pages=5, strict=False):
+def backfill(store, payees, fetch, *, usdc=BASE_USDC, max_pages=5, strict=False,
+             retries=PAGE_RETRIES, sleep=time.sleep):
     """Ingest inbound USDC for each valid payee. Returns a stage summary
     {payees, fetched, ingested, errors, truncated, per_payee}. Invalid addresses
     are skipped (not silently ingested); a duplicate payee is processed once; a
@@ -136,7 +189,8 @@ def backfill(store, payees, fetch, *, usdc=BASE_USDC, max_pages=5, strict=False)
         seen.add(low)
         try:
             xfers, was_truncated = payee_transfers(fetch, p, usdc=usdc,
-                                                   max_pages=max_pages, strict=strict)
+                                                   max_pages=max_pages, strict=strict,
+                                                   retries=retries, sleep=sleep)
         except IncompleteHistory:
             # strict mode: a capped payee invalidates the RUN, so do not bury it
             # in per_payee alongside ordinary transport errors.
@@ -211,6 +265,13 @@ def main(argv=None):
                    help="pages per payee (~50 transfers/page; default 5)")
     p.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Blockscout base URL")
     p.add_argument("--usdc", default=BASE_USDC, help="USDC contract address")
+    p.add_argument("--retries", type=int, default=PAGE_RETRIES,
+                   help="extra attempts per PAGE on a transport failure "
+                        "(default %d, on top of http_util's own transient "
+                        "retries). The indexer fails ~2%% of page fetches when "
+                        "healthy, which drops ~1 payee in 10 from a 5-page walk; "
+                        "retries take that to ~0. Set 0 to disable."
+                        % PAGE_RETRIES)
     p.add_argument("--fail-on-incomplete", action="store_true",
                    help="exit 1 when the corpus came back incomplete (page cap "
                         "hit, or a payee failed to fetch). OFF by default: a "
@@ -236,7 +297,8 @@ def main(argv=None):
     pager = BlockscoutPager(base_url=args.base_url, usdc=args.usdc)
     try:
         summary = backfill(store, payees, pager.fetch, usdc=args.usdc,
-                           max_pages=args.max_pages, strict=args.strict)
+                           max_pages=args.max_pages, strict=args.strict,
+                           retries=max(0, args.retries))
     except IncompleteHistory as e:
         sys.stderr.write("chain_backfill: INCOMPLETE -- %s\n"
                          "Raise --max-pages or drop --strict; the corpus this "
