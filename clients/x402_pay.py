@@ -48,14 +48,29 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import x402_challenge          # noqa: E402
 import user_agent as ua_policy  # noqa: E402
 
+#: eth-account is the ONE third-party dependency in this repo, and it is needed
+#: only to SIGN. Importing must therefore not be fatal.
+#:
+#: It used to `raise SystemExit(2)` right here, at import time. That does not
+#: fail one test -- it kills the entire `python -m unittest ...` run before a
+#: single test executes, on any machine without the package. Reproduced: with
+#: eth-account unavailable, `unittest test_x402_pay.py test_addresses.py` exited
+#: 2 and test_addresses never ran. Harmless while this file sat outside the
+#: canonical command; fatal the moment it was added to it.
+#:
+#: So the module imports cleanly, `HAVE_ETH_ACCOUNT` records the truth, the
+#: tests skip on it, and the CLI -- the only caller that actually needs to sign
+#: -- refuses with the same message in `main()`.
+NEEDS_ETH_ACCOUNT = ("x402_pay: needs eth-account. Install it:\n"
+                     "    pip install -r clients/requirements.txt\n")
 try:
     from eth_account import Account
     from eth_account.messages import encode_typed_data
+    HAVE_ETH_ACCOUNT = True
 except ImportError:
-    sys.stderr.write(
-        "x402_pay: needs eth-account. Install it:\n"
-        "    pip install -r clients/requirements.txt\n")
-    raise SystemExit(2)
+    Account = None
+    encode_typed_data = None
+    HAVE_ETH_ACCOUNT = False
 
 # Known chain ids + public RPCs (override with --rpc).
 CHAIN_IDS = {"base": 8453, "base-sepolia": 84532}
@@ -290,6 +305,9 @@ def make_pay(signer_pk, network="base", rpc_url=None):
 
 
 def main(argv=None):
+    if not HAVE_ETH_ACCOUNT:
+        sys.stderr.write(NEEDS_ETH_ACCOUNT)
+        return 2
     p = argparse.ArgumentParser(description="Funded-signer x402 test client for Blackwall.")
     p.add_argument("--url", required=True, help="Blackwall forecast endpoint URL")
     p.add_argument("--counterparty", required=True, help="counterparty EVM address to score")
