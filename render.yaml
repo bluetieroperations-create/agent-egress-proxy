@@ -99,6 +99,20 @@ services:
         sync: false
       - key: BLACKWALL_RECEIPT_KEY
         sync: false
+      # DURABLE LEDGER MIRROR (remote_ledger.py). Only needed on a host with NO
+      # persistent disk -- with the disk above, the ledger already survives a
+      # restart and these should stay unset. All three are required together;
+      # setting some but not all is a FATAL config error, because an operator who
+      # set two of three believes their data is durable.
+      # BLACKWALL_LEDGER_KEY must be 32 bytes (64 hex) and must DIFFER from every
+      # other secret here -- load_key refuses a reused one. Lose it and the
+      # mirrored log is unreadable. See docs/DURABLE_LEDGER.md.
+      - key: BLACKWALL_LEDGER_KV_URL
+        sync: false
+      - key: BLACKWALL_LEDGER_KV_TOKEN
+        sync: false
+      - key: BLACKWALL_LEDGER_KEY
+        sync: false
       # Ed25519 seed for INDEPENDENTLY-VERIFIABLE receipts (base64url, 32 bytes):
       #   python -c "import os,base64;print(base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip('='))"
       # Absent -> verdicts carry no `receipt` field, which is honest but means the

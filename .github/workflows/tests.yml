@@ -81,7 +81,8 @@ jobs:
             test_honeypot.py test_mcp_http.py test_payee_syntax.py \
             test_screen_payer.py test_token_decimals.py test_upto_scheme.py \
             test_user_agent.py test_x402_challenge.py test_ci_coverage.py \
-            test_seller_intel.py test_volume_integrity.py test_solana_backfill.py
+            test_seller_intel.py test_volume_integrity.py test_solana_backfill.py \
+            test_billing_preflight.py test_reachability_ledger.py test_seller_portal.py test_seller_report.py
 
       # The engine is stdlib-only and the suite above proves it runs that way.
       # Production installs a NATIVE Ed25519 backend (requirements-signing.txt),

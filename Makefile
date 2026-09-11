@@ -48,7 +48,8 @@ test:
 	  test_traceipt_ingest.py test_traceipt_pull.py test_traceipt_verify.py \
 	  test_transfer_sim.py test_two_stage_signer.py test_upto_scheme.py \
 	  test_user_agent.py test_verdict_anchor.py test_verdict_oracle.py test_x402.py \
-	  test_x402_challenge.py
+	  test_x402_challenge.py \
+	  test_billing_preflight.py test_reachability_ledger.py test_seller_portal.py test_seller_report.py
 
 # Suites needing a third-party package, kept OUT of `make test` so the stdlib
 # guarantee stays honest. remote_ledger requires AES-GCM by design (it refuses to

@@ -40,6 +40,7 @@ has **no pip dependencies**.
 | `BLACKWALL_READINESS_LOCAL` | set to score endpoint readiness **ourselves** from public signals (no third-party call, no query-stream leak). Preferred over `BLACKWALL_READINESS`. |
 | `BLACKWALL_READINESS` | base URL of an EXTERNAL readiness oracle (e.g. `https://ontarioprotocol.com`); folds its grade in, but calls a third party per request and reveals your query stream. Prefer `BLACKWALL_READINESS_LOCAL`. |
 | `BLACKWALL_RECEIPT_KEY` | **secret** for signing receipts + report tokens (set a strong random value) |
+| `BLACKWALL_LEDGER_KV_URL` / `BLACKWALL_LEDGER_KV_TOKEN` / `BLACKWALL_LEDGER_KEY` | **durable ledger mirror** for a host with no persistent disk: every ledger event is AES-256-GCM sealed and mirrored to a Redis-REST KV, and replayed at boot. All three required together (partial config is fatal). `BLACKWALL_LEDGER_KEY` is 32 bytes (64 hex) and must differ from every other secret — **lose it and the log is unreadable**. See `docs/DURABLE_LEDGER.md`. |
 | `BLACKWALL_SIGNING_SEED` | **secret**, base64url 32 bytes — turns on the INDEPENDENTLY-VERIFIABLE Ed25519 receipt. Absent, verdicts carry no `receipt` field and the claim the product advertises is simply off. Must NOT equal `BLACKWALL_RECEIPT_KEY` (the service refuses to boot if they match). Generate: `python -c "import os,base64;print(base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip('='))"` |
 
 > ### ⚠️ Base MAINNET needs the CDP facilitator

@@ -869,6 +869,123 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   claim: AgentCore forwards `payTo` VERBATIM into the signature, so it never asks
   whether the payee is an address at all.
   Tests: `test_payee_syntax.py`),
+  `bounded_server.py` (ADMISSION CONTROL -- a ceiling on requests IN FLIGHT.
+  MEASURED on the live free deploy: at 120 concurrent, 43% of verdicts failed
+  while p50 stayed FLAT at ~2s. The service was not getting slow, it was
+  DROPPING work -- as an edge 502, which a caller cannot distinguish from
+  "broken". `ThreadingHTTPServer` is thread-per-request with no cap.
+  DIAGNOSIS, measured not assumed: `/healthz` served 100/100 concurrent cleanly
+  while verdicts shed 26% at 80, so the saturating resource is per-request
+  COMPUTE, not connections. But the verdict is only 3.4ms server-side (2.05ms
+  profiled locally) -- the real constraint is that a Render free instance is
+  ~0.1 CPU, so 3.4ms of work costs ~34ms of wall clock: ~29/s theoretical,
+  ~14/s measured. NOTHING IN OUR CODE CHANGES THAT ORDER OF MAGNITUDE, and this
+  module does NOT claim to: it adds ZERO throughput. What it changes is the
+  SHAPE of overload -- admitted requests keep their latency, excess ones get an
+  immediate honest `503` + `Retry-After` instead of being timed out into a 502.
+  For a PAID endpoint that is the difference between a caller retrying and a
+  caller concluding the service is down. BoundedSemaphore (not Semaphore) so an
+  unbalanced release raises instead of silently restoring the unbounded
+  behaviour; acquire BEFORE the thread is spawned; release in
+  `process_request_thread`'s finally, the one place that runs for every admitted
+  request. TWO BUGS FOUND BY RUNNING IT, both invisible to the unit tests:
+  (1) 50 concurrent POSTs produced 5 TRANSPORT ERRORS (3 broken pipe, 2 RST) --
+  socketserver's default listen backlog is 5, and closing a socket that still
+  holds unread inbound data makes the kernel RST away the 503 we just wrote;
+  fixed with `request_queue_size=256` + half-close-and-drain, measured 5 -> 0.
+  (2) that drain then ran ON THE ACCEPT-LOOP THREAD, so shedding stalled new
+  accepts by up to 0.5s EACH -- load-shedding as a self-inflicted outage; moved
+  to short-lived capped threads, measured /healthz at 1-2ms while 31 requests
+  shed. HONEST TEST LIMITATION, found by mutation testing and left documented
+  rather than papered over: the backlog and RST fixes are NOT killed by any unit
+  test -- loopback accepts too fast to overflow a backlog and a 200KB body fits
+  in local socket buffers, so neither condition reproduces. Their evidence is
+  the real-path measurement, and `test_every_client_gets_an_HTTP_RESPONSE_not_a_reset`
+  says so in its docstring instead of implying coverage it does not have.
+  PRE-DEPLOY AUDIT found a HIGH one this had introduced: `/healthz` went through
+  the SAME ceiling, so under saturation a health check could be shed with 503 --
+  and a platform that restarts an instance on a failed health check turns
+  load-shedding into an OUTAGE, strictly worse than the 502s being replaced. It
+  measured clean live (25/25 while 34 verdicts shed) purely by timing luck, since
+  verdicts are 3.4ms and permits turned over between probes. Health is now exempt
+  via a NON-BLOCKING MSG_PEEK at bytes the kernel already holds (never waits --
+  blocking on the accept loop is the same mistake as the drain above), and the
+  exemption is ITSELF capped (`MAX_EXEMPT_INFLIGHT`) because an exemption is not
+  a bypass: a flood of GET /healthz would otherwise restore unbounded threads.
+  Verified under REAL saturation: ceiling=1 with 50 flooding threads (2391 shed,
+  2318 served) and 40/40 health probes returned 200.
+  Also fixed: `_refusing` leaked if `Thread.start()` raised, so after
+  MAX_REFUSE_THREADS such failures NO refusal would ever drain again and the
+  RSTs returned permanently.
+  Ceiling via `BLACKWALL_MAX_INFLIGHT` (default 40, the last clean rung
+  measured); always re-measure on the box you actually run on.
+  Tests: `test_bounded_server.py`, 7 tests, 5 of 7 mutations killed (the 2
+  unkillable ones named above)),
+  `remote_ledger.py` (durable ENCRYPTED mirror of the append-only verdict ledger --
+  the answer to "no persistent disk". MEASURED on the live free-tier deploy, not
+  assumed: the SQLite reputation store needs NO durability (its only writer,
+  `reputation_store.ingest_from_chain`, is gated behind `BLACKWALL_INGEST=0`, and
+  five payees' settlement/distinct-payer counts came back byte-identical to the
+  baked 46,031-row seed), while the LEDGER is the only thing that accumulates --
+  and `aggregate_counterparties` folds it into the recency-weighted
+  `recent_dispute_rate` behind `going_bad`. So the problem is not "persist a
+  database", it is "persist an append-only log". Subclasses `EventLedger` and
+  overrides exactly TWO things -- the single write point (`_append`) and boot
+  (`hydrate`) -- so every reader keeps reading the LOCAL file unchanged.
+  AES-256-GCM per record with a random nonce and the envelope version bound as
+  AAD; key DERIVED (`HMAC-SHA256(secret, label)`) not used raw, and `load_key`
+  refuses a secret reused from the signing seed / receipt key. AT-LEAST-ONCE
+  DELIBERATELY: a duplicate row is harmless because settlements dedupe by tx hash
+  (`ledger.py:134`), while a LOST row erases an outcome and a missing dispute
+  makes a bad counterparty look BETTER than it is -- so a transient failure is
+  retried. FAIL-OPEN on the payment path (local write first and unconditional;
+  one serialized worker; failures counted, never raised; a bounded queue with
+  `put_nowait` so the durability feature cannot OOM or block the service it
+  protects). NO PLAINTEXT FALLBACK: AES-GCM is not stdlib and this does not
+  hand-roll one -- if the cipher is unusable the service REFUSES TO BOOT (exit 2).
+  AUDIT FINDING, found by RUNNING it against a genuinely broken `cryptography`
+  install rather than by reading the code: "installed" is not "working" -- a
+  broken native build imports fine then raises `pyo3_runtime.PanicException`,
+  which derives from `BaseException`, so `except Exception` did NOT catch it; it
+  escaped every fail-open guard and surfaced as a 500 on the payment path. Now
+  `_guard` converts it (passing KeyboardInterrupt/SystemExit through) and
+  `ensure_cipher()` proves the cipher round-trips AT BOOT. Restore is BYTE-EXACT
+  (`seal` serializes exactly as `_append`), so an operator can verify with `diff`.
+  Verified end to end against a real HTTP KV: 16 events restored byte-for-byte
+  across a full container wipe, with zero plaintext (not the counterparty, amount,
+  asset, outcome, or even the JSON field names) visible to the provider. SHARP
+  EDGE: lose `BLACKWALL_LEDGER_KEY` and the log is unreadable -- rows under an old
+  key are skipped, counted, and announced in the boot banner.
+  LIVE AUDIT (2026-09-07), found by the mirror writing NOTHING while every log
+  line looked healthy: (1) a Redis-REST store reports a COMMAND-level failure in
+  the response BODY with HTTP 200 -- a READ-ONLY token, NOPERM, WRONGTYPE, a
+  quota refusal -- and `_cmd` read only `result`, so each became `None`; `append`
+  ignores its return, so `_mirror` counted the record MIRRORED. Silent total data
+  loss with the banner still reading ON, which is exactly the failure this module
+  exists to prevent. An `error` body now raises, naming the command and quoting
+  the store. (2) the banner asserted a capability it never tested: `hydrate` only
+  READS, so a read-only token / wrong database / revoked permission all boot
+  clean. `verify_writable()` probes a real write at boot (`SET <list_key>:probe
+  ... EX 60` then `GET` -- a separate self-expiring key, never the log) and the
+  banner reports DEGRADED -- NOT WRITABLE instead of ON. NOT fatal: one probe
+  cannot separate a bad token from a KV outage, and taking the payment path down
+  over a third party is the worse error, so it warns and keeps serving. Verified
+  end to end against a read-only stub (DEGRADED banner + named cause + verdict
+  still served + local row kept) and a healthy one (ON, 3 local == 3 mirrored,
+  probe key absent from the log).
+  PRE-DEPLOY AUDIT, two more: (1) `close()` was implemented, unit-tested and
+  CALLED BY NOTHING -- the wired-and-inert pattern again -- so every record still
+  queued at shutdown was lost, and a REDEPLOY is exactly when that queue is
+  non-empty; and the obvious fix would have been inert too, because it only ran
+  on KeyboardInterrupt while a platform stops a container with SIGTERM. Both
+  wired; verified 12/12 rows mirrored on a real SIGTERM. (2) the KV response was
+  read with an unbounded `r.read()` -- the store is a THIRD PARTY, and a broken
+  or hostile one could be buffered straight into a 512MB box; `http_util.py`
+  caps its reads for exactly this reason and this path did not. Capped at 64MB,
+  with a restraint control so an over-tight cap cannot silently disable
+  mirroring. See
+  `docs/DURABLE_LEDGER.md`. Tests: `test_remote_ledger.py`, 48 tests, 31 mutations
+  verified killed),
   `http_util.py` (hardened JSON GET for the live data path: retry+backoff on
   transient 429/5xx/timeout -- honors `Retry-After`, permanent 4xx not retried --
   plus a read-size cap; transport+clock injectable. Used by `chain_backfill`'s
@@ -1235,7 +1352,8 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_honeypot.py test_billing_preflight.py test_seller_report.py test_seller_portal.py test_reachability_ledger.py test_approvals.py test_token_decimals.py
+ test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_honeypot.py test_billing_preflight.py test_seller_report.py test_seller_portal.py test_reachability_ledger.py test_approvals.py test_token_decimals.py \
+ test_bounded_server.py test_ci_coverage.py test_remote_ledger.py test_seller_intel.py test_solana_backfill.py test_user_agent.py test_volume_integrity.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop

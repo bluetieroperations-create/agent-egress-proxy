@@ -80,6 +80,13 @@ services:
         value: "0.0001"
       - key: BLACKWALL_MAX_FEE_RATIO_BPS
         value: "100"
+      # Split facilitator budgets: /verify is read-only and wants a SHORT bound;
+      # /settle has a side effect, and timing out after a broadcast leaves the
+      # agent paid-but-unserved with a spent nonce, so it keeps a longer one.
+      - key: BLACKWALL_FACILITATOR_TIMEOUT
+        value: "8"
+      - key: BLACKWALL_FACILITATOR_SETTLE_TIMEOUT
+        value: "25"
       # Secrets -- leave blank for a free public smoke test (billing OFF). Set them
       # later (Environment tab) to turn billing on for a real paid round-trip.
       - key: BLACKWALL_PAY_TO
@@ -87,6 +94,32 @@ services:
       - key: BLACKWALL_FACILITATOR
         sync: false
       - key: BLACKWALL_RECEIPT_KEY
+        sync: false
+      # DURABLE LEDGER MIRROR (remote_ledger.py) -- THIS is the variant that needs
+      # it. BLACKWALL_LEDGER above points at /data on a plan with NO disk, so the
+      # ledger resets on every restart, and the ledger is the ONLY thing the
+      # engine accumulates (the SQLite store is read-only in production and comes
+      # from the image). Records are AES-256-GCM sealed before they leave the
+      # process, so the KV provider stores opaque blobs.
+      # All three are required together; setting some but not all is a FATAL
+      # config error. BLACKWALL_LEDGER_KEY is 32 bytes (64 hex) and must DIFFER
+      # from every other secret here.
+      #
+      # !! DO NOT DELETE THESE THREE. They look unreferenced if you grep a branch
+      # that predates remote_ledger.py -- a sibling session did exactly that on
+      # 2026-09-11, found no hits, and recommended removing all three. They are
+      # read ONLY by remote_ledger.py, which is not on `main`.
+      #
+      # !! BLACKWALL_LEDGER_KEY IS UNRECOVERABLE. It is not stored anywhere else.
+      # Delete or rotate it and every already-mirrored record becomes permanently
+      # unreadable -- the rows are skipped, counted, and announced in the boot
+      # banner, but the data is gone. Back it up somewhere that is not the KV
+      # provider. See docs/DURABLE_LEDGER.md.
+      - key: BLACKWALL_LEDGER_KV_URL
+        sync: false
+      - key: BLACKWALL_LEDGER_KV_TOKEN
+        sync: false
+      - key: BLACKWALL_LEDGER_KEY
         sync: false
       # Ed25519 seed for INDEPENDENTLY-VERIFIABLE receipts (base64url, 32 bytes):
       #   python -c "import os,base64;print(base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip('='))"
