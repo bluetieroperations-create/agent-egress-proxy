@@ -481,6 +481,286 @@ class TestCdpAuthenticatedGet(unittest.TestCase):
         self.assertEqual(auth, ["Bearer token"])
 
 
+class TestSettlementAuth(unittest.TestCase):
+    """POST /verify -- folded from the parallel session's cdp_preflight.py.
+
+    /supported is a READ; settlement is a WRITE. A CDP Secret API Key can carry
+    restrictions (the keys already in the operator's project are scoped
+    `Portfolio: Primary / Trade - View`), so a key can pass the capability read
+    and be refused on the path that moves money. That failure is invisible until
+    production, which is the shape of failure this module exists to catch.
+    """
+
+    PAYEE = "0x" + "3e" * 20
+
+    def _post(self, result):
+        def post(url, body, key_id, key_secret, **kw):
+            self.seen = {"url": url, "body": body}
+            if isinstance(result, Exception):
+                raise result
+            return result
+        return post
+
+    def test_no_credentials_is_a_note_not_a_finding(self):
+        # Mutation: warning when there is nothing to prove. A keyless
+        # facilitator has no authentication; reporting that as a problem would
+        # put a permanent WARN on a configuration that is simply different.
+        row = bp.check_settlement_auth(None, None, "base", self.PAYEE)
+        self.assertEqual(row["status"], bp.NOTE)
+
+    def test_a_refused_credential_fails(self):
+        # THE POINT. Mutation: grading it WARN, or not probing at all. A wrong
+        # or wrongly-scoped key is never transient -- it presents in production
+        # as every settlement failing while the service reports healthy.
+        row = bp.check_settlement_auth(
+            "id", "sec", "base", self.PAYEE,
+            authed_post=self._post(bp._CredentialsRejected("HTTP 401")))
+        self.assertEqual(row["status"], bp.FAIL)
+        self.assertIn("refused the credentials", row["detail"])
+
+    def test_it_names_SCOPE_as_the_likely_cause(self):
+        # The actionable half. A key that passes /supported and fails /verify
+        # authenticates fine and lacks the x402 permission -- telling the
+        # operator to re-check the key id would send them the wrong way.
+        row = bp.check_settlement_auth(
+            "id", "sec", "base", self.PAYEE,
+            authed_post=self._post(bp._CredentialsRejected("HTTP 403")))
+        self.assertIn("SCOPED", row["detail"])
+
+    def test_a_validation_error_is_a_PASS(self):
+        # Mutation: treating any 4xx as failure. The payload is a DELIBERATE
+        # throwaway with an empty `payload`, so a structured x402 validation
+        # error is the EXPECTED answer and proves we got past authentication.
+        # Failing on it would reject every correct credential.
+        row = bp.check_settlement_auth("id", "sec", "base", self.PAYEE,
+                                       authed_post=self._post((400, '{"error":"bad"}')))
+        self.assertEqual(row["status"], bp.OK)
+
+    def test_an_unreachable_endpoint_only_warns(self):
+        # Mutation: grading a blip FAIL. Same restraint the keyless path uses.
+        row = bp.check_settlement_auth("id", "sec", "base", self.PAYEE,
+                                       authed_post=self._post(OSError("timeout")))
+        self.assertEqual(row["status"], bp.WARN)
+        self.assertIn("NOT confirmed", row["detail"])
+
+    def test_the_probe_cannot_move_money(self):
+        # Mutation: pointing this at /settle. /verify validates and returns;
+        # only /settle transfers. A preflight that could spend money is not a
+        # preflight. Also pins the empty payload -- a REAL signed authorization
+        # here would be a live payment attempt.
+        bp.check_settlement_auth("id", "sec", "base", self.PAYEE,
+                                 authed_post=self._post((200, "{}")))
+        self.assertTrue(self.seen["url"].endswith("/verify"), self.seen["url"])
+        self.assertNotIn("settle", self.seen["url"])
+        self.assertEqual(self.seen["body"]["paymentPayload"]["payload"], {})
+
+    def test_the_probe_describes_the_payment_we_would_actually_take(self):
+        # Mutation: probing a hardcoded network/payee. Authenticating against a
+        # tuple we do not serve proves nothing about the one we do.
+        bp.check_settlement_auth("id", "sec", "base", self.PAYEE,
+                                 authed_post=self._post((200, "{}")))
+        body = self.seen["body"]
+        self.assertEqual(body["paymentPayload"]["network"], "eip155:8453")
+        # BOTH halves. A first mutation pass changed only the REQUIREMENTS'
+        # network to base-sepolia and survived, because this asserted the
+        # payload's network alone -- and the requirements are the half that
+        # describes what we would actually charge for.
+        req = body["paymentRequirements"]
+        self.assertEqual(req["network"], "eip155:8453")
+        self.assertEqual(req["payTo"], self.PAYEE)
+        self.assertEqual(req["scheme"], "exact")
+
+
+class TestCdpAuthenticatedPost(unittest.TestCase):
+    """The POST status mapping, which decides FAIL vs PASS on /verify.
+
+    Reached by no other test -- they all inject `authed_post` -- so a mutation
+    treating EVERY 4xx as a refused credential survived until this existed. That
+    mutation rejects every correct credential, because the deliberate throwaway
+    payload is SUPPOSED to come back as a 400-class x402 validation error.
+    """
+
+    def _run(self, raiser):
+        import cdp_auth
+        import urllib.request
+        real_open, real_jwt = urllib.request.urlopen, cdp_auth.build_cdp_jwt
+        cdp_auth.build_cdp_jwt = lambda *a, **k: "token"
+        urllib.request.urlopen = raiser
+        try:
+            return bp._cdp_post_json("https://cdp.example/verify", {"a": 1},
+                                     "id", "sec")
+        finally:
+            urllib.request.urlopen = real_open
+            cdp_auth.build_cdp_jwt = real_jwt
+
+    def _http_error(self, code):
+        import urllib.error
+
+        class _E(urllib.error.HTTPError):  # noqa: N801
+            def read(self_inner, *a):
+                return b'{"error":"x402 validation"}'
+
+        def raiser(req, timeout=None):
+            raise _E(req.full_url, code, "no", {}, None)
+        return raiser
+
+    def test_401_and_403_are_refused_credentials(self):
+        for code in (401, 403):
+            with self.assertRaises(bp._CredentialsRejected):
+                self._run(self._http_error(code))
+
+    def test_a_validation_error_is_RETURNED_not_raised(self):
+        # THE MUTATION THAT SURVIVED FIRST: raising on every HTTPError. The
+        # probe sends an empty payload ON PURPOSE, so a 400-class x402
+        # validation error is the expected answer and PROVES auth succeeded.
+        # Raising there reports a perfectly good credential as refused.
+        status, body = self._run(self._http_error(400))
+        self.assertEqual(status, 400)
+        self.assertIn("validation", body)
+
+    def test_a_server_error_is_returned_too(self):
+        # A 500 is the facilitator's problem, not our credential's.
+        status, _ = self._run(self._http_error(503))
+        self.assertEqual(status, 503)
+
+    def test_the_request_is_a_POST_carrying_the_bearer(self):
+        # Mutation: dropping the Authorization header, or the method. CDP 401s
+        # without the header, so every probe would report a refused credential.
+        seen = {}
+
+        class _Resp:
+            status = 200
+
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *a):
+                return False
+
+            def read(self_inner, n):
+                return b"{}"
+
+        def capture(req, timeout=None):
+            seen["method"] = req.get_method()
+            seen.update(req.headers)
+            return _Resp()
+
+        self._run(capture)
+        self.assertEqual(seen["method"], "POST")
+        auth = [v for k, v in seen.items() if k.lower() == "authorization"]
+        self.assertEqual(auth, ["Bearer token"])
+
+
+class TestSupportedVersions(unittest.TestCase):
+    """x402Version discrimination -- the catch `supported_kinds` cannot make.
+
+    `supported_kinds` reduces a /supported doc to (scheme, network) and DROPS
+    `x402Version`. A facilitator settling Base-mainnet `exact` at v1 only, while
+    our 402 advertises v2, matches on that pair and would be graded OK -- and the
+    real paid call is rejected as an unsupported kind. Measured live 2026-09-11
+    on facilitator.x402.rs: all 31 entries state a version (5 v1, 26 v2), so the
+    field is populated in the wild.
+    """
+
+    def _doc(self, *entries):
+        return {"kinds": list(entries)}
+
+    def test_a_version_mismatch_fails(self):
+        # Mutation: ignoring x402Version, which is what the code did before this
+        # was folded in from the parallel session's cdp_preflight.py.
+        doc = self._doc({"scheme": "exact", "network": "eip155:8453",
+                         "x402Version": 1})
+        row = bp._grade_kinds("https://f.example", doc, "exact", "base",
+                              want_version=2)
+        self.assertEqual(row["status"], bp.FAIL)
+        self.assertIn("x402 v1", row["detail"])
+
+    def test_a_matching_version_passes(self):
+        doc = self._doc({"scheme": "exact", "network": "eip155:8453",
+                         "x402Version": 2})
+        row = bp._grade_kinds("https://f.example", doc, "exact", "base",
+                              want_version=2)
+        self.assertEqual(row["status"], bp.OK)
+
+    def test_one_matching_version_among_several_passes(self):
+        # Mutation: requiring the ONLY version to be ours. A facilitator listing
+        # both v1 and v2 for our tuple settles ours fine.
+        doc = self._doc({"scheme": "exact", "network": "eip155:8453",
+                         "x402Version": 1},
+                        {"scheme": "exact", "network": "eip155:8453",
+                         "x402Version": 2})
+        row = bp._grade_kinds("https://f.example", doc, "exact", "base",
+                              want_version=2)
+        self.assertEqual(row["status"], bp.OK)
+
+    def test_an_unstated_version_is_no_opinion_not_a_mismatch(self):
+        # Mutation: treating absent as wrong. Many facilitators omit the field
+        # entirely; failing them for it would reject correct configurations --
+        # the fail-open discipline every gate in this repo follows.
+        doc = self._doc({"scheme": "exact", "network": "eip155:8453"})
+        row = bp._grade_kinds("https://f.example", doc, "exact", "base",
+                              want_version=2)
+        self.assertEqual(row["status"], bp.OK)
+        self.assertEqual(row["versions"], [])
+
+    def test_versions_of_a_DIFFERENT_kind_are_not_consulted(self):
+        # Mutation: collecting every version in the document. A v1 entry for a
+        # different network -- or, the case that survived a first mutation pass,
+        # a different SCHEME on the SAME network -- says nothing about our
+        # tuple, and counting it would fail a facilitator that supports us
+        # perfectly. Both filters are exercised, because dropping either one
+        # alone must be caught.
+        doc = self._doc({"scheme": "exact", "network": "eip155:8453",
+                         "x402Version": 2},
+                        {"scheme": "exact", "network": "solana-devnet",
+                         "x402Version": 1},
+                        {"scheme": "upto", "network": "eip155:8453",
+                         "x402Version": 1})
+        self.assertEqual(bp.kind_versions(doc, "exact", "eip155:8453"), {2})
+        row = bp._grade_kinds("https://f.example", doc, "exact", "base",
+                              want_version=2)
+        self.assertEqual(row["status"], bp.OK)
+
+    def test_the_caip2_spelling_is_consulted_before_the_legacy_one(self):
+        # MEASURED LIVE 2026-09-11 and nearly a false finding: facilitator.x402.rs
+        # lists the SAME chain under BOTH spellings at DIFFERENT versions --
+        # `exact/base-sepolia` at v1 and `exact/eip155:84532` at v2. We advertise
+        # the CAIP-2 id, so the versions stated for THAT spelling are the ones
+        # that bind; reading the legacy row would fail a facilitator that
+        # genuinely settles what we quote.
+        #
+        # Mutation: iterating (network, caip2) instead of (caip2, network), or
+        # merging versions across both spellings -- which is what the parallel
+        # session's `_is_base_mainnet` does, and why this fold is not a copy.
+        doc = self._doc({"scheme": "exact", "network": "base-sepolia",
+                         "x402Version": 1},
+                        {"scheme": "exact", "network": "eip155:84532",
+                         "x402Version": 2})
+        row = bp._grade_kinds("https://f.example", doc, "exact", "base-sepolia",
+                              want_version=2)
+        self.assertEqual(row["status"], bp.OK)
+        self.assertEqual(row["versions"], [2])
+
+    def test_a_legacy_only_listing_at_the_wrong_version_still_fails(self):
+        # The other half: no CAIP-2 twin to rescue it. Verified live against
+        # facilitator.x402.rs on `solana-devnet` (exact/v1 only), which the
+        # shipped check FAILs.
+        doc = self._doc({"scheme": "exact", "network": "solana-devnet",
+                         "x402Version": 1})
+        row = bp._grade_kinds("https://f.example", doc, "exact", "solana-devnet",
+                              want_version=2)
+        self.assertEqual(row["status"], bp.FAIL)
+
+    def test_a_non_integer_version_is_ignored(self):
+        # Junk from a third party must not become a mismatch -- the same
+        # tolerance supported_kinds documents.
+        doc = self._doc({"scheme": "exact", "network": "eip155:8453",
+                         "x402Version": "two"})
+        self.assertEqual(bp.kind_versions(doc, "exact", "eip155:8453"), set())
+        self.assertEqual(bp._grade_kinds("https://f.example", doc, "exact",
+                                         "base", want_version=2)["status"], bp.OK)
+
+
 class TestSettlementCost(unittest.TestCase):
     """Does the fee cover what it COSTS to collect the fee?
 
@@ -770,7 +1050,7 @@ class TestPreflight(unittest.TestCase):
         self.assertEqual(set(names), {"payee", "network", "asset", "pricing",
                                       "challenge", "revenue", "proportionality",
                                       "settlement_cost", "facilitator",
-                                      "self_reported_amount"})
+                                      "settlement_auth", "self_reported_amount"})
 
     def test_status_is_the_worst_check(self):
         def fetch(url, **kw):

@@ -449,7 +449,7 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   well-formed to us and UNREADABLE to a real client (in which case we are not
   charging, we are refusing); a facilitator that answers and does not settle our
   network; and a pricing policy that is perfectly valid and collects NOTHING, which
-  looks exactly like success until the month ends. TEN checks, four of which exist
+  looks exactly like success until the month ends. ELEVEN checks, four of which exist
   nowhere else. (1) CHALLENGE ROUND-TRIP -- emit the 402 we would serve and re-parse
   it with our OWN `x402_challenge.parse_challenge`, through BOTH carriers
   independently (the body path would otherwise shadow the header path, and 86 of 195
@@ -526,10 +526,36 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `--settlement-cost` rather than treated as a constant of nature. Two mutations
   survived the first pass and both were the wired-and-inert pattern in miniature:
   the flag could be dropped from the assembly leaving it parsed, documented and
-  INERT, and the mean shortfall could be hardcoded to zero. Pure
+  INERT, and the mean shortfall could be hardcoded to zero. (11) SETTLEMENT AUTH, folded 2026-09-11 from the PARALLEL SESSION's
+  `cdp_preflight.py` (branch `claude/blackwall-x402-integration-j3rdab`) -- both
+  sessions built a CDP preflight without knowing about the other, and that one
+  probed `POST /verify` as well as `GET /supported`. NOT redundant: `/supported`
+  is a READ and settlement is a WRITE, and a CDP Secret API Key carries
+  RESTRICTIONS (the keys already in the operator's project are scoped `Portfolio:
+  Primary / Trade - View`), so a key can pass the capability read and be refused
+  on the path that moves money -- invisible until production, the exact shape
+  this module exists to catch. NO MONEY MOVES: only `/settle` transfers, and the
+  payload is a deliberate throwaway with an empty `payload{}`, so a structured
+  x402 validation error is the EXPECTED answer and a PASS. 401/403 -> FAIL and
+  names SCOPE as the likely cause when `/supported` passed; anything else -> OK;
+  unreachable -> WARN; no creds -> NOTE. The same fold also brought the
+  x402Version DISCRIMINATION `supported_kinds` structurally cannot make -- it
+  reduces to (scheme, network) and DROPS the version, so a facilitator settling
+  Base-mainnet `exact` at v1 only, while our 402 advertises v2, matched the pair
+  and graded OK while the real paid call would be rejected as an unsupported
+  kind. `kind_versions` reads versions for ONE (scheme, network); an EMPTY set is
+  no opinion, never a mismatch, because many facilitators omit the field.
+  MEASURED LIVE on facilitator.x402.rs: all 31 entries state a version (5 v1, 26
+  v2), and the gate FAILs `solana-devnet` (exact/v1 only) end to end. A NUANCE
+  that nearly became a false finding and is now pinned by test: that facilitator
+  lists the SAME chain under BOTH spellings at DIFFERENT versions --
+  `exact/base-sepolia` v1 AND `exact/eip155:84532` v2 -- so the CAIP-2 spelling
+  must be consulted FIRST and its versions read alone. The parallel session's
+  `_is_base_mainnet` merges both spellings, which is why this is a fold rather
+  than a copy. Pure
   core; network and corpus injected; exits 0/1/2 (ready / a person should look / it
   would not work) so a scheduled run is actionable. Tests:
-  `test_billing_preflight.py`, 96 tests, 49 mutations verified killed),
+  `test_billing_preflight.py`, 115 tests, 63 mutations verified killed),
   `seller_report.py` (the SELLER side -- "why agents are not paying you". Every
   other gate here serves the BUYER; this is the first thing that serves the party
   being screened, and it needs no new data: one payee or host, the committed

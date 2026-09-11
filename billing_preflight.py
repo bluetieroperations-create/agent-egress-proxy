@@ -370,6 +370,40 @@ def supported_kinds(doc):
     return kinds
 
 
+def kind_versions(doc, scheme, network):
+    """x402 protocol versions a /supported doc states for ONE (scheme, network).
+
+    FOLDED FROM the parallel session's `cdp_preflight.py`, which caught what
+    `supported_kinds` structurally cannot: it reduces to (scheme, network) and
+    DROPS `x402Version`. A facilitator that settles Base-mainnet `exact` at v1
+    only, while our 402 advertises v2, matches on that pair and is graded OK --
+    and the real paid call is then rejected as an unsupported kind. Measured
+    live 2026-09-11 on facilitator.x402.rs: all 31 entries state a version,
+    5 at v1 and 26 at v2, so this field is populated in the wild rather than
+    theoretical.
+
+    Returns the stated versions, or an EMPTY set when the document states none.
+    Empty means "no opinion", never "mismatch" -- absent is not wrong, and a
+    facilitator that omits the field must not be failed for it.
+    """
+    versions = set()
+    if not isinstance(doc, dict):
+        return versions
+    for entry in (doc.get("kinds") or []):
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("scheme") != scheme:
+            continue
+        if _safe_text(entry.get("network"), 40) != _safe_text(network, 40):
+            continue
+        stated = entry.get("x402Version")
+        if isinstance(stated, int):
+            versions.add(stated)
+        if len(versions) >= 20:
+            break
+    return versions
+
+
 def check_facilitator(url, scheme, network, fetch=None,
                       cdp_id=None, cdp_secret=None, authed_fetch=None):
     """Does the facilitator answer, and does it support what we QUOTE?
@@ -443,11 +477,101 @@ def check_facilitator(url, scheme, network, fetch=None,
     return _grade_kinds(url, doc, scheme, network)
 
 
-def _grade_kinds(url, doc, scheme, network):
+def check_settlement_auth(cdp_id, cdp_secret, network, pay_to, price_atomic=10000,
+                          authed_post=None):
+    """Will the credential be accepted on the endpoint that SETTLES?
+
+    FOLDED FROM the parallel session's `cdp_preflight.py` (branch
+    `claude/blackwall-x402-integration-j3rdab`), which probed `POST /verify` as
+    well as `GET /supported`. Both sessions built a CDP preflight without
+    knowing about the other; this is the half theirs had and this module did not.
+
+    WHY A SECOND PROBE IS NOT REDUNDANT. `/supported` is a READ. Settlement is a
+    WRITE, and a CDP Secret API Key can carry restrictions -- the keys already in
+    the operator's project are scoped `Portfolio: Primary / Trade - View`. A key
+    that reads the capability list and is refused on the settlement path passes
+    the `/supported` check and fails in production, which is the precise shape of
+    failure this whole module exists to catch. So the two are graded together:
+    `/supported` proves CDP settles what we QUOTE, this proves CDP accepts WHO
+    WE ARE on the path that moves money.
+
+    NO MONEY MOVES. Only `/settle` transfers; `/verify` validates a payload and
+    returns. The payload here is a deliberate throwaway with an empty `payload`
+    object, so the expected answer is a structured x402 validation error -- and
+    that is a PASS, because it means we got past authentication. The only failing
+    answers are 401 and 403.
+
+    Graded: 401/403 -> FAIL (never transient; no waiting fixes a wrong key).
+    Anything else -> OK. Unreachable -> WARN, like every other network blip here.
+    No CDP credentials -> NOTE, because there is no authentication to prove.
+    """
+    if not (cdp_id and cdp_secret):
+        return _check("settlement_auth", NOTE,
+                      "no CDP credentials -- there is no facilitator "
+                      "authentication to prove")
+    from x402 import (CDP_FACILITATOR_URL, DEFAULT_SCHEME, X402_VERSION,
+                      build_requirements, to_caip2)
+
+    post = _cdp_post_json if authed_post is None else authed_post
+    body = {
+        "x402Version": X402_VERSION,
+        "paymentPayload": {"x402Version": X402_VERSION,
+                           "scheme": DEFAULT_SCHEME,
+                           "network": to_caip2(network),
+                           "payload": {}},
+        "paymentRequirements": build_requirements(
+            price_atomic, pay_to, PREFLIGHT_RESOURCE, network=network),
+    }
+    try:
+        status, _ = post(CDP_FACILITATOR_URL.rstrip("/") + "/verify",
+                         body, cdp_id, cdp_secret)
+    except _CredentialsRejected as e:
+        return _check("settlement_auth", FAIL,
+                      "CDP refused the credentials on /verify (%s) -- the "
+                      "settlement path would reject every payment. If "
+                      "/supported passed, the key authenticates but is not "
+                      "SCOPED for x402; check its API restrictions."
+                      % _safe_text(e, 120))
+    except Exception as e:
+        return _check("settlement_auth", WARN,
+                      "could not reach CDP /verify (%s) -- could be transient; "
+                      "the credential was NOT confirmed on the settlement path"
+                      % _safe_text(e, 120))
+    return _check("settlement_auth", OK,
+                  "CDP accepted the credentials on /verify (HTTP %s) -- the "
+                  "settlement path authenticates; no funds moved" % status,
+                  http_status=status)
+
+
+def _cdp_post_json(url, body, key_id, key_secret, timeout=20.0):
+    """POST an authenticated CDP endpoint. Returns (status, text).
+
+    A 4xx that is NOT 401/403 is RETURNED, not raised: an x402 validation error
+    on a deliberately empty payload is the expected answer and proves auth
+    succeeded. Only a rejected credential raises.
+    """
+    from cdp_auth import build_cdp_jwt
+
+    token = build_cdp_jwt(key_id, key_secret, "POST", url)
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST", headers={
+        "Content-Type": "application/json", "Accept": "application/json",
+        "Authorization": "Bearer " + token})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read(1 << 20).decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            raise _CredentialsRejected("HTTP %s" % e.code)
+        return e.code, e.read(1 << 20).decode("utf-8", "replace")
+
+
+def _grade_kinds(url, doc, scheme, network, want_version=None):
     """Grade a /supported document. Shared by the keyless and the CDP path so
     the two cannot drift on what "supports what we quote" means."""
-    from x402 import to_caip2
+    from x402 import to_caip2, X402_VERSION
 
+    want_version = X402_VERSION if want_version is None else want_version
     caip2 = to_caip2(network)
     kinds = supported_kinds(doc)
     if not kinds:
@@ -458,10 +582,27 @@ def _grade_kinds(url, doc, scheme, network):
     # A facilitator may list either spelling of the network.
     for candidate in (caip2, network):
         if (scheme, str(candidate)) in kinds:
+            listed = sorted("%s/%s" % k for k in kinds)
+            stated = kind_versions(doc, scheme, candidate)
+            if stated and want_version not in stated:
+                # The (scheme, network) pair matches and the PROTOCOL VERSION
+                # does not. A real paid call is an unsupported-kind rejection,
+                # which is the same outcome as an unlisted network and graded
+                # the same way. Only when versions are actually STATED -- an
+                # empty set is no opinion, not a mismatch.
+                return _check("facilitator", FAIL,
+                              "facilitator %s supports %s on %s but only at "
+                              "x402 v%s, and we advertise v%s -- every payment "
+                              "would be rejected as an unsupported kind"
+                              % (_safe_text(url), scheme, candidate,
+                                 "/v".join(str(v) for v in sorted(stated)),
+                                 want_version),
+                              kinds=listed, versions=sorted(stated))
             return _check("facilitator", OK,
-                          "facilitator %s supports %s on %s"
-                          % (_safe_text(url), scheme, candidate),
-                          kinds=sorted("%s/%s" % k for k in kinds))
+                          "facilitator %s supports %s on %s%s"
+                          % (_safe_text(url), scheme, candidate,
+                             " at x402 v%s" % want_version if stated else ""),
+                          kinds=listed, versions=sorted(stated))
     listed = sorted("%s/%s" % k for k in kinds)
     shown = ", ".join(listed[:MAX_KINDS_SHOWN])
     if len(listed) > MAX_KINDS_SHOWN:
@@ -831,7 +972,7 @@ def preflight(pay_to, facilitator=None, network="base", asset=None,
               price="0.001", value_pricing=False, knobs=None,
               corpus=None, fetch=None, offline=False,
               cdp_id=None, cdp_secret=None, corpus_path=None,
-              settlement_cost=SETTLEMENT_COST):
+              settlement_cost=SETTLEMENT_COST, authed_post=None):
     """Run every check and return the report. No side effects beyond `fetch`."""
     from x402 import (BASE_SEPOLIA_USDC, BASE_USDC, BillingConfig, BillingGate,
                       DEFAULT_SCHEME, PricingPolicy, to_caip2)
@@ -894,10 +1035,17 @@ def preflight(pay_to, facilitator=None, network="base", asset=None,
     if offline:
         checks.append(_check("facilitator", NOTE,
                              "--offline: the facilitator was not probed"))
+        checks.append(_check("settlement_auth", NOTE,
+                             "--offline: the credential was not probed"))
     else:
         checks.append(check_facilitator(facilitator, DEFAULT_SCHEME, network,
                                         fetch=fetch, cdp_id=cdp_id,
                                         cdp_secret=cdp_secret))
+        # /supported proves CDP settles what we QUOTE; /verify proves it accepts
+        # WHO WE ARE on the path that moves money. A restricted key passes the
+        # first and fails the second.
+        checks.append(check_settlement_auth(cdp_id, cdp_secret, network, pay_to,
+                                            authed_post=authed_post))
 
     return {"status": worst(c["status"] for c in checks),
             "checks": checks, "pay_to": pay_to, "asset": asset,
