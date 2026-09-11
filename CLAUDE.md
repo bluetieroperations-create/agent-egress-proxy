@@ -607,6 +607,24 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   core; network and corpus injected; exits 0/1/2 (ready / a person should look / it
   would not work) so a scheduled run is actionable. Tests:
   `test_billing_preflight.py`, 115 tests, 63 mutations verified killed),
+  THE PAYOUT ADDRESS is `BLACKWALL_PAY_TO`, dashboard-set (`sync: false` in both
+  blueprints) and deliberately NOT in code -- a hardcoded payout is a wrong
+  payout waiting to ship. Confirmed by the operator 2026-09-11 and by the live
+  `/.well-known/x402`. `cdp_preflight.py` is DELETED: its unique half (the
+  `POST /verify` probe) is folded into `check_settlement_auth` above and tested
+  there, nothing imported it, and it DEFAULTED its payee to
+  `0x3ec5e0ec...9004e1` under the comment "defaults to the live one" -- which is
+  TRACEIPT's payTo. So it proved a CDP key could pay a DIFFERENT product's
+  address and reported success; two cross-session handoffs then repeated that
+  address as Blackwall's "real payout address", which is how a wrong default
+  becomes a wrong belief. `cdp_verify_probe.py` now has NO default payee and
+  refuses without one, and it `raise SystemExit(main())` -- it returned 2 on a
+  refusal and discarded it, so "I declined to probe" exited 0, indistinguishable
+  from "the credential verified". Found by running it, not by reading it.
+  `billing_preflight.py` was never affected: it reads `BLACKWALL_PAY_TO` from the
+  environment and hardcodes nothing, so the other session's "passes every check"
+  was a config problem in their shell, not a defect in the module.
+
   `seller_report.py` (the SELLER side -- "why agents are not paying you". Every
   other gate here serves the BUYER; this is the first thing that serves the party
   being screened, and it needs no new data: one payee or host, the committed
