@@ -449,7 +449,7 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   well-formed to us and UNREADABLE to a real client (in which case we are not
   charging, we are refusing); a facilitator that answers and does not settle our
   network; and a pricing policy that is perfectly valid and collects NOTHING, which
-  looks exactly like success until the month ends. Nine checks, three of which exist
+  looks exactly like success until the month ends. TEN checks, four of which exist
   nowhere else. (1) CHALLENGE ROUND-TRIP -- emit the 402 we would serve and re-parse
   it with our OWN `x402_challenge.parse_challenge`, through BOTH carriers
   independently (the body path would otherwise shadow the header path, and 86 of 195
@@ -502,10 +502,34 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   GET (no header and a garbage bearer both 401), so a 401 with a properly minted
   JWT really does mean refused -- a POST-only endpoint would answer 405, which
   routes to WARN. THREE TESTS encoded the old behaviour and were replaced, one
-  of them (`test_cdp_does_not_probe_the_network`) PINNING the skip. Pure
+  of them (`test_cdp_does_not_probe_the_network`) PINNING the skip. (10) SETTLEMENT COST, added 2026-09-11 -- every other money check here asks
+  what we CHARGE; none asked what charging COSTS. Collecting an x402 payment
+  means the facilitator broadcasts an onchain settlement, and CDP prices that at
+  $0.001 past a free first 1,000/month. A fee below it is not thin margin, it is
+  a payment we lose money by accepting, and it looks identical to revenue in
+  every report until the invoice arrives. MEASURED on the committed corpus at the
+  shipped value pricing: 41 of 46 payees billable at the CHEAPEST end of the
+  price hull (89.1%) and 133 of 164 at the dearest (81.1%) are billed below cost,
+  mean shortfall $0.000882. An earlier note said "140 of 164" -- that took the
+  first billable of each payee's min/max and so belonged to NEITHER end of the
+  hull; both real ends are now reported, and the detail line names which one it
+  measured. Break-even lands at $0.9995, not the $1.00 the bps arithmetic gives,
+  because the real fee function ROUNDS -- which is why `_breakeven_amount`
+  BISECTS that function rather than inverting the formula, an inversion being a
+  second implementation of pricing free to drift from the one that quotes. Graded
+  WARN and NEVER FAIL: billing still works -- the 402 is valid, the payer pays,
+  the money arrives -- and selling below cost is a decision an operator may make
+  deliberately (a loss-leader buying the verdict->outcome history this engine
+  exists to accumulate). The real fix at volume is CDP's `batch-settlement`
+  scheme, which collapses the per-payment cost instead of raising the price.
+  `SETTLEMENT_COST` is a THIRD PARTY'S price, so it is DATED and overridable via
+  `--settlement-cost` rather than treated as a constant of nature. Two mutations
+  survived the first pass and both were the wired-and-inert pattern in miniature:
+  the flag could be dropped from the assembly leaving it parsed, documented and
+  INERT, and the mean shortfall could be hardcoded to zero. Pure
   core; network and corpus injected; exits 0/1/2 (ready / a person should look / it
   would not work) so a scheduled run is actionable. Tests:
-  `test_billing_preflight.py`, 83 tests, 36 mutations verified killed),
+  `test_billing_preflight.py`, 96 tests, 49 mutations verified killed),
   `seller_report.py` (the SELLER side -- "why agents are not paying you". Every
   other gate here serves the BUYER; this is the first thing that serves the party
   being screened, and it needs no new data: one payee or host, the committed

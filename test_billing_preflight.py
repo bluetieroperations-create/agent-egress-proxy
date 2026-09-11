@@ -481,6 +481,152 @@ class TestCdpAuthenticatedGet(unittest.TestCase):
         self.assertEqual(auth, ["Bearer token"])
 
 
+class TestSettlementCost(unittest.TestCase):
+    """Does the fee cover what it COSTS to collect the fee?
+
+    Every other money check here asks what we charge; none asked what charging
+    costs. Collecting an x402 payment means the facilitator broadcasts an
+    onchain settlement, and past the free tier that settlement has a price.
+    """
+
+    # 10 bps of the amount, floored at $0.0001, free at or below $0.01 --
+    # the shipped value-pricing config, in atomic units like the real one.
+    @staticmethod
+    def _fee(amount):
+        amt = bp.Decimal(str(amount))
+        if amt <= bp.Decimal("0.01"):
+            return 0
+        fee = max(bp.Decimal("0.0001"), amt * bp.Decimal(10) / bp.Decimal(10000))
+        # ROUNDS, like the real BillingGate._price_for -- which is exactly why
+        # break-even lands at $0.9995 rather than the $1.00 the bps arithmetic
+        # gives, and why _breakeven_amount bisects the function instead of
+        # inverting the formula. A truncating fixture here would hide that.
+        return int((fee * 1000000).quantize(bp.Decimal("1")))
+
+    def _points(self, *amounts):
+        return [("p%d" % i, bp.Decimal(str(a)), bp.Decimal(str(a)))
+                for i, a in enumerate(amounts)]
+
+    def test_a_fee_below_the_settlement_cost_warns(self):
+        # Mutation: comparing fee > settle, or skipping the comparison. A $0.10
+        # payment bills the $0.0001 floor and costs $0.001 to settle -- we lose
+        # ten times what we collect, and it looks like revenue in every report.
+        row = bp.check_settlement_cost(self._fee, self._points("0.10"))
+        self.assertEqual(row["status"], bp.WARN)
+        self.assertEqual(row["below_settlement"], 1)
+
+    def test_it_never_fails_only_warns(self):
+        # Mutation: grading this FAIL. FAIL means "this would not work" and
+        # exits 2. Billing WORKS -- the 402 is valid, the payer pays, the money
+        # arrives. Selling below cost is a decision an operator may make
+        # deliberately, so it must not block a deploy.
+        row = bp.check_settlement_cost(self._fee, self._points(*["0.02"] * 50))
+        self.assertNotEqual(row["status"], bp.FAIL)
+        self.assertEqual(row["status"], bp.WARN)
+
+    def test_a_fee_above_the_settlement_cost_is_ok(self):
+        # Mutation: warning unconditionally. 10 bps of $50 is $0.05, fifty
+        # times the settlement cost.
+        row = bp.check_settlement_cost(self._fee, self._points("50.00"))
+        self.assertEqual(row["status"], bp.OK)
+        self.assertEqual(row["below_settlement"], 0)
+
+    def test_the_free_path_is_not_counted_as_a_loss(self):
+        # Mutation: counting a zero fee as "below settlement". A payment we do
+        # not bill is never settled either, so it costs nothing -- counting it
+        # would invent a loss on the entire free tier and make the healthiest
+        # possible config look the worst.
+        row = bp.check_settlement_cost(self._fee, self._points("0.005", "0.001"))
+        self.assertEqual(row["status"], bp.OK)
+        self.assertEqual(row["billable"], 0)
+
+    def test_the_boundary_is_inclusive(self):
+        # Mutation: `fee <= settle`. A fee EXACTLY equal to the settlement cost
+        # breaks even; it is not a loss, and calling it one would flag a config
+        # that is precisely at the line the check exists to find.
+        fee_exact = lambda amount: 1000          # $0.001, == settle
+        row = bp.check_settlement_cost(fee_exact, self._points("1.00"))
+        self.assertEqual(row["status"], bp.OK)
+
+    def test_the_settlement_cost_is_overridable(self):
+        # Mutation: hardcoding CDP's price. It is a THIRD PARTY'S number, dated
+        # 2026-09-08; when it moves, a hardcoded check mis-measures silently.
+        pts = self._points("50.00")
+        self.assertEqual(bp.check_settlement_cost(self._fee, pts)["status"], bp.OK)
+        expensive = bp.check_settlement_cost(self._fee, pts, settle="1.00")
+        self.assertEqual(expensive["status"], bp.WARN)
+
+    def test_a_missing_corpus_is_not_a_finding_about_the_config(self):
+        # Mutation: reporting OK on no data, which claims a measurement that
+        # never happened -- the failure mode seller_report's rule 1 exists for.
+        row = bp.check_settlement_cost(self._fee, [])
+        self.assertEqual(row["status"], bp.WARN)
+        self.assertIn("NOT measured", row["detail"])
+
+    def test_the_detail_names_which_end_of_the_hull_was_measured(self):
+        # The corpus stores a price HULL, not a list, and `check_revenue`
+        # reports an interval over both ends. A bare "41 of 46" next to
+        # "46-164" reads as a contradiction unless it says which end it is.
+        row = bp.check_settlement_cost(self._fee, self._points("0.10"))
+        self.assertIn("CHEAPEST", row["detail"])
+
+    def test_a_fee_just_under_the_cost_is_still_a_loss(self):
+        # Mutation: `fee < settle / 2`, or any threshold softer than the real
+        # cost. 10 bps of $0.60 is $0.0006 -- comfortably above half the
+        # settlement cost and still below it, so it loses money. A softened
+        # threshold under-reports exactly the band nearest break-even, which is
+        # where most of the corpus actually sits.
+        row = bp.check_settlement_cost(self._fee, self._points("0.60"))
+        self.assertEqual(row["status"], bp.WARN)
+        self.assertEqual(row["below_settlement"], 1)
+        self.assertEqual(bp.Decimal(row["avg_shortfall"]),
+                         bp.Decimal("0.000400"))
+
+    def test_the_mean_shortfall_is_actually_computed(self):
+        # Mutation: reporting a constant "0". The shortfall is the number an
+        # operator reads to decide whether this matters at all -- a hardcoded
+        # zero would make every below-cost config look free.
+        row = bp.check_settlement_cost(self._fee, self._points("0.10"))
+        # $0.10 bills the $0.0001 floor against a $0.001 settlement.
+        self.assertEqual(bp.Decimal(row["avg_shortfall"]),
+                         bp.Decimal("0.000900"))
+
+    def test_preflight_passes_the_configured_cost_through(self):
+        # Mutation: dropping `settle=settlement_cost` from the assembly, which
+        # leaves --settlement-cost parsed, documented and INERT while the check
+        # silently uses CDP's default. The wired-and-inert pattern -- the exact
+        # defect class this repo has now hit five times, and the reason the
+        # check exists at all.
+        rows = corpus(("0.50", "0.50"))
+        cheap = bp.preflight(GOOD, corpus=rows, offline=True,
+                             settlement_cost="0.0000001")
+        dear = bp.preflight(GOOD, corpus=rows, offline=True,
+                            settlement_cost="100")
+
+        def row_of(report):
+            return [c for c in report["checks"]
+                    if c["name"] == "settlement_cost"][0]
+
+        self.assertEqual(row_of(cheap)["status"], bp.OK)
+        self.assertEqual(row_of(dear)["status"], bp.WARN)
+
+    def test_break_even_is_found_from_the_real_fee_function(self):
+        # Mutation: inverting the bps arithmetic instead of bisecting. The real
+        # function ROUNDS, so break-even is 0.9995 rather than the 1.00 the
+        # arithmetic gives -- and an inversion would be a SECOND implementation
+        # of pricing, free to drift from the one that actually quotes.
+        row = bp.check_settlement_cost(self._fee, self._points("0.10"))
+        self.assertEqual(bp.Decimal(row["breakeven"]), bp.Decimal("0.9995"))
+
+    def test_break_even_is_none_when_no_payment_could_ever_cover_it(self):
+        # Mutation: returning the ceiling, which would assert a break-even that
+        # does not exist and read as "just charge more".
+        row = bp.check_settlement_cost(self._fee, self._points("50.00"),
+                                       settle="10000")
+        self.assertIsNone(row["breakeven"])
+        self.assertNotIn("break-even is", row["detail"])
+
+
 class TestPricePoints(unittest.TestCase):
     def test_inverted_bounds_are_normalized(self):
         # Mutation: trusting the order. A row whose max < min would make the
@@ -623,7 +769,8 @@ class TestPreflight(unittest.TestCase):
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(set(names), {"payee", "network", "asset", "pricing",
                                       "challenge", "revenue", "proportionality",
-                                      "facilitator", "self_reported_amount"})
+                                      "settlement_cost", "facilitator",
+                                      "self_reported_amount"})
 
     def test_status_is_the_worst_check(self):
         def fetch(url, **kw):
@@ -763,7 +910,16 @@ class TestEnvDefaults(unittest.TestCase):
         text = out.getvalue()
         self.assertIn("VALUE pricing", text)
         self.assertIn("free at or below 0.01", text)
-        self.assertEqual(code, 0, text)
+        # This test is about the CLI READING THE ENVIRONMENT, and it asserted
+        # exit 0 -- which conflated "the env was read" with "the config is
+        # perfect". Those came apart when the settlement-cost check landed: the
+        # env this fixture sets (10 bps, $0.0001 floor) genuinely bills below
+        # what CDP charges to settle, so exit 1 is the CORRECT answer and the
+        # old assertion was pinning a config opinion it never meant to make.
+        # What must hold is that nothing FAILED (exit 2) -- a well-formed config
+        # is still deployable -- and that the values came from the environment.
+        self.assertIn(code, (0, 1), text)
+        self.assertNotEqual(code, 2, text)
 
 
 class TestCommittedCorpus(unittest.TestCase):

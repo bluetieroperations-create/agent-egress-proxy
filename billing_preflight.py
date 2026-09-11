@@ -637,6 +637,122 @@ def check_proportionality(fee_atomic, points, bound_bps=100, decimals=6,
                   % (bound_bps, median_low * 100), **stats)
 
 
+# Coinbase CDP facilitator pricing, read from their docs on 2026-09-08
+# (docs.cdp.coinbase.com/x402/seller/facilitator): "The first 1,000 onchain
+# Facilitator transactions each month are free, then each additional onchain
+# transaction costs $0.001." Verification is free; only SETTLEMENT costs.
+#
+# A THIRD PARTY'S PRICE, so it is dated and overridable rather than treated as a
+# constant of nature -- when it moves, the number here is wrong and the check
+# would quietly mis-measure. `--settlement-cost` overrides it.
+SETTLEMENT_COST = Decimal("0.001")
+SETTLEMENT_FREE_TIER = 1000
+
+
+def check_settlement_cost(fee_atomic, points, settle=SETTLEMENT_COST,
+                          decimals=6, free_tier=SETTLEMENT_FREE_TIER,
+                          source=None):
+    """Does the fee cover what it COSTS to collect the fee?
+
+    THE GAP THIS CLOSES: every other money check here asks what we charge.
+    None asked what charging COSTS. Collecting an x402 payment means the
+    facilitator broadcasts an onchain settlement, and past the free tier that
+    settlement has a price. A fee below it is not thin margin -- it is a
+    payment we lose money by accepting, and it looks identical to revenue in
+    every report until the invoice arrives.
+
+    MEASURED on the committed corpus at the shipped value pricing (10 bps,
+    min fee $0.0001) against CDP's $0.001: 41 of 46 billable payees (89.1%)
+    at the cheapest end of the hull, 133 of 164 (81.1%) at the dearest, at a
+    mean shortfall of $0.000882. Break-even lands at $0.9995 rather than the
+    $1.00 the arithmetic suggests (10 bps of $1 is exactly $0.001) because the
+    real fee function ROUNDS -- which is why `_breakeven_amount` bisects that
+    function instead of inverting the bps. An earlier note here said "140 of
+    164"; that figure took the first billable of each payee's min/max and so
+    belonged to neither end of the hull. Both real ends are reported above.
+
+    GRADED AS ECONOMICS, NEVER AS BREAKAGE -- so WARN, never FAIL. Billing
+    still works: the 402 is valid, the payer pays, the money arrives. Selling
+    below cost is a decision an operator may make deliberately (a loss-leader
+    that buys the verdict->outcome history this engine is built to accumulate),
+    and the free tier makes it cost literally nothing at low volume. FAIL means
+    "this would not work", and that is not what is wrong here.
+
+    The fee is compared at each payee's CHEAPEST advertised option, which is the
+    end where the absolute min-fee floor binds and margin is thinnest -- the
+    same end `check_proportionality` measures, and the pessimistic one.
+    """
+    if not points:
+        return _check("settlement_cost", WARN,
+                      "no corpus available%s -- settlement economics were NOT "
+                      "measured"
+                      % (" at %s" % _safe_text(source, 200) if source else ""))
+    settle = Decimal(str(settle))
+    scale = Decimal(10) ** int(decimals)
+    billable = below = 0
+    shortfall = Decimal(0)
+    for point in points:
+        fee = Decimal(fee_atomic(point[1]) or 0) / scale
+        if fee <= 0:
+            continue                      # free path: no settlement, no cost
+        billable += 1
+        if fee < settle:
+            below += 1
+            shortfall += settle - fee
+    if not billable:
+        return _check("settlement_cost", OK,
+                      "nothing is billed, so no settlement is ever paid for",
+                      billable=0)
+    # Break-even is a property of the POLICY, not of any one payee, so it is
+    # found by asking the real fee function rather than re-deriving the bps --
+    # that would be a second implementation of pricing, free to drift from the
+    # one that actually quotes.
+    breakeven = _breakeven_amount(fee_atomic, settle, decimals)
+    stats = {"billable": billable, "below_settlement": below,
+             "settlement_cost": str(settle),
+             "avg_shortfall": ("%.6f" % (shortfall / below)) if below else "0",
+             "breakeven": str(breakeven) if breakeven is not None else None,
+             "free_tier": free_tier}
+    if not below:
+        return _check("settlement_cost", OK,
+                      "every payment billable at its cheapest advertised "
+                      "option covers the %s settlement cost (%d of %d)"
+                      % (settle, billable, billable), **stats)
+    where = ("; break-even is a %s payment" % breakeven
+             if breakeven is not None else "")
+    return _check("settlement_cost", WARN,
+                  "%d of %d payees billable at their CHEAPEST advertised "
+                  "option are billed BELOW the %s it costs to settle them, "
+                  "losing a mean %s each%s -- free for the first %d "
+                  "settlements a month, then real money"
+                  % (below, billable, settle, stats["avg_shortfall"], where,
+                     free_tier), **stats)
+
+
+def _breakeven_amount(fee_atomic, settle, decimals=6, ceiling=Decimal("1000")):
+    """Smallest advertised amount whose fee covers `settle`, or None.
+
+    Bisection over the REAL fee function. Pricing is monotonic in the amount
+    (bps of it, clamped), so bisection is valid; it is deliberately not an
+    inversion of the bps formula, which would duplicate pricing here.
+    """
+    scale = Decimal(10) ** int(decimals)
+
+    def covers(amount):
+        return Decimal(fee_atomic(amount) or 0) / scale >= settle
+
+    if not covers(ceiling):
+        return None                       # even a huge payment cannot cover it
+    lo, hi = Decimal(0), ceiling
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        if covers(mid):
+            hi = mid
+        else:
+            lo = mid
+    return hi.quantize(Decimal("0.0001"))
+
+
 def check_revenue(projection, source=None):
     """Would this configuration collect ANYTHING?
 
@@ -714,7 +830,8 @@ def load_corpus(path=CORPUS_PATH, load=None):
 def preflight(pay_to, facilitator=None, network="base", asset=None,
               price="0.001", value_pricing=False, knobs=None,
               corpus=None, fetch=None, offline=False,
-              cdp_id=None, cdp_secret=None, corpus_path=None):
+              cdp_id=None, cdp_secret=None, corpus_path=None,
+              settlement_cost=SETTLEMENT_COST):
     """Run every check and return the report. No side effects beyond `fetch`."""
     from x402 import (BASE_SEPOLIA_USDC, BASE_USDC, BillingConfig, BillingGate,
                       DEFAULT_SCHEME, PricingPolicy, to_caip2)
@@ -770,6 +887,9 @@ def preflight(pay_to, facilitator=None, network="base", asset=None,
         bound_bps = int(policy.max_fee_ratio_bps) if policy is not None else 100
         checks.append(check_proportionality(gate._price_for, points,
                                             bound_bps=bound_bps, source=source))
+        checks.append(check_settlement_cost(gate._price_for, points,
+                                            settle=settlement_cost,
+                                            source=source))
 
     if offline:
         checks.append(_check("facilitator", NOTE,
@@ -827,6 +947,11 @@ def main(argv=None):
     p.add_argument("--corpus", default=None,
                    help="price corpus to project against (default: the "
                         "committed data/directory.json beside this script)")
+    p.add_argument("--settlement-cost", default=str(SETTLEMENT_COST),
+                   help="USD your facilitator charges per onchain settlement "
+                        "(default %s, CDP's price as of 2026-09-08 past its "
+                        "free tier; a THIRD PARTY'S number, so override it "
+                        "when it moves)" % SETTLEMENT_COST)
     p.add_argument("--offline", action="store_true",
                    help="skip the facilitator probe (no network)")
     p.add_argument("--json", metavar="PATH", help="also write the report as JSON")
@@ -839,7 +964,8 @@ def main(argv=None):
         knobs={"free_below": args.free_below, "bps": args.bps,
                "min_fee": args.min_fee, "max_fee": args.max_fee,
                "max_fee_ratio_bps": args.max_fee_ratio_bps},
-        offline=args.offline, corpus_path=args.corpus)
+        offline=args.offline, corpus_path=args.corpus,
+        settlement_cost=args.settlement_cost)
     sys.stdout.write(format_report(report) + "\n")
     if args.json:
         with open(args.json, "w", encoding="utf-8") as fh:
