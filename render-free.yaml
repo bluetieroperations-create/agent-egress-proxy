@@ -110,8 +110,18 @@ services:
       # process, so the KV provider stores opaque blobs.
       # All three are required together; setting some but not all is a FATAL
       # config error. BLACKWALL_LEDGER_KEY is 32 bytes (64 hex) and must DIFFER
-      # from every other secret here. Lose it and the mirrored log is unreadable.
-      # See docs/DURABLE_LEDGER.md.
+      # from every other secret here.
+      #
+      # !! DO NOT DELETE THESE THREE. They look unreferenced if you grep a branch
+      # that predates remote_ledger.py -- a sibling session did exactly that on
+      # 2026-09-11, found no hits, and recommended removing all three. They are
+      # read ONLY by remote_ledger.py, which is not on `main`.
+      #
+      # !! BLACKWALL_LEDGER_KEY IS UNRECOVERABLE. It is not stored anywhere else.
+      # Delete or rotate it and every already-mirrored record becomes permanently
+      # unreadable -- the rows are skipped, counted, and announced in the boot
+      # banner, but the data is gone. Back it up somewhere that is not the KV
+      # provider. See docs/DURABLE_LEDGER.md.
       - key: BLACKWALL_LEDGER_KV_URL
         sync: false
       - key: BLACKWALL_LEDGER_KV_TOKEN

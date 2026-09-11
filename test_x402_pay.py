@@ -22,6 +22,32 @@ import x402_challenge                       # noqa: E402
 import x402_pay                             # noqa: E402
 
 
+
+# HONEST TEST LIMITATION, documented rather than papered over (the same call
+# `bounded_server.py` makes about its backlog fix).
+#
+# `clients/x402_pay.py` used to `raise SystemExit(2)` at IMPORT time when
+# eth-account was absent. That does not fail one test: unittest imports every
+# named module before running anything, so it killed the whole
+# `python -m unittest ...` invocation before a single test executed. A box
+# missing one optional package therefore ran ZERO of this repo's ~2200 tests.
+# Harmless while this file sat outside CLAUDE.md's canonical command; fatal the
+# moment it was added to it, which is how it surfaced.
+#
+# MEASURED, not asserted. With the import poisoned:
+#     before:  exit 2, "Ran 0 tests"   -- test_addresses never executed
+#     after:   exit 0, "Ran 16 tests"  -- x402_pay's parsing tests + the sibling
+#
+# There is NO unit test for it here, deliberately. The property needs a fresh
+# interpreter with the dep absent, and this module is one of the modules such a
+# child would run -- so the child re-enters the probe and forks again. The first
+# attempt did exactly that and spawned processes until it was killed. A test that
+# can fork unboundedly in CI is a worse defect than the gap it covers, and an
+# env-var sentinel to break the recursion is a second mechanism to get wrong.
+# The guard that actually holds the line is structural: `HAVE_ETH_ACCOUNT` is a
+# flag, and the only `SystemExit` left is inside `main()`, where signing happens.
+
+
 ACCEPT = {"payTo": "0x" + "ab" * 20, "amount": "25000",
           "asset": "0x" + "cd" * 20, "network": "eip155:8453"}
 
