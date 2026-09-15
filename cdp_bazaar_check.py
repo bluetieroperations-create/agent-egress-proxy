@@ -147,14 +147,17 @@ def main():
         return 2
     else:
         print("\n==> NOT YET in the catalog (scanned the FULL catalog).")
-        print("    Async indexing can lag the settle by minutes-to-a-day; re-run")
-        print("    later. If still absent after ~24-48h: MEASURED 2026-09-15")
-        print("    against 2000 listed entries, the likely cause is the SHAPE")
-        print("    of our advertised `resource`:")
-        print("      listed entries: resource = an ABSOLUTE URL STRING (2000/2000)")
-        print("      we advertise  : a dict whose .url is RELATIVE")
-        print("    and every listed entry carries extensions.bazaar.info, which")
-        print("    we do not emit. See docs/BAZAAR_LISTING.md.")
+        print("    Async indexing can lag the settle by minutes-to-a-day.")
+        print("    STATE AS OF 2026-09-15: the relative-`resource` hypothesis was")
+        print("    FIXED AND DEPLOYED -- the live 402 now advertises an absolute")
+        print("    url (verified in production), so a first CDP settlement plus an")
+        print("    absolute resource is already in place and this is now a waiting")
+        print("    game, not a known defect.")
+        print("    IF STILL ABSENT AFTER ~24-48h, the next candidate is")
+        print("    extensions.bazaar.info: present in 2000/2000 catalogued entries")
+        print("    while we emit only `schema`. It was left out DELIBERATELY so")
+        print("    that a listing appearing would tell us which change mattered.")
+        print("    See docs/BAZAAR_LISTING.md.")
         return 1
 
 
