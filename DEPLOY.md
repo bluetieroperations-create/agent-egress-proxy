@@ -103,9 +103,20 @@ has **no pip dependencies**.
 > enough to catch a silent fallback. Both relayers are long-lived production
 > addresses (nonces 4,020,491 and 1,515,416), so neither is a throwaway.
 >
-> **Note the relayer address is not a promise.** A facilitator may rotate it. Treat
-> "the relayer differs from the one my previous facilitator used" as the durable
-> check, not the specific hex.
+> **The relayer address is not a promise, and CDP DOES rotate it -- observed.**
+> A second CDP settlement on 2026-09-15 (`0xc04e425b…a6450`) came from
+> `0x68a96f41…07863`, a different address from the first
+> (`0x625d8a65…6ac39`). Both are long-lived production senders (nonces 3.2M and
+> 1.5M). So of the three signals, only two are durable:
+>
+> | signal | durable? |
+> |---|---|
+> | `tx.to` = **USDC directly**, not Multicall3 | ✅ held on both |
+> | selector `0xe3ee160e` (v/r/s), not `0xcf092995` | ✅ held on both |
+> | a specific relayer address | ⚠️ **rotates** |
+>
+> Check the ROUTE and the SELECTOR. Use the relayer only as "it differs from the
+> one my previous facilitator used".
 >
 > ### Settlement cost is NOT visible on-chain
 >
