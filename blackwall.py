@@ -2307,6 +2307,15 @@ class _Handler(BaseHTTPRequestHandler):
         if not subject or not isinstance(subject, str):
             self._send_json(400, {"error": "subject or attestation_id required"})
             return
+        try:
+            seller_audit._revoke_key()
+        except seller_audit.RevocationNotConfigured as e:
+            # Distinguish an OPERATOR MISCONFIGURATION from a bad token. 403 for
+            # both would send someone hunting a token problem that does not
+            # exist; this leaks nothing, since it is a fact about our own config.
+            self._send_json(503, {"error": "revocation not configured",
+                                  "detail": str(e)})
+            return
         if not seller_audit.verify_revoke_token(subject, body.get("token")):
             # Same 403 whether the subject is known or not, so this is not an
             # enumeration oracle for who holds a badge (the approvals-endpoint

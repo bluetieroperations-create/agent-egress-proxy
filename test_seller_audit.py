@@ -351,6 +351,153 @@ class TestRegistry(unittest.TestCase):
         self.assertIsNone(self.reg.credential_for(MERCHANT, now=1500))
 
 
+class TestVerifyOnceNotPerRequest(unittest.TestCase):
+    """AUDIT FINDING (HIGH), found by measuring the hot path rather than reading it.
+
+    `credential_for` called `verify_attestation`, which RE-SIGNS the payload to
+    compare signatures. That put an Ed25519 signing operation on the VERDICT
+    path, for every request naming a badged counterparty, reachable by any
+    anonymous caller of /v1/forecast-payment. MEASURED:
+
+        credential_for, native backend          0.133 ms
+        credential_for, pure-Python backend   221.864 ms
+        the whole forecast, no registry          0.109 ms
+
+    So on the pure-Python fallback it is ~2000x the verdict it decorates -- a
+    self-inflicted outage on a 0.1-CPU box, not a slow path. It was ALSO a
+    variable-time oracle (`_scalarmult` leaks the nonce's Hamming weight, and
+    the nonce derives from the secret prefix), though that half was already
+    covered incidentally: the attestation signer shares BLACKWALL_SIGNING_SEED
+    with receipt signing, so the existing public-bind boot guard fires. The
+    LATENCY was covered by nothing.
+
+    THE FIX IS ALSO THE RIGHT DESIGN. The signature protects against a tampered
+    attestation FILE -- a load-time concern. Nothing mutates the in-memory
+    envelope between load and use, so verifying once on entry is equivalent and
+    removes both problems. Expiry and revocation MUST stay per-request: they are
+    time- and state-dependent.
+    """
+
+    def setUp(self):
+        self.signer = SA.attestation_signer(seed=SEED)
+        self.audit = SA.run_audit(readiness=_ready(), record=_record())
+        self.att = SA.sign_attestation(MERCHANT, self.audit,
+                                       issued_at=int(time.time()), ttl=3600,
+                                       signer=self.signer)
+
+    def test_credential_for_does_NOT_sign(self):
+        # MUTATION: restoring the per-request verify_attestation call.
+        # Asserted by counting real signing operations, not by timing (a timing
+        # assertion would be flaky on a loaded box and would not say WHY).
+        reg = SA.SellerRegistry(signer=self.signer)
+        reg.add(self.att)
+        calls = []
+        real = self.signer.sign
+        self.signer.sign = lambda payload: (calls.append(1), real(payload))[1]
+        try:
+            for _ in range(5):
+                self.assertIsNotNone(reg.credential_for(MERCHANT,
+                                                        int(time.time())))
+        finally:
+            self.signer.sign = real
+        self.assertEqual(calls, [], "credential_for signed %d time(s) on the "
+                                    "verdict hot path" % len(calls))
+
+    def test_add_REFUSES_an_envelope_it_cannot_verify(self):
+        # The security property moves to entry, so entry must enforce it.
+        # MUTATION: storing without verifying -- the signature check would then
+        # exist nowhere at all, which is strictly worse than the slow version.
+        forged = dict(self.att,
+                      payload=dict(self.att["payload"], floor="0.990000"))
+        reg = SA.SellerRegistry(signer=self.signer)
+        with self.assertRaises(ValueError):
+            reg.add(forged)
+        self.assertIsNone(reg.credential_for(MERCHANT, int(time.time())))
+
+    def test_add_REFUSES_a_verdict_envelope_signed_by_the_same_key(self):
+        # The typ check must move with the signature check, or the
+        # claim-confusion attack comes back at a different layer.
+        import receipt_signer as rs
+        verdict = rs.ReceiptSigner(seed=SEED).sign(dict(self.att["payload"]))
+        reg = SA.SellerRegistry(signer=self.signer)
+        with self.assertRaises(ValueError):
+            reg.add(verdict)
+
+    def test_add_REFUSES_an_envelope_signed_by_a_DIFFERENT_key(self):
+        other = SA.attestation_signer(seed=OTHER_SEED)
+        alien = SA.sign_attestation(MERCHANT, self.audit,
+                                    issued_at=int(time.time()), ttl=3600,
+                                    signer=other)
+        reg = SA.SellerRegistry(signer=self.signer)
+        with self.assertRaises(ValueError):
+            reg.add(alien)
+
+    def test_EXPIRY_still_evaluates_per_request(self):
+        # MUTATION: caching the whole verdict at entry. Expiry is a function of
+        # the clock, so a badge verified once must still die on time.
+        reg = SA.SellerRegistry(signer=self.signer)
+        att = SA.sign_attestation(MERCHANT, self.audit, issued_at=1000,
+                                  ttl=1000, signer=self.signer)
+        reg.add(att)
+        self.assertIsNotNone(reg.credential_for(MERCHANT, 1500))
+        self.assertIsNone(reg.credential_for(MERCHANT, 2000))
+
+    def test_REVOCATION_still_evaluates_per_request(self):
+        # MUTATION: same. Revocation is state, not a property of the envelope.
+        reg = SA.SellerRegistry(signer=self.signer)
+        reg.add(self.att)
+        now = int(time.time())
+        self.assertIsNotNone(reg.credential_for(MERCHANT, now))
+        reg.revoke(MERCHANT)
+        self.assertIsNone(reg.credential_for(MERCHANT, now))
+
+    def test_verify_attestation_is_still_the_full_public_check(self):
+        # RESTRAINT CONTROL. Third parties and the tests above use it; moving
+        # the hot-path call must not weaken the function itself.
+        ok, reason = SA.verify_attestation(self.att, now=int(time.time()),
+                                           signer=self.signer)
+        self.assertTrue(ok, reason)
+        self.assertFalse(SA.verify_attestation(self.att, now=10 ** 12,
+                                               signer=self.signer)[0])
+
+
+class TestRevokeTokenKeyHandling(unittest.TestCase):
+    """AUDIT FINDING (MEDIUM): revoke tokens derived from a COMMITTED key.
+
+    `sign_revoke_token` fell back to `blackwall._receipt_key()`, which returns
+    `_DEV_RECEIPT_KEY` -- `b"blackwall-dev-receipt-key-not-for-production"`, in
+    the public repo -- when BLACKWALL_RECEIPT_KEY is unset. MEASURED: a forged
+    token computed from that constant was ACCEPTED. So any reader of GitHub
+    could strip any merchant's badge.
+
+    Bounded by the monotonic-safety design -- revocation only ever REMOVES
+    trust, so this is merchant griefing, not privilege escalation -- which is
+    why it is MEDIUM and not HIGH. It is still the third instance in this repo
+    of the same root cause (`seller_audit._DEV_AUDIT_KEY`,
+    `receipt_signer`'s refusal to have one, and now this).
+    """
+
+    def test_an_unset_key_REFUSES_rather_than_using_the_dev_fallback(self):
+        # MUTATION: restoring the `or _DEV_RECEIPT_KEY` path for revocation.
+        import blackwall
+        with self.assertRaises(SA.RevocationNotConfigured):
+            SA.sign_revoke_token("0x" + "c" * 40, key=None, environ={})
+        # And a token forged from the committed constant must not verify.
+        forged = SA.sign_revoke_token("0x" + "c" * 40,
+                                      key=blackwall._DEV_RECEIPT_KEY)
+        self.assertFalse(SA.verify_revoke_token("0x" + "c" * 40, forged,
+                                                key=None, environ={}))
+
+    def test_an_explicitly_set_key_works(self):
+        env = {"BLACKWALL_RECEIPT_KEY": "a-real-operator-secret"}
+        tok = SA.sign_revoke_token("0x" + "c" * 40, environ=env)
+        self.assertTrue(SA.verify_revoke_token("0x" + "c" * 40, tok, environ=env))
+
+    def test_verify_never_raises_when_unconfigured(self):
+        # The HTTP path must get False, not a 500.
+        self.assertFalse(SA.verify_revoke_token("0xabc", "whatever", environ={}))
+
+
 class TestDurableRevocation(unittest.TestCase):
     """Revocation MUST survive a restart.
 
@@ -600,6 +747,12 @@ class TestTheLiveWire(unittest.TestCase):
     def setUpClass(cls):
         import threading
         import blackwall
+        # A REAL operator secret. `sign_revoke_token` now REFUSES the committed
+        # dev fallback (audit finding: a token forged from it was accepted), so
+        # the tier's revocation endpoint requires this to be set -- exactly as a
+        # deploy must.
+        cls._prev_key = os.environ.get("BLACKWALL_RECEIPT_KEY")
+        os.environ["BLACKWALL_RECEIPT_KEY"] = "audit-test-operator-secret"
         cls.tmp = tempfile.mkdtemp()
         cls.revpath = os.path.join(cls.tmp, "revocations.jsonl")
         cls.signer = SA.attestation_signer(seed=SEED)
@@ -631,6 +784,10 @@ class TestTheLiveWire(unittest.TestCase):
             cls.server._httpd.shutdown()
         except Exception:
             pass
+        if cls._prev_key is None:
+            os.environ.pop("BLACKWALL_RECEIPT_KEY", None)
+        else:
+            os.environ["BLACKWALL_RECEIPT_KEY"] = cls._prev_key
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def _post(self, path, body):
@@ -689,7 +846,7 @@ class TestTheLiveWire(unittest.TestCase):
     def test_a_VALID_token_revokes_and_it_shows_up_in_the_public_list(self):
         import blackwall
         victim = "0x" + "d" * 40
-        token = SA.sign_revoke_token(victim, key=blackwall._receipt_key())
+        token = SA.sign_revoke_token(victim)
         code, body = self._post("/v1/seller/revoke",
                                 {"subject": victim, "token": token})
         self.assertEqual(code, 200, body)
@@ -709,7 +866,7 @@ class TestTheLiveWire(unittest.TestCase):
         self.assertEqual(code, 200, before)
         reasons_before = " ".join(before.get("reasons") or [])
 
-        token = SA.sign_revoke_token(MERCHANT, key=blackwall._receipt_key())
+        token = SA.sign_revoke_token(MERCHANT)
         self.assertEqual(
             self._post("/v1/seller/revoke",
                        {"subject": MERCHANT, "token": token})[0], 200)
@@ -721,6 +878,21 @@ class TestTheLiveWire(unittest.TestCase):
                       "the badge was not applied before revocation, so this "
                       "test cannot show it being withdrawn")
         self.assertNotIn("verified", reasons_after.lower())
+
+    def test_an_UNCONFIGURED_revocation_secret_reports_503_not_403(self):
+        # MUTATION TESTING CAUGHT THIS GAP: the branch was implemented and no
+        # test reached it over HTTP. 403 for a missing secret would send an
+        # operator hunting a token problem that does not exist, and it leaks
+        # nothing -- it is a fact about our own configuration.
+        prev = os.environ.pop("BLACKWALL_RECEIPT_KEY", None)
+        try:
+            code, body = self._post("/v1/seller/revoke",
+                                    {"subject": MERCHANT, "token": "x" * 32})
+            self.assertEqual(code, 503, body)
+            self.assertEqual(body["error"], "revocation not configured")
+        finally:
+            if prev is not None:
+                os.environ["BLACKWALL_RECEIPT_KEY"] = prev
 
     def test_there_is_NO_unrevoke_route(self):
         # MONOTONIC SAFETY. MUTATION: adding a restore endpoint. A stolen token

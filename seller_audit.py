@@ -257,20 +257,18 @@ def sign_attestation(subject, audit_result, *, issued_at, ttl=DEFAULT_TTL_SECOND
     return signer.sign(core)
 
 
-def verify_attestation(attestation, *, now, signer=None, revoked=None):
-    """(ok, reason). Checks typ, signature, expiry and revocation. Never raises.
+def verify_envelope(attestation, signer=None):
+    """(ok, reason) for the TIME-INDEPENDENT half: shape, typ and signature.
 
-    THE SIGNATURE CHECK IS A RE-SIGN AND COMPARE, which works because Ed25519 is
-    DETERMINISTIC: the same seed over the same bytes yields the same signature.
-    That keeps this dependency-free -- `cdp_auth`'s Ed25519 is sign-only by
-    design -- and is the seed holder's path. A THIRD PARTY does not use this
-    function at all: they take the envelope and the public key from
-    `/jwks.json` and verify with any standard Ed25519 implementation, which is
-    the whole point of moving off HMAC.
-
-    `typ` IS CHECKED FIRST and is not optional. One key signs verdicts and
-    attestations, so a bare signature check would accept either for the other --
-    and any anonymous caller can get a verdict signed.
+    Split out of `verify_attestation` because the signature check is a
+    RE-SIGN-AND-COMPARE, and running it per request put an Ed25519 signing
+    operation on the verdict hot path -- measured at 221.9ms on the pure-Python
+    backend against a 0.109ms verdict, reachable by any anonymous caller. The
+    signature protects against a tampered attestation FILE, which is a
+    load-time concern: nothing mutates the in-memory envelope between entry and
+    use, so verifying once on entry is equivalent. Expiry and revocation stay
+    per-request in `credential_for`, because they are functions of the clock and
+    of operator state rather than of the envelope.
     """
     try:
         import receipt_signer
@@ -290,22 +288,42 @@ def verify_attestation(attestation, *, now, signer=None, revoked=None):
         expected = signer.sign(dict(payload))
         if expected is None:
             return False, "no signer to verify against"
-        # Re-sign under OUR protected header and compare both halves, so a
-        # tampered kid/typ cannot be smuggled through by signing the payload
-        # alone.
         if protected != expected["protected"]:
             return False, "protected header does not match"
         if not hmac.compare_digest(signature, expected["signature"]):
             return False, "bad signature"
-        if int(now) >= int(payload.get("expires_at", 0)):
+        return True, "ok"
+    except Exception as e:
+        return False, "%s" % type(e).__name__
+
+
+def check_window(payload, now, revoked=None):
+    """(ok, reason) for the TIME- and STATE-dependent half. PURE, microseconds,
+    safe to run on every verdict."""
+    try:
+        if int(now) >= int((payload or {}).get("expires_at", 0)):
             return False, "expired"
         revoked = revoked or set()
-        if payload.get("attestation_id") in revoked \
-                or payload.get("subject") in revoked:
+        if (payload or {}).get("attestation_id") in revoked \
+                or (payload or {}).get("subject") in revoked:
             return False, "revoked"
         return True, "ok"
     except Exception as e:
         return False, "%s" % type(e).__name__
+
+
+def verify_attestation(attestation, *, now, signer=None, revoked=None):
+    """(ok, reason). Checks typ, signature, expiry and revocation. Never raises.
+
+    Composes `verify_envelope` (shape/typ/signature) and `check_window`
+    (expiry/revocation) so there is ONE implementation of each. Still the full
+    public check -- third parties and the CLI use it; the VERDICT path uses
+    `check_window` alone, because the envelope was already verified on entry.
+    """
+    ok, reason = verify_envelope(attestation, signer)
+    if not ok:
+        return False, reason
+    return check_window((attestation or {}).get("payload"), now, revoked)
 
 
 def load_registry(attestations_path=None, revocations_path=None, signer=None):
@@ -350,6 +368,10 @@ def load_registry(attestations_path=None, revocations_path=None, signer=None):
                         registry.add(json.loads(line))
                         loaded += 1
                     except Exception:
+                        # Includes an envelope that FAILS VERIFICATION: `add`
+                        # raises, so a tampered row is skipped and counted
+                        # rather than stored. That is the whole reason the
+                        # signature check moved to entry.
                         skipped += 1
         except Exception as e:
             return registry, ("attestation file %r unreadable (%s) -- no "
@@ -374,30 +396,60 @@ def normalize_revocation_key(subject_or_id):
     return str(subject_or_id or "").strip().lower()
 
 
-def sign_revoke_token(subject_or_id, key=None):
+class RevocationNotConfigured(RuntimeError):
+    """No revocation secret is set, so no revoke token can be minted or checked."""
+
+
+def _revoke_key(environ=None):
+    """The revocation secret, with NO committed fallback.
+
+    AUDIT FINDING (medium): this used `blackwall._receipt_key()`, which returns
+    `_DEV_RECEIPT_KEY` -- a constant IN THE PUBLIC REPO -- when
+    BLACKWALL_RECEIPT_KEY is unset. MEASURED: a token forged from that constant
+    was accepted, so any reader of GitHub could strip any merchant's badge.
+    Bounded by this module's monotonic-safety design (revocation only ever
+    REMOVES trust, so it is merchant griefing rather than escalation), which is
+    why it is medium and not high -- but it is the THIRD instance of this root
+    cause here, after `_DEV_AUDIT_KEY` and the reason `receipt_signer` refuses
+    to have one at all.
+    """
+    env = os.environ if environ is None else environ
+    raw = (env.get("BLACKWALL_RECEIPT_KEY") or "").encode("utf-8")
+    if not raw:
+        raise RevocationNotConfigured(
+            "BLACKWALL_RECEIPT_KEY is not set -- refusing to derive a revoke "
+            "token from a committed development key")
+    return raw
+
+
+def sign_revoke_token(subject_or_id, key=None, environ=None):
     """Capability token authorizing REVOCATION of one subject/attestation.
 
     PER-SUBJECT, not a single admin secret: a leaked token revokes exactly one
     merchant rather than the whole registry. Domain-separated with "revoke:" so
     a report token or an approval token can never revoke a badge -- the same
     reason `approvals.sign_approval_token` carries "approve:".
+
+    Raises `RevocationNotConfigured` when no secret is set. Explicitly NOT the
+    `_receipt_key()` dev fallback -- see `_revoke_key`.
     """
     if key is None:
-        import blackwall
-        key = blackwall._receipt_key()
+        key = _revoke_key(environ)
     return hmac.new(key,
                     (_REVOKE_DOMAIN + normalize_revocation_key(subject_or_id)
                      ).encode("utf-8"),
                     hashlib.sha256).hexdigest()[:32]
 
 
-def verify_revoke_token(subject_or_id, token, key=None):
-    """Constant-time check. Never raises; anything unusable is False."""
+def verify_revoke_token(subject_or_id, token, key=None, environ=None):
+    """Constant-time check. Never raises; anything unusable -- including an
+    unconfigured secret -- is False, so the HTTP path gets a refusal and not a
+    500."""
     if not token or not isinstance(token, str):
         return False
     try:
-        return hmac.compare_digest(token,
-                                   sign_revoke_token(subject_or_id, key))
+        return hmac.compare_digest(
+            token, sign_revoke_token(subject_or_id, key, environ))
     except Exception:
         return False
 
@@ -490,6 +542,13 @@ class SellerRegistry:
         one inside its own signature would otherwise be filed under the address
         the attacker chose.
         """
+        ok, reason = verify_envelope(attestation, self._signer)
+        if not ok:
+            # THE SECURITY PROPERTY MOVED HERE, so entry must enforce it. Storing
+            # an unverifiable envelope would leave the signature check nowhere at
+            # all, which is strictly worse than the slow per-request version.
+            raise ValueError("refusing to store an unverifiable attestation: %s"
+                             % reason)
         payload = (attestation or {}).get("payload") or {}
         subject = payload.get("subject")
         if not subject:
@@ -529,8 +588,10 @@ class SellerRegistry:
         att = self._by_subject.get(str(subject).lower())
         if att is None:
             return None
-        ok, _ = verify_attestation(att, now=now, signer=self._signer,
-                                   revoked=self._revoked)
+        # NO SIGNATURE CHECK HERE, deliberately: the envelope was verified once
+        # by `add`/`issue`. See `verify_envelope` for the measurement that
+        # forced this (221.9ms per verdict on the pure-Python backend).
+        ok, _ = check_window(att.get("payload"), now, self._revoked)
         if not ok:
             return None
         payload = att["payload"]

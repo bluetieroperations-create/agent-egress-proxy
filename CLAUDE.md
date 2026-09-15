@@ -234,7 +234,18 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   the thin shim is UNVERIFIED against a live Lucid install (composition order and
   the 403 convention come from their published docs), amounts assume 6 decimals,
   and A2A/ERC-8004 are untouched. TypeScript + vitest; own tests run from that
-  dir. 27 tests, 11 mutations verified killed),
+  dir. POST-MERGE AUDIT finding (MEDIUM), reproduced before fixing: the
+  challenge is authored by the SELLER BEING SCREENED and every `accepts[]` entry
+  cost one forecast request, so a hostile 402 with 500 entries produced exactly
+  500 parallel calls against the operator's own Blackwall -- one-request-to-N
+  amplification, and money on a paid endpoint. `MAX_ACCEPTS = 16` is DERIVED
+  FROM THE CORPUS, not taste: 370 priced quotes across 177 answering hosts is a
+  mean of 2.09 entries per host, and our own live endpoint serves 2, so 16 is
+  ~8x the mean. OVER THE CAP IS A REFUSAL, NOT A TRUNCATION -- scoring the first
+  16 and allowing would let an attacker put the bad entry at position 17, which
+  is the ordering bug design point 1 exists to avoid; a challenge advertising
+  more than 16 payment options is itself anomalous. Restraint control: 1, 2, 3,
+  8 and 16 entries all pass unaffected. 30 tests, 14 mutations verified killed),
   `integrations/openclaw/` (OpenClaw/NemoClaw plugin -- a `before_tool_call` hook
   that recognizes payment-shaped tool calls (flat payTo/amount, 402-challenge
   accepts[], or a signed X-PAYMENT header -> passed through for payload-sim),
@@ -337,6 +348,45 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   an operator act. `GET /v1/seller/revocations` PUBLISHES the list, which is what
   completes 3b: a badge anyone can verify against `/jwks.json` whose revocation
   nobody can see is only as good as its TTL.
+  POST-MERGE AUDIT (2026-09-15), three findings, all fixed, and the first was
+  found by MEASURING the hot path rather than reading it:
+  (1) HIGH -- `credential_for` called `verify_attestation`, whose signature check
+  is a RE-SIGN-AND-COMPARE, so every verdict naming a badged counterparty
+  performed an Ed25519 signing operation, reachable by any anonymous caller of
+  `/v1/forecast-payment`. MEASURED: 0.133ms on the native backend and
+  **221.864ms on the pure-Python fallback**, against a 0.109ms verdict -- ~2000x
+  the thing it decorates, which on a 0.1-CPU box is a self-inflicted outage, not
+  a slow path. It was ALSO a variable-time oracle (`_scalarmult` leaks the
+  nonce's Hamming weight and the nonce derives from the secret prefix), though
+  that half was already covered INCIDENTALLY: the attestation signer shares
+  `BLACKWALL_SIGNING_SEED` with receipt signing, so the existing public-bind
+  boot guard fires. The LATENCY was covered by nothing, and the FATAL message's
+  "~170ms per verdict" understated it. THE FIX IS ALSO THE RIGHT DESIGN: the
+  signature protects against a tampered FILE, which is a load-time concern, and
+  nothing mutates the in-memory envelope between entry and use -- so
+  `verify_envelope` (shape/typ/signature) runs ONCE in `add`/`issue`, which now
+  REFUSES an unverifiable envelope, and `check_window` (expiry/revocation) runs
+  per request because those are functions of the clock and of operator state.
+  RE-MEASURED: 221,864us -> 0.87us, and BACKEND-INDEPENDENT, so the oracle is
+  gone rather than mitigated. `verify_attestation` still composes both halves as
+  the full public check. Verified on the REAL boot path: a file with one good and
+  one tampered row reports "1 badge(s) loaded, 1 skipped".
+  (2) MEDIUM -- `sign_revoke_token` fell back to `blackwall._receipt_key()`,
+  which returns `_DEV_RECEIPT_KEY` (`b"blackwall-dev-receipt-key-not-for-
+  production"`, IN THE PUBLIC REPO) when `BLACKWALL_RECEIPT_KEY` is unset.
+  MEASURED: a token forged from that constant was ACCEPTED, so any reader of
+  GitHub could strip any merchant's badge. Bounded by this module's
+  monotonic-safety design -- revocation only ever REMOVES trust, so it is
+  merchant griefing rather than escalation -- hence medium. THIRD instance of
+  this root cause here after `_DEV_AUDIT_KEY` and the reason `receipt_signer`
+  refuses to have one. `_revoke_key` now has NO fallback and raises
+  `RevocationNotConfigured`; the route answers 503 "revocation not configured"
+  rather than a misleading 403. Verified live: the dev-key forgery gets 403, the
+  real operator token gets 200.
+  (3) See `integrations/lucid` for the third (fan-out amplification).
+  7 further mutations verified killed, one of which SURVIVED and was a real gap:
+  the 503-when-unconfigured branch was implemented and no test reached it over
+  HTTP.
   12 mutations verified killed, TWO of which SURVIVED the first pass and were
   real test gaps worth naming: the domain-separation test compared against
   `approvals.sign_approval_token`, which carries its OWN prefix, so deleting

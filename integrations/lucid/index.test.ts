@@ -14,6 +14,7 @@ import {
   combine,
   parseChallenge,
   requirementsFromAuthenticate,
+  MAX_ACCEPTS,
   wrapFetchWithBlackwall,
 } from "./index.js";
 
@@ -274,5 +275,55 @@ describe("the fetch wrapper", () => {
     expect(r.status).toBe(402);
     const body = await r.json();          // must still be readable
     expect(body.accepts[0].payTo).toBe(PAYEE_A);
+  });
+});
+
+describe("fan-out cap (audit finding)", () => {
+  function challengeWith(n: number) {
+    return {
+      x402Version: 2,
+      accepts: Array.from({ length: n }, (_, i) => ({
+        scheme: "exact", network: "eip155:8453", maxAmountRequired: "1000",
+        asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        payTo: "0x" + i.toString(16).padStart(40, "0"),
+      })),
+    };
+  }
+  const serve = (n: number) => (async () =>
+    new Response(JSON.stringify(challengeWith(n)), {
+      status: 402, headers: { "content-type": "application/json" },
+    })) as any;
+
+  it("a hostile 402 cannot fan out into N forecast calls", async () => {
+    // MUTATION: removing the cap. REPRODUCED before the fix: 500 accepts
+    // entries caused exactly 500 parallel forecast requests against the
+    // operator's own Blackwall -- one-request-to-N amplification, authored by
+    // the seller being screened, and it spends money on a paid endpoint.
+    const forecast = vi.fn(async () => ({ verdict: "GO" }));
+    const f = wrapFetchWithBlackwall(serve(500), { forecast: forecast as any });
+    const r = await f("https://hostile.example" as any);
+    expect(r.status).toBe(403);
+    expect(forecast).not.toHaveBeenCalled();     // refused BEFORE any fan-out
+  });
+
+  it("refuses rather than scoring a subset", async () => {
+    // MUTATION: truncating to the first MAX_ACCEPTS and allowing. Then an
+    // attacker puts the bad entry at position 17 -- the ordering bug design
+    // point 1 exists to avoid.
+    const f = wrapFetchWithBlackwall(serve(MAX_ACCEPTS + 1),
+                                     { forecast: async () => ({ verdict: "GO" }) });
+    const r = await f("https://hostile.example" as any);
+    expect(r.status).toBe(403);
+    expect((await r.json()).verdict).toBe("STOP");
+  });
+
+  it("RESTRAINT: a realistic challenge is unaffected", async () => {
+    // The corpus mean is 2.09 entries per host; the cap is ~8x that. A cap that
+    // refused real sellers would be worse than the amplification it prevents.
+    const forecast = vi.fn(async () => ({ verdict: "GO" }));
+    for (const n of [1, 2, 3, 8, MAX_ACCEPTS]) {
+      const f = wrapFetchWithBlackwall(serve(n), { forecast: forecast as any });
+      expect((await f("https://ok.example" as any)).status).toBe(402);
+    }
   });
 });

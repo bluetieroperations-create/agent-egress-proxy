@@ -78,6 +78,28 @@ export const BLACKWALL_VERDICT = "blackwall_verdict";
 
 const USDC_DECIMALS = 6;
 
+/**
+ * Ceiling on how many `accepts[]` entries one challenge may have.
+ *
+ * AUDIT FINDING (medium), measured not assumed: the challenge is authored by
+ * the SELLER being screened, and every entry costs one forecast request. A
+ * hostile 402 with 500 entries produced 500 parallel calls against the
+ * operator's own Blackwall -- reproduced, exactly 500 -- which is a
+ * one-request-to-N amplification, and against a PAID endpoint it also spends
+ * money.
+ *
+ * DERIVED FROM THE CORPUS, not taste: across 177 answering hosts the census
+ * records 370 priced quotes, a mean of 2.09 entries per host, and our own live
+ * endpoint serves 2. Sixteen is ~8x that mean -- generous for any legitimate
+ * challenge.
+ *
+ * OVER THE CAP IS A REFUSAL, NOT A TRUNCATION. Scoring the first 16 and
+ * allowing would let an attacker put the bad entry at position 17, which is the
+ * ordering bug that design point 1 exists to avoid. A challenge advertising
+ * more than 16 payment options is itself anomalous.
+ */
+export const MAX_ACCEPTS = 16;
+
 // ---------------------------------------------------------------------------
 // Pure: parse the challenge (all three carriers)
 // ---------------------------------------------------------------------------
@@ -290,6 +312,18 @@ export function wrapFetchWithBlackwall(
     const accepts = parseChallenge(safeJson(text), response.headers);
     const url = typeof input === "string" ? input : (input?.url as string | undefined);
     const { claims } = claimsFromChallenge(accepts, url, cfg.payer);
+
+    if (accepts.length > MAX_ACCEPTS) {
+      return refusal(
+        BLACKWALL_VERDICT,
+        "STOP",
+        [
+          `challenge advertises ${accepts.length} payment options (cap ${MAX_ACCEPTS}); ` +
+            "the corpus mean is 2.09 per host -- refusing rather than scoring a subset, " +
+            "since scoring the first N would let the rest go unchecked",
+        ],
+      );
+    }
 
     if (!claims.length) return response; // nothing readable to score -- see `combine`
 
