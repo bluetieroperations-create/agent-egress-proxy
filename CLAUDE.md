@@ -485,8 +485,17 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   the default `BLACKWALL_NETWORK=base`, and that facilitator lists 31 kinds with NO
   `eip155:8453` -- every EVM network it settles is a testnet, as is all of
   `x402.org/facilitator`'s EVM support. The documented copy-paste mainnet deploy
-  would have had every payment rejected while looking healthy. Base mainnet needs the
-  authenticated CDP facilitator, which is also the only Bazaar-listing path. SECOND LIVE-RUN FINDING (2026-09-07, against a real payout address): with CDP
+  would have had every payment rejected while looking healthy. CORRECTED 2026-09-15,
+  and the correction is the more useful finding: that sentence used to read "Base
+  mainnet needs the authenticated CDP facilitator", which GENERALIZED from two
+  measured facilitators to every keyless one. `facilitator.payai.network` is keyless
+  and DOES settle Base mainnet -- 33 kinds including `exact`/`eip155:8453` at x402
+  v2, measured live. It is what the live service has been settling through all
+  along. So keylessness is not the property that matters; whether a facilitator
+  LISTS your (scheme, network, version) is, which is exactly what the preflight
+  checks and what a prose claim about "keyless facilitators" cannot. CDP remains the
+  only Bazaar-listing path -- a DIFFERENT claim, and one taken from Coinbase's docs
+  rather than measured here. SECOND LIVE-RUN FINDING (2026-09-07, against a real payout address): with CDP
   creds set the facilitator check returned NOTE and the text "/supported is
   authenticated, so it was NOT probed here" -- so INVALID CDP CREDENTIALS PASSED
   the preflight, and the single most likely way a mainnet deploy fails silently

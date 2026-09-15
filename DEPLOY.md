@@ -42,23 +42,34 @@ has **no pip dependencies**.
 | `BLACKWALL_RECEIPT_KEY` | **secret** for signing receipts + report tokens (set a strong random value) |
 | `BLACKWALL_SIGNING_SEED` | **secret**, base64url 32 bytes — turns on the INDEPENDENTLY-VERIFIABLE Ed25519 receipt. Absent, verdicts carry no `receipt` field and the claim the product advertises is simply off. Must NOT equal `BLACKWALL_RECEIPT_KEY` (the service refuses to boot if they match). Generate: `python -c "import os,base64;print(base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip('='))"` |
 
-> ### ⚠️ Base MAINNET needs the CDP facilitator
+> ### ⚠️ Check that your facilitator actually settles Base MAINNET
 >
-> **Measured live 2026-09-06, not assumed.** Neither public keyless facilitator
-> settles on Base mainnet:
+> **Measured live.** Not every facilitator lists `eip155:8453`, and one that does
+> not will reject every payment while the service looks healthy:
 >
-> | facilitator | kinds | `eip155:8453` (Base mainnet) |
-> |---|---|---|
-> | `https://facilitator.x402.rs` | 31 | **no** — every EVM network it lists is a testnet |
-> | `https://x402.org/facilitator` | 11 | **no** — EVM support is `eip155:84532` only |
+> | facilitator | kinds | `eip155:8453` (Base mainnet) | keyless |
+> |---|---|---|---|
+> | `https://facilitator.x402.rs` | 31 | **no** — every EVM network it lists is a testnet | yes |
+> | `https://x402.org/facilitator` | 11 | **no** — EVM support is `eip155:84532` only | yes |
+> | `https://facilitator.payai.network` | 33 | **yes** — `exact`/`eip155:8453` at x402 v2 | yes |
+> | CDP (`api.cdp.coinbase.com/platform/v2/x402`) | — | **yes** | no (API key) |
 >
 > So `BLACKWALL_FACILITATOR=https://facilitator.x402.rs` with the default
-> `BLACKWALL_NETWORK=base` advertises a 402 no configured facilitator can
-> settle: **every payment is rejected**, and the service looks healthy the whole
-> time. Earlier revisions of this file showed exactly that pairing. For mainnet,
-> set `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET` and let `choose_facilitator` route
-> to the authenticated CDP endpoint (which is also the only one Bazaar catalogs);
-> use a keyless facilitator with `BLACKWALL_NETWORK=base-sepolia` for the dry run.
+> `BLACKWALL_NETWORK=base` advertises a 402 that facilitator cannot settle:
+> **every payment is rejected**, and the service looks healthy the whole time.
+> Earlier revisions of this file showed exactly that pairing.
+>
+> **This heading used to read "Base MAINNET needs the CDP facilitator", and that
+> was wrong** — it generalized from the two rows measured on 2026-09-06 to every
+> keyless facilitator. PayAI is keyless and settles Base mainnet; it is what the
+> live service has been using. Keylessness is not the property that matters.
+> Whether the facilitator lists your (scheme, network, x402Version) is — so check
+> that, not the category.
+>
+> CDP is still worth setting for a different reason: it is **the only path
+> Coinbase Bazaar catalogs** (Coinbase's own documentation, not measured here).
+> Set `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET` and `choose_facilitator` routes to
+> it; use `BLACKWALL_NETWORK=base-sepolia` with a keyless facilitator for a dry run.
 >
 > `python billing_preflight.py --pay-to 0x... --facilitator ...` checks this, and
 > a facilitator that answers but does not list your (scheme, network) is a hard
