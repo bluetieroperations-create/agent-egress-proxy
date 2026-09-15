@@ -43,6 +43,25 @@ MIN_RETENTION = 0.8
 # MIN_RETENTION because it measures what users actually experience.
 MIN_GATING_RETENTION = 0.95
 
+# Share of the crawl's payees that may fail to fetch before the refresh stops being a
+# refresh. `chain_backfill.backfill` is fail-soft PER PAYEE: a transport error records
+# {"error": ...} and ingests NOTHING for that payee, so the run continues and reports
+# `errors`. Nothing read that field, which is why this constant did not exist.
+#
+# Why this WARNS below the threshold instead of rejecting on the first error: the
+# candidate store is seeded FROM the committed one (scripts/refresh_seed.sh -- "MERGE,
+# don't REPLACE"), so an errored payee KEEPS its previous rows. It goes STALE, it does
+# not disappear. Rejecting a whole refresh over one flaky payee would trade a real
+# stale-cliff risk for an imaginary data-loss one.
+#
+# Why it rejects at all: `age_days` is computed from the NEWEST row in the store, so a
+# crawl where most payees errored still looks fresh -- a handful of refreshed rows carry
+# the timestamp while the rest of the corpus quietly ages. Past this share the store's
+# freshness signal no longer describes the store. MEASURED: the public indexer fails
+# ~2% of page fetches when healthy, which drops ~10% of payees across a 5-page walk, so
+# 25% leaves headroom over normal operation while still catching a crawl that broke.
+MAX_CRAWL_ERROR_RATE = 0.25
+
 # Mirrors blackwall's verdict gates -- imported lazily in gating_capable() to keep this
 # module importable without pulling in the whole engine.
 _GATE_MIN_SETTLEMENTS = 20      # blackwall.THIN_HISTORY_SETTLEMENTS
@@ -110,12 +129,58 @@ def store_stats(edges, *, age_days=None):
     }
 
 
-def assess_refresh(old, new, *, min_retention=MIN_RETENTION, warn_days=REFRESH_WARN_DAYS,
-                   min_gating_retention=MIN_GATING_RETENTION):
+def crawl_health(crawl, *, max_error_rate=MAX_CRAWL_ERROR_RATE):
+    """PURE: read a `chain_backfill.backfill` summary for signs the crawl itself failed.
+
+    Returns {reasons[], warnings[]}. Takes the summary dict
+    {payees, fetched, ingested, errors, truncated, per_payee} -- or None, which yields
+    nothing at all, because "no crawl summary supplied" is not evidence of a healthy
+    crawl and must never read as one.
+
+    This is the first reader of `truncated`. It was added by the commit "a truncated
+    crawl must say so" and then said so to nobody -- a field no code consumes is the
+    wired-and-inert pattern, and no mutation test can catch it, because deleting an
+    unread field breaks nothing."""
+    if not crawl:
+        return {"reasons": [], "warnings": []}
+    reasons, warnings = [], []
+    attempted = crawl.get("payees") or 0
+    errors = crawl.get("errors") or 0
+    total = attempted + errors          # `payees` counts the ones that SUCCEEDED
+    if total and errors:
+        rate = errors / float(total)
+        msg = ("%d of %d payees failed to fetch (%.0f%%) -- they keep their previous rows, "
+               "so the corpus does not shrink, but that share of it did not refresh"
+               % (errors, total, 100.0 * rate))
+        if rate > max_error_rate:
+            reasons.append(msg + "; past %.0f%% the store's age no longer describes the "
+                                 "store, because age is read from its newest row"
+                                 % (max_error_rate * 100))
+        else:
+            warnings.append(msg)
+    truncated = crawl.get("truncated") or 0
+    if truncated:
+        warnings.append(
+            "%d payee(s) hit the page cap -- their history is a recent WINDOW, not a "
+            "complete record; totals derived from this corpus are floors" % truncated)
+    return {"reasons": reasons, "warnings": warnings}
+
+
+def assess_refresh(old, new, *, crawl=None, min_retention=MIN_RETENTION,
+                   warn_days=REFRESH_WARN_DAYS,
+                   min_gating_retention=MIN_GATING_RETENTION,
+                   max_error_rate=MAX_CRAWL_ERROR_RATE):
     """Decide whether a freshly-crawled store may REPLACE the committed one. PURE.
     Returns {accept, reasons[], warnings[], old, new}. `reasons` non-empty => REJECT
-    (keep the current store). `warnings` never block -- they annotate an accept."""
+    (keep the current store). `warnings` never block -- they annotate an accept.
+
+    `crawl` is the optional `chain_backfill.backfill` summary. Without it the store
+    checks below still run, but they are all FLOORS computed from the candidate itself
+    and so are blind to how it was produced -- see `crawl_health`."""
     reasons, warnings = [], []
+    health = crawl_health(crawl, max_error_rate=max_error_rate)
+    reasons.extend(health["reasons"])
+    warnings.extend(health["warnings"])
 
     # 1. size retention -- a collapse means a partial/failed crawl, not healthy churn.
     if old["payees"] and new["payees"] < old["payees"] * min_retention:
@@ -197,6 +262,11 @@ def main(argv=None):
     p.add_argument("--old", required=True, help="current committed store (.gz/.db)")
     p.add_argument("--new", required=True, help="freshly-crawled candidate store (.gz/.db)")
     p.add_argument("--json", help="write the assessment JSON here")
+    p.add_argument("--crawl",
+                   help="chain_backfill's summary JSON for the run that BUILT --new. "
+                        "Without it the store checks are all floors computed from the "
+                        "candidate itself, so a crawl that dropped or truncated payees "
+                        "is invisible.")
     args = p.parse_args(argv)
     now = datetime.datetime.now(datetime.timezone.utc)
 
@@ -205,7 +275,18 @@ def main(argv=None):
         age = seed_age_days(newest, now) if newest else None
         return store_stats(edges, age_days=age)
 
-    result = assess_refresh(_stats(args.old), _stats(args.new))
+    crawl = None
+    if args.crawl:
+        # `chain_backfill` writes its summary JSON to stdout and then a human line
+        # after it, so a captured stream is JSON *followed by prose*. Decode the
+        # leading object and ignore the rest rather than requiring the caller to
+        # separate them -- json.load() on that stream raises "Extra data".
+        with open(args.crawl) as fh:
+            text = fh.read().lstrip()
+        crawl, _ = json.JSONDecoder().raw_decode(text)
+    result = assess_refresh(_stats(args.old), _stats(args.new), crawl=crawl)
+    if crawl is None:
+        print("NOTE: no --crawl summary; crawl health was not assessed")
     print("old:", {k: result["old"][k] for k in ("payees", "edges", "age_days",
                                                   "gating_reachable")})
     print("new:", {k: result["new"][k] for k in ("payees", "edges", "age_days",

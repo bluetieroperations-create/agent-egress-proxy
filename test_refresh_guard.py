@@ -155,5 +155,89 @@ class TestGatingCapableUtility(unittest.TestCase):
         self.assertTrue(G.assess_refresh(old, new)["accept"])
 
 
+class TestCrawlHealth(unittest.TestCase):
+    """The guard's checks on the STORE are all floors computed from the candidate
+    itself, so they cannot see how it was produced. These read the crawl summary.
+
+    Each test names the mutation it kills."""
+
+    def _stores(self):
+        good = {"payees": 100, "edges": 500, "gating_capable": 50, "age_days": 10}
+        fresh = {"payees": 100, "edges": 500, "gating_capable": 50, "age_days": 2}
+        return good, fresh
+
+    def test_absent_summary_asserts_nothing(self):
+        # Mutation: treat a missing summary as healthy and return a warning-free
+        # pass -- "we did not look" would then read identically to "we looked and
+        # it was fine".
+        self.assertEqual(G.crawl_health(None), {"reasons": [], "warnings": []})
+        self.assertEqual(G.crawl_health({}), {"reasons": [], "warnings": []})
+
+    def test_a_few_failed_payees_warn_but_do_not_reject(self):
+        # THE STALE-CLIFF GUARD. The candidate is seeded FROM the committed store
+        # (refresh_seed.sh: "MERGE, don't REPLACE"), so an errored payee keeps its
+        # old rows -- it goes stale, it does not vanish. Mutation: reject on the
+        # first error -> one flaky payee blocks every refresh, and the 90-day
+        # stale cliff this module exists to prevent arrives on schedule.
+        old, new = self._stores()
+        r = G.assess_refresh(old, new, crawl={"payees": 95, "errors": 5})
+        self.assertTrue(r["accept"])
+        self.assertTrue(any("failed to fetch" in w for w in r["warnings"]))
+        self.assertEqual(r["reasons"], [])
+
+    def test_a_mostly_failed_crawl_is_rejected(self):
+        # Mutation: warn instead of reject at any rate -> a crawl where 40% of
+        # payees errored ships as a "refresh". It passes every store check: the
+        # merge keeps retention at 100%, and `age_days` is read from the NEWEST
+        # row, so a handful of refreshed payees carry the freshness of a corpus
+        # that mostly did not move.
+        old, new = self._stores()
+        r = G.assess_refresh(old, new, crawl={"payees": 60, "errors": 40})
+        self.assertFalse(r["accept"])
+        self.assertTrue(any("40 of 100" in x for x in r["reasons"]))
+
+    def test_the_error_rate_is_over_ATTEMPTED_not_over_successes(self):
+        # `payees` counts the ones that SUCCEEDED, so the denominator is
+        # payees+errors. Mutation: divide by `payees` -> 40 errors against 60
+        # successes reads as 67% instead of 40%, and the threshold fires at the
+        # wrong place in both directions.
+        h = G.crawl_health({"payees": 60, "errors": 40})
+        self.assertTrue(any("40 of 100 payees" in x for x in h["reasons"]))
+
+    def test_threshold_boundary_accepts_at_the_limit(self):
+        # Exactly at MAX_CRAWL_ERROR_RATE is not "past" it. Mutation: >= instead
+        # of > -> the documented threshold is off by one case.
+        h = G.crawl_health({"payees": 75, "errors": 25}, max_error_rate=0.25)
+        self.assertEqual(h["reasons"], [])
+        self.assertTrue(h["warnings"])
+
+    def test_truncation_warns_and_never_rejects(self):
+        # Truncation is the STEADY STATE at the page cap -- every high-volume
+        # payee is truncated on every run. Mutation: reject on truncated > 0 ->
+        # no refresh ever ships again.
+        old, new = self._stores()
+        r = G.assess_refresh(old, new, crawl={"payees": 100, "errors": 0, "truncated": 70})
+        self.assertTrue(r["accept"])
+        self.assertTrue(any("page cap" in w for w in r["warnings"]))
+        self.assertEqual(r["reasons"], [])
+
+    def test_truncated_finally_has_a_reader(self):
+        # `truncated` shipped with no consumer anywhere in the repo -- the
+        # wired-and-inert pattern, which no mutation test can catch because
+        # deleting an unread field breaks nothing. This IS the consumer.
+        # Mutation: drop the truncated branch -> the field is inert again.
+        self.assertTrue(G.crawl_health({"payees": 1, "truncated": 3})["warnings"])
+        self.assertFalse(G.crawl_health({"payees": 1, "truncated": 0})["warnings"])
+
+    def test_store_checks_still_run_with_a_crawl_supplied(self):
+        # Mutation: return early on a healthy crawl -> the retention and
+        # freshness checks stop running whenever a summary is passed.
+        old = {"payees": 100, "edges": 500, "gating_capable": 50, "age_days": 10}
+        collapsed = {"payees": 10, "edges": 50, "gating_capable": 5, "age_days": 2}
+        r = G.assess_refresh(old, collapsed, crawl={"payees": 100, "errors": 0})
+        self.assertFalse(r["accept"])
+        self.assertTrue(any("collapsed" in x for x in r["reasons"]))
+
+
 if __name__ == "__main__":
     unittest.main()

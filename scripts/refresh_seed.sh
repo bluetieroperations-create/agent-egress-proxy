@@ -53,8 +53,12 @@ python3 -c "import gzip,shutil,sys; shutil.copyfileobj(gzip.open(sys.argv[1],'rb
     data/reputation_seed.db.gz "$TMP_STORE"
 
 echo "refresh_seed: backfilling data/seed_payees.txt (--max-pages $PAGES) -> temp ..."
+# Capture the backfill's summary: it carries `errors` (payees that fetched NOTHING)
+# and `truncated` (payees cut off at the page cap). The guard below cannot see either
+# from the store alone -- every check it makes on the store is a floor.
+TMP_CRAWL="$WORK/crawl.json"
 python3 chain_backfill.py --store "$TMP_STORE" \
-    --payees-file data/seed_payees.txt --max-pages "$PAGES"
+    --payees-file data/seed_payees.txt --max-pages "$PAGES" | tee "$TMP_CRAWL"
 
 # INDEX DEPTH. The guard below validates the STORE only -- payees, edges, age --
 # so a shallow index build passes it while quietly shrinking coverage. Measured
@@ -75,7 +79,8 @@ echo "refresh_seed: gzipping candidate store ..."
 python3 -c "import gzip,shutil,sys; shutil.copyfileobj(open(sys.argv[1],'rb'), gzip.open(sys.argv[2],'wb',9))" "$TMP_STORE" "$TMP_GZ"
 
 echo "refresh_seed: running the refresh guard (candidate vs committed) ..."
-if python3 refresh_guard.py --old data/reputation_seed.db.gz --new "$TMP_GZ"; then
+if python3 refresh_guard.py --old data/reputation_seed.db.gz --new "$TMP_GZ" \
+        --crawl "$TMP_CRAWL"; then
     echo "refresh_seed: guard ACCEPTED -- promoting candidate over committed artifacts."
     mv "$TMP_GZ"  data/reputation_seed.db.gz
     mv "$TMP_CAT" data/category_index.json
