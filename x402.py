@@ -198,6 +198,63 @@ def build_requirements(price_atomic, pay_to, resource=None, asset=BASE_USDC,
 MAX_RESOURCE_URL = 2048  # cap the (attacker-controlled) resource url
 
 
+def canonical_resource_url(origin, requested, max_len=MAX_RESOURCE_URL):
+    """Build the 402's `resource.url`: OUR origin + the REQUEST's path.
+
+    THE ORIGIN CAN NEVER COME FROM THE REQUEST. `_challenge` used to pass the
+    client-supplied `resource` field straight through, and MEASURED on the live
+    service that meant a caller chose what our 402 advertised -- verified with
+    `https://evil.example/owned`, `javascript:alert(1)` and
+    `//evil.example/x`, each echoed back inside a real 402 carrying our payTo.
+
+    Why that matters beyond tidiness: the 402 is the document CDP indexes into
+    the Bazaar catalog, so an attacker could pay 0.001 USDC with a foreign
+    `resource` and have THEIR url catalogued against OUR payout address,
+    borrowing our settlement history for the price of one call.
+
+    The same change fixes the listing. Our own url was RELATIVE
+    ("/v1/forecast-payment") and no indexer can invent a host from a path --
+    measured, 2000 of 2000 catalogued entries carry an absolute url.
+
+    The PATH is still taken from the request, because different paths are
+    different priced resources. Only the origin is ours to decide.
+
+    With no `origin` configured the path is returned as-is, so an existing
+    deploy is unchanged -- but a client-supplied origin is discarded either way,
+    since that was never legitimate.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+    if not isinstance(requested, str):
+        requested = ""
+    # Strip control characters first: this value is echoed into a base64 response
+    # header and into a public catalog, and a newline forges header structure.
+    requested = "".join(ch for ch in requested
+                        if ch.isprintable() and not ch.isspace()) or "/"
+    parts = urlsplit(requested)
+    # DISCARD scheme and netloc unconditionally -- that is the whole guard. It
+    # also disposes of javascript:/data:/file: and of "//host/x", whose netloc
+    # urlsplit already parses out.
+    path = parts.path or "/"
+    if not path.startswith("/"):
+        path = "/" + path
+    # Normalize away traversal so a caller cannot name a url outside the path
+    # space we serve.
+    segments = []
+    for seg in path.split("/"):
+        if seg in ("", "."):
+            continue
+        if seg == "..":
+            if segments:
+                segments.pop()
+            continue
+        segments.append(seg)
+    path = "/" + "/".join(segments)
+    tail = urlunsplit(("", "", path, parts.query, ""))
+    base = (origin or "").strip().rstrip("/")
+    url = (base + tail) if base else tail
+    return url[:max_len]
+
+
 def build_resource_info(url, description="Blackwall payment forecast",
                         mime_type="application/json", service_name="Blackwall",
                         tags=None):
@@ -827,12 +884,19 @@ class BillingConfig:
                  pay_to=None, decimals=6, session_credits=1000,
                  session_price=None, session_ttl=86400,
                  service_name="Blackwall",
+                 #: OUR public origin, used to make the 402's `resource.url`
+                 #: absolute. Fed from BLACKWALL_ORIGIN / --origin, which
+                 #: already existed for openapi.json's servers[] and was simply
+                 #: never used here. NEVER taken from a request -- see
+                 #: canonical_resource_url.
+                 origin=None,
                  resource_description="Blackwall payment forecast",
                  resource_tags=("x402", "payments", "risk"),
                  input_schema=None, output_example=None):
         if not is_evm_address(pay_to or ""):
             raise ValueError("BillingConfig.pay_to must be a valid EVM address")
         self.service_name = service_name
+        self.origin = origin
         self.resource_description = resource_description
         self.resource_tags = resource_tags
         # The forecast input schema (for the Bazaar extension on the 402 body) so
@@ -891,7 +955,7 @@ class BillingGate:
         # v2: the resource/description/mimeType live in a top-level ResourceInfo,
         # not inside each accept. Build it from the resource URL being paid for.
         info = build_resource_info(
-            resource,
+            canonical_resource_url(getattr(self.cfg, "origin", None), resource),
             description=self.cfg.resource_description,
             service_name=self.cfg.service_name,
             tags=self.cfg.resource_tags)

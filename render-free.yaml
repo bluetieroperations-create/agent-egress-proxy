@@ -82,6 +82,15 @@ services:
         value: "100"
       # Secrets -- leave blank for a free public smoke test (billing OFF). Set them
       # later (Environment tab) to turn billing on for a real paid round-trip.
+      # OUR public origin. Makes the 402's `resource.url` ABSOLUTE, which is
+      # what CDP's Bazaar indexes (measured: 2000/2000 catalogued entries carry
+      # an absolute url; ours was the relative path and we are not listed). It
+      # is ALSO the security fix -- `resource` is client-supplied, and without a
+      # configured origin a caller's own absolute url was echoed into our 402,
+      # so an attacker could have THEIR url catalogued against OUR payTo for the
+      # price of one 0.001 USDC call. Set this to the public URL of THIS service.
+      - key: BLACKWALL_ORIGIN
+        sync: false
       - key: BLACKWALL_PAY_TO
         sync: false
       - key: BLACKWALL_FACILITATOR

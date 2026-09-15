@@ -519,7 +519,34 @@ class TestV2WireFormat(unittest.TestCase):
                              facilitator=X.MockFacilitator())
         r = gate.check("https://r")
         self.assertEqual(r.body["x402Version"], 2)
-        self.assertEqual(r.body["resource"]["url"], "https://r")
+        # THIS ASSERTION USED TO READ `== "https://r"` -- i.e. it pinned the
+        # caller's own absolute url being echoed into our 402. That was the
+        # vulnerability, not the contract: the `resource` field is
+        # client-supplied, so honouring its ORIGIN let a caller choose what our
+        # 402 (and the Bazaar entry bound to our payTo) pointed at. Measured
+        # live with https://evil.example/owned before the fix.
+        # With no origin configured, only the PATH survives.
+        self.assertEqual(r.body["resource"]["url"], "/")
+
+    def test_a_configured_origin_makes_the_402_resource_ABSOLUTE(self):
+        # The listing half: 2000/2000 catalogued Bazaar entries carry an
+        # absolute url, and an indexer cannot invent our host from a path.
+        gate = X.BillingGate(
+            X.BillingConfig(price="0.001", pay_to=PAY_TO,
+                            origin="https://blackwall-free.onrender.com"),
+            facilitator=X.MockFacilitator())
+        r = gate.check("/v1/forecast-payment")
+        self.assertEqual(r.body["resource"]["url"],
+                         "https://blackwall-free.onrender.com/v1/forecast-payment")
+
+    def test_a_configured_origin_still_discards_a_hostile_one(self):
+        gate = X.BillingGate(
+            X.BillingConfig(price="0.001", pay_to=PAY_TO,
+                            origin="https://blackwall-free.onrender.com"),
+            facilitator=X.MockFacilitator())
+        r = gate.check("https://evil.example/v1/forecast-payment")
+        self.assertEqual(r.body["resource"]["url"],
+                         "https://blackwall-free.onrender.com/v1/forecast-payment")
         acc = r.body["accepts"][0]
         self.assertEqual(acc["amount"], "1000")
         self.assertEqual(acc["network"], "eip155:8453")
@@ -656,6 +683,115 @@ class TestCdpFacilitator(unittest.TestCase):
         req = X.build_requirements(1000, PAY_TO, "https://r")
         self.assertFalse(fac.verify(make_payment(), req)["valid"])
         self.assertFalse(fac.settle(make_payment(), req)["success"])
+
+
+class TestCanonicalResourceUrl(unittest.TestCase):
+    """The 402's `resource.url` must be OURS, never the caller's.
+
+    FOUND while fixing the Bazaar listing, and it is the more serious half.
+    `_challenge` passed the request's `resource` field into
+    `build_resource_info` verbatim, and that field is CLIENT-SUPPLIED.
+    MEASURED ON THE LIVE SERVICE before fixing -- every one of these came back
+    inside a real 402 advertising our payTo:
+
+        resource=https://evil.example/owned  -> url 'https://evil.example/owned'
+        resource=javascript:alert(1)         -> url 'javascript:alert(1)'
+        resource=//evil.example/x            -> url '//evil.example/x'
+
+    Two consequences. (1) The 402 is the document CDP indexes into the Bazaar
+    catalog, so an attacker could pay us 0.001 USDC with a foreign `resource`
+    and have THEIR url catalogued against OUR payout address -- cheap, and it
+    borrows our settlement history. (2) Our own url was RELATIVE
+    ("/v1/forecast-payment"), which is why we are not indexed: an indexer cannot
+    invent our host from a path.
+
+    One change fixes both: the ORIGIN comes from our config and the PATH is all
+    that is taken from the request.
+    """
+
+    ORIGIN = "https://blackwall-free.onrender.com"
+
+    def test_a_client_supplied_ORIGIN_is_DISCARDED(self):
+        # THE ATTACK. MUTATION: honouring an absolute request url. A caller
+        # would then choose what our 402 -- and the Bazaar entry bound to our
+        # payTo -- points at.
+        for hostile in ("https://evil.example/owned",
+                        "http://evil.example/v1/forecast-payment",
+                        "//evil.example/protocol-relative",
+                        "https://user:pw@evil.example/x"):
+            got = X.canonical_resource_url(self.ORIGIN, hostile)
+            self.assertTrue(got.startswith(self.ORIGIN + "/"),
+                            "%r -> %r escaped our origin" % (hostile, got))
+            self.assertNotIn("evil.example", got)
+
+    def test_a_non_http_scheme_cannot_survive(self):
+        # MUTATION: passing the scheme through. `javascript:` in a field that
+        # gets rendered by a catalog UI is an XSS primitive we would be
+        # publishing ourselves.
+        for bad in ("javascript:alert(1)", "data:text/html,<script>",
+                    "file:///etc/passwd"):
+            got = X.canonical_resource_url(self.ORIGIN, bad)
+            self.assertTrue(got.startswith(self.ORIGIN + "/"), got)
+            for scheme in ("javascript", "data:", "file:"):
+                self.assertNotIn(scheme, got.lower())
+
+    def test_the_PATH_is_kept_because_it_identifies_the_priced_resource(self):
+        # Different paths are different priced resources, so the path must
+        # survive -- this is not a "replace everything with a constant" fix.
+        self.assertEqual(X.canonical_resource_url(self.ORIGIN, "/v1/forecast-payment"),
+                         self.ORIGIN + "/v1/forecast-payment")
+        self.assertEqual(
+            X.canonical_resource_url(self.ORIGIN, "https://evil.example/v1/x?a=b"),
+            self.ORIGIN + "/v1/x?a=b")
+
+    def test_a_relative_path_becomes_ABSOLUTE(self):
+        # The listing half. MUTATION: leaving it relative -- measured 2000/2000
+        # catalogued entries carry an absolute url.
+        got = X.canonical_resource_url(self.ORIGIN, "v1/forecast-payment")
+        self.assertEqual(got, self.ORIGIN + "/v1/forecast-payment")
+
+    def test_traversal_is_normalized_away(self):
+        # MUTATION: naive concatenation. `..` segments would let a caller
+        # advertise a url outside the path space we serve.
+        for probe in ("/a/../../../etc/passwd", "../../secret", "/./x/../y"):
+            got = X.canonical_resource_url(self.ORIGIN, probe)
+            self.assertTrue(got.startswith(self.ORIGIN + "/"), got)
+            self.assertNotIn("..", got)
+
+    def test_NO_ORIGIN_configured_leaves_the_path_alone(self):
+        # RESTRAINT CONTROL. An operator with no BLACKWALL_ORIGIN keeps today's
+        # behaviour for their own path -- so this change cannot break a working
+        # deploy -- but a client-supplied ORIGIN is still discarded, because that
+        # was never legitimate.
+        self.assertEqual(X.canonical_resource_url(None, "/v1/forecast-payment"),
+                         "/v1/forecast-payment")
+        self.assertEqual(X.canonical_resource_url("", "https://evil.example/x"),
+                         "/x")
+
+    def test_it_is_bounded(self):
+        # MUTATION: dropping the cap. The url goes into a base64 response
+        # header; an unbounded one produces a header proxies silently drop.
+        got = X.canonical_resource_url(self.ORIGIN, "/" + "x" * 9000)
+        self.assertLessEqual(len(got), X.MAX_RESOURCE_URL)
+
+    def test_junk_never_raises(self):
+        for junk in (None, 7, b"x", [], {}, "", "   "):
+            got = X.canonical_resource_url(self.ORIGIN, junk)
+            self.assertIsInstance(got, str)
+            self.assertTrue(got.startswith(self.ORIGIN), got)
+
+    def test_control_characters_are_stripped(self):
+        # The url is echoed into a header and into a public catalog; a newline
+        # would forge header structure. Same untrusted-echo class as
+        # payee_syntax's hint and approvals' decided_by.
+        # MUTATION TESTING CAUGHT THIS TEST, not the code: the string here was
+        # written through a heredoc and contained LITERAL backslash-r-n rather
+        # than real control characters, so removing the strip left it passing.
+        # Built from chr() now so there is no escaping layer to get wrong.
+        hostile = "/v1/x" + chr(13) + chr(10) + "X-Injected: 1"
+        got = X.canonical_resource_url(self.ORIGIN, hostile)
+        for ch in (chr(13), chr(10), chr(0), chr(9), " "):
+            self.assertNotIn(ch, got, "control char %r survived" % ch)
 
 
 class TestChooseFacilitator(unittest.TestCase):

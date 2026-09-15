@@ -2847,6 +2847,11 @@ def main(argv=None):
         billing = BillingGate(
             BillingConfig(price=args.price, pay_to=args.pay_to,
                           network=args.network,
+                          # Makes the 402's `resource.url` ABSOLUTE. BLACKWALL_ORIGIN
+                          # / --origin already existed for openapi.json's servers[]
+                          # and was simply never used here, which is why our url was
+                          # relative and (measured) no Bazaar entry looks like that.
+                          origin=args.origin,
                           asset=default_billing_asset(args.network, args.asset,
                                                        BASE_USDC, BASE_SEPOLIA_USDC)),
             facilitator=facilitator, pricing=pricing)
