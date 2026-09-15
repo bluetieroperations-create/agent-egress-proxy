@@ -45,42 +45,37 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   targeted not firehose; idempotent),
   `addresses.py` (EVM address validation/normalization),
   `x402.py` (Blackwall's own x402 billing: 402 challenge, facilitator seam,
-  replay guard, sessions.
-  THE 402's `resource.url` IS OURS, NOT THE CALLER'S (2026-09-15,
-  `canonical_resource_url`). Found while fixing the Bazaar listing and it is the
-  more serious half: `_challenge` passed the request's `resource` field into
-  `build_resource_info` VERBATIM, and that field is CLIENT-SUPPLIED. MEASURED ON
-  THE LIVE SERVICE before fixing -- `https://evil.example/owned`,
-  `javascript:alert(1)` and `//evil.example/x` each came back inside a real 402
-  advertising our `payTo`. The 402 is the document CDP indexes into the Bazaar,
-  so an attacker could pay 0.001 USDC with a foreign `resource` and have THEIR
-  url catalogued against OUR payout address, borrowing our settlement history for
-  one call; and `javascript:` in a field a catalog UI renders is an XSS primitive
-  we would publish ourselves. THE ORIGIN IS OURS, THE PATH IS THEIRS: scheme and
-  netloc are discarded unconditionally (which also disposes of javascript:/data:/
-  file: and of `//host/x`, whose netloc urlsplit parses out), traversal segments
-  normalize away, control characters are stripped (the value is echoed into a
-  base64 header where a newline forges header structure -- the untrusted-echo
-  class again), and the length is capped. The PATH still comes from the request
-  because different paths are different priced resources. Fed from
-  `BLACKWALL_ORIGIN`/`--origin`, which ALREADY EXISTED for openapi.json's
-  `servers[]` and was simply never used here -- which is also why our url was
-  RELATIVE and why we are not in the Bazaar (measured: 2000/2000 catalogued
-  entries carry an ABSOLUTE url, and an indexer cannot invent a host from a
-  path). CORRECTION TO MY OWN FIRST DIAGNOSIS: `build_resource_info` returns a
-  v2-spec ResourceInfo OBJECT, so the object shape was right all along and CDP's
-  string is its projection of `.url`; the fix is absoluteness, not stringness.
-  ONE TEST encoded the old behaviour (`resource.url == "https://r"` -- i.e. it
-  pinned the caller's own url being echoed) and was replaced. Restraint: with no
-  origin configured the path is unchanged, so no existing deploy breaks, and a
-  hostile origin is discarded either way. `extensions.bazaar.info` is present in
-  2000/2000 catalogued entries and we emit only `schema` -- DELIBERATELY left
-  alone, because the absolute url is the one change with a mechanism behind it
-  and changing two things at once means a listing that appears tells you nothing
-  about which mattered. 6 mutations verified killed, one of which caught a TEST
-  defect rather than a code one: the control-character case held LITERAL
-  backslash-r-n from a heredoc, so stripping could be removed with the test still
-  green; it is built from `chr()` now. See `docs/BAZAAR_LISTING.md`),
+  replay guard, sessions. A HALF-SET CDP PAIR IS NOW A BOOT ERROR
+  (`FacilitatorConfigError`), not a silent fallback -- found 2026-09-15 by the
+  parallel Migrations session while reviewing the CDP cutover plan, and confirmed
+  end to end before fixing. `choose_facilitator` gated on
+  `if cdp_id and cdp_secret`, so setting ONE of them fell through to
+  `facilitator_url` -- which reads as harmless and is not: on MAINNET that URL is
+  a keyless facilitator that settles real USDC perfectly well. So an operator who
+  pasted `CDP_API_KEY_ID` and fumbled the secret got a service taking real
+  payments through the OLD facilitator while believing they had cut over, and
+  their evidence that CDP worked was a settlement CDP never touched. The failure
+  mode is not "it doesn't work", it is "it works and proves the wrong thing" --
+  the same shape as `cdp_preflight.py` defaulting to TRACEIPT's `payTo` under a
+  comment asserting it was the live one. Setting either variable states the
+  operator's intent; honouring half of it answers a different question. Same rule
+  `receipt_signer.py` already applies to a malformed signing seed: set-but-bad
+  means they intended the feature, so fail LOUD at boot. Bounded blast radius --
+  the caller is inside `if args.pay_to`, so it can only stop the deploy that turns
+  billing ON. `billing_preflight.check_facilitator` catches it and grades FAIL
+  (never WARN: no amount of waiting fixes a misconfiguration), which mattered
+  because that module MODELLED the old fallback faithfully and therefore BLESSED
+  it -- with the secret missing it probed the keyless URL, found mainnet
+  supported, and returned OK, so the check whose entire job is "what happens if I
+  flip billing on?" PASSED the most likely way a cutover fails. TWO TESTS encoded
+  the old behaviour and were replaced, one of them (`test_partial_creds_fall_back_
+  to_the_url_path`) asserting OK as correct. MEASURED LIMIT, so the operator is
+  not misled twice: the boot banner proves the vars are PRESENT, not that the
+  credential is VALID -- a garbage secret still boots and still prints
+  "CDP facilitator (authenticated) ... Bazaar-eligible". Validity is
+  `check_settlement_auth`'s 401/403 -> FAIL, or the settlement itself. Restraint
+  controls: neither var set still boots keyless, and billing OFF is unaffected.
+  6 mutations verified killed),
   `cdp_auth.py` (pure-Python Ed25519 (RFC 8032) + CDP Bearer-JWT, so the
   `CdpFacilitator` in x402.py can settle through the authenticated Coinbase CDP
   facilitator -- the one whose settlements Bazaar catalogs),

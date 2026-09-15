@@ -827,10 +827,54 @@ class TestChooseFacilitator(unittest.TestCase):
         fac, _ = X.choose_facilitator(None, None, None)
         self.assertIsNone(fac)
 
-    def test_partial_cdp_creds_do_not_select_cdp(self):
-        # Only one of the pair set -> not CDP (would fail to mint a token).
-        fac, _ = X.choose_facilitator("https://facilitator.x402.rs", "kid", None)
+    def test_half_set_cdp_creds_are_a_boot_ERROR_not_a_silent_fallback(self):
+        # THE SILENT-CUTOVER BUG. This test previously asserted the OPPOSITE --
+        # that one-of-the-pair "does not select CDP" -- which is true and is not
+        # the point: it fell back to `facilitator_url`, and on mainnet that is a
+        # keyless facilitator that settles perfectly well. So an operator who
+        # pasted CDP_API_KEY_ID and fumbled the secret got a service that
+        # settled real USDC through the OLD facilitator while they believed they
+        # had cut over. A successful settlement is then indistinguishable from a
+        # successful CUTOVER -- the failure mode is not "it doesn't work", it is
+        # "it works and proves the wrong thing".
+        #
+        # Setting either variable states the operator's intent. Honouring half of
+        # it is answering a different question from the one they asked. Same rule
+        # receipt_signer.py already applies to a malformed BLACKWALL_SIGNING_SEED:
+        # set-but-bad means they intended the feature, so fail LOUD.
+        #
+        # Mutation: `and` -> `or` in the guard, or dropping the raise entirely;
+        # either restores the silent fallback and this test fails.
+        for cid, secret in (("kid", None), (None, self.SECRET),
+                            ("kid", ""), ("", self.SECRET)):
+            with self.assertRaises(X.FacilitatorConfigError) as caught:
+                X.choose_facilitator("https://facilitator.x402.rs", cid, secret)
+            msg = str(caught.exception)
+            # It must name BOTH variables and which one is missing -- an operator
+            # reading a crash-looped deploy log has only this string.
+            self.assertIn("CDP_API_KEY_ID", msg)
+            self.assertIn("CDP_API_KEY_SECRET", msg)
+
+    def test_the_error_names_the_variable_that_is_actually_missing(self):
+        # Mutation: always naming the same side. Getting this backwards sends the
+        # operator to re-paste the field that was already correct.
+        with self.assertRaises(X.FacilitatorConfigError) as c:
+            X.choose_facilitator(None, "kid", None)
+        self.assertIn("CDP_API_KEY_SECRET is missing", str(c.exception))
+        with self.assertRaises(X.FacilitatorConfigError) as c:
+            X.choose_facilitator(None, None, self.SECRET)
+        self.assertIn("CDP_API_KEY_ID is missing", str(c.exception))
+
+    def test_neither_set_is_still_a_clean_keyless_fallback(self):
+        # RESTRAINT CONTROL. The guard must fire ONLY on a HALF-set pair. An
+        # operator running deliberately keyless has set neither, and that is a
+        # supported configuration -- turning it into a boot failure would take
+        # the free public deploy down.
+        fac, note = X.choose_facilitator("https://facilitator.x402.rs", None, None)
+        self.assertIsInstance(fac, X.HttpFacilitator)
         self.assertNotIsInstance(fac, X.CdpFacilitator)
+        fac2, _ = X.choose_facilitator(None, None, None)
+        self.assertIsNone(fac2)
 
     def test_cdp_host_guard_rejects_lookalike_urls(self):
         # THE TOKEN-LEAK BUG: the "is this a CDP host?" test must be a real

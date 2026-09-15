@@ -631,6 +631,15 @@ class CdpFacilitator(HttpFacilitator):
         return {"Authorization": "Bearer " + token}
 
 
+class FacilitatorConfigError(ValueError):
+    """The facilitator configuration is internally inconsistent.
+
+    Raised for a state no operator can have intended, where guessing which half
+    they meant would route real money. Currently one case: exactly ONE of
+    CDP_API_KEY_ID / CDP_API_KEY_SECRET set.
+    """
+
+
 def choose_facilitator(facilitator_url, cdp_id, cdp_secret, timeout=8.0, settle_timeout=25.0):
     """
     Pick the facilitator from config, returning (facilitator_or_None, note).
@@ -641,7 +650,31 @@ def choose_facilitator(facilitator_url, cdp_id, cdp_secret, timeout=8.0, settle_
     misroute settlement and leak an auth token, so a non-CDP `facilitator_url` is
     explicitly ignored (with a note) rather than silently honored. An explicit
     CDP host in `facilitator_url` (e.g. a staging endpoint) IS honored.
+
+    A HALF-SET CDP PAIR RAISES `FacilitatorConfigError` rather than falling back.
+    This used to fall through to `facilitator_url`, which reads as harmless and
+    is not: on MAINNET that URL is a keyless facilitator which settles real USDC
+    perfectly well, so an operator who pasted the key id and fumbled the secret
+    got a service that took real payments through the OLD facilitator while they
+    believed they had cut over to CDP. The settlement succeeds, so success is
+    indistinguishable from a successful cutover -- and the operator's evidence
+    that CDP works is a payment CDP never touched. Setting either variable states
+    the intent; honouring half of it answers a different question. Same rule
+    receipt_signer.py applies to a malformed signing seed: set-but-bad means the
+    operator intended the feature, so fail LOUD at boot. Bounded blast radius --
+    the caller only reaches here when billing is ON (`if args.pay_to`), so this
+    can only stop the deploy that turns billing on, which is the one that matters.
     """
+    if bool(cdp_id) != bool(cdp_secret):
+        missing = "CDP_API_KEY_SECRET" if cdp_id else "CDP_API_KEY_ID"
+        present = "CDP_API_KEY_ID" if cdp_id else "CDP_API_KEY_SECRET"
+        raise FacilitatorConfigError(
+            "half-configured CDP facilitator: %s is set but %s is missing. "
+            "Refusing to fall back to a keyless facilitator -- on mainnet that "
+            "would settle real payments through the wrong facilitator while "
+            "looking like a successful CDP cutover. Set both "
+            "CDP_API_KEY_ID and CDP_API_KEY_SECRET, or unset both to run "
+            "deliberately keyless." % (present, missing))
     if cdp_id and cdp_secret:
         if facilitator_url and _is_cdp_host(facilitator_url):
             url = facilitator_url

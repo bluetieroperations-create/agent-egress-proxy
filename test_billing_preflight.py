@@ -389,14 +389,25 @@ class TestCdpSelection(unittest.TestCase):
                              cdp_secret="secret",
                              authed_fetch=self._authed(self.KINDS))
 
-    def test_partial_creds_fall_back_to_the_url_path(self):
-        # Mutation: `cdp_id or cdp_secret`. choose_facilitator requires BOTH;
-        # with one set it uses the URL, and the preflight must model the same.
-        def fetch(url, **kw):
-            return {"kinds": [{"scheme": "exact", "network": "base"}]}
-        row = bp.check_facilitator("https://f.example", "exact", "base",
-                                   fetch=fetch, cdp_id="id")
-        self.assertEqual(row["status"], bp.OK)
+    def test_partial_creds_FAIL_they_do_not_fall_back_to_the_url_path(self):
+        # THIS TEST ASSERTED THE OPPOSITE AND WAS WRONG. It modelled the old
+        # silent fallback faithfully -- half-set CDP pair, probe the keyless
+        # URL, mainnet supported, status OK -- and so the preflight whose whole
+        # purpose is "what happens if I flip billing on?" PASSED the single most
+        # likely way a CDP cutover fails. Worse, the keyless facilitator it fell
+        # back to settles mainnet fine, so the operator would get a real
+        # settlement and read it as proof CDP worked.
+        #
+        # Mutation: dropping the FacilitatorConfigError catch (traceback instead
+        # of a graded row), or grading it WARN/OK. A misconfiguration that no
+        # amount of waiting fixes is FAIL, by this module's own rule.
+        def fetch(url, **kw):                       # must never be reached
+            raise AssertionError("probed a facilitator on a half-set CDP pair")
+        for kwargs in ({"cdp_id": "id"}, {"cdp_secret": "secret"}):
+            row = bp.check_facilitator("https://f.example", "exact", "base",
+                                       fetch=fetch, **kwargs)
+            self.assertEqual(row["status"], bp.FAIL, kwargs)
+            self.assertIn("CDP_API_KEY", row["detail"])
 
 
 class TestCdpAuthenticatedGet(unittest.TestCase):

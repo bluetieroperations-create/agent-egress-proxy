@@ -415,17 +415,28 @@ def check_facilitator(url, scheme, network, fetch=None,
         configuration error which will never work no matter how long you wait,
         and it presents as "every payment is rejected" in production.
     """
-    from x402 import to_caip2
+    from x402 import FacilitatorConfigError, choose_facilitator, to_caip2
+
+    # Mirror `choose_facilitator` by CALLING it, so this cannot drift from the
+    # selection the server actually makes. Two things worth an operator's
+    # attention come out of that call: CDP is the only Bazaar-cataloging path,
+    # and a non-CDP `facilitator_url` set alongside CDP creds is silently
+    # IGNORED (deliberately -- sending a CDP Bearer JWT to a community
+    # facilitator would leak an auth token).
+    #
+    # AND it is where a HALF-SET CDP pair is caught. This check previously
+    # modelled the old silent fallback faithfully and therefore BLESSED it: with
+    # CDP_API_KEY_ID set and the secret missing it probed the keyless URL, found
+    # mainnet supported, and returned OK -- so the module whose entire job is
+    # "what happens if I flip billing on?" passed the single most likely way a
+    # CDP cutover fails. A test even pinned that as correct.
+    try:
+        selected, selected_note = choose_facilitator(url, cdp_id, cdp_secret)
+    except FacilitatorConfigError as e:
+        return _check("facilitator", FAIL, _safe_text(e, 400))
 
     if cdp_id and cdp_secret:
-        # Mirror `choose_facilitator` by CALLING it, so this cannot drift from
-        # the selection the server actually makes. Two things worth an operator's
-        # attention come out of that call: CDP is the only Bazaar-cataloging
-        # path, and a non-CDP `facilitator_url` set alongside CDP creds is
-        # silently IGNORED (deliberately -- sending a CDP Bearer JWT to a
-        # community facilitator would leak an auth token).
-        from x402 import choose_facilitator
-        facilitator, note = choose_facilitator(url, cdp_id, cdp_secret)
+        facilitator, note = selected, selected_note
         base = getattr(facilitator, "base_url", "") or ""
         # PROBE IT. This used to return NOTE with "/supported is authenticated,
         # so it was NOT probed here" -- which meant the single most likely way a
