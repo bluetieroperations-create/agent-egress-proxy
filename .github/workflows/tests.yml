@@ -76,7 +76,12 @@ jobs:
             test_rpc_node.py test_auth_sim.py \
             test_directory_liveness.py test_price_corroboration.py \
             test_advertised_prices.py test_deploy_manifest.py \
-            test_receipt_signer.py
+            test_receipt_signer.py \
+            test_approvals.py test_token_decimals.py test_asset_coverage.py \
+            test_billing_preflight.py test_honeypot.py test_mcp_http.py \
+            test_payee_syntax.py test_reachability_ledger.py \
+            test_screen_payer.py test_seller_portal.py test_seller_report.py \
+            test_upto_scheme.py test_x402_challenge.py test_x402_pay.py
 
       # The engine is stdlib-only and the suite above proves it runs that way.
       # Production installs a NATIVE Ed25519 backend (requirements-signing.txt),
