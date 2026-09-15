@@ -1623,6 +1623,28 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   independent lock `REVERT_AXIS_GATES` (default False) -- `build_issuer_grades(...,
   revert_summaries=)` attaches it per issuer, `_fold_revert_axis` drags to LOW only when the
   lock is on AND evidence is sufficient AND the rate is material; dormant on today's corpus),
+  `cdp_bazaar_check.py` (are we in the CDP Bazaar catalog yet? NEEDS NO
+  CREDENTIALS -- it used to mint a Bearer JWT and refuse to run without
+  `CDP_API_KEY_ID`/`CDP_API_KEY_SECRET`, so the check went unrun for that reason
+  alone; MEASURED 2026-09-15 both `/discovery/resources` and `/discovery/search`
+  answer 200 UNAUTHENTICATED, which makes sense for a marketplace. THE SEARCH
+  ENDPOINT CANNOT PROVE ABSENCE and that is the trap: `?q=` IS honoured when
+  there are matches (`q=onesource` -> 19 of 20 contain it) but on a MISS it
+  silently returns 20 ARBITRARY entries with `partialResults: true`, so a miss
+  looks like a page of unrelated sellers -- search may only CONFIRM a hit, and
+  absence is settled by the full offset-paginated scan against the
+  `pagination.total` the API states (15,572 entries). Needles are now a host and
+  the payout address ONLY: the bare product name was one, and since matching is a
+  substring test over each entry's whole JSON, the search miss-fallback could
+  match somebody else's description and report us LISTED when absent. Exit codes
+  0/1/2 (listed / not yet / inconclusive) -- every outcome used to exit 0, so a
+  scheduled run could not tell them apart. FIRST RUN after the first CDP
+  settlement: NOT listed, full 15,572 scanned. Likely cause MEASURED against
+  2000 listed entries -- `resource` is an absolute URL STRING in 2000/2000 and
+  `extensions.bazaar.info` present in 2000/2000, while we advertise a DICT whose
+  `.url` is RELATIVE and emit only `schema`. Stated as a hypothesis, not a proof:
+  the catalog entry is what CDP stores and may be normalized, but an indexer
+  cannot invent our host from a relative path. See `docs/BAZAAR_LISTING.md`),
   `ROADMAP.md`, `docs/DATA_SOURCE_SPIKE.md`. Tests:
   `test_blackwall.py`, `test_ledger.py`, `test_reputation_onchain.py`,
   `test_settlement_watch.py`, `test_addresses.py`, `test_x402.py`,
