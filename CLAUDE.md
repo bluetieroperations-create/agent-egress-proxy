@@ -27,6 +27,40 @@ Guidance for working in this repo.
 > Session handoffs are **not kept in this repo** — it is public. They are delivered
 > to the operator directly. Ask for the current one rather than looking for a file.
 
+## Destructive operations: the branch-deletion near-miss
+
+**Nothing is deleted without per-item human approval.** Branches, tags, files,
+releases, repos. No force-push, no rebase onto a shared branch, no "cleanup".
+
+Recorded because it nearly happened on 2026-09-15. A GitHub account-maintenance
+sweep flagged 11 branches across three repos as "merged but undeleted", derived by
+matching branch names against the head refs of MERGED pull requests. Every one was
+wrong. A branch can have a merged PR and then keep receiving commits -- which is
+exactly how this account works, since the same `claude/*` branch is reused across
+sessions. Measured with `compare/{default}...{branch}`:
+
+  claude/blackwall-x402-integration-j3rdab   ahead=27  behind=0   <- the LIVE Blackwall branch named above
+  fix/taxonomy-wins-reversibility            ahead=9
+  chore/sep-census-and-sol-decimals          ahead=3
+  feat/approvals-loop, feat/demo-malformed-payee, +6 more   ahead>=1 each
+
+Acting on that report would have destroyed ~50 commits of unmerged work. **A branch
+name appearing on a merged PR proves nothing about whether the branch is live.**
+
+The only valid staleness test is `ahead_by == 0` from the compare API. Even then a
+branch is merely a CANDIDATE, and only after confirming it is not the default
+branch, not the head of an open PR, not named in this file, and not the working
+branch of a scheduled Routine -- `claude/cold-start-data-monetization-qucjk2` (MCP
+ecosystem reading, monthly) and `research/mcp-and-ecosystem-history` are both
+claimed that way, and deleting either silently breaks a scheduled job. Record the
+commit SHA in any such report so the decision is reversible.
+
+Related failure, same day and same shape: a `contents/` API call returned proxy
+HTTP 400 and the resulting empty list read as "this repo has no LICENSE and no
+files at all". **A failed call is not an empty result.** Check the HTTP status and
+look for a `message` key before treating a response as data; for file presence,
+`git ls-tree -r --name-only HEAD` is authoritative where the API is not.
+
 ## Repo
 
 Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
