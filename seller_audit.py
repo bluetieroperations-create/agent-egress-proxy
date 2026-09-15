@@ -326,6 +326,40 @@ def verify_attestation(attestation, *, now, signer=None, revoked=None):
     return check_window((attestation or {}).get("payload"), now, revoked)
 
 
+def describe_registry(registry):
+    """(level, message) for the boot banner. PURE, so the branch is testable.
+
+    Lived inline in `blackwall.main()`, where no unit test could reach it --
+    mutation testing showed the "do not say ON" guard could be deleted with
+    every test still green. Extracted per this repo's convention that the
+    decision-critical part is a small pure function, rather than adding a
+    subprocess test to reach a branch that should not have been buried.
+
+    level is "warn" when the tier cannot do its job and "info" otherwise, so the
+    caller picks the stream without re-deciding anything.
+    """
+    if registry is None:
+        return "info", "verified-merchant tier OFF (not configured)"
+    unusable = getattr(registry, "unusable", None)
+    skips = list(getattr(registry, "skip_reasons", None) or [])
+    loaded = getattr(registry, "loaded", 0)
+    skipped = getattr(registry, "skipped", 0)
+    try:
+        revoked = registry.published_revocations()["count"]
+    except Exception:
+        revoked = 0
+    if unusable:
+        msg = ("verified-merchant tier CONFIGURED BUT INERT -- %s" % unusable)
+        if skips:
+            msg += " [%d skipped: %s]" % (skipped, "; ".join(skips))
+        return "warn", msg
+    msg = ("verified-merchant tier ON (%d badge(s) loaded, %d skipped, "
+           "%d revoked)" % (loaded, skipped, revoked))
+    if skips:
+        return "warn", msg + " -- skipped: %s" % "; ".join(skips)
+    return "info", msg
+
+
 def load_registry(attestations_path=None, revocations_path=None, signer=None):
     """Build a SellerRegistry from committed artifacts. Returns (registry, error).
 
@@ -356,6 +390,23 @@ def load_registry(attestations_path=None, revocations_path=None, signer=None):
         registry = SellerRegistry(signer=signer, revocations=store)
     except Exception as e:
         return None, "registry unavailable (%s)" % (e,)
+    #: A registry whose SIGNER is unavailable can verify nothing and issue
+    #: nothing, so every badge is skipped. It fails CLOSED -- no floor is ever
+    #: granted -- but the boot banner used to announce it as ON regardless, and
+    #: the skip COUNT points an operator at their badge file when the real cause
+    #: is a missing seed. Measured at boot: a VALID badge with no
+    #: BLACKWALL_SIGNING_SEED gave "tier ON (0 loaded, 1 skipped)", and with an
+    #: empty file "ON (0 loaded, 0 skipped)", which reads as healthy.
+    registry.unusable = None
+    if not getattr(registry._signer, "available", False):
+        import receipt_signer
+        registry.unusable = (
+            "no signing seed (%s) -- every badge will be skipped and no trust "
+            "floor can be granted" % receipt_signer.ENV_SEED)
+    #: WHY a badge was skipped, not just how many. "1 skipped" cannot
+    #: distinguish an unverifiable signature from malformed JSON, and those have
+    #: completely different fixes.
+    registry.skip_reasons = []
     loaded, skipped = 0, 0
     if attestations_path and os.path.exists(attestations_path):
         try:
@@ -367,12 +418,18 @@ def load_registry(attestations_path=None, revocations_path=None, signer=None):
                     try:
                         registry.add(json.loads(line))
                         loaded += 1
-                    except Exception:
+                    except Exception as e:
                         # Includes an envelope that FAILS VERIFICATION: `add`
                         # raises, so a tampered row is skipped and counted
                         # rather than stored. That is the whole reason the
-                        # signature check moved to entry.
+                        # signature check moved to entry. The REASON is kept
+                        # (bounded, de-duplicated) because the count alone sends
+                        # an operator to the wrong file.
                         skipped += 1
+                        reason = str(e)[:160] or type(e).__name__
+                        if reason not in registry.skip_reasons \
+                                and len(registry.skip_reasons) < 5:
+                            registry.skip_reasons.append(reason)
         except Exception as e:
             return registry, ("attestation file %r unreadable (%s) -- no "
                               "merchant gets a floor"

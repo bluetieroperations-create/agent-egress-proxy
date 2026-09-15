@@ -3106,12 +3106,16 @@ def main(argv=None):
         sys.stderr.write("blackwall: WARNING verified-merchant tier %s\n" % _sr_err)
         sys.stderr.flush()
     elif seller_registry is not None:
-        sys.stdout.write(
-            "blackwall: verified-merchant tier ON (%d badge(s) loaded, %d "
-            "skipped, %d revoked)\n"
-            % (getattr(seller_registry, "loaded", 0),
-               getattr(seller_registry, "skipped", 0),
-               seller_registry.published_revocations()["count"]))
+        # The decision lives in seller_audit.describe_registry (PURE), because
+        # mutation testing showed a banner branch buried here was reachable by
+        # no test: the "do not say ON for an inert tier" guard could be deleted
+        # with every test still green.
+        _level, _msg = _seller_audit.describe_registry(seller_registry)
+        if _level == "warn":
+            sys.stderr.write("blackwall: WARNING %s\n" % _msg)
+            sys.stderr.flush()
+        else:
+            sys.stdout.write("blackwall: %s\n" % _msg)
 
     # Advertised-vs-settled price-divergence watch-list (price_integrity.py); fail-open.
     divergence_index, _div_err = load_index_json(

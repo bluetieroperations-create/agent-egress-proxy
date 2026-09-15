@@ -4,6 +4,7 @@ the mutation it kills. The anti-corruption rules (earned, bounded, revocable, ne
 a STOP override) are the point, so they get the most coverage.
 """
 import base64
+import json
 import os
 import time
 import shutil
@@ -680,6 +681,95 @@ class TestDurableRevocation(unittest.TestCase):
         # And it is genuinely usable -- revocation still works.
         reg.revoke(MERCHANT)
         self.assertIn(MERCHANT, reg.published_revocations()["revoked"])
+
+    def test_a_configured_registry_with_NO_SIGNER_reports_itself_unusable(self):
+        # PRE-MERGE AUDIT (low-med). MEASURED at boot: with
+        # BLACKWALL_SELLER_REGISTRY set and BLACKWALL_SIGNING_SEED unset, a
+        # VALID badge was skipped and the banner still read
+        #   "verified-merchant tier ON (0 badge(s) loaded, 1 skipped, ...)"
+        # It fails CLOSED -- no signer means nothing verifies means no floor is
+        # granted -- so this is not a hole. It is the "announced as ON while
+        # doing nothing" pattern this repo keeps hitting (honeypot's binding
+        # hazard, remote_ledger's read-only token), and the counts point the
+        # operator the WRONG WAY: "1 skipped" reads as a malformed badge file,
+        # not as a missing seed. With an empty file it reads "0 loaded, 0
+        # skipped", which looks healthy.
+        # MUTATION: dropping `unusable` -- the caller cannot distinguish
+        # "configured and working" from "configured and inert".
+        reg, err = SA.load_registry(None, self.path,
+                                    signer=SA.attestation_signer(seed=None,
+                                                                 environ={}))
+        self.assertIsNotNone(reg)
+        self.assertTrue(getattr(reg, "unusable", None),
+                        "a registry whose signer is unavailable must say so")
+        self.assertIn("SIGNING_SEED", reg.unusable)
+
+    def test_a_WORKING_registry_is_not_flagged_unusable(self):
+        # RESTRAINT CONTROL: the flag must not fire on a healthy tier.
+        reg, err = SA.load_registry(None, self.path, signer=self.signer)
+        self.assertIsNone(err)
+        self.assertFalse(getattr(reg, "unusable", None))
+
+    def test_skip_REASONS_are_surfaced_so_the_cause_is_diagnosable(self):
+        # MUTATION: discarding the reason. "1 skipped" alone cannot distinguish
+        # an unverifiable signature from malformed JSON, and those have
+        # completely different fixes.
+        path = os.path.join(self.tmp, "mixed.jsonl")
+        good = SA.sign_attestation(MERCHANT, self.audit,
+                                   issued_at=int(time.time()), ttl=3600,
+                                   signer=self.signer)
+        forged = dict(good, payload=dict(good["payload"], floor="0.990000"))
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(good) + "\n")
+            fh.write(json.dumps(forged) + "\n")
+            fh.write("not json\n")
+        reg, err = SA.load_registry(path, self.path, signer=self.signer)
+        self.assertEqual(reg.loaded, 1)
+        self.assertEqual(reg.skipped, 2)
+        self.assertTrue(reg.skip_reasons, "no skip reasons recorded")
+        joined = " | ".join(reg.skip_reasons).lower()
+        self.assertIn("signature", joined)
+
+    def test_describe_registry_refuses_to_say_ON_for_an_inert_tier(self):
+        # MUTATION TESTING FOUND THIS BRANCH UNREACHABLE. It was inline in
+        # blackwall.main(), so "say ON anyway" survived every test. Extracted to
+        # a pure function rather than papered over with a subprocess test.
+        reg, _ = SA.load_registry(None, self.path,
+                                  signer=SA.attestation_signer(seed=None,
+                                                               environ={}))
+        level, msg = SA.describe_registry(reg)
+        self.assertEqual(level, "warn")
+        self.assertIn("INERT", msg)
+        self.assertNotIn("tier ON", msg)
+        self.assertIn("SIGNING_SEED", msg)
+
+    def test_describe_registry_says_ON_for_a_working_tier(self):
+        reg, _ = SA.load_registry(None, self.path, signer=self.signer)
+        level, msg = SA.describe_registry(reg)
+        self.assertEqual(level, "info")
+        self.assertIn("tier ON", msg)
+
+    def test_describe_registry_WARNS_when_badges_were_skipped(self):
+        # A working tier that silently dropped a badge is still something an
+        # operator must see, and the REASON must travel with it.
+        path = os.path.join(self.tmp, "one_bad.jsonl")
+        good = SA.sign_attestation(MERCHANT, self.audit,
+                                   issued_at=int(time.time()), ttl=3600,
+                                   signer=self.signer)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(good) + "\n")
+            fh.write(json.dumps(dict(good,
+                     payload=dict(good["payload"], floor="0.990000"))) + "\n")
+        reg, _ = SA.load_registry(path, self.path, signer=self.signer)
+        level, msg = SA.describe_registry(reg)
+        self.assertEqual(level, "warn")
+        self.assertIn("tier ON", msg)
+        self.assertIn("signature", msg.lower())
+
+    def test_describe_registry_handles_None(self):
+        level, msg = SA.describe_registry(None)
+        self.assertEqual(level, "info")
+        self.assertIn("OFF", msg)
 
     def test_no_store_configured_still_revokes_for_this_process(self):
         # RESTRAINT CONTROL. Durability is an upgrade, not a precondition: a
