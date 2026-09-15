@@ -8,7 +8,8 @@
 # regression from reaching main.
 #
 # No dependencies to install: everything under test is stdlib-only by design. The
-# integration plugins (integrations/langchain, integrations/wallets, integrations/openclaw)
+# integration plugins (integrations/langchain, integrations/wallets, integrations/openclaw,
+# integrations/lucid)
 # need third-party packages and run from their own directories -- they are deliberately
 # NOT part of this job.
 #
@@ -161,6 +162,16 @@ jobs:
 
       - name: OpenClaw plugin (vitest)
         working-directory: integrations/openclaw
+        run: |
+          npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+          npm test
+
+      # Lucid Agents policy gate. IMPORTS ../openclaw/core.js, so this step also
+      # guards that split: if the dependency-free core ever re-acquires a
+      # host-only import, this fails to collect while openclaw's own tests still
+      # pass -- which is exactly how the coupling was found in the first place.
+      - name: Lucid Agents policy gate (vitest)
+        working-directory: integrations/lucid
         run: |
           npm ci --no-audit --no-fund || npm install --no-audit --no-fund
           npm test

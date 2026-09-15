@@ -195,13 +195,58 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   under AWS's own spelling so `upto_scheme` sees the allowance a spend cap cannot.
   Dependency-free core `agentcore_guard.py` + thin `strands_plugin.py` /
   `langgraph_middleware.py`; own tests run from that dir),
+  `integrations/lucid/` (Lucid Agents Commerce SDK gate (daydreamsai/lucid-agents)
+  -- an ADAPTER, not a clone. Lucid's buyer path composes fetch wrappers and its
+  own `wrapBaseFetchWithPolicy` inspects the unpaid x402 requirement and reserves
+  budget BEFORE a signature exists, refusing with `403 policy_violation` -- the
+  right place to stand, which is why this is a fetch wrapper too. THE GAP is the
+  one `integrations/agentcore/` documents about AWS: their budget tier constrains
+  `allowedRecipients` (a STATIC allowlist), `maxPaymentUsd` and
+  `maxTotalUsd`/`windowMs`, so it enforces HOW MUCH and WHO only from a list a
+  human typed. An allowlist cannot say a payee is a wash-trading Sybil ring,
+  OFAC-sanctioned, quoting 50x its category median, silent for 90 days, or
+  advertising a `payTo` that is not a possible address. TWO DESIGN POINTS THE
+  WRAPPER POSITION FORCES, both bugs if done the obvious way: (1) SCORE EVERY
+  `accepts[]` ENTRY -- the client picks a requirement later, INSIDE
+  `wrapFetchWithPayment`, so scoring `accepts[0]` and letting it pay `accepts[1]`
+  scores a payment that never happened; the choice is unknowable here so the only
+  sound rule is "safe for whichever it picks" and the combined decision is the
+  MOST CONSERVATIVE across entries (openclaw reads `accepts[0]` and is RIGHT to:
+  it sits at a tool-call boundary where the payload is already chosen). (2) READ
+  ALL THREE CARRIERS -- MEASURED, the body alone leaves 86 of 195 live hosts
+  unreadable and 80 of those serve a complete v2 challenge in `payment-required`
+  with `{}` as the body, so a body-only gate fails OPEN on ~41% of the live
+  ecosystem while looking healthy. Turns a 402 into a 403, the same currency
+  Lucid's policy already speaks, so no signature is ever created; never signs,
+  holds a key or moves money. FAIL-CLOSED default (an unscored payment is
+  irreversible, a stopped agent is not) and `mode: "observe"` overrides
+  everything. `decide` is IMPORTED from `../openclaw/core.js`, not copied -- ONE
+  place where GO/HOLD/STOP becomes allow/confirm/block. THAT IMPORT FORCED A
+  SPLIT worth noting: openclaw's `index.ts` had one
+  `import ... from "openclaw/plugin-sdk/plugin-entry"` holding the claim parsing
+  AND the decision hostage, making the module unimportable outside an OpenClaw
+  plugin -- so the dependency-free half moved to `core.ts` and `index.ts` became
+  the thin host adapter that re-exports it, which is the shape
+  `blackwall_guard.py` / `wallet_guard.py` / `agentcore_guard.py` already had and
+  this one did not. VERIFIED LIVE against the real endpoint: a sanctioned payee
+  -> 403 STOP, a cold-start payee -> 403 HOLD, and one clean + one sanctioned
+  entry -> STOP with both entries' reasons merged. HONEST LIMITS in its README:
+  the thin shim is UNVERIFIED against a live Lucid install (composition order and
+  the 403 convention come from their published docs), amounts assume 6 decimals,
+  and A2A/ERC-8004 are untouched. TypeScript + vitest; own tests run from that
+  dir. 27 tests, 11 mutations verified killed),
   `integrations/openclaw/` (OpenClaw/NemoClaw plugin -- a `before_tool_call` hook
   that recognizes payment-shaped tool calls (flat payTo/amount, 402-challenge
   accepts[], or a signed X-PAYMENT header -> passed through for payload-sim),
   forecasts them, and blocks non-GO. Enforce + fail-closed by default; keyless
   (free-tier endpoint), claim-only egress. TypeScript + vitest; own tests run
   from that dir (`npm install && npm test`), not the root command. Canonical
-  source for the nemoclaw-community `blackwall-x402-payment-gate` example),
+  source for the nemoclaw-community `blackwall-x402-payment-gate` example. SPLIT
+  2026-09-15 into `core.ts` (dependency-free: claim parsing, `decide`, `postJson`,
+  config) and `index.ts` (the thin OpenClaw host adapter, re-exporting the core),
+  because a single host-only import made the decision logic unimportable from
+  `integrations/lucid` -- the alternative was a second copy of "what does a
+  verdict mean". Its 38 tests pass unchanged),
   `BLACKWALL.md`, `DISCOVERY.md`, `DEPLOY.md`, `COMPETITIVE.md`, `PRICING.md`,
   `ap_gate.py` (treasury/AP payout gate -- folds the verdict into a
   RELEASE/REVIEW/BLOCK decision at the approve-&-release step; see
