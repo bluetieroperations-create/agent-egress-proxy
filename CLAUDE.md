@@ -199,7 +199,26 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   2000/2000 catalogued entries and we emit only `schema` -- DELIBERATELY left
   alone, because the absolute url is the one change with a mechanism behind it
   and changing two things at once means a listing that appears tells you nothing
-  about which mattered. 6 mutations verified killed, one of which caught a TEST
+  about which mattered. POST-MERGE FUZZ of `canonical_resource_url` (43 cases: unicode, percent-
+  encoding, NUL, bidi overrides, backslashes, 5KB paths, non-string types) --
+  THE ORIGIN GUARD HELD IN EVERY CASE, verified by netloc rather than by
+  substring. ONE real finding, LOW: `%2f`/`%5c` are not literal separators, so
+  `/..%2f..` was ONE segment that merely CONTAINED ".." and the traversal text
+  reached the advertised url. Not a host escape -- every case stayed on our own
+  origin -- but a consumer that percent-decodes then resolves would land outside
+  the path space we serve. Encoded separators are now decoded ONCE before
+  splitting, deliberately NOT to a fixed point: then the number of rounds is the
+  attacker's choice and each round can synthesize separators the previous one
+  lacked, which is why double-encoded `%255c..` correctly stays literal text.
+  TWO OF THE THREE FUZZ FLAGS WERE FALSE POSITIVES IN THE ASSERTION, not
+  defects: `https:///evil.example/x` and a backslash-prefixed host land as a
+  PATH on our own origin, and a substring grep for a hostname cannot tell a host
+  from a path. Corrected to assert `urlsplit(got).netloc`. The corrected
+  assertion then swung TOO LOOSE -- mutation testing showed the segment check
+  ALONE passes with the decode deleted -- so BOTH halves are asserted now: no
+  `..` SEGMENT and no encoded separator remaining. LOOSENING AN ASSERTION TO
+  KILL A FALSE POSITIVE CAN WALK STRAIGHT PAST THE TRUE ONE, which is the lesson
+  worth keeping. 9 mutations verified killed, three of which caught a TEST
   defect rather than a code one: the control-character case held LITERAL
   backslash-r-n from a heredoc, so stripping could be removed with the test still
   green; it is built from `chr()` now. See `docs/BAZAAR_LISTING.md`.

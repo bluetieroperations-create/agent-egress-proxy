@@ -750,6 +750,68 @@ class TestCanonicalResourceUrl(unittest.TestCase):
         got = X.canonical_resource_url(self.ORIGIN, "v1/forecast-payment")
         self.assertEqual(got, self.ORIGIN + "/v1/forecast-payment")
 
+    def test_PERCENT_ENCODED_separators_are_treated_as_separators(self):
+        # FUZZ FINDING (low). `/..%2f..` and `/v1/x%2f..%2f..%2fetc` survived
+        # normalization: %2f is not a literal "/", so segment splitting saw ONE
+        # segment that merely CONTAINS "..", and the traversal text reached the
+        # advertised url.
+        #
+        # NOT a host escape -- verified, every case stayed on our own origin, so
+        # nothing could be redirected. The residual risk is a CONSUMER that
+        # percent-decodes and then resolves, landing outside the path space we
+        # serve. Cheap to close, so closed.
+        # MUTATION: dropping the pre-decode of the encoded separators.
+        # THE PROPERTY IS "NO TRAVERSAL SEGMENT", NOT "NO `..` SUBSTRING", and
+        # the difference is real: `/a%255c..` is DOUBLE-encoded, so after the
+        # single decode round `..` remains as literal TEXT inside a segment
+        # (`a%5c..`) and resolves nowhere. Asserting the substring flagged that
+        # as a failure -- the third time today an assertion was wrong rather
+        # than the code, which is worth saying out loud.
+        #
+        # Decoding to a FIXED POINT would "fix" it and be worse: the number of
+        # rounds would be the attacker's choice, and each round can synthesize
+        # separators the previous one did not have.
+        from urllib.parse import urlsplit
+        for probe in ("/..%2f..", "/v1/x%2f..%2f..%2fetc", "/a%2F..%2F..%2Fb",
+                      "/a%5c..%5c..", "/a%255c.."):
+            got = X.canonical_resource_url(self.ORIGIN, probe)
+            self.assertTrue(got.startswith(self.ORIGIN + "/"), got)
+            segments = urlsplit(got).path.split("/")
+            self.assertNotIn("..", segments,
+                             "a traversal SEGMENT survived in %r -> %r"
+                             % (probe, got))
+            # AND no encoded separator may remain, or a consumer that decodes
+            # once reconstitutes the traversal we just normalized away. Both
+            # halves are needed: mutation testing showed the segment check
+            # ALONE passes with the decode deleted, because `..%2f..` is one
+            # segment that merely contains "..". Loosening an assertion to fix
+            # a false positive can walk straight past the true one.
+            for enc in ("%2f", "%2F", "%5c", "%5C"):
+                self.assertNotIn(enc, got,
+                                 "encoded separator %s survived in %r -> %r"
+                                 % (enc, probe, got))
+
+    def test_the_ORIGIN_is_checked_as_a_HOST_not_as_a_substring(self):
+        # THIS TEST EXISTS BECAUSE MY OWN FUZZ ASSERTION WAS WRONG. It grepped
+        # the output for "evil.example" and flagged `https:///evil.example/x`
+        # and `\\evil.example\x` as host leaks -- but both land as a PATH on
+        # our origin, which is correct and harmless. A substring check on a url
+        # cannot tell a host from a path, and a wrong assertion is how a suite
+        # grows a false sense of coverage.
+        # The property is about netloc, so assert netloc.
+        from urllib.parse import urlsplit
+        mine = urlsplit(self.ORIGIN).netloc
+        bs = chr(92)  # literal backslash, built from chr() so no escaping layer
+        for probe in ("https:///evil.example/x",
+                      bs + bs + "evil.example" + bs + "x",
+                      "//evil.example/x", "https://evil.example:8080/x",
+                      "http://user:pw@evil.example/x",
+                      "https://evil.example" + bs + "@ours/x"):
+            got = X.canonical_resource_url(self.ORIGIN, probe)
+            self.assertEqual(urlsplit(got).netloc, mine,
+                             "%r -> %r has netloc %r"
+                             % (probe, got, urlsplit(got).netloc))
+
     def test_traversal_is_normalized_away(self):
         # MUTATION: naive concatenation. `..` segments would let a caller
         # advertise a url outside the path space we serve.

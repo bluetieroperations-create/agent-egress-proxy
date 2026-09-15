@@ -231,6 +231,18 @@ def canonical_resource_url(origin, requested, max_len=MAX_RESOURCE_URL):
     # header and into a public catalog, and a newline forges header structure.
     requested = "".join(ch for ch in requested
                         if ch.isprintable() and not ch.isspace()) or "/"
+    # PERCENT-ENCODED SEPARATORS BECOME SEPARATORS before anything splits on
+    # "/". Found by fuzzing: `/..%2f..` and `/v1/x%2f..%2f..%2fetc` slipped
+    # through normalization, because %2f is not a literal slash -- segment
+    # splitting saw ONE segment that merely CONTAINS "..", so the traversal text
+    # reached the advertised url. NOT a host escape (every fuzz case stayed on
+    # our own origin, verified), but a consumer that percent-decodes and then
+    # resolves would land outside the path space we serve. Decoded ONCE, so a
+    # double-encoded `%252f` becomes the literal text `%2f` rather than a
+    # separator -- decoding to a fixed point would let an attacker choose how
+    # many rounds we do.
+    for enc in ("%2f", "%2F", "%5c", "%5C"):
+        requested = requested.replace(enc, "/")
     parts = urlsplit(requested)
     # DISCARD scheme and netloc unconditionally -- that is the whole guard. It
     # also disposes of javascript:/data:/file: and of "//host/x", whose netloc
