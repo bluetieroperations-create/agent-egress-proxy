@@ -308,6 +308,158 @@ def verify_attestation(attestation, *, now, signer=None, revoked=None):
         return False, "%s" % type(e).__name__
 
 
+def load_registry(attestations_path=None, revocations_path=None, signer=None):
+    """Build a SellerRegistry from committed artifacts. Returns (registry, error).
+
+    FAIL-OPEN ON THE BADGE SIDE, FAIL-CLOSED ON THE REVOCATION SIDE, and the
+    asymmetry is the whole point. A missing or garbled attestation file means no
+    merchant gets a trust FLOOR -- strictly more conservative, so it degrades
+    safely and returns an empty registry with a warning. An unreadable
+    REVOCATION file is the opposite: proceeding would load badges while unable
+    to see which were withdrawn, i.e. granting trust the operator had removed.
+    That returns (None, error) so the caller disables the tier entirely rather
+    than run it half-blind.
+
+    `None` for both paths is not an error -- it means the tier is not
+    configured, which is the shipped default.
+    """
+    if not attestations_path and not revocations_path:
+        return None, None
+    store = None
+    if revocations_path:
+        store = FileRevocationStore(revocations_path)
+        try:
+            store.all()
+        except Exception as e:
+            return None, ("revocation list %r unreadable (%s) -- refusing to "
+                          "load badges we cannot check revocation for"
+                          % (revocations_path, type(e).__name__))
+    try:
+        registry = SellerRegistry(signer=signer, revocations=store)
+    except Exception as e:
+        return None, "registry unavailable (%s)" % (e,)
+    loaded, skipped = 0, 0
+    if attestations_path and os.path.exists(attestations_path):
+        try:
+            with open(attestations_path, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        registry.add(json.loads(line))
+                        loaded += 1
+                    except Exception:
+                        skipped += 1
+        except Exception as e:
+            return registry, ("attestation file %r unreadable (%s) -- no "
+                              "merchant gets a floor"
+                              % (attestations_path, type(e).__name__))
+    registry.loaded = loaded
+    registry.skipped = skipped
+    return registry, None
+
+
+# ---------------------------------------------------------------------------
+# Revocation: durable, append-only, publishable.
+# ---------------------------------------------------------------------------
+_REVOKE_DOMAIN = "revoke:"
+
+
+def normalize_revocation_key(subject_or_id):
+    """Lowercase + strip. An EVM address arrives EIP-55-checksummed from a live
+    402 and lowercase from a crawl -- the join that silently missed 64 of 69
+    endpoints in `advertised_prices`. Here the same slip would let a revoked
+    merchant read as trusted again just by changing capitalization."""
+    return str(subject_or_id or "").strip().lower()
+
+
+def sign_revoke_token(subject_or_id, key=None):
+    """Capability token authorizing REVOCATION of one subject/attestation.
+
+    PER-SUBJECT, not a single admin secret: a leaked token revokes exactly one
+    merchant rather than the whole registry. Domain-separated with "revoke:" so
+    a report token or an approval token can never revoke a badge -- the same
+    reason `approvals.sign_approval_token` carries "approve:".
+    """
+    if key is None:
+        import blackwall
+        key = blackwall._receipt_key()
+    return hmac.new(key,
+                    (_REVOKE_DOMAIN + normalize_revocation_key(subject_or_id)
+                     ).encode("utf-8"),
+                    hashlib.sha256).hexdigest()[:32]
+
+
+def verify_revoke_token(subject_or_id, token, key=None):
+    """Constant-time check. Never raises; anything unusable is False."""
+    if not token or not isinstance(token, str):
+        return False
+    try:
+        return hmac.compare_digest(token,
+                                   sign_revoke_token(subject_or_id, key))
+    except Exception:
+        return False
+
+
+class FileRevocationStore:
+    """Append-only JSONL of revoked subjects and attestation ids.
+
+    DURABILITY IS THE WHOLE POINT. `SellerRegistry._revoked` was in-memory, so a
+    redeploy -- exactly when the process restarts -- RESTORED every revoked
+    badge along with its trust floor. That is not a fail-open: fail-open means
+    declining to add caution, while this actively GRANTS trust the operator had
+    withdrawn. Bounded by the badge TTL rather than unbounded, which makes it
+    easy to under-rate.
+
+    FAILS CLOSED ON WRITE, deliberately opposite to `reachability_ledger`'s
+    fail-soft: a diagnostic that cannot log should still answer, but a
+    REVOCATION that silently does not persist leaves the operator believing
+    trust was withdrawn when it was not.
+
+    NO un-revoke. Restoring trust is a deliberate operator act on the file, not
+    an API call, so every reachable path is monotonically safe: whoever holds a
+    token can only REMOVE trust, never grant it.
+    """
+
+    def __init__(self, path):
+        self.path = path
+
+    def add(self, subject_or_id):
+        key = normalize_revocation_key(subject_or_id)
+        if not key:
+            raise ValueError("cannot revoke an empty subject")
+        line = json.dumps({"subject": key}, sort_keys=True) + "\n"
+        with open(self.path, "a", encoding="utf-8") as fh:
+            fh.write(line)
+            fh.flush()
+            os.fsync(fh.fileno())
+        return key
+
+    def all(self):
+        """Every revoked key. A junk LINE is skipped -- one bad row must not
+        erase the rest -- but an unreadable FILE raises rather than returning
+        an empty set, because empty means "nobody is revoked", the most
+        permissive possible answer to a question about withdrawn trust. A
+        MISSING file is not unreadable: it means nothing has been revoked yet."""
+        out = set()
+        if not os.path.exists(self.path):
+            return out
+        with open(self.path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                key = normalize_revocation_key((row or {}).get("subject"))
+                if key:
+                    out.add(key)
+        return out
+
+
 # ---------------------------------------------------------------------------
 # Registry: what the verdict path consults ("is this merchant verified?").
 # ---------------------------------------------------------------------------
@@ -315,10 +467,14 @@ class SellerRegistry:
     """Holds issued attestations by subject and answers `credential_for` at verdict
     time. In-memory + stdlib; a deployment can persist the attestation dicts."""
 
-    def __init__(self, signer=None):
+    def __init__(self, signer=None, revocations=None):
         self._signer = signer if signer is not None else attestation_signer()
         self._by_subject = {}     # subject(lower) -> attestation envelope
-        self._revoked = set()     # attestation_ids and/or subjects
+        self._store = revocations
+        #: In-process cache of the durable set. Seeded from the store at
+        #: construction so a restart does not resurrect a revoked badge.
+        self._revoked = set(revocations.all()) if revocations is not None \
+            else set()
 
     def issue(self, subject, audit_result, *, issued_at, ttl=DEFAULT_TTL_SECONDS):
         att = sign_attestation(subject, audit_result, issued_at=issued_at,
@@ -341,9 +497,31 @@ class SellerRegistry:
         self._by_subject[str(subject).lower()] = attestation
 
     def revoke(self, subject_or_id):
-        """Revoke a badge by subject address OR attestation_id."""
-        self._revoked.add(str(subject_or_id).lower()
-                          if str(subject_or_id).startswith("0x") else subject_or_id)
+        """Revoke by subject address OR attestation_id. Durable when a store is
+        configured; in-process only otherwise (durability is an upgrade, not a
+        precondition). Persists BEFORE updating the cache, so a write failure
+        raises rather than leaving the operator believing it stuck.
+
+        Works for a subject with NO loaded badge -- pre-emptive revocation: the
+        operator learns a merchant went bad and must be able to act before the
+        next boot loads its attestation off disk."""
+        key = normalize_revocation_key(subject_or_id)
+        if not key:
+            raise ValueError("cannot revoke an empty subject")
+        if self._store is not None:
+            self._store.add(key)
+        self._revoked.add(key)
+        return key
+
+    def published_revocations(self):
+        """The revocation list as a publishable document.
+
+        The completion of third-party verifiability: `sign_attestation` makes a
+        badge anyone can check, and a signed badge whose revocation nobody can
+        see is only as good as its TTL. Returns a COPY -- handing out the
+        internal set would let a caller mutate the registry through the
+        published view."""
+        return {"revoked": sorted(self._revoked), "count": len(self._revoked)}
 
     def credential_for(self, subject, now):
         """Return {grade, floor, attestation_id} for a VALID (signed, unexpired,

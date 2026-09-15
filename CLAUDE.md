@@ -255,10 +255,52 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   different subject than its own signature gets filed under the attacker's
   address. NO DOWNGRADE PATH: a legacy flat `sig` attestation is refused outright
   rather than kept for compatibility, which would be algorithm confusion -- safe
-  because the registry was never wired, so none exists in the wild. STILL OPEN:
-  the registry is still unbound, so the tier remains inert in production, and
-  revocation is in-process only (`_revoked`), so a revoked badge stays valid to
-  every other process. 10 mutations verified killed),
+  because the registry was never wired, so none exists in the wild.
+  NOW WIRED AND REVOCABLE (2026-09-15, the same day, because the two had to land
+  in this order). The tier was `seller_registry` -- a `forecast` PARAMETER bound
+  by NOTHING -- so for its entire life no badge could be issued, consulted or
+  revoked on the wire while every unit test passed. Wiring it took the SEVEN
+  edits `honeypot.py` counts, and the SIXTH (the `BlackwallServer.__init__`
+  parameter) was caught by an AttributeError AT BOOT: the loudest of the seven
+  and the only one that is not silent. The seventh (`_BoundHandler`) is covered
+  by `test_approvals`' parity guard, and `test_seller_audit.TestTheLiveWire`
+  drives a REAL server because five earlier instances of this pattern were all
+  invisible to unit tests. Loaded from `BLACKWALL_SELLER_REGISTRY`;
+  revocations persist to `BLACKWALL_SELLER_REVOCATIONS`.
+  REVOCATION IS DURABLE, and the old in-memory `_revoked` was not a fail-open --
+  fail-open means declining to add caution, while a restart RESTORED every
+  revoked badge along with its trust floor, actively granting trust the operator
+  had withdrawn. Bounded by the badge TTL rather than unbounded, which is what
+  made it easy to under-rate. `FileRevocationStore` is append-only, fsynced, and
+  FAILS CLOSED on write -- deliberately opposite to `reachability_ledger`'s
+  fail-soft, because a diagnostic that cannot log should still answer while a
+  revocation that silently did not persist leaves the operator believing trust
+  was withdrawn. Keys are NORMALIZED (lower+strip) or a revoked merchant reads as
+  trusted again under EIP-55 capitalization -- the join that missed 64 of 69
+  endpoints in `advertised_prices`, here as an evasion. `load_registry`'s failure
+  is ASYMMETRIC and that is the design: a bad ATTESTATION file costs a merchant
+  its floor (conservative -> fail-open, tier still runs), an unreadable
+  REVOCATION list means loading badges we cannot check revocation for (-> refuse
+  outright). Verified at BOOT in both directions.
+  MONOTONICALLY SAFE BY CONSTRUCTION: there is NO un-revoke, on the store, the
+  registry or the wire, so whoever holds a token can only REMOVE trust from ONE
+  merchant, never grant it. `sign_revoke_token` is PER-SUBJECT (a leak is not the
+  whole registry) and domain-separated with "revoke:"; `POST /v1/seller/revoke`
+  returns the SAME 403 for a known and an unknown subject so it is not an
+  enumeration oracle for who holds a badge, and 503 rather than 200 when the
+  store refused. Issuance is deliberately NOT exposed -- granting a floor stays
+  an operator act. `GET /v1/seller/revocations` PUBLISHES the list, which is what
+  completes 3b: a badge anyone can verify against `/jwks.json` whose revocation
+  nobody can see is only as good as its TTL.
+  12 mutations verified killed, TWO of which SURVIVED the first pass and were
+  real test gaps worth naming: the domain-separation test compared against
+  `approvals.sign_approval_token`, which carries its OWN prefix, so deleting
+  "revoke:" left them unequal and the test PASSING -- a check aimed slightly to
+  the left of the thing it verifies, same shape as `cdp_preflight`'s wrong
+  default payee; and the asymmetric-failure rule was implemented with no test
+  reaching either branch, because bad LINES in a readable file are skipped
+  line-by-line and never touch the unreadable-FILE path. A DIRECTORY in place of
+  the file is how both are now exercised, since `chmod` does nothing as root),
   `payload_sim.py` (payload simulation: cross-check the agent's ACTUAL signed x402
   payment -- from the request-body `payment_authorization`, NOT the fee header --
   against the claim being scored. Phase 1: recipient/amount/asset/chain field match;

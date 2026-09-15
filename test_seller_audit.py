@@ -4,6 +4,10 @@ the mutation it kills. The anti-corruption rules (earned, bounded, revocable, ne
 a STOP override) are the point, so they get the most coverage.
 """
 import base64
+import os
+import time
+import shutil
+import tempfile
 import unittest
 
 import seller_audit as SA
@@ -345,6 +349,385 @@ class TestRegistry(unittest.TestCase):
     def test_revoked_is_none(self):
         self.reg.revoke(MERCHANT)
         self.assertIsNone(self.reg.credential_for(MERCHANT, now=1500))
+
+
+class TestDurableRevocation(unittest.TestCase):
+    """Revocation MUST survive a restart.
+
+    `SellerRegistry._revoked` was an in-memory set, so a redeploy -- which is
+    exactly when the process restarts -- RESTORED every revoked badge and with
+    it the trust floor. That is not a fail-open: fail-open means declining to
+    add caution, and this actively GRANTS trust the operator had withdrawn. The
+    badge also expires, so the window is bounded by the TTL rather than
+    infinite, which makes it easy to under-rate.
+
+    Second half of the same problem: an attestation is now independently
+    verifiable, and a third party checking one has no way to learn it was
+    revoked unless the revocation list is PUBLISHED. An expiring signed badge
+    with unpublished revocation is only as good as its TTL.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.path = os.path.join(self.tmp, "revocations.jsonl")
+        self.signer = SA.attestation_signer(seed=SEED)
+        self.audit = SA.run_audit(readiness=_ready(), record=_record())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _reg(self):
+        return SA.SellerRegistry(signer=self.signer,
+                                 revocations=SA.FileRevocationStore(self.path))
+
+    def test_a_revocation_survives_a_restart(self):
+        # MUTATION: keeping the in-memory set. The second registry is a fresh
+        # process for all practical purposes -- same file, new object.
+        reg = self._reg()
+        reg.issue(MERCHANT, self.audit, issued_at=1000, ttl=10000)
+        att = reg._by_subject[MERCHANT]
+        self.assertIsNotNone(reg.credential_for(MERCHANT, now=1500))
+        reg.revoke(MERCHANT)
+        self.assertIsNone(reg.credential_for(MERCHANT, now=1500))
+
+        restarted = self._reg()
+        restarted.add(att)
+        self.assertIsNone(restarted.credential_for(MERCHANT, now=1500),
+                          "a restart restored a REVOKED badge and its floor")
+
+    def test_revocation_works_by_attestation_id_too(self):
+        reg = self._reg()
+        att = reg.issue(MERCHANT, self.audit, issued_at=1000, ttl=10000)
+        reg.revoke(att["payload"]["attestation_id"])
+        restarted = self._reg()
+        restarted.add(att)
+        self.assertIsNone(restarted.credential_for(MERCHANT, now=1500))
+
+    def test_a_subject_can_be_revoked_BEFORE_any_badge_is_loaded(self):
+        # Pre-emptive revocation. MUTATION: requiring the attestation to exist.
+        # The operator learns a merchant went bad and must be able to act before
+        # the next boot loads its badge off disk.
+        reg = self._reg()
+        reg.revoke(MERCHANT)
+        att = SA.sign_attestation(MERCHANT, self.audit, issued_at=1000,
+                                  ttl=10000, signer=self.signer)
+        reg2 = self._reg()
+        reg2.add(att)
+        self.assertIsNone(reg2.credential_for(MERCHANT, now=1500))
+
+    def test_revocation_is_APPEND_ONLY_and_idempotent(self):
+        # MUTATION: rewriting the file, or a delete path. There is deliberately
+        # NO un-revoke: restoring trust must be a deliberate operator act, not
+        # a call. So the store only ever grows.
+        reg = self._reg()
+        reg.revoke(MERCHANT)
+        reg.revoke(MERCHANT)
+        reg.revoke("sa_other")
+        self.assertEqual(SA.FileRevocationStore(self.path).all(),
+                         {MERCHANT, "sa_other"})
+        self.assertFalse(hasattr(SA.FileRevocationStore, "unrevoke"))
+        self.assertFalse(hasattr(SA.SellerRegistry, "unrevoke"))
+
+    def test_subjects_are_normalized_so_case_cannot_evade(self):
+        # MUTATION: storing the raw string. A live 402 returns EIP-55 checksummed
+        # while crawls store lowercase -- the join that missed 64 of 69 endpoints
+        # in advertised_prices. Here the same slip would make a revoked merchant
+        # readable again by asking with different capitalization.
+        reg = self._reg()
+        reg.revoke(MERCHANT.upper())
+        att = SA.sign_attestation(MERCHANT, self.audit, issued_at=1000,
+                                  ttl=10000, signer=self.signer)
+        reg2 = self._reg()
+        reg2.add(att)
+        self.assertIsNone(reg2.credential_for(MERCHANT, now=1500))
+
+    def test_the_list_is_PUBLISHABLE_so_a_third_party_can_check(self):
+        # The completion of third-party verifiability: a signed badge whose
+        # revocation nobody can see is only as good as its TTL.
+        # MUTATION: returning the internal set, which would let a caller mutate
+        # the registry's revocations through the published view.
+        reg = self._reg()
+        reg.revoke(MERCHANT)
+        pub = reg.published_revocations()
+        self.assertEqual(pub["revoked"], [MERCHANT])
+        pub["revoked"].append("0xdeadbeef")
+        self.assertEqual(reg.published_revocations()["revoked"], [MERCHANT])
+
+    def test_an_unwritable_store_FAILS_CLOSED_on_revoke(self):
+        # MUTATION: fail-soft, mirroring reachability_ledger. Opposite call here
+        # and the asymmetry is the point: a diagnostic that cannot log should
+        # still answer, but a REVOCATION that silently does not persist leaves
+        # the operator believing trust was withdrawn when it was not. Raise.
+        store = SA.FileRevocationStore(os.path.join(self.tmp, "nope", "r.jsonl"))
+        with self.assertRaises(Exception):
+            store.add(MERCHANT)
+
+    def test_an_unreadable_store_does_not_silently_forget_revocations(self):
+        # MUTATION: returning an empty set on a corrupt file. Empty means "no
+        # merchant is revoked", which is the most permissive possible answer to
+        # a question about withdrawn trust. A junk LINE is skipped (one bad row
+        # must not erase the rest), but an unreadable FILE raises.
+        with open(self.path, "w", encoding="utf-8") as fh:
+            fh.write('{"subject": "%s"}\n' % MERCHANT)
+            fh.write("not json at all\n")
+            fh.write('{"subject": "sa_x"}\n')
+        self.assertEqual(SA.FileRevocationStore(self.path).all(),
+                         {MERCHANT, "sa_x"})
+
+    def test_load_registry_REFUSES_when_the_revocation_list_is_unreadable(self):
+        # MUTATION TESTING CAUGHT THIS GAP TOO: the asymmetric-failure rule was
+        # implemented and no test exercised it, so `load_registry` could have
+        # loaded badges while blind to revocations and stayed green.
+        #
+        # The asymmetry is the point. A bad ATTESTATION file costs a merchant
+        # its floor -- strictly more conservative, so fail-open. An unreadable
+        # REVOCATION list is the opposite: loading badges we cannot check
+        # revocation for GRANTS trust the operator withdrew. Refuse.
+        # A directory in place of the file makes open() raise without needing
+        # chmod, which does nothing when the tests run as root.
+        blocked = os.path.join(self.tmp, "as_a_dir.jsonl")
+        os.mkdir(blocked)
+        reg, err = SA.load_registry(None, blocked, signer=self.signer)
+        self.assertIsNone(reg, "loaded badges despite being unable to read "
+                               "the revocation list")
+        self.assertIn("revocation", err)
+
+    def test_load_registry_still_returns_a_registry_for_a_bad_BADGE_file(self):
+        # The other half of the asymmetry, as a RESTRAINT CONTROL: a garbled
+        # attestation file must not disable the tier's revocation machinery.
+        # MUTATION: making the badge side fail-closed too -- that would let a
+        # corrupt badge file take out the revocation list with it.
+        path = os.path.join(self.tmp, "badges.jsonl")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("not json\n")
+            fh.write('{"payload": {}}\n')
+        reg, err = SA.load_registry(path, self.path, signer=self.signer)
+        self.assertIsNotNone(reg)
+        self.assertEqual(reg.loaded, 0)
+        self.assertEqual(reg.skipped, 2)
+        self.assertIsNone(err)
+
+    def test_an_UNREADABLE_badge_file_still_returns_a_working_registry(self):
+        # The stronger half of the restraint, and mutation testing showed the
+        # test above did NOT reach it: bad LINES in a readable file are skipped
+        # line-by-line and never touch the unreadable-FILE branch. So that
+        # branch could have been made fail-closed and stayed green -- letting a
+        # corrupt badge file take the revocation machinery down with it, which
+        # is the failure this asymmetry exists to prevent.
+        # MUTATION: `return None, (...)` on that branch -> this fails.
+        blocked = os.path.join(self.tmp, "badges_as_dir.jsonl")
+        os.mkdir(blocked)
+        reg, err = SA.load_registry(blocked, self.path, signer=self.signer)
+        self.assertIsNotNone(reg, "a corrupt BADGE file disabled the tier; only "
+                                  "an unreadable REVOCATION list may do that")
+        self.assertIn("attestation file", err)
+        # And it is genuinely usable -- revocation still works.
+        reg.revoke(MERCHANT)
+        self.assertIn(MERCHANT, reg.published_revocations()["revoked"])
+
+    def test_no_store_configured_still_revokes_for_this_process(self):
+        # RESTRAINT CONTROL. Durability is an upgrade, not a precondition: a
+        # registry with no store must still honour revoke() in-process.
+        reg = SA.SellerRegistry(signer=self.signer)
+        reg.issue(MERCHANT, self.audit, issued_at=1000, ttl=10000)
+        reg.revoke(MERCHANT)
+        self.assertIsNone(reg.credential_for(MERCHANT, now=1500))
+
+
+class TestRevocationAuthority(unittest.TestCase):
+    """Only the key holder may revoke, and revoking is MONOTONICALLY SAFE."""
+
+    def test_the_token_is_per_subject_so_a_leak_revokes_ONE_merchant(self):
+        # MUTATION: a single global admin secret. One leaked value would then
+        # let the holder revoke every merchant in the registry.
+        a = SA.sign_revoke_token(MERCHANT, key=b"k")
+        b = SA.sign_revoke_token("0x" + "9" * 40, key=b"k")
+        self.assertNotEqual(a, b)
+        self.assertTrue(SA.verify_revoke_token(MERCHANT, a, key=b"k"))
+        self.assertFalse(SA.verify_revoke_token(MERCHANT, b, key=b"k"))
+
+    def test_it_is_domain_separated_from_a_BARE_hmac_of_the_subject(self):
+        # THIS TEST WAS WRONG AND MUTATION TESTING CAUGHT IT. It used to compare
+        # against `approvals.sign_approval_token`, which carries its OWN
+        # "approve:" prefix -- so removing "revoke:" left the two still
+        # unequal and the test still passing. A check aimed slightly to the
+        # left of the thing it verifies, the same shape as cdp_preflight's
+        # wrong default payee.
+        #
+        # The property that actually matters: the token must not be a bare HMAC
+        # of the subject under the shared key. All these capabilities derive
+        # from ONE secret (`blackwall._receipt_key`), so an unprefixed token
+        # would be interchangeable with any future bare-HMAC capability over
+        # the same string -- and the collision would be discovered by whoever
+        # adds that one, not by us.
+        # MUTATION: dropping the "revoke:" prefix -> this fails.
+        import hashlib
+        import hmac as _hmac
+        bare = _hmac.new(b"k", MERCHANT.encode(), hashlib.sha256).hexdigest()[:32]
+        self.assertNotEqual(SA.sign_revoke_token(MERCHANT, key=b"k"), bare)
+        # And distinct from the two sibling capabilities, for the same reason.
+        import approvals
+        self.assertNotEqual(SA.sign_revoke_token(MERCHANT, key=b"k"),
+                            approvals.sign_approval_token(MERCHANT, key=b"k"))
+
+    def test_a_wrong_key_cannot_revoke(self):
+        tok = SA.sign_revoke_token(MERCHANT, key=b"k")
+        self.assertFalse(SA.verify_revoke_token(MERCHANT, tok, key=b"other"))
+
+    def test_junk_tokens_are_refused_without_raising(self):
+        for junk in (None, "", 7, b"x", "0" * 32):
+            self.assertFalse(SA.verify_revoke_token(MERCHANT, junk, key=b"k"))
+
+    def test_case_normalized_so_the_token_matches_either_spelling(self):
+        # A live 402 returns EIP-55; an operator may type either.
+        tok = SA.sign_revoke_token(MERCHANT.upper(), key=b"k")
+        self.assertTrue(SA.verify_revoke_token(MERCHANT, tok, key=b"k"))
+
+
+class TestTheLiveWire(unittest.TestCase):
+    """A REAL server. Everything above is reachable only if it is WIRED.
+
+    This tier was `seller_registry` -- a `forecast` parameter bound by nothing,
+    so for its entire life no badge could be issued, consulted or revoked over
+    HTTP while every unit test passed. Fifth instance of that pattern in this
+    repo, which is why the coverage here is a running process rather than a
+    function call. Wiring it took SEVEN edits and the sixth (the
+    `BlackwallServer.__init__` parameter) was caught only by an AttributeError
+    at boot -- the loudest of the seven and the only one that is not silent.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import threading
+        import blackwall
+        cls.tmp = tempfile.mkdtemp()
+        cls.revpath = os.path.join(cls.tmp, "revocations.jsonl")
+        cls.signer = SA.attestation_signer(seed=SEED)
+        cls.registry = SA.SellerRegistry(
+            signer=cls.signer, revocations=SA.FileRevocationStore(cls.revpath))
+        audit = SA.run_audit(readiness=_ready(), record=_record())
+        # ISSUED AT THE REAL CLOCK. `forecast` calls credential_for with
+        # int(time.time()) when no `now` is passed, so a badge issued at t=1000
+        # is long expired and the tier silently does nothing -- which is how
+        # this first failed, and is worth pinning as the reason.
+        cls.att = cls.registry.issue(MERCHANT, audit,
+                                     issued_at=int(time.time()), ttl=3600)
+        cls.server = blackwall.BlackwallServer(
+            host="127.0.0.1", port=0,
+            reputation_source=blackwall.MockReputationSource(),
+            seller_registry=cls.registry)
+        cls.thread = threading.Thread(target=cls.server.serve_forever,
+                                      daemon=True)
+        cls.thread.start()
+        for _ in range(200):
+            if getattr(cls.server, "_httpd", None):
+                break
+            time.sleep(0.02)
+        cls.base = "http://127.0.0.1:%d" % cls.server._httpd.server_address[1]
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            cls.server._httpd.shutdown()
+        except Exception:
+            pass
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _post(self, path, body):
+        import json as _json
+        import urllib.error
+        import urllib.request
+        req = urllib.request.Request(
+            self.base + path, data=_json.dumps(body).encode(),
+            headers={"content-type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, _json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, _json.loads(e.read() or b"{}")
+
+    def _get(self, path):
+        import json as _json
+        import urllib.request
+        with urllib.request.urlopen(self.base + path, timeout=10) as r:
+            return r.status, _json.loads(r.read())
+
+    def test_the_revocation_list_is_served_publicly(self):
+        # MUTATION: removing the GET route, or returning the empty default even
+        # when a registry is bound (the wired-and-inert shape).
+        code, body = self._get("/v1/seller/revocations")
+        self.assertEqual(code, 200)
+        self.assertIn("revoked", body)
+        self.assertIn("count", body)
+
+    def test_revoking_requires_the_TOKEN(self):
+        # MUTATION: dropping the verify_revoke_token call. Without it any
+        # anonymous caller could strip any merchant's badge.
+        # Its OWN subject: revocation is durable and append-only, so sharing
+        # MERCHANT would make another test's revocation this test's
+        # precondition -- unittest orders by name, so that passed or failed
+        # depending on the method names.
+        subject = "0x" + "1" * 40
+        code, body = self._post("/v1/seller/revoke",
+                                {"subject": subject, "token": "0" * 32})
+        self.assertEqual(code, 403)
+        self.assertNotIn(subject,
+                         self._get("/v1/seller/revocations")[1]["revoked"])
+
+    def test_a_missing_token_is_refused(self):
+        code, _ = self._post("/v1/seller/revoke", {"subject": MERCHANT})
+        self.assertEqual(code, 403)
+
+    def test_an_unknown_subject_gets_the_SAME_403_not_a_404(self):
+        # MUTATION: 404 for an unknown subject. That turns the endpoint into an
+        # enumeration oracle for who holds a badge -- the same rule the
+        # approvals endpoint follows.
+        code, _ = self._post("/v1/seller/revoke",
+                             {"subject": "0x" + "7" * 40, "token": "0" * 32})
+        self.assertEqual(code, 403)
+
+    def test_a_VALID_token_revokes_and_it_shows_up_in_the_public_list(self):
+        import blackwall
+        victim = "0x" + "d" * 40
+        token = SA.sign_revoke_token(victim, key=blackwall._receipt_key())
+        code, body = self._post("/v1/seller/revoke",
+                                {"subject": victim, "token": token})
+        self.assertEqual(code, 200, body)
+        self.assertEqual(body["revoked"], victim)
+        self.assertTrue(body["durable"])
+        self.assertIn(victim, self._get("/v1/seller/revocations")[1]["revoked"])
+
+    def test_revocation_actually_removes_the_FLOOR_from_a_live_verdict(self):
+        # THE POINT. Everything else is plumbing; this asserts the verdict
+        # changes. MUTATION: not threading seller_registry into forecast --
+        # the badge would be stored, served and revocable and never affect a
+        # verdict, which is the inert state this change exists to end.
+        import blackwall
+        req = {"counterparty": MERCHANT, "amount": "0.09", "asset": "USDC",
+               "chain": "base"}
+        code, before = self._post("/v1/forecast-payment", req)
+        self.assertEqual(code, 200, before)
+        reasons_before = " ".join(before.get("reasons") or [])
+
+        token = SA.sign_revoke_token(MERCHANT, key=blackwall._receipt_key())
+        self.assertEqual(
+            self._post("/v1/seller/revoke",
+                       {"subject": MERCHANT, "token": token})[0], 200)
+
+        code, after = self._post("/v1/forecast-payment", req)
+        self.assertEqual(code, 200, after)
+        reasons_after = " ".join(after.get("reasons") or [])
+        self.assertIn("verified", reasons_before.lower(),
+                      "the badge was not applied before revocation, so this "
+                      "test cannot show it being withdrawn")
+        self.assertNotIn("verified", reasons_after.lower())
+
+    def test_there_is_NO_unrevoke_route(self):
+        # MONOTONIC SAFETY. MUTATION: adding a restore endpoint. A stolen token
+        # must only ever be able to REMOVE trust.
+        for path in ("/v1/seller/unrevoke", "/v1/seller/restore"):
+            code, _ = self._post(path, {"subject": MERCHANT, "token": "x"})
+            self.assertIn(code, (404, 405), path)
 
 
 if __name__ == "__main__":

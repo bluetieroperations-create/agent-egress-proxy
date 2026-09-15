@@ -1846,6 +1846,7 @@ class _Handler(BaseHTTPRequestHandler):
     settlement_sim_source = None  # settlement_sim.SettlementSimSource (pre-sig feasibility)
     auth_sim_source = None  # auth_sim.AuthorizationSimSource (EIP-3009 replay/window)
     graph_source = None  # payer_reputation.PayerReputationSource (Sybil corroboration)
+    seller_registry = None  # seller_audit.SellerRegistry (verified-merchant tier)
     velocity_source = None  # settlement_velocity.VelocitySource (stale gate)
     openapi_server_url = None  # public origin for the openapi.json servers[] (or None)
     verdict_anchor = None  # verdict_anchor.VerdictAnchor, or None (opt-in audit trail)
@@ -1937,6 +1938,17 @@ class _Handler(BaseHTTPRequestHandler):
                 # dependency without needing a coordinated deploy.
                 signer = getattr(self, "receipt_signer", None)
                 self._send_json(200, signer.jwks() if signer else {"keys": []})
+            elif path == "/v1/seller/revocations":
+                # PUBLIC on purpose, and the completion of third-party
+                # verifiability. `seller_audit.sign_attestation` makes a badge
+                # anyone can check against /jwks.json -- and a signed badge
+                # whose revocation nobody can see is only as good as its TTL.
+                # Publishing it discloses nothing: a revoked merchant's verdict
+                # is already what any anonymous caller of /v1/forecast-payment
+                # gets about that payee.
+                reg = getattr(self, "seller_registry", None)
+                self._send_json(200, reg.published_revocations() if reg
+                                else {"revoked": [], "count": 0})
             elif path == "/v1/price-index":
                 # PUBLIC GOOD, and the cheapest distribution asset we have: a price
                 # index for agent services computed from SETTLED on-chain reality
@@ -2106,6 +2118,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._do_verify_signer()
             elif self.path == "/v1/report-outcome":
                 self._do_report_outcome()
+            elif self.path == "/v1/seller/revoke":
+                self._do_revoke_seller()
             elif self.path == "/v1/session":
                 self._do_session()
             elif self.path == "/v1/screen-payer":
@@ -2268,6 +2282,49 @@ class _Handler(BaseHTTPRequestHandler):
             self.approvals.put(record)
         self._send_json(200, approvals.public_view(record))
 
+    def _do_revoke_seller(self):
+        """Withdraw a merchant's verified badge. OWNER-ONLY, one-way.
+
+        MONOTONICALLY SAFE BY CONSTRUCTION: there is no un-revoke route, so the
+        worst a stolen token can do is REMOVE trust from one merchant. The token
+        is per-subject (`seller_audit.sign_revoke_token`), so a leak cannot
+        revoke the whole registry, and it is domain-separated with "revoke:" so
+        a report token cannot become the right to revoke a badge.
+
+        Takes effect for a subject with NO badge loaded -- pre-emptive
+        revocation, because the operator learns a merchant went bad before the
+        next boot reads its attestation off disk.
+        """
+        import seller_audit
+        if self.seller_registry is None:
+            self._send_json(404, {"error": "no seller registry configured"})
+            return
+        body, err = self._read_json_body()
+        if err is not None:
+            self._send_json(400, {"error": err})
+            return
+        subject = body.get("subject") or body.get("attestation_id")
+        if not subject or not isinstance(subject, str):
+            self._send_json(400, {"error": "subject or attestation_id required"})
+            return
+        if not seller_audit.verify_revoke_token(subject, body.get("token")):
+            # Same 403 whether the subject is known or not, so this is not an
+            # enumeration oracle for who holds a badge (the approvals-endpoint
+            # rule).
+            self._send_json(403, {"error": "invalid token"})
+            return
+        try:
+            key = self.seller_registry.revoke(subject)
+        except Exception as e:
+            # The store FAILS CLOSED: a revocation that did not persist must not
+            # report success, or the operator believes trust was withdrawn when
+            # a restart will restore it.
+            self._send_json(503, {"error": "revocation not persisted",
+                                  "detail": type(e).__name__})
+            return
+        self._send_json(200, {"revoked": key, "durable":
+                              self.seller_registry._store is not None})
+
     def _do_screen_payer(self):
         """Screen a PAYER over HTTP -- the buyer side of the graph.
 
@@ -2370,6 +2427,7 @@ class _Handler(BaseHTTPRequestHandler):
                                  readiness_source=self.readiness_source,
                                  hold_above=self.hold_above,
                                  peer_index=self.peer_index,
+                                 seller_registry=self.seller_registry,
                                  graph_source=self.graph_source,
                                  velocity_source=self.velocity_source,
                                  category_index=self.category_index,
@@ -2472,6 +2530,7 @@ class BlackwallServer:
     def __init__(self, host="127.0.0.1", port=8402, reputation_source=None,
                  ledger=None, billing=None, readiness_source=None,
                  hold_above=None, peer_index=None, openapi_server_url=None,
+                 seller_registry=None,
                  graph_source=None, velocity_source=None, verdict_anchor=None,
                  receipt_signer=None,
                  category_index=None, divergence_index=None, rate_limiter=None,
@@ -2492,6 +2551,13 @@ class BlackwallServer:
         self.readiness_source = readiness_source
         self.hold_above = hold_above
         self.peer_index = peer_index
+        # SIXTH of the seven edits honeypot.py counts. Adding the class
+        # attribute, the route, the handler method, the forecast kwarg and the
+        # _BoundHandler line still leaves the server unable to START without
+        # this one -- which is how it was caught: an AttributeError at boot,
+        # the loudest of the seven failure modes and the only one that is not
+        # silent.
+        self.seller_registry = seller_registry
         self.graph_source = graph_source
         self.velocity_source = velocity_source
         self.openapi_server_url = openapi_server_url
@@ -2536,6 +2602,7 @@ class BlackwallServer:
                         "hold_above": self.hold_above,
                         "peer_index": self.peer_index,
                         "graph_source": self.graph_source,
+                        "seller_registry": self.seller_registry,
                         "velocity_source": self.velocity_source,
                         "verdict_anchor": self.verdict_anchor,
                         "category_index": self.category_index,
@@ -2995,6 +3062,31 @@ def main(argv=None):
                          "category price signal OFF\n" % _cat_err)
         sys.stderr.flush()
 
+    # Verified-merchant tier (seller_audit.py). Badges load from
+    # BLACKWALL_SELLER_REGISTRY, revocations persist to
+    # BLACKWALL_SELLER_REVOCATIONS. Unset = the tier is OFF, which is the
+    # shipped default and was the ONLY state available before: `seller_registry`
+    # was a `forecast` parameter bound by nothing, so the whole tier was inert.
+    # ASYMMETRIC FAILURE, deliberately: a bad attestation file costs a floor
+    # (conservative), while an unreadable REVOCATION list would mean loading
+    # badges we cannot check revocation for -- granting trust the operator
+    # withdrew -- so that disables the tier outright.
+    import seller_audit as _seller_audit
+    seller_registry, _sr_err = _seller_audit.load_registry(
+        os.environ.get("BLACKWALL_SELLER_REGISTRY"),
+        os.environ.get("BLACKWALL_SELLER_REVOCATIONS"),
+        signer=_seller_audit.attestation_signer())
+    if _sr_err:
+        sys.stderr.write("blackwall: WARNING verified-merchant tier %s\n" % _sr_err)
+        sys.stderr.flush()
+    elif seller_registry is not None:
+        sys.stdout.write(
+            "blackwall: verified-merchant tier ON (%d badge(s) loaded, %d "
+            "skipped, %d revoked)\n"
+            % (getattr(seller_registry, "loaded", 0),
+               getattr(seller_registry, "skipped", 0),
+               seller_registry.published_revocations()["count"]))
+
     # Advertised-vs-settled price-divergence watch-list (price_integrity.py); fail-open.
     divergence_index, _div_err = load_index_json(
         os.environ.get("BLACKWALL_DIVERGENCE_INDEX"))
@@ -3329,6 +3421,7 @@ def main(argv=None):
                              graph_source=graph_source,
                              velocity_source=velocity_source,
                              verdict_anchor=anchor,
+                             seller_registry=seller_registry,
                              category_index=category_index,
                              divergence_index=divergence_index,
                              rate_limiter=rate_limiter,
