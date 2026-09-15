@@ -477,16 +477,25 @@ class TestRevokeTokenKeyHandling(unittest.TestCase):
     `receipt_signer`'s refusal to have one, and now this).
     """
 
-    def test_an_unset_key_REFUSES_rather_than_using_the_dev_fallback(self):
-        # MUTATION: restoring the `or _DEV_RECEIPT_KEY` path for revocation.
-        import blackwall
+    def test_an_unset_key_REFUSES_rather_than_falling_back(self):
+        # MUTATION: accepting an ephemeral or constant key for revocation.
+        #
+        # This test used to forge a token from `blackwall._DEV_RECEIPT_KEY` and
+        # assert it was refused. That constant NO LONGER EXISTS -- `hmac_key`
+        # owns the secret now and has no committed fallback -- so the test broke,
+        # which is the fix working. Rewritten to assert the PROPERTY rather than
+        # the absence of one particular guessable value: with no secret set,
+        # NOTHING mints or verifies a revoke token.
+        subject = "0x" + "c" * 40
         with self.assertRaises(SA.RevocationNotConfigured):
-            SA.sign_revoke_token("0x" + "c" * 40, key=None, environ={})
-        # And a token forged from the committed constant must not verify.
-        forged = SA.sign_revoke_token("0x" + "c" * 40,
-                                      key=blackwall._DEV_RECEIPT_KEY)
-        self.assertFalse(SA.verify_revoke_token("0x" + "c" * 40, forged,
-                                                key=None, environ={}))
+            SA.sign_revoke_token(subject, key=None, environ={})
+        # Tokens an attacker would try, given the repo is public.
+        for guess in (b"dev-insecure-key", b"blackwall-dev-receipt-key",
+                      b"changeme", b"secret", b""):
+            forged = SA.sign_revoke_token(subject, key=guess) if guess else "0" * 32
+            self.assertFalse(
+                SA.verify_revoke_token(subject, forged, key=None, environ={}),
+                "a token forged from %r was accepted" % guess)
 
     def test_an_explicitly_set_key_works(self):
         env = {"BLACKWALL_RECEIPT_KEY": "a-real-operator-secret"}

@@ -27,7 +27,7 @@ check-seed-age:
 test:
 	python3 -m unittest \
 	  test_aa_cosigner.py test_aave_reserve.py test_addresses.py \
-	  test_advertised_prices.py test_ap_gate.py test_approvals.py \
+	  test_advertised_prices.py test_ap_gate.py test_approvals.py test_hmac_key.py \
 	  test_asset_coverage.py test_auth_sim.py test_backed_oracle.py test_bench.py \
 	  test_billing_preflight.py test_blackwall.py test_blockscout.py \
 	  test_calibration_lock.py test_calldata.py test_categories.py \

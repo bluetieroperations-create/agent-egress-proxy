@@ -95,6 +95,47 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   clock quietly turned this suite from 0.1s into 12s via one PRE-EXISTING test
   that had no sleep seam),
   `addresses.py` (EVM address validation/normalization),
+  `hmac_key.py` (the ONE owner of the HMAC capability secret. THREE separate
+  modules each grew their own COMMITTED fallback for it and each was found as a
+  separate audit finding -- `blackwall._DEV_RECEIPT_KEY`, `approvals._key()`'s
+  placeholder, and `seller_audit._DEV_AUDIT_KEY`. A COMMITTED SECRET IS NOT A
+  SECRET, and every capability token here is an HMAC under this one:
+  `sign_report_token` (authorizes writing an OUTCOME, which feeds the reputation
+  ledger the entire product is built on), `approvals` decide/redeem (marks a
+  HOLD human-approved), and `seller_audit.sign_revoke_token`. With the fallbacks
+  in force anyone who could read the public repo could mint all three.
+  MEASURED ON THE LIVE DEPLOY BEFORE FIXING: a dev-key-forged report token was
+  REFUSED with 403, so `BLACKWALL_RECEIPT_KEY` is set in production and this was
+  LATENT rather than breached -- which is why it could be fixed properly instead
+  of as an emergency, and why the fix could afford to change boot behaviour.
+  WHY A RANDOM PER-PROCESS KEY rather than refusing to boot: `receipt_signer`
+  can turn signing OFF when unset because a verdict without a receipt is still a
+  valid verdict, and that option does not exist here -- `receipt_id` is emitted
+  on EVERY verdict and is the ledger join key, so the capability is MANDATORY.
+  Refusing to boot would break every deploy that has not set it, including the
+  free public smoke-test configuration whose own blueprint says to leave the
+  secret blank. The one real cost of the random key is that tokens DO NOT SURVIVE
+  A RESTART, and that cost FAILS SAFE: after a redeploy an in-flight outcome
+  report is REJECTED, never accepted as a forgery. It is confusing if
+  unexplained -- intermittent "invalid report_token" with no cause -- so
+  `describe()` says exactly that and the boot banner prints it. A SHORT secret is
+  ACCEPTED and reported WEAK rather than refused, because an operator's existing
+  short secret must not stop a deploy and turning that into a boot failure would
+  be a breaking change dressed as a security fix. REVOCATION IS THE ONE
+  CAPABILITY THAT STILL REFUSES an ephemeral key (`RevocationNotConfigured`): a
+  revoke token that works only until the next redeploy is worse than none, since
+  an operator would mint one, hand it to whoever does the revoking, and it would
+  silently stop working in precisely the situation where trust needs
+  withdrawing. An explicitly-set secret ALWAYS wins over an
+  already-generated ephemeral one, or a call-order accident would keep the random
+  key after the operator configured a real one. `test_hmac_key` also SCANS THE
+  SOURCE for the three literals, and that scan is deliberately BLUNT -- it cannot
+  tell a mention from a use, which it proved by failing on the docstrings that
+  explain the fix. That is the right trade: a scan clever enough to allow
+  mentions can be talked into allowing a use, so the convention is to DESCRIBE
+  these constants in prose and never quote them. Verified on the real boot path
+  in all three states (unset -> WARNING ephemeral, set -> configured, short ->
+  WARNING weak). 7 mutations verified killed),
   `x402.py` (Blackwall's own x402 billing: 402 challenge, facilitator seam,
   replay guard, sessions. A HALF-SET CDP PAIR IS NOW A BOOT ERROR
   (`FacilitatorConfigError`), not a silent fallback -- found 2026-09-15 by the
@@ -1612,7 +1653,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_honeypot.py test_billing_preflight.py test_seller_report.py test_seller_portal.py test_reachability_ledger.py test_approvals.py test_token_decimals.py \
+ test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_honeypot.py test_billing_preflight.py test_seller_report.py test_seller_portal.py test_reachability_ledger.py test_approvals.py test_token_decimals.py test_hmac_key.py \
  test_bounded_server.py test_ci_coverage.py test_remote_ledger.py test_seller_intel.py test_solana_backfill.py test_user_agent.py test_volume_integrity.py
 ```
 

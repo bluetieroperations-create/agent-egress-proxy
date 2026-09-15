@@ -123,7 +123,6 @@ MAX_BODY_BYTES = 64 * 1024        # request-body cap (oversize guard)
 
 # Receipts are signed so the agent can keep a tamper-evident audit trail. This
 # is a DEV key; a real deployment supplies BLACKWALL_RECEIPT_KEY from a secret.
-_DEV_RECEIPT_KEY = b"blackwall-dev-receipt-key-not-for-production"
 
 
 # ===========================================================================
@@ -994,7 +993,7 @@ def sign_receipt(verdict_obj, key=None):
     """
     if key is None:
         key = os.environ.get("BLACKWALL_RECEIPT_KEY", "").encode("utf-8") \
-            or _DEV_RECEIPT_KEY
+            or _receipt_key()
     canonical = json.dumps(verdict_obj, sort_keys=True,
                            separators=(",", ":")).encode("utf-8")
     digest = hmac.new(key, canonical, hashlib.sha256).hexdigest()
@@ -1002,8 +1001,11 @@ def sign_receipt(verdict_obj, key=None):
 
 
 def _receipt_key():
-    return os.environ.get("BLACKWALL_RECEIPT_KEY", "").encode("utf-8") \
-        or _DEV_RECEIPT_KEY
+    """The HMAC capability secret. Owned by `hmac_key` -- see that module for why
+    the committed fallback that used to live here was a real defect and why the
+    replacement is a random per-process key rather than a boot refusal."""
+    import hmac_key
+    return hmac_key.load_key()[0]
 
 
 def sign_report_token(receipt_id, key=None):
@@ -3070,6 +3072,21 @@ def main(argv=None):
         sys.stderr.write("blackwall: WARNING category index unusable (%s) -- "
                          "category price signal OFF\n" % _cat_err)
         sys.stderr.flush()
+
+    # THE HMAC CAPABILITY SECRET (hmac_key.py). Report tokens, approval
+    # decide/redeem tokens and seller revoke tokens are all HMACs under one
+    # secret. It used to fall back to a COMMITTED constant in three separate
+    # modules, which made all three forgeable by anyone who could read the repo.
+    # Now an unset secret yields a random PER-PROCESS key: unforgeable, but the
+    # tokens do not survive a restart. Said out loud here, because the symptom
+    # otherwise is intermittent "invalid report_token" with no visible cause.
+    import hmac_key as _hmac_key
+    _cap_key, _cap_ephemeral = _hmac_key.load_key()
+    if _cap_ephemeral or _hmac_key.is_weak(_cap_key):
+        sys.stderr.write("blackwall: WARNING %s\n" % _hmac_key.describe())
+        sys.stderr.flush()
+    else:
+        sys.stdout.write("blackwall: %s\n" % _hmac_key.describe())
 
     # Verified-merchant tier (seller_audit.py). Badges load from
     # BLACKWALL_SELLER_REGISTRY, revocations persist to

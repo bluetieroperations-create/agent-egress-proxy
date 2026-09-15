@@ -403,23 +403,31 @@ class RevocationNotConfigured(RuntimeError):
 def _revoke_key(environ=None):
     """The revocation secret, with NO committed fallback.
 
-    AUDIT FINDING (medium): this used `blackwall._receipt_key()`, which returns
-    `_DEV_RECEIPT_KEY` -- a constant IN THE PUBLIC REPO -- when
-    BLACKWALL_RECEIPT_KEY is unset. MEASURED: a token forged from that constant
-    was accepted, so any reader of GitHub could strip any merchant's badge.
+    AUDIT FINDING (medium): this used `blackwall._receipt_key()`, which fell back
+    to a placeholder constant IN THE PUBLIC REPO when BLACKWALL_RECEIPT_KEY was
+    unset. MEASURED: a token forged from that constant was accepted, so any
+    reader of GitHub could strip any merchant's badge. That fallback is gone --
+    `hmac_key` now owns the secret for every capability.
     Bounded by this module's monotonic-safety design (revocation only ever
     REMOVES trust, so it is merchant griefing rather than escalation), which is
     why it is medium and not high -- but it is the THIRD instance of this root
     cause here, after `_DEV_AUDIT_KEY` and the reason `receipt_signer` refuses
     to have one at all.
     """
-    env = os.environ if environ is None else environ
-    raw = (env.get("BLACKWALL_RECEIPT_KEY") or "").encode("utf-8")
-    if not raw:
+    import hmac_key
+    key, ephemeral = hmac_key.load_key(environ)
+    if ephemeral:
+        # REVOCATION IS THE ONE CAPABILITY THAT STILL REFUSES. The other two
+        # degrade acceptably on an ephemeral key -- a rejected outcome report or
+        # a rejected approval fails safe. A revoke token that works only until
+        # the next redeploy is worse than none: an operator would mint one, hand
+        # it to whoever does the revoking, and it would silently stop working,
+        # which is precisely the situation where trust needs withdrawing.
         raise RevocationNotConfigured(
-            "BLACKWALL_RECEIPT_KEY is not set -- refusing to derive a revoke "
-            "token from a committed development key")
-    return raw
+            "%s is not set -- refusing to mint a revoke token from an ephemeral "
+            "per-process key, which would stop working at the next restart"
+            % hmac_key.ENV)
+    return key
 
 
 def sign_revoke_token(subject_or_id, key=None, environ=None):

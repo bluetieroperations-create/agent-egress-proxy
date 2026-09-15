@@ -128,10 +128,17 @@ def claim_digest(claim):
 
 
 def _key():
-    """HMAC key. Reuses BLACKWALL_RECEIPT_KEY so an operator has one secret to
-    manage; domain separation below keeps an approval token from ever being
-    mistaken for a report token."""
-    return (os.environ.get("BLACKWALL_RECEIPT_KEY") or "dev-insecure-key").encode("utf-8")
+    """HMAC key, owned by `hmac_key` so one operator secret covers every
+    capability and a rotation rotates all of them rather than some.
+
+    AUDIT FINDING (fixed): this read the environment itself and fell back to a
+    committed constant (a five-word "dev insecure" placeholder). An approval token authorizes `decide` and `redeem` on
+    a HOLD -- i.e. marking a payment as human-approved -- so with the fallback
+    in force anyone who could read the public repo could forge that approval.
+    Domain separation below keeps an approval token from ever being mistaken for
+    a report or revoke token on the shared secret."""
+    import hmac_key
+    return hmac_key.load_key()[0]
 
 
 def sign_approval_token(approval_id, key=None):
