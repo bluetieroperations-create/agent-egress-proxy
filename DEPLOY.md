@@ -75,6 +75,51 @@ has **no pip dependencies**.
 > `python billing_preflight.py --pay-to 0x... --facilitator ...` checks this, and
 > a facilitator that answers but does not list your (scheme, network) is a hard
 > FAIL — it is a config error that never starts working.
+>
+> ### ⚠️ The boot banner cannot tell you which facilitator SETTLED. The transaction can.
+>
+> The banner proves the two CDP variables are **present**, not that the credential
+> is **valid** and not that CDP did the settling: a garbage secret still boots and
+> still prints `CDP facilitator (authenticated) … Bazaar-eligible`. And until
+> `choose_facilitator` learned to refuse a half-set pair, setting only
+> `CDP_API_KEY_ID` fell back to a keyless facilitator that settles mainnet fine —
+> so a real settlement could look exactly like a successful CDP cutover while CDP
+> never touched it. **Verify from the chain, not the log.**
+>
+> Each facilitator leaves a distinct fingerprint. Measured on Base mainnet, same
+> payer, same payee, same asset, 2026-09-15 — the ONLY thing that changed between
+> these two rows is the facilitator:
+>
+> | | payai (keyless) | CDP (authenticated) |
+> |---|---|---|
+> | relayer (`tx.from`) | `0xb2bd2992…f371b` | `0x625d8a65…6ac39` |
+> | `tx.to` | Multicall3 `0xca11bde0…76ca11` | **USDC directly** `0x833589fC…02913` |
+> | selector | `0xcf092995` `transferWithAuthorization` (bytes sig) | `0xe3ee160e` same fn (v/r/s sig) |
+> | gasUsed | 109,400 | 86,250 (no Multicall3 wrapper) |
+> | logs | 2 — `AuthorizationUsed` + one `Transfer` | identical shape |
+> | tx | `0x5cee6276…70b1b` | `0x96559181…44bfd` |
+>
+> Three independent signals move together, so one mismatched relayer address is
+> enough to catch a silent fallback. Both relayers are long-lived production
+> addresses (nonces 4,020,491 and 1,515,416), so neither is a throwaway.
+>
+> **Note the relayer address is not a promise.** A facilitator may rotate it. Treat
+> "the relayer differs from the one my previous facilitator used" as the durable
+> check, not the specific hex.
+>
+> ### Settlement cost is NOT visible on-chain
+>
+> Both settlements above moved the **full quoted amount** to `BLACKWALL_PAY_TO` —
+> `1000` raw advertised, `1000` raw received — with **two logs and no fee
+> transfer**. Gas was paid by the relayer, not deducted from the payment
+> (0.000000766 ETH via payai, 0.000000431 ETH via CDP).
+>
+> So a transaction receipt **cannot** tell you what settling cost you. CDP prices
+> settlement at $0.001 past a free first 1,000/month and bills the CDP account
+> off-chain, which is invisible here. `billing_preflight.check_settlement_cost`
+> can therefore only ever **cite** that price sheet, never measure it — which is
+> why it is `--settlement-cost`-overridable and dated in the source rather than
+> treated as a constant. The honest figure for the payai path is `0`.
 
 ## Build & run (any container host)
 
