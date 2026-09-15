@@ -273,6 +273,19 @@ def _signed(auth_over=None):
          "payload": {"authorization": auth, "signature": SIG65}}).encode()).decode()
 
 
+def _payto_source(hosts=None, age_days=1.0):
+    """A payTo baseline over a synthetic directory. `age_days` fresh by default:
+    the STALENESS guard (payto_baseline.MAX_INDEX_AGE_DAYS) refuses to gate on a
+    corpus it cannot date, and the shipped `data/directory.json` is undated -- so
+    a source built from the real artifact would test the guard, not the gate.
+    """
+    import payto_baseline as _pb
+    records = hosts if hosts is not None else [
+        {"payee": LEGIT.lower(), "resources": ["https://api.seller.test/v1/quote"]}]
+    return _pb.PayToBaselineSource(index=_pb.build_payto_index(records),
+                                   age_days=age_days)
+
+
 # (name, category, expect, known_gap, payload, forecast-source kwargs)
 from transfer_sim import OK as TS_OK
 from transfer_sim import RECEIVER_BLOCKED as TS_RECEIVER_BLOCKED
@@ -352,6 +365,26 @@ SIM_SCENARIOS = [
               chain="eip155:8453", price_history=["5.00"] * 20),
      lambda: {}),
 
+    # x402 v2 made `payTo` per-request ("no longer static"), so a compromised or
+    # hostile endpoint can name an attacker's wallet and be paid the RIGHT PRICE
+    # by the WRONG PARTY. Every spending control in this market sees a payment
+    # that is in budget, in the right asset, correctly signed. The published
+    # mitigations are a static recipient allowlist, or an alert on every
+    # first-seen address -- a cold-start problem restated as a control.
+    #
+    # KNOWN GAP BY DESIGN, not by oversight: the detection works (70 unit tests
+    # and a live-wire test), but `PAYTO_BASELINE_GATES` ships OFF. 1.6% is the
+    # HOST-level false-flag ceiling measured on the corpus; the REQUEST-level
+    # rate cannot be derived from it, so the gate has to earn it on real traffic
+    # first -- the way SYBIL_RING_GATES graduated. This line flips to
+    # `known_gap=False` when the lock does, and the scorecard is the right place
+    # for that to be visible rather than buried in a docstring.
+    ("swapped payTo on a single-recipient endpoint", "payto-baseline", "block",
+     True,
+     _payload(counterparty="0x" + "d" * 40,
+              resource="https://api.seller.test/v1/quote"),
+     lambda: {"payto_source": _payto_source()}),
+
     # --- controls: these must NOT be blocked (over-blocking is the real risk here) ---
     # RESTRAINT for the widened screen: an ordinary `exact` payment with a
     # proportionate allowance must stay clean. Widening what gets screened is only
@@ -402,6 +435,47 @@ SIM_SCENARIOS = [
     ("non-EVM payee is not condemned", "control", "allow", False,
      _payload(counterparty="2DgEL95L8DtaRb4ubYqrrnMbX7Zxgjxq7k8Ed9XAWYcp"),
      lambda: {}),
+    # RESTRAINT #1 for the payTo baseline, and the one it would be easiest to get
+    # wrong: the recipient the endpoint ACTUALLY advertises must stay clean. A
+    # join-key bug here (EIP-55 checksummed on the wire vs lowercase in the
+    # crawl -- the join that silently missed 64 of 69 live endpoints in
+    # advertised_prices) would flag the real recipient of every EVM endpoint in
+    # the ecosystem as an attack. Deliberately CHECKSUMMED to pin that.
+    ("the endpoint's own advertised recipient", "control", "allow", False,
+     _payload(counterparty=LEGIT.upper().replace("0X", "0x"),
+              resource="https://api.seller.test/v1/quote"),
+     lambda: {"payto_source": _payto_source()}),
+    # RESTRAINT #2, and the measured false-flag class: 8 of 514 corpus hosts
+    # (1.6%) advertise more than one payTo -- marketplaces and multi-tenant APIs,
+    # api.aidress.ai with six of them. For those, a recipient we have not seen is
+    # indistinguishable from a tenant being onboarded, so the host has no stable
+    # baseline and this declines to judge. If it ever blocks, the gate has become
+    # the revert_scan mistake with a new name: convicting an endpoint for working
+    # as designed.
+    ("unseen recipient on a multi-tenant endpoint", "control", "allow", False,
+     _payload(counterparty="0x" + "d" * 40,
+              resource="https://api.market.test/v1/quote"),
+     lambda: {"payto_source": _payto_source([
+         {"payee": LEGIT.lower(),
+          "resources": ["https://api.market.test/v1/quote"]},
+         {"payee": "0x" + "e" * 40,
+          "resources": ["https://api.market.test/v1/other"]}])}),
+    # RESTRAINT #3: an endpoint absent from our crawl must NOT be penalised. The
+    # live ecosystem is larger than 514 hosts, so most real endpoints land here,
+    # and gating on absence would HOLD nearly everything -- our own missing data
+    # becoming a case against a seller (the reachability_ledger rule).
+    ("an uncrawled endpoint is not penalised", "control", "allow", False,
+     _payload(resource="https://never-crawled.test/v1/quote"),
+     lambda: {"payto_source": _payto_source()}),
+    # RESTRAINT #4: the STALENESS guard. `data/directory.json` carries no
+    # timestamp, and a seller that legitimately rotated its payout wallet is
+    # indistinguishable from a swapped recipient against a baseline we cannot
+    # date. So an undated corpus RECORDS and never gates, even with the lock on.
+    ("a mismatch against an undated baseline is not gated", "control", "allow",
+     False,
+     _payload(counterparty="0x" + "d" * 40,
+              resource="https://api.seller.test/v1/quote"),
+     lambda: {"payto_source": _payto_source(age_days=None)}),
     # RESTRAINT for the currency gate, and the reason it is knowledge-based: an
     # asset we have simply never seen must NOT be condemned for being unfamiliar.
     # Only assets KNOWN not to be dollars gate; "not known to be USD" is not the

@@ -81,7 +81,7 @@ jobs:
             test_approvals.py test_asset_coverage.py \
             test_billing_preflight.py test_bounded_server.py \
             test_ci_coverage.py test_hmac_key.py test_honeypot.py \
-            test_mcp_http.py test_payee_syntax.py \
+            test_mcp_http.py test_payee_syntax.py test_payto_baseline.py \
             test_reachability_ledger.py test_screen_payer.py \
             test_seller_intel.py test_seller_portal.py test_seller_report.py \
             test_solana_backfill.py test_token_decimals.py \

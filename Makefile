@@ -40,9 +40,10 @@ test:
 	  test_holder_concentration.py test_honeypot.py test_http_util.py \
 	  test_issuer_trust_gate.py test_keccak.py test_ledger.py test_mcp_http.py \
 	  test_mcp_server.py test_payee_syntax.py test_payer_graph.py \
+	  test_payto_baseline.py \
 	  test_payer_reputation.py test_payload_sim.py test_price_corroboration.py \
 	  test_price_integrity.py test_pyth_price.py test_rams_readiness.py \
-	   test_billing_preflight.py test_bounded_server.py test_ci_coverage.py \
+	   test_bounded_server.py test_ci_coverage.py \
 	   test_ratelimit.py test_reachability_ledger.py test_readiness.py \
 	   test_receipt_signer.py test_redteam.py test_refresh_guard.py \
 	   test_reputation_onchain.py test_reputation_store.py test_revert_scan.py \

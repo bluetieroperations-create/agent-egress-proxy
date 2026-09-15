@@ -1262,7 +1262,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              rwa_source=None, stock_registry=None, pyth_source=None, rwa_ledger=None,
              balance_reader=None, backing_index=None, dex_source=None,
              holder_source=None, aave_source=None, issuer_trust_source=None,
-             honeypot_source=None,
+             honeypot_source=None, payto_source=None,
              settlement_sim_source=None, auth_sim_source=None,
              receipt_signer=None):
     """
@@ -1594,6 +1594,25 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     from payee_syntax import apply_payee_syntax, assess_payee
     verdict = apply_payee_syntax(verdict, assess_payee(clean.get("counterparty")))
 
+    # payTo-vs-endpoint baseline (payto_baseline.py): x402 v2 makes `payTo`
+    # per-request, so a hostile endpoint can name an attacker's wallet and be paid
+    # the RIGHT PRICE by the WRONG PARTY -- invisible to every spending control,
+    # and a cold-start HOLD is not the same claim (it clears once the swapped
+    # address has any history). This says the endpoint-relative thing: this host
+    # has only ever advertised one recipient in our crawl, and this is not it.
+    # Index is built ONCE at boot from OUR committed corpus, never from the
+    # request and never learned from traffic. DESCRIPTIVE by default -- the
+    # PAYTO_BASELINE_GATES lock is off until the false-HOLD rate is measured on
+    # real traffic. Needs `resource`; a payment without one never reaches it.
+    if payto_source is not None and clean.get("resource"):
+        try:
+            _pb = payto_source.check(clean["resource"], clean.get("counterparty"))
+        except Exception:
+            _pb = None                      # fail-open: never blocks a verdict
+        if _pb:
+            from payto_baseline import apply_payto_baseline
+            verdict = apply_payto_baseline(verdict, _pb)
+
     # Holder-concentration rug-check (holder_concentration.py): a single non-contract
     # wallet holding a dominant share of the token supply -> dump/manipulation risk.
     # Keyless Blockscout; HOLD-only, fail-open, contract holders excluded (issuer custody).
@@ -1843,6 +1862,7 @@ class _Handler(BaseHTTPRequestHandler):
     dex_source = None  # dex_price.DexPriceSource (market-vs-NAV peg), or None
     holder_source = None  # holder_concentration.HolderConcentrationSource (rug-check), or None
     honeypot_source = None  # honeypot.HoneypotSource (sell-path / exit check), or None
+    payto_source = None  # payto_baseline.PayToBaselineSource (recipient baseline), or None
     aave_source = None  # aave_reserve.AaveReserveSource (advisory quality), or None
     issuer_trust_source = None  # issuer_trust_gate.IssuerTrustSource (earned grade), or None
     settlement_sim_source = None  # settlement_sim.SettlementSimSource (pre-sig feasibility)
@@ -2030,6 +2050,13 @@ class _Handler(BaseHTTPRequestHandler):
         configured = {
             "settlement_simulation": self.settlement_sim_source is not None,
             "honeypot_check": self.honeypot_source is not None,
+            # NOTE: this dict is build_descriptor()'s KWARGS, not a free-form
+            # capability report -- adding a key here breaks /.well-known/x402
+            # with a TypeError (found by test_discovery, not by reading). So
+            # `payto_baseline` is deliberately NOT advertised: it is DESCRIPTIVE
+            # while PAYTO_BASELINE_GATES is off, and advertising a signal that
+            # cannot change a verdict is the "banner says ON, feature is inert"
+            # failure in its public-facing form. Advertise it when the lock flips.
             "rwa_readiness": self.rwa_source is not None,
             "market_peg": self.dex_source is not None,
             "holder_concentration": self.holder_source is not None,
@@ -2453,6 +2480,7 @@ class _Handler(BaseHTTPRequestHandler):
                                  dex_source=self.dex_source,
                                  holder_source=self.holder_source,
                                  honeypot_source=self.honeypot_source,
+                                 payto_source=self.payto_source,
                                  aave_source=self.aave_source,
                                  issuer_trust_source=self.issuer_trust_source,
                                  settlement_sim_source=self.settlement_sim_source,
@@ -2548,7 +2576,7 @@ class BlackwallServer:
                  enrichment_source=None, rwa_source=None, stock_registry=None,
                  pyth_source=None, rwa_ledger=None, balance_reader=None,
                  backing_index=None, dex_source=None, holder_source=None,
-                 honeypot_source=None,
+                 honeypot_source=None, payto_source=None,
                  aave_source=None, issuer_trust_source=None,
                  settlement_sim_source=None, auth_sim_source=None,
                  max_inflight=DEFAULT_MAX_INFLIGHT):
@@ -2588,6 +2616,7 @@ class BlackwallServer:
         self.dex_source = dex_source
         self.holder_source = holder_source
         self.honeypot_source = honeypot_source
+        self.payto_source = payto_source
         # ALWAYS on. Constructed here rather than injected because a HOLD with
         # nowhere to send it is the defect, and an opt-in flag reproduces it.
         import approvals as _approvals
@@ -2629,6 +2658,7 @@ class BlackwallServer:
                         "dex_source": self.dex_source,
                         "holder_source": self.holder_source,
                         "honeypot_source": self.honeypot_source,
+                        "payto_source": self.payto_source,
                         "aave_source": self.aave_source,
                         "issuer_trust_source": self.issuer_trust_source,
                         "settlement_sim_source": self.settlement_sim_source,
@@ -3309,6 +3339,59 @@ def main(argv=None):
                              "HOLD, permissioned securities deferred)\n")
             sys.stdout.flush()
 
+    # ALWAYS LOADED, never gating by default -- payto_baseline.py. x402 v2 made
+    # `payTo` per-request ("no longer static"), so a hostile or compromised
+    # endpoint can name an attacker's wallet and collect the correct price from
+    # the wrong party; the published mitigations are a static recipient allowlist
+    # or an alert on every first-seen address, which is a cold-start problem
+    # restated as a control. This supplies the endpoint-relative fact instead.
+    #
+    # No flag, because there is nothing to opt into: the index is one dict built
+    # from OUR OWN committed crawl, the lookup is O(1), no network is touched, and
+    # the GATE is behind the PAYTO_BASELINE_GATES constant (default off). A
+    # missing artifact yields an empty index and every lookup answers `unknown` --
+    # identical to today's behaviour. The signal is recorded from day one because
+    # that is the traffic the gate has to be calibrated on.
+    payto_source = None
+    try:
+        from payto_baseline import (MAX_STABLE_PAYEES, PAYTO_BASELINE_GATES,
+                                    PayToBaselineSource)
+        payto_source = PayToBaselineSource.from_path(
+            os.environ.get("BLACKWALL_PAYTO_INDEX"))
+        _pb_hosts = len(payto_source)
+        _pb_multi = sum(1 for v in payto_source.index.values()
+                        if len(v) > MAX_STABLE_PAYEES)
+        if _pb_hosts:
+            # Say which of the THREE things is actually true, because two of them
+            # look like "on". The lock can be flipped and the gate still not
+            # fire, if the directory cannot be dated -- so the banner reports the
+            # lock and the corpus age separately rather than one word for both.
+            if not PAYTO_BASELINE_GATES:
+                _pb_state = "RECORDED ONLY (PAYTO_BASELINE_GATES off)"
+            elif payto_source.stale:
+                _pb_state = ("RECORDED ONLY -- the lock is ON but the directory "
+                             "is %s, so a seller that rotated wallets cannot be "
+                             "told from a swapped recipient"
+                             % ("undated" if payto_source.age_days is None
+                                else "%.0f days old" % payto_source.age_days))
+            else:
+                _pb_state = "HOLDs"
+            sys.stdout.write(
+                "blackwall: payTo baseline loaded -- %d endpoint host(s), %d "
+                "advertising more than one recipient (no baseline, never "
+                "gated); recipient mismatch %s\n"
+                % (_pb_hosts, _pb_multi, _pb_state))
+        else:
+            # Say so rather than announcing a feature that answers `unknown` to
+            # everything -- the wired-and-inert failure mode, stated at boot.
+            sys.stdout.write("blackwall: payTo baseline INERT -- no crawl "
+                             "artifact found, every endpoint reads as unknown\n")
+        sys.stdout.flush()
+    except Exception as _exc:              # never let a descriptive signal stop boot
+        sys.stderr.write("blackwall: payTo baseline unavailable (%s)\n" % _exc)
+        sys.stderr.flush()
+        payto_source = None
+
     # OPT-IN (BLACKWALL_AAVE=1, needs an EVM RPC): Aave reserve quality (advisory). A
     # token Aave has frozen -> risk note (feeds the aggregate); listed -> positive note.
     aave_source = None
@@ -3465,6 +3548,7 @@ def main(argv=None):
                              dex_source=dex_source,
                              holder_source=holder_source,
                              honeypot_source=honeypot_source,
+                             payto_source=payto_source,
                              aave_source=aave_source,
                              issuer_trust_source=issuer_trust_source,
                              settlement_sim_source=settlement_sim_source,

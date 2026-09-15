@@ -1224,6 +1224,103 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   claim: AgentCore forwards `payTo` VERBATIM into the signature, so it never asks
   whether the payee is an address at all.
   Tests: `test_payee_syntax.py`),
+  `payto_baseline.py` (IS THIS THE RECIPIENT THIS ENDPOINT HAS ALWAYS USED?
+  x402 v2 made `payTo` DYNAMIC -- per-request routing "to addresses, roles, or
+  callback-based payout logic", and the field "is no longer static". A real
+  feature for marketplaces, and a new attack: a compromised or hostile endpoint
+  names an attacker's wallet and is paid the RIGHT PRICE by the WRONG PARTY. The
+  amount is in budget, the asset is right, the signature is valid, and NO
+  SPENDING CONTROL IN THIS MARKET SEES IT. The ecosystem's published mitigations
+  are "implement recipient allowlists" and "log and alert on first-seen payment
+  addresses" -- the THIRD instance of the gap `integrations/agentcore/` documents
+  about AWS and `integrations/lucid/` about Lucid (a STATIC LIST A HUMAN TYPED),
+  and the second half is a COLD-START PROBLEM STATED AS A CONTROL: it fires on
+  every legitimate new counterparty, which is how an alert gets turned off.
+  Blackwall already scores whatever `payTo` arrives per request and never assumed
+  a stable recipient; what it could not say is the ENDPOINT-RELATIVE fact. A
+  cold-start HOLD is NOT that claim -- it clears the moment the swapped address
+  has any history, and it says nothing about the endpoint.
+  `ecosystem_scan` already writes per-payee resources to `data/directory.json`;
+  inverting that gives host -> {advertised payees}. Built ONCE AT BOOT from OUR
+  OWN COMMITTED CRAWL -- never from the request, never from a live fetch, and
+  NEVER LEARNED FROM TRAFFIC, because a baseline learned from requests would let
+  an attacker teach us their address and then pay it (the `advertised_prices`
+  rule). MEASURED BEFORE SHIPPING, the way sybil_ring graduated: 266 payees, 514
+  distinct hosts, and **8 hosts (1.6%)** advertise more than one payTo
+  (api.aidress.ai 6, blockrun.ai 3, api.arkm.com 2, four gedx402 subdomains 2
+  each). So 506 of 514 (98.4%) have exactly ONE recipient on record, and 0 of
+  3827 (host, payee) pairs the crawl itself recorded flag -- in lowercase AND in
+  EIP-55 checksummed form, which is the join that silently missed 64 of 69 live
+  endpoints in `advertised_prices` and would here read as an ATTACK on the real
+  recipient of every EVM endpoint in the ecosystem. `test_payto_baseline`
+  COMPUTES those figures from the artifact rather than restating them.
+  A HOST THAT ROTATES HAS NO BASELINE -- the one judgement call, and the hardest
+  case is the one that LOOKS most like the attack: a known multi-payee host names
+  a recipient we have never seen. From here that is indistinguishable from a
+  marketplace onboarding a tenant, so it grades `multi_payee` and is NEVER gated.
+  Gating it would put api.aidress.ai permanently on the wrong side. The
+  `payee_syntax.invalid_hex` discipline: record what you cannot defend gating on.
+  DEFAULT OFF (`PAYTO_BASELINE_GATES`): 1.6% is the HOST-level false-flag
+  ceiling and the REQUEST-level rate cannot be derived from the corpus -- one
+  high-traffic multi-tenant host could dominate live traffic while being one row
+  here. HOLD-only, never STOP (inference from our own crawl, not proof).
+  Fail-open in every direction -- unknown host, missing artifact, relative
+  resource, absent counterparty all read `unknown`, because the live ecosystem is
+  larger than 514 hosts and gating on absence would HOLD nearly everything (the
+  `reachability_ledger` rule: our own missing data must never become a case
+  against a seller).
+  AUDIT FINDING, found by MEASURING the artifact rather than reading the code:
+  `data/directory.json` CARRIES NO TIMESTAMP and was last touched 18 days before
+  this landed. A seller may legitimately rotate its payout wallet, and against a
+  stale baseline that ordinary event is indistinguishable from a swapped
+  recipient -- so the gate would manufacture evidence against a seller who did
+  nothing wrong. `index_age_days` reads an explicit `generated_at` (the shape
+  `asset_coverage.json` already uses) and returns None for the bare-list shape;
+  an UNKNOWN age counts as STALE, and a stale baseline RECORDS but never gates
+  even with the lock on. DELIBERATELY NOT `getmtime`, which is the obvious
+  implementation and is wrong here: a container clones the repo at build time, so
+  every committed artifact's mtime is the BUILD date and an arbitrarily old
+  corpus would read as minutes old -- the `chain_backfill` `age_days` inversion
+  exactly, and the same shape as `payee_syntax`'s "0 malformed" meaning 0 SEEN.
+  So dating the artifact is a PRECONDITION for the lock, not just flipping it;
+  the boot banner reports the lock and the corpus age SEPARATELY because two of
+  the three states look like "on", and a test asserts the shipped corpus is
+  currently undated so a future change cannot quietly make the gate live.
+  KNOWN LIMITS, all three stated in the module: (1) `resource` is
+  CLIENT-SUPPLIED, so this defends an HONEST agent against a HOSTILE ENDPOINT --
+  which is the v2 attack -- but a caller that forwards the value out of the 402
+  CHALLENGE rather than the url it DIALED lets the endpoint choose the host key;
+  `x402.canonical_resource_url` exists because we learned this field is
+  attacker-influenced on our own server. (2) A SELLER CAN OPT OUT by advertising
+  two payTos and becoming `multi_payee`; acceptable because the gate is strictly
+  additive, so evading it returns the payee to the STATUS QUO (cold-start HOLD,
+  sanctions, price anomaly and the Sybil gates all still apply) and grants
+  nothing. Same mechanism means an attacker who gets a resource claim on someone
+  else's host into our crawl can DISABLE the gate for that host -- fail-open,
+  which is the right direction for a poisoning we cannot yet verify against.
+  (3) A HOST IS NOT AN OPERATOR: two businesses can share one, and 58 of 266
+  corpus payees span hosts.
+  MEASURED COST: 70.9ms and 261KB to index 514 hosts at boot; 1.1-2.5us per
+  verdict against a ~2ms verdict, so ~0.1%. Redteam: 1 attack (KNOWN GAP BY
+  DESIGN while the lock is off -- flipping it turns the scorecard to 32 caught /
+  2 gaps / 0 false positives, verified) + 4 restraint controls (the endpoint's
+  own EIP-55 recipient, an unseen recipient on a multi-tenant host, an uncrawled
+  endpoint, and a mismatch against an undated baseline). Verified on the REAL
+  boot path in all four states and over REAL HTTP. 25 mutations verified killed,
+  TWO of which SURVIVED the first pass and were both test defects worth naming:
+  the host-sanitizer test asserted `_safe_text` DIRECTLY and claimed a control
+  character "cannot survive into a host key at all", so deleting the sanitizer
+  from `assess_payto` left every test green -- `urlsplit` strips ONLY CR, LF and
+  TAB, and NUL, ESC and DEL pass straight into `.hostname`, making that sanitizer
+  LOAD-BEARING rather than defense-in-depth (a COMPLETE ANSI sequence is refused
+  one layer down because `[` makes urlsplit raise "Invalid IPv6 URL", but that is
+  an accident of a bracket, not a guard this module owns); and the empty-set
+  branch had no test, so `if not advertised` -> `if advertised is None` let a
+  host mapped to an empty set reach the single-element unpack and raise
+  ValueError out of a function documented never to raise. A THIRD test was wrong
+  on first run and caught by the suite itself: it demanded `multi_payee` for a
+  recipient the fixture explicitly advertised. Tests:
+  `test_payto_baseline.py`, 70 tests incl. a REAL server),
   `bounded_server.py` (ADMISSION CONTROL -- a ceiling on requests IN FLIGHT.
   MEASURED on the live free deploy: at 120 concurrent, 43% of verdicts failed
   while p50 stayed FLAT at ~2s. The service was not getting slow, it was
@@ -1714,6 +1811,18 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
 > security suite, never ran in the documented check. `test_deploy_manifest.py`
 > now asserts the list matches the directory, because a canonical command that
 > silently skips files is worse than no canonical command.
+>
+> **The guard checks for OMISSIONS, not for DUPLICATES**, and that gap hid one:
+> `test_billing_preflight.py` was listed TWICE in the `Makefile` `test` target,
+> so its 115 tests ran twice and the reported total read 2725 instead of 2601.
+> Found 2026-09-15 by refusing to accept a count discrepancy between two runs of
+> what looked like the same file set -- not by any test. Harmless to correctness
+> and actively misleading about coverage, which is the same failure mode as the
+> omission above pointing the other way. Note the three lists are legitimately
+> NOT identical in length: `Makefile:test` and the CI step carry 100 files, while
+> CLAUDE.md's command carries 101 -- `test_remote_ledger.py` needs
+> `cryptography` and runs in `make test-native`, deliberately kept out of the
+> stdlib-only run.
 
 Convention: the security/decision-critical logic lives in small **pure functions**
 at the top of each module, unit-tested TDD-first with **mutation notes** (each
@@ -1729,7 +1838,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_honeypot.py test_billing_preflight.py test_seller_report.py test_seller_portal.py test_reachability_ledger.py test_approvals.py test_token_decimals.py test_hmac_key.py \
+ test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_payto_baseline.py test_honeypot.py test_billing_preflight.py test_seller_report.py test_seller_portal.py test_reachability_ledger.py test_approvals.py test_token_decimals.py test_hmac_key.py \
  test_bounded_server.py test_ci_coverage.py test_remote_ledger.py test_seller_intel.py test_solana_backfill.py test_user_agent.py test_volume_integrity.py
 ```
 
