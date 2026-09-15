@@ -532,7 +532,25 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   exists to accumulate). The real fix at volume is CDP's `batch-settlement`
   scheme, which collapses the per-payment cost instead of raising the price.
   `SETTLEMENT_COST` is a THIRD PARTY'S price, so it is DATED and overridable via
-  `--settlement-cost` rather than treated as a constant of nature. Two mutations
+  `--settlement-cost` rather than treated as a constant of nature. CORRECTED
+  2026-09-15, reported by the billing session after a real mainnet settlement,
+  and the correction is the finding: dating the constant was NOT ENOUGH, because
+  the cost belongs to the FACILITATOR YOU CONFIGURED and the check hardcoded
+  CDP's while production settled through PayAI -- so it reported a shortfall
+  computed from a price sheet nobody was paying. `settlement_cost_for` now reads
+  the facilitator the config would actually USE, mirroring `choose_facilitator`
+  (both CDP creds present means CDP whatever the URL says, or a config settling
+  through CDP would be priced as PayAI). A facilitator absent from
+  `SETTLEMENT_COSTS` yields UNKNOWN and the check DECLINES TO GRADE -- NOTE,
+  reporting the break-even (a property of pricing alone, true regardless) and
+  asking for `--settlement-cost`, rather than borrowing another facilitator's
+  number. PayAI is deliberately NOT recorded as $0: two settlements showed no
+  ON-CHAIN deduction, which is evidence about the chain and not about commercial
+  terms, and a fee billed off-chain looks identical from a receipt -- calling it
+  free would be the same leap as "valid checksum" -> "right payout address" and
+  "two testnet facilitators" -> "keyless is testnet-only", both of which this
+  project has already made. An explicit `--settlement-cost` always wins: that is
+  the operator's measured number and it beats anything on file. Two mutations
   survived the first pass and both were the wired-and-inert pattern in miniature:
   the flag could be dropped from the assembly leaving it parsed, documented and
   INERT, and the mean shortfall could be hardcoded to zero. (11) SETTLEMENT AUTH, folded 2026-09-11 from the PARALLEL SESSION's

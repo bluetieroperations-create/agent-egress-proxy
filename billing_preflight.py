@@ -778,21 +778,71 @@ def check_proportionality(fee_atomic, points, bound_bps=100, decimals=6,
                   % (bound_bps, median_low * 100), **stats)
 
 
-# Coinbase CDP facilitator pricing, read from their docs on 2026-09-08
-# (docs.cdp.coinbase.com/x402/seller/facilitator): "The first 1,000 onchain
-# Facilitator transactions each month are free, then each additional onchain
-# transaction costs $0.001." Verification is free; only SETTLEMENT costs.
+# WHAT ONE SETTLEMENT COSTS, PER FACILITATOR.
 #
-# A THIRD PARTY'S PRICE, so it is dated and overridable rather than treated as a
-# constant of nature -- when it moves, the number here is wrong and the check
-# would quietly mis-measure. `--settlement-cost` overrides it.
-SETTLEMENT_COST = Decimal("0.001")
-SETTLEMENT_FREE_TIER = 1000
+# This started as a bare `SETTLEMENT_COST = 0.001` -- Coinbase CDP's published
+# price -- and that was wrong in the way this module exists to catch: it is a
+# property of the facilitator you CONFIGURED, not a constant, and the live
+# service was settling through PayAI the whole time. So the check reported a
+# loss computed from a price sheet production does not pay. Reported by the
+# billing session on 2026-09-15, after a real mainnet settlement.
+#
+# A facilitator absent from this table yields UNKNOWN, and unknown means the
+# check DECLINES TO GRADE rather than falling back to somebody else's number.
+# That is the whole correction: a figure you cannot source is worse than an
+# admission that you have none.
+CDP_SETTLEMENT_COST = Decimal("0.001")      # published, past a free tier
+SETTLEMENT_FREE_TIER = 1000                 # CDP: first N onchain settlements/month
+
+SETTLEMENT_COSTS = {
+    # host                    -> (per-settlement USD, how we know)
+    "api.cdp.coinbase.com": (CDP_SETTLEMENT_COST,
+                             "CDP's published price (docs.cdp.coinbase.com, read "
+                             "2026-09-08), past a free first %d onchain "
+                             "settlements a month" % SETTLEMENT_FREE_TIER),
+}
+
+# DELIBERATELY NOT IN THE TABLE, and the reasoning matters more than the entry.
+# Two live CDP settlements on 2026-09-15 showed PayAI deducting NOTHING on-chain,
+# which is evidence about the CHAIN, not about the facilitator's commercial
+# terms -- a fee billed off-chain or absorbed in gas looks identical from a
+# receipt. Recording that observation as "$0" would turn "we saw no deduction"
+# into "it is free", which is the same leap as "valid checksum" -> "right
+# payout address" and "two testnet facilitators" -> "keyless is testnet-only".
+# Unknown is the fail-safe direction: it asks the operator for a number instead
+# of quietly under-reporting a loss.
+SETTLEMENT_COST_UNVERIFIED = {
+    "facilitator.payai.network":
+        "no on-chain deduction observed across 2 settlements (2026-09-15); "
+        "commercial terms unverified",
+}
 
 
-def check_settlement_cost(fee_atomic, points, settle=SETTLEMENT_COST,
+def settlement_cost_for(facilitator_url, cdp_id=None, cdp_secret=None):
+    """(cost, provenance) for the facilitator this config would actually use.
+
+    Mirrors `choose_facilitator`'s selection: BOTH CDP credentials present means
+    CDP regardless of `facilitator_url`, which is silently ignored there.
+    Returns (None, why) when we have no sourced figure.
+    """
+    from urllib.parse import urlsplit
+    from x402 import CDP_FACILITATOR_URL
+
+    url = CDP_FACILITATOR_URL if (cdp_id and cdp_secret) else (facilitator_url or "")
+    host = (urlsplit(str(url)).hostname or "").lower()
+    if not host:
+        return None, "no facilitator configured"
+    if host in SETTLEMENT_COSTS:
+        cost, how = SETTLEMENT_COSTS[host]
+        return cost, how
+    if host in SETTLEMENT_COST_UNVERIFIED:
+        return None, "%s: %s" % (host, SETTLEMENT_COST_UNVERIFIED[host])
+    return None, "no published per-settlement price on file for %s" % _safe_text(host, 60)
+
+
+def check_settlement_cost(fee_atomic, points, settle=None,
                           decimals=6, free_tier=SETTLEMENT_FREE_TIER,
-                          source=None):
+                          source=None, provenance=None):
     """Does the fee cover what it COSTS to collect the fee?
 
     THE GAP THIS CLOSES: every other money check here asks what we charge.
@@ -801,6 +851,14 @@ def check_settlement_cost(fee_atomic, points, settle=SETTLEMENT_COST,
     settlement has a price. A fee below it is not thin margin -- it is a
     payment we lose money by accepting, and it looks identical to revenue in
     every report until the invoice arrives.
+
+    `settle` IS NOT A CONSTANT. It comes from `settlement_cost_for`, which reads
+    the facilitator this config would actually use, and it is None whenever we
+    have no sourced price for that facilitator. None means the check reports what
+    it DOES know -- the break-even payment size, a property of pricing alone --
+    and refuses to claim a loss. The original version hardcoded CDP's $0.001
+    while production settled through PayAI, so it reported a shortfall computed
+    from a price sheet nobody was paying.
 
     MEASURED on the committed corpus at the shipped value pricing (10 bps,
     min fee $0.0001) against CDP's $0.001: 41 of 46 billable payees (89.1%)
@@ -828,8 +886,27 @@ def check_settlement_cost(fee_atomic, points, settle=SETTLEMENT_COST,
                       "no corpus available%s -- settlement economics were NOT "
                       "measured"
                       % (" at %s" % _safe_text(source, 200) if source else ""))
-    settle = Decimal(str(settle))
     scale = Decimal(10) ** int(decimals)
+    if settle is None:
+        # No sourced price for the configured facilitator. Report the one thing
+        # that is true regardless -- where this pricing policy breaks even per
+        # settlement -- and make the missing input explicit rather than
+        # substituting somebody else's number.
+        billable = sum(1 for p in points
+                       if Decimal(fee_atomic(p[1]) or 0) / scale > 0)
+        probe = _breakeven_amount(fee_atomic, Decimal("0.001"), decimals)
+        return _check("settlement_cost", NOTE,
+                      "not graded: %s. %d of %d corpus payees are billable at "
+                      "their cheapest advertised option%s. Pass "
+                      "--settlement-cost with your facilitator's real "
+                      "per-settlement price to grade it"
+                      % (_safe_text(provenance or "no per-settlement price "
+                                    "available", 160), billable, len(points),
+                         ("; at a hypothetical $0.001 the policy would break "
+                          "even at a %s payment" % probe) if probe else ""),
+                      billable=billable, settlement_cost=None,
+                      breakeven_at_0_001=str(probe) if probe else None)
+    settle = Decimal(str(settle))
     billable = below = 0
     shortfall = Decimal(0)
     for point in points:
@@ -853,7 +930,7 @@ def check_settlement_cost(fee_atomic, points, settle=SETTLEMENT_COST,
              "settlement_cost": str(settle),
              "avg_shortfall": ("%.6f" % (shortfall / below)) if below else "0",
              "breakeven": str(breakeven) if breakeven is not None else None,
-             "free_tier": free_tier}
+             "free_tier": free_tier, "cost_source": provenance}
     if not below:
         return _check("settlement_cost", OK,
                       "every payment billable at its cheapest advertised "
@@ -972,7 +1049,7 @@ def preflight(pay_to, facilitator=None, network="base", asset=None,
               price="0.001", value_pricing=False, knobs=None,
               corpus=None, fetch=None, offline=False,
               cdp_id=None, cdp_secret=None, corpus_path=None,
-              settlement_cost=SETTLEMENT_COST, authed_post=None):
+              settlement_cost=None, authed_post=None):
     """Run every check and return the report. No side effects beyond `fetch`."""
     from x402 import (BASE_SEPOLIA_USDC, BASE_USDC, BillingConfig, BillingGate,
                       DEFAULT_SCHEME, PricingPolicy, to_caip2)
@@ -1028,8 +1105,18 @@ def preflight(pay_to, facilitator=None, network="base", asset=None,
         bound_bps = int(policy.max_fee_ratio_bps) if policy is not None else 100
         checks.append(check_proportionality(gate._price_for, points,
                                             bound_bps=bound_bps, source=source))
+        # The per-settlement cost is a property of the facilitator this config
+        # would USE, so it is resolved here rather than defaulted in the check.
+        # An explicit --settlement-cost always wins: that is the operator's own
+        # measured number, and it beats anything on file.
+        if settlement_cost is None:
+            settle_cost, settle_why = settlement_cost_for(
+                facilitator, cdp_id=cdp_id, cdp_secret=cdp_secret)
+        else:
+            settle_cost, settle_why = settlement_cost, "supplied by the operator"
         checks.append(check_settlement_cost(gate._price_for, points,
-                                            settle=settlement_cost,
+                                            settle=settle_cost,
+                                            provenance=settle_why,
                                             source=source))
 
     if offline:
@@ -1095,11 +1182,13 @@ def main(argv=None):
     p.add_argument("--corpus", default=None,
                    help="price corpus to project against (default: the "
                         "committed data/directory.json beside this script)")
-    p.add_argument("--settlement-cost", default=str(SETTLEMENT_COST),
-                   help="USD your facilitator charges per onchain settlement "
-                        "(default %s, CDP's price as of 2026-09-08 past its "
-                        "free tier; a THIRD PARTY'S number, so override it "
-                        "when it moves)" % SETTLEMENT_COST)
+    p.add_argument("--settlement-cost", default=None,
+                   help="USD your facilitator charges per onchain settlement. "
+                        "Default: derived from the facilitator you configured "
+                        "(CDP is on file at %s past its free tier); anything "
+                        "else is UNKNOWN and the check declines to grade rather "
+                        "than borrowing another facilitator's price"
+                        % CDP_SETTLEMENT_COST)
     p.add_argument("--offline", action="store_true",
                    help="skip the facilitator probe (no network)")
     p.add_argument("--json", metavar="PATH", help="also write the report as JSON")
