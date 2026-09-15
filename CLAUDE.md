@@ -210,7 +210,55 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   an endpoint from readiness + on-chain history + sanctions + price-fairness, issue a
   signed/expiring/revocable attestation granting a bounded trust FLOOR that waives the
   thin-count gate but never the Sybil gate and never overrides a STOP; folds into
-  decide_payment via `verified_floor` + forecast via a `SellerRegistry`),
+  decide_payment via `verified_floor` + forecast via a `SellerRegistry`.
+  SIGNING IS Ed25519 AS OF 2026-09-15 (was HMAC-SHA256), and TWO DEFECTS WERE FIXED
+  TOGETHER because either alone is worse than both. (1) HMAC IS SYMMETRIC: the
+  badge's whole selling point is that a merchant shows it and a buyer checks it,
+  and only the holder of the secret could do either -- who could also forge one.
+  (2) `_audit_key` FELL BACK TO A COMMITTED KEY, `_DEV_AUDIT_KEY =
+  b"blackwall-dev-audit-key-not-for-prod"`, in the PUBLIC repo; with
+  `BLACKWALL_AUDIT_KEY` unset -- the shipped default -- any reader of GitHub could
+  forge a badge granting a trust floor. `receipt_signer.py` documents exactly this
+  lesson ("a receipt signed with a committed key is WORSE than none -- it looks
+  verifiable") and this module never got it. UNEXPLOITABLE IN PRODUCTION ONLY
+  BECAUSE `seller_registry` IS NEVER BOUND in `serve_forever` -- two defects
+  cancelling, and the FIFTH instance of the wired-and-inert pattern here. Which is
+  also why the signing fix had to land BEFORE wiring the registry: doing them in
+  the other order would have activated the forgeable badge. NO FALLBACK now -- an
+  unconfigured signer RAISES `AttestationUnavailable` rather than issuing an
+  unsigned badge, deliberately asymmetric with `ReceiptSigner.sign()` returning
+  None, because a verdict without a receipt is still a valid verdict while an
+  unsigned attestation is pure assertion that would still grant a floor. The
+  envelope is byte-compatible with `receipt_signer`'s, so ONE verifier reads
+  verdicts, Traceipt receipts and attestations, and the key is ALREADY published at
+  `/jwks.json` -- no new key to manage. `typ` is
+  `blackwall-seller-attestation+json`: one key signs both claim types, so the label
+  is the only thing separating "we vouch for this merchant" from "we judged this
+  payment", and since ANY anonymous caller can get a verdict signed,
+  `verify_attestation` CHECKS typ FIRST -- without it a signed verdict is a valid
+  badge, and the signature is genuine so nothing else catches it. Required
+  parameterizing `receipt_signer.TYP`, which is BOUND AT CONSTRUCTION and
+  deliberately NOT a `sign()` argument (a per-call typ lets the verdict path
+  mislabel a verdict with one wrong keyword; a structural test asserts `sign()`
+  takes only `payload`). FLOATS NOW TRAVEL AS DECIMAL STRINGS (`_decimalize`): the
+  HMAC version signed raw floats and got away with it ONLY because we were the
+  only possible verifier -- floats have no canonical JSON form and `canonical_json`
+  refuses them, so `sign_attestation` RAISED the moment it reached the real signer.
+  `floor` is now "0.850000"; `blackwall.py` applies it through `float()` and is
+  unaffected. Verification for the SEED HOLDER is a re-sign-and-compare, sound
+  because Ed25519 is DETERMINISTIC and dependency-free (`cdp_auth`'s Ed25519 is
+  sign-only by design); a THIRD PARTY never calls `verify_attestation` -- they take
+  the envelope plus the public key and use any standard implementation, which
+  `TestThirdPartyVerifiable` does against `cryptography`, a test that was
+  IMPOSSIBLE to write under HMAC and is the whole finding. `SellerRegistry.add`
+  keys off the SIGNED subject, never an outer field, or an envelope claiming a
+  different subject than its own signature gets filed under the attacker's
+  address. NO DOWNGRADE PATH: a legacy flat `sig` attestation is refused outright
+  rather than kept for compatibility, which would be algorithm confusion -- safe
+  because the registry was never wired, so none exists in the wild. STILL OPEN:
+  the registry is still unbound, so the tier remains inert in production, and
+  revocation is in-process only (`_revoked`), so a revoked badge stays valid to
+  every other process. 10 mutations verified killed),
   `payload_sim.py` (payload simulation: cross-check the agent's ACTUAL signed x402
   payment -- from the request-body `payment_authorization`, NOT the fee header --
   against the claim being scored. Phase 1: recipient/amount/asset/chain field match;

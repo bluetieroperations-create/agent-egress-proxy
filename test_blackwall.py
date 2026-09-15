@@ -731,9 +731,16 @@ class TestSellerAuditTier(unittest.TestCase):
         def lookup(self, cp):
             return dict(self.rec)
 
+    #: An explicit test seed. `SellerRegistry()` with no signer deliberately
+    #: REFUSES to issue when BLACKWALL_SIGNING_SEED is unset -- these tests used
+    #: to work only because seller_audit fell back to a COMMITTED dev key, which
+    #: made every badge forgeable by anyone who could read the repo.
+    _SEED = bytes(range(32))
+
     def _registry(self, record, *, ready="ready"):
         from readiness import score_readiness
-        reg = self._SA.SellerRegistry()
+        reg = self._SA.SellerRegistry(
+            signer=self._SA.attestation_signer(seed=self._SEED))
         rd = score_readiness({"payment_challenge": True, "manifest_present": True,
                               "manifest_well_formed": True, "https": True,
                               "endpoint_reachable": True, "openapi": True,

@@ -294,6 +294,70 @@ class DomainSeparation(unittest.TestCase):
         self.assertNotEqual(a, b)
 
 
+class TypIsParameterized(unittest.TestCase):
+    """A SELLER ATTESTATION is a third claim, distinct from both a verdict and a
+    receipt: "this merchant passed an audit" is not "we judged this payment" and
+    not "this payment happened". `seller_audit` needs to reuse this signer, and
+    this module's own rationale (see TYP) says a shared label lets a verifier
+    trusting one issuer accept the other's claim. So the label must be settable
+    -- and BOUND AT CONSTRUCTION, never per call: a per-call `typ` would let the
+    verdict path emit an attestation label by passing the wrong argument, which
+    is precisely the confusion the label exists to prevent.
+    """
+
+    def test_the_attestation_typ_is_distinct_from_both_other_claims(self):
+        # MUTATION: setting ATTESTATION_TYP equal to TYP, or to Traceipt's.
+        self.assertNotEqual(rs.ATTESTATION_TYP, rs.TYP)
+        self.assertNotEqual(rs.ATTESTATION_TYP, "x402-receipt+json")
+        self.assertTrue(rs.ATTESTATION_TYP.endswith("+json"))
+
+    def test_default_is_unchanged_so_every_existing_caller_is_untouched(self):
+        # RESTRAINT CONTROL. Parameterizing must not silently relabel verdicts.
+        self.assertEqual(rs.build_protected("kid")["typ"], rs.TYP)
+        self.assertEqual(rs.ReceiptSigner(seed=SEED).typ, rs.TYP)
+        self.assertEqual(
+            rs.ReceiptSigner(seed=SEED).sign({"a": 1})["protected"]["typ"], rs.TYP)
+
+    def test_a_signer_carries_its_typ_into_the_envelope(self):
+        # MUTATION: ignoring the constructor argument and always emitting TYP --
+        # the whole point is that an attestation is labelled as one.
+        s = rs.ReceiptSigner(seed=SEED, typ=rs.ATTESTATION_TYP)
+        env = s.sign({"subject": "0xabc"})
+        self.assertEqual(env["protected"]["typ"], rs.ATTESTATION_TYP)
+
+    def test_SIGN_TAKES_NO_TYP_so_a_verdict_signer_cannot_emit_an_attestation(self):
+        # THE STRUCTURAL PROPERTY, and the reason typ is not a sign() argument.
+        # MUTATION: adding a `typ=` parameter to sign(). Then one wrong keyword
+        # in the verdict path mislabels a verdict as an audited-merchant
+        # attestation, which a verifier would accept as a different claim
+        # entirely. Asserted against the SIGNATURE, not by reading the source.
+        import inspect
+        params = set(inspect.signature(rs.ReceiptSigner.sign).parameters) - {"self"}
+        self.assertEqual(params, {"payload"},
+                         "sign() must take only the payload -- typ is bound at "
+                         "construction so it cannot be varied per request")
+
+    def test_the_two_typs_produce_DIFFERENT_signatures_over_the_same_payload(self):
+        # The label is only a real discriminator if it changes the signature, so
+        # an attacker cannot take a verdict envelope and relabel it.
+        # MUTATION: dropping typ from build_protected (or from signing_input) --
+        # both labels would then verify over the same bytes.
+        payload = {"subject": "0xabc", "grade": "A"}
+        v = rs.ReceiptSigner(seed=SEED).sign(payload)
+        a = rs.ReceiptSigner(seed=SEED, typ=rs.ATTESTATION_TYP).sign(payload)
+        self.assertEqual(v["payload"], a["payload"])
+        self.assertNotEqual(v["signature"], a["signature"])
+        self.assertEqual(v["protected"]["kid"], a["protected"]["kid"])
+
+    def test_an_empty_or_non_string_typ_is_refused_not_silently_defaulted(self):
+        # MUTATION: `typ or TYP`. That turns "" into a VERDICT label, so a
+        # misconfigured attestation signer would emit verdicts -- failing open
+        # on exactly the field that separates two claims.
+        for bad in ("", "   ", None, 7, b"x"):
+            with self.assertRaises((ValueError, TypeError), msg=repr(bad)):
+                rs.ReceiptSigner(seed=SEED, typ=bad)
+
+
 class BuildClaims(unittest.TestCase):
     VERDICT = {"verdict": "HOLD", "hard_stop": False, "score": 0.9961234,
                "reasons": ["a", "b"], "receipt_id": "bw_abc",
