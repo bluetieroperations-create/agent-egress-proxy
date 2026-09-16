@@ -144,6 +144,19 @@ DEFAULT_FORECAST_INPUT_SCHEMA = {
     },
 }
 DEFAULT_FORECAST_OUTPUT_EXAMPLE = {"verdict": "GO", "receipt_id": "..."}
+#: The example request advertised in `extensions.bazaar.info`. A catalog entry is
+#: INVOCABLE -- an indexer may POST exactly this body -- so the example must be
+#: one THIS engine accepts. BLACKWALL.md's curl uses `0xKNOWNGOOD000...`, which
+#: `payee_syntax` grades `invalid_hex`; advertising it would publish an example
+#: the gate answering it would flag. Every REQUIRED field of
+#: DEFAULT_FORECAST_INPUT_SCHEMA is present, and a test asserts both properties
+#: rather than trusting this comment.
+DEFAULT_FORECAST_INPUT_EXAMPLE = {
+    "counterparty": "0x0000000000000000000000000000000000000001",
+    "amount": "0.09",
+    "asset": "USDC",
+    "chain": "base",
+}
 
 
 # ===========================================================================
@@ -297,7 +310,8 @@ def build_resource_info(url, description="Blackwall payment forecast",
     return info
 
 
-def build_bazaar_extension(input_schema=None, output_example=None):
+def build_bazaar_extension(input_schema=None, output_example=None,
+                           input_example=None):
     """The `extensions.bazaar` block that makes a v2 402 challenge INVOCABLE.
 
     x402scan's v2 validator (validatePaymentRequiredDetailed) reads the endpoint's
@@ -316,7 +330,25 @@ def build_bazaar_extension(input_schema=None, output_example=None):
         props["input"] = {"properties": {"body": input_schema}}
     if output_example is not None:
         props["output"] = {"properties": {"example": output_example}}
-    return {"bazaar": {"schema": {"properties": props}}}
+    out = {"schema": {"properties": props}}
+    # `info` is the OTHER half the catalog carries: `schema` is the machine
+    # contract (JSON Schema), `info` is the worked example. MEASURED on 100 live
+    # entries 2026-09-16: info present in 100/100, and its shape depends on the
+    # METHOD -- `queryParams` in 80/100 (the GET form) versus `body`+`bodyType`
+    # in the 16/100 that are POST. Ours is POST, so this emits the POST form;
+    # docs/BAZAAR_LISTING.md had summarised the GET form as universal, which
+    # would have advertised query params on an endpoint that reads a JSON body.
+    # ADDITIVE ONLY: `schema` above is what x402scan's validator reads to mark a
+    # resource invocable, and nothing here moves or rewrites it.
+    if input_example is not None:
+        out["info"] = {
+            "input": {"method": "POST", "type": "http", "bodyType": "json",
+                      "body": input_example},
+            "output": {"type": "json",
+                       "example": output_example if output_example is not None
+                       else {}},
+        }
+    return {"bazaar": out}
 
 
 def make_402_body(requirements_list, error=None, resource=None, extensions=None):
@@ -938,7 +970,7 @@ class BillingConfig:
                  origin=None,
                  resource_description="Blackwall payment forecast",
                  resource_tags=("x402", "payments", "risk"),
-                 input_schema=None, output_example=None):
+                 input_schema=None, output_example=None, input_example=None):
         if not is_evm_address(pay_to or ""):
             raise ValueError("BillingConfig.pay_to must be a valid EVM address")
         self.service_name = service_name
@@ -951,6 +983,8 @@ class BillingConfig:
                              else DEFAULT_FORECAST_INPUT_SCHEMA)
         self.output_example = (output_example if output_example is not None
                               else DEFAULT_FORECAST_OUTPUT_EXAMPLE)
+        self.input_example = (input_example if input_example is not None
+                              else DEFAULT_FORECAST_INPUT_EXAMPLE)
         self.price_atomic = to_atomic(price, decimals)
         if self.price_atomic is None or self.price_atomic <= 0:
             raise ValueError("invalid price")
@@ -1010,7 +1044,8 @@ class BillingGate:
         ext = None
         if self.cfg.input_schema is not None:
             ext = build_bazaar_extension(self.cfg.input_schema,
-                                         self.cfg.output_example)
+                                         self.cfg.output_example,
+                                         self.cfg.input_example)
         return BillingResult(
             False, status=402,
             body=make_402_body([self._requirements(resource, price_atomic)],

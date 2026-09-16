@@ -118,13 +118,70 @@ BLACKWALL_ORIGIN = https://blackwall-free.onrender.com
 **Without it the security fix still applies** (a hostile origin is discarded) but
 the url stays relative, so the listing hypothesis is untested.
 
-### What I deliberately did NOT change
+### What I deliberately did NOT change (SUPERSEDED 2026-09-16 — `info` now added)
 
 `extensions.bazaar.info` is present in **2000/2000** catalogued entries and we
 emit only `schema`. I left it alone **on purpose**: the absolute url is the one
 change with a mechanism behind it, and changing two things at once means a
 listing that appears tells you nothing about which mattered. If we are still
 absent 24–48h after this deploys, `info` is the next thing to add.
+
+## 2026-09-16 — still absent at ~25h, so `info` was added
+
+Re-checked ~25h after the first CDP settlement, with the absolute-url fix live
+and re-verified in production (a hostile `resource` still comes back rooted at
+our own origin). **NOT listed — the FULL catalog was scanned, 16,061 entries.**
+The catalog itself grew from 15,572 → 16,061 across the two checks, so indexing
+is demonstrably live for other sellers; absence is about us, not about a stalled
+pipeline.
+
+**The measurement corrected THIS document.** The table above records
+`extensions.bazaar.info: { input: {method, type, queryParams}, output: {example} }`
+as the shape. Sampling 100 live entries on 2026-09-16 shows that is the **GET**
+form, and it is not universal:
+
+| `info.input` key | of 100 sampled |
+|---|---|
+| `method` | 100 |
+| `type` | 100 |
+| `queryParams` | **80 (the GET form)** |
+| `pathParams` | 32 |
+| `body` + `bodyType` | **16 (the POST form)** |
+| `headers` | 4 |
+
+`info` itself is present in 100/100, and `output` (`{example, type}`) in 94/100.
+**Ours is a POST endpoint**, so copying this document's own summary would have
+advertised query params on an endpoint that reads a JSON body — the catalog
+entry is invocable, so that is an entry an indexer could try and fail to call.
+A real POST entry, measured:
+
+```
+info.input:  {body: {...}, bodyType: "json", method: "POST", type: "http"}
+info.output: {example: {...}, type: "json"}
+```
+
+Note `info.input.body` is a **worked example** (concrete values), while
+`extensions.bazaar.schema…input.properties.body` is a **JSON Schema**. They are
+the two halves the catalog carries, not two spellings of one thing, which is why
+`info` is additive and `schema` is untouched.
+
+**The advertised example must be one our own engine accepts.** `BLACKWALL.md`'s
+curl uses `0xKNOWNGOOD000…`, which `payee_syntax` grades `invalid_hex` — we would
+have published an example that the gate answering it would flag. The advertised
+body uses a valid placeholder instead, and a test asserts both that every
+REQUIRED schema field is present and that the counterparty is not flagged.
+Verified by POSTing the advertised body verbatim at a real server: HTTP 200,
+`payee_syntax: ok`, verdict HOLD — an honest cold start, which is the correct
+demonstration of what this endpoint does.
+
+**Methodological cost, stated plainly:** the 24–48h window is not closed. We are
+at ~25h, so if a listing now appears we cannot fully separate "`info` mattered"
+from "indexing simply took longer" — the ambiguity the original hold-back existed
+to avoid. It is a smaller ambiguity than the first one (absolute url vs nothing),
+and the alternative is waiting another day having already learned that the url
+alone was not sufficient at 25h. **An operator who wants a clean read can hold
+the deploy until past 48h**; the change is additive and nothing else depends on
+it.
 
 ## Original recommendation (superseded by the section above)
 

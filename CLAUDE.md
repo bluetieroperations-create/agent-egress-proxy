@@ -2005,7 +2005,34 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `extensions.bazaar.info` present in 2000/2000, while we advertise a DICT whose
   `.url` is RELATIVE and emit only `schema`. Stated as a hypothesis, not a proof:
   the catalog entry is what CDP stores and may be normalized, but an indexer
-  cannot invent our host from a relative path. See `docs/BAZAAR_LISTING.md`),
+  cannot invent our host from a relative path.
+  SECOND RUN 2026-09-16 (~25h after the first CDP settlement, absolute url live
+  and re-verified in production): STILL NOT LISTED, full 16,061 entries scanned
+  -- and the catalog GREW 15,572 -> 16,061 between the two checks, so indexing
+  is live for other sellers and the absence is about us. So
+  `extensions.bazaar.info` was added, the half deliberately held back. THE
+  MEASUREMENT CORRECTED OUR OWN DOC: `docs/BAZAAR_LISTING.md` recorded
+  `info.input` as `{method, type, queryParams}`, but sampling 100 live entries
+  shows that is the GET form (80/100) while the POST form (16/100) -- OURS -- is
+  `{body, bodyType, method, type}` with `output {example, type}`. Copying our own
+  summary would have advertised query params on an endpoint that reads a JSON
+  body, on an entry an indexer can INVOKE. `info` is the worked EXAMPLE and
+  `schema` is the JSON SCHEMA: two halves the catalog carries, so `info` is
+  purely additive and `schema` (what marks a resource invocable) is untouched.
+  THE ADVERTISED EXAMPLE MUST BE ONE OUR OWN ENGINE ACCEPTS -- `BLACKWALL.md`'s
+  curl uses `0xKNOWNGOOD000...`, which `payee_syntax` grades `invalid_hex`, so
+  publishing it would advertise an example the gate answering it would flag;
+  a test asserts every REQUIRED schema field is present AND that the
+  counterparty is not flagged, and the body was POSTed verbatim at a real server
+  (200, `payee_syntax: ok`, cold-start HOLD). 6 mutations verified killed, ONE OF
+  WHICH SURVIVED THE FIRST PASS and was the seventh-edit hazard inside the change
+  that introduced it: the unit tests call `build_bazaar_extension` DIRECTLY with
+  an example, so dropping `self.cfg.input_example` at the ONE call site left
+  `info` absent from the real 402 with every test green. Now asserted on the body
+  the gate actually SERVES. HONEST LIMIT: at ~25h the 24-48h window is not
+  closed, so a listing appearing now cannot fully separate "`info` mattered" from
+  "indexing took longer" -- an operator wanting a clean read can hold the deploy
+  past 48h, since the change is additive. See `docs/BAZAAR_LISTING.md`),
   `ROADMAP.md`, `docs/DATA_SOURCE_SPIKE.md`. Tests:
   `test_blackwall.py`, `test_ledger.py`, `test_reputation_onchain.py`,
   `test_settlement_watch.py`, `test_addresses.py`, `test_x402.py`,

@@ -578,6 +578,78 @@ class TestV2WireFormat(unittest.TestCase):
         self.assertEqual(ext["bazaar"]["schema"]["properties"]["output"]
                          ["properties"]["example"], {"verdict": "GO"})
 
+    def test_bazaar_info_matches_the_POST_shape_the_catalog_carries(self):
+        # `extensions.bazaar.info` is present in 2000/2000 catalogued entries
+        # while we emitted only `schema`. MEASURED on 100 live catalog entries
+        # 2026-09-16, and the measurement CORRECTED our own notes: `queryParams`
+        # is the GET form (80/100) and docs/BAZAAR_LISTING.md had summarised it
+        # as the universal shape. The POST form (16/100), which is ours, is
+        # {body, bodyType, method, type} with output {example, type}. Copying
+        # the note would have advertised a POST endpoint with query params.
+        # Mutation: emit `queryParams` instead of `body`/`bodyType` -> FAILS.
+        ext = X.build_bazaar_extension({"type": "object"}, {"verdict": "GO"},
+                                       input_example={"counterparty": "0x1"})
+        info = ext["bazaar"]["info"]
+        self.assertEqual(info["input"]["method"], "POST")
+        self.assertEqual(info["input"]["type"], "http")
+        self.assertEqual(info["input"]["bodyType"], "json")
+        self.assertEqual(info["input"]["body"], {"counterparty": "0x1"})
+        self.assertEqual(info["output"]["example"], {"verdict": "GO"})
+        self.assertEqual(info["output"]["type"], "json")
+        self.assertNotIn("queryParams", info["input"])
+
+    def test_bazaar_info_is_absent_without_an_example(self):
+        # Fail-quiet: no example -> no `info` block at all, rather than an
+        # `info` advertising an empty body. Mutation: emit info unconditionally
+        # -> FAILS. `schema` must still be emitted, so the existing listing
+        # behaviour is unchanged for a caller that supplies no example.
+        ext = X.build_bazaar_extension({"type": "object"}, {"verdict": "GO"})
+        self.assertNotIn("info", ext["bazaar"])
+        self.assertIn("schema", ext["bazaar"])
+
+    def test_schema_block_is_untouched_by_info(self):
+        # `schema` is what x402scan's validator reads to mark a resource
+        # INVOCABLE; `info` is additive and must not disturb it. Mutation:
+        # build info by MOVING the schema fields -> FAILS.
+        ext = X.build_bazaar_extension({"type": "object"}, {"verdict": "GO"},
+                                       input_example={"a": 1})
+        self.assertEqual(ext["bazaar"]["schema"]["properties"]["input"]
+                         ["properties"]["body"], {"type": "object"})
+        self.assertEqual(ext["bazaar"]["schema"]["properties"]["output"]
+                         ["properties"]["example"], {"verdict": "GO"})
+
+    def test_the_advertised_example_is_one_our_own_engine_accepts(self):
+        # A catalog entry is INVOCABLE -- an indexer may send exactly this body.
+        # Our own docs use `0xKNOWNGOOD000...`, which `payee_syntax` grades
+        # `invalid_hex`, so publishing that would advertise an example the
+        # engine that answers it would flag. Mutation: put a placeholder that
+        # is not a possible address in DEFAULT_FORECAST_INPUT_EXAMPLE -> FAILS.
+        import payee_syntax
+        ex = X.DEFAULT_FORECAST_INPUT_EXAMPLE
+        for field in X.DEFAULT_FORECAST_INPUT_SCHEMA["required"]:
+            self.assertIn(field, ex, "advertised example omits a REQUIRED field")
+        grade = payee_syntax.assess_payee(ex["counterparty"])["grade"]
+        self.assertNotIn(grade, ("malformed", "invalid_hex"),
+                         "we would advertise a counterparty our own gate flags")
+
+    def test_the_SERVED_402_carries_info_not_just_the_helper(self):
+        # THE SEVENTH-EDIT HAZARD, caught by mutation on the very change that
+        # introduced it: the three tests above call build_bazaar_extension
+        # DIRECTLY with an input_example, so dropping `self.cfg.input_example`
+        # at the one call site leaves `info` absent from the REAL 402 with every
+        # one of them still green -- measured, it SURVIVED the first pass. The
+        # property is about what a stranger receives, so it is asserted on the
+        # body the gate actually serves, through the config default.
+        # Mutation: drop the argument at the call site -> FAILS.
+        cfg = X.BillingConfig(price="0.001", pay_to=PAY_TO)
+        gate = X.BillingGate(cfg, facilitator=X.MockFacilitator(approve=True))
+        body = gate.check("/v1/forecast-payment").body
+        info = body["extensions"]["bazaar"]["info"]
+        self.assertEqual(info["input"]["body"], X.DEFAULT_FORECAST_INPUT_EXAMPLE)
+        self.assertEqual(info["input"]["method"], "POST")
+        # and `schema` -- what marks the resource invocable -- is still there.
+        self.assertIn("schema", body["extensions"]["bazaar"])
+
     def test_facilitator_envelope_is_v2(self):
         # The facilitator POST envelope must carry x402Version: 2.
         captured = {}
