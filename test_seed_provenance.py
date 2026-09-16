@@ -28,7 +28,7 @@ class TestBuildProvenance(unittest.TestCase):
         # Mutation: report it as the attempted total -> the record understates
         # the crawl's size and the failure rate cannot be recomputed from it.
         r = S.build_provenance(STORE, CRAWL, max_pages=4, built_at="T")
-        self.assertEqual(r["crawl_payees_attempted"], 281)
+        self.assertEqual(r["crawl_payees_attempted_onchain"], 281)
 
     def test_an_absent_crawl_yields_NULL_not_zero(self):
         # THE ONE THAT MATTERS. Mutation: default the counts to 0 -> a record
@@ -38,7 +38,7 @@ class TestBuildProvenance(unittest.TestCase):
         r = S.build_provenance(STORE, None, max_pages=4, built_at="T")
         self.assertIsNone(r["crawl_payees_at_page_cap"])
         self.assertIsNone(r["crawl_payees_failed"])
-        self.assertIsNone(r["crawl_payees_attempted"])
+        self.assertIsNone(r["crawl_payees_attempted_onchain"])
 
     def test_completeness_is_stated_not_implied(self):
         # Mutation: drop the field -> a consumer must infer boundedness from a

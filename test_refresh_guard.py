@@ -239,5 +239,102 @@ class TestCrawlHealth(unittest.TestCase):
         self.assertTrue(any("collapsed" in x for x in r["reasons"]))
 
 
+class TestCrawlHealthNeverRaises(unittest.TestCase):
+    """AUDIT REGRESSIONS. `crawl_health` read summary fields with `or 0` and fed
+    them straight to arithmetic, so a corrupt or hand-edited JSON raised.
+
+    A guard exists to fail SAFE. Dying instead of deciding is worse than any
+    verdict it could return -- and under refresh_seed.sh's `set -eu` the crash
+    also aborted a refresh the guard had already accepted. `gating_capable` in
+    this same module documents the standard: NEVER raises."""
+
+    HOSTILE = [
+        ("string counts", {"payees": "270", "errors": "11", "truncated": "70"}),
+        ("a list, not a dict", [1, 2, 3]),
+        ("nested dicts as counts", {"payees": {"a": 1}, "errors": 2}),
+        ("negative counts", {"payees": 100, "errors": -5, "truncated": -1}),
+        ("floats", {"payees": 270.0, "errors": 11.0, "truncated": 2.5}),
+        ("None counts", {"payees": None, "errors": None, "truncated": None}),
+        ("a string, not a dict", "not a summary"),
+        ("huge", {"payees": 10 ** 9, "errors": 10 ** 9, "truncated": 10 ** 9}),
+    ]
+
+    def test_never_raises_on_any_malformed_summary(self):
+        for label, crawl in self.HOSTILE:
+            with self.subTest(label):
+                out = G.crawl_health(crawl)
+                self.assertIsInstance(out["reasons"], list)
+                self.assertIsInstance(out["warnings"], list)
+
+    def test_assess_refresh_never_raises_either(self):
+        old = {"payees": 100, "edges": 500, "gating_capable": 50, "age_days": 10}
+        new = {"payees": 100, "edges": 500, "gating_capable": 50, "age_days": 2}
+        for label, crawl in self.HOSTILE:
+            with self.subTest(label):
+                self.assertIn("accept", G.assess_refresh(old, new, crawl=crawl))
+
+    def test_unusable_counts_are_treated_as_zero_not_trusted(self):
+        # Mutation: coerce junk to a large number -> a corrupt summary could
+        # manufacture a passing error rate.
+        self.assertEqual(G.crawl_health({"payees": {"a": 1}, "errors": 0}),
+                         {"reasons": [], "warnings": []})
+
+    def test_junk_in_the_ERROR_field_cannot_manufacture_a_REJECT(self):
+        # Sharper than the case above, which put junk in `payees` where a wrong
+        # value is inert. Junk in `errors` drives the threshold directly.
+        # Mutation: return a large number for unparseable input -> a corrupt or
+        # truncated summary REJECTS a perfectly good refresh, and the corpus
+        # walks toward the stale cliff because a JSON file was malformed.
+        out = G.crawl_health({"payees": 100, "errors": {"x": 1}})
+        self.assertEqual(out["reasons"], [])
+        self.assertEqual(out["warnings"], [])
+
+    def test_a_negative_error_count_is_zero_not_a_negative_rate(self):
+        # A count below zero is corrupt, not informative. Mutation: pass it
+        # through -> `errors` is truthy, the rate goes NEGATIVE, and the guard
+        # emits a warning reading "-5 of 95 payees failed to fetch" -- a number
+        # that cannot exist, presented as a measurement.
+        self.assertEqual(G.crawl_health({"payees": 100, "errors": -5}),
+                         {"reasons": [], "warnings": []})
+        self.assertEqual(G.crawl_health({"payees": 100, "truncated": -3})["warnings"], [])
+
+
+class TestRefreshScriptKeepsProvenanceNonFatal(unittest.TestCase):
+    """AUDIT REGRESSION (the expensive one). scripts/refresh_seed.sh runs
+    `set -eu`. Provenance generation was added as a bare command BEFORE the
+    promotion `mv`, so a crash there discarded a refresh the guard had ACCEPTED
+    -- safety work disabling the safety mechanism, which is the same shape as the
+    non-zero-exit regression in chain_backfill.
+
+    Asserted on the script text because the failure is a shell control-flow
+    property, invisible to any Python-level test."""
+
+    def _script(self):
+        import os
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "scripts", "refresh_seed.sh")
+        with open(path) as fh:
+            return fh.read()
+
+    def test_the_script_still_aborts_on_error_by_default(self):
+        # If this ever stops being true the test below is measuring nothing.
+        self.assertIn("set -eu", self._script())
+
+    def test_provenance_failure_cannot_block_promotion(self):
+        text = self._script()
+        # The call must be INSIDE a conditional, never a bare statement whose
+        # failure trips `set -e`.
+        self.assertIn("if python3 seed_provenance.py", text)
+        # And the promotion must still happen after it.
+        prov = text.index("seed_provenance.py")
+        promote = text.index('mv "$TMP_GZ"  data/reputation_seed.db.gz')
+        self.assertLess(prov, promote, "provenance must be attempted before the mv")
+
+    def test_a_failed_run_removes_the_stale_record(self):
+        # A provenance file describing the PREVIOUS store, sitting beside the new
+        # one, is confidently wrong -- worse than absent. Mutation: leave it.
+        self.assertIn("rm -f data/reputation_seed.json", self._script())
+
+
 if __name__ == "__main__":
     unittest.main()

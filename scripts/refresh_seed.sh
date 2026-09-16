@@ -85,12 +85,34 @@ if python3 refresh_guard.py --old data/reputation_seed.db.gz --new "$TMP_GZ" \
     # The corpus is a BOUNDED sample and must say so in the artifact, not only in
     # a docstring someone may not read. Written from the candidate BEFORE the move,
     # so the record always describes the store it ships beside.
-    python3 seed_provenance.py --store "$TMP_GZ" --crawl "$TMP_CRAWL" \
-        --max-pages "$PAGES" --out "$WORK/reputation_seed.json"
+    #
+    # NOT FATAL, and this script runs `set -eu`. AUDIT FIX: as first written, a
+    # crash here aborted the run BEFORE the mv below -- discarding a refresh the
+    # guard had already ACCEPTED. A missing completeness record is a documentation
+    # gap; a skipped refresh walks the corpus toward the 90-day `stale` cliff this
+    # whole pipeline exists to prevent. The freshness wins.
+    #
+    # On failure the STALE record is deleted rather than left in place: a
+    # provenance file describing the PREVIOUS store, sitting beside the new one,
+    # is worse than none at all -- it is confidently wrong instead of absent.
+    if python3 seed_provenance.py --store "$TMP_GZ" --crawl "$TMP_CRAWL" \
+            --max-pages "$PAGES" --out "$WORK/reputation_seed.json"; then
+        PROVENANCE_OK=1
+    else
+        PROVENANCE_OK=0
+        echo "refresh_seed: WARNING -- provenance generation FAILED." >&2
+        echo "refresh_seed: promoting the store anyway (freshness beats the record)," >&2
+        echo "refresh_seed: and REMOVING the stale record so nothing describes the" >&2
+        echo "refresh_seed: wrong store. Re-run seed_provenance.py by hand." >&2
+    fi
     mv "$TMP_GZ"  data/reputation_seed.db.gz
     mv "$TMP_CAT" data/category_index.json
     mv "$TMP_DIV" data/divergence_index.json
-    mv "$WORK/reputation_seed.json" data/reputation_seed.json
+    if [ "$PROVENANCE_OK" = "1" ]; then
+        mv "$WORK/reputation_seed.json" data/reputation_seed.json
+    else
+        rm -f data/reputation_seed.json
+    fi
     echo "refresh_seed: done. Freshness:"
     python3 check_seed_age.py || true
     echo ""

@@ -58,11 +58,33 @@ def build_provenance(store, crawl, *, max_pages, built_at, source="base-x402",
     measure" must never serialize as "we measured zero", which is the same
     mistake as a guard treating an absent summary as a healthy one.
     """
+    crawl = crawl if isinstance(crawl, dict) else None
     crawl = crawl or {}
-    at_cap = crawl.get("truncated")
-    failed = crawl.get("errors")
-    attempted = crawl.get("payees")
+
+    def _count(key):
+        """A summary field as a non-negative int, or None when absent/unusable.
+
+        AUDIT FIX: this read the raw value and added two of them, so a corrupt
+        summary raised inside a PURE function -- and under `set -eu` in
+        refresh_seed.sh that aborted a refresh the guard had already accepted.
+        None (unmeasured) is the right answer for junk: never 0, which would
+        read as a measured clean crawl."""
+        v = crawl.get(key)
+        if v is None:
+            return None
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            return None
+        return n if n >= 0 else None
+
+    at_cap = _count("truncated")
+    failed = _count("errors")
+    attempted = _count("payees")
     if attempted is not None and failed is not None:
+        # NOTE: excludes payees SKIPPED as invalid addresses -- backfill counts
+        # those in neither `payees` nor `errors`, and a malformed input list is a
+        # different failure from a network one.
         attempted = attempted + failed
     rec = {
         "corpus": source,
@@ -73,7 +95,7 @@ def build_provenance(store, crawl, *, max_pages, built_at, source="base-x402",
         "distinct_payers": store.get("payers"),
         "gating_capable_payees": store.get("gating_capable"),
         "age_days": store.get("age_days"),
-        "crawl_payees_attempted": attempted,
+        "crawl_payees_attempted_onchain": attempted,
         "crawl_payees_at_page_cap": at_cap,
         "crawl_payees_failed": failed,
         "built_at": built_at,

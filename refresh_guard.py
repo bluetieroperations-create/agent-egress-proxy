@@ -141,12 +141,26 @@ def crawl_health(crawl, *, max_error_rate=MAX_CRAWL_ERROR_RATE):
     crawl must say so" and then said so to nobody -- a field no code consumes is the
     wired-and-inert pattern, and no mutation test can catch it, because deleting an
     unread field breaks nothing."""
-    if not crawl:
+    if not isinstance(crawl, dict) or not crawl:
         return {"reasons": [], "warnings": []}
     reasons, warnings = [], []
-    attempted = crawl.get("payees") or 0
-    errors = crawl.get("errors") or 0
-    total = attempted + errors          # `payees` counts the ones that SUCCEEDED
+
+    def _count(key):
+        """A summary field as a non-negative int, or 0. NEVER raises.
+
+        AUDIT FIX: this used `or 0`, which passes a string or a dict straight
+        through to arithmetic. A corrupt or hand-edited summary then crashed the
+        guard -- and a guard whose job is to fail SAFE must not die instead of
+        deciding. `gating_capable` above documents the same standard."""
+        try:
+            n = int(crawl.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+        return n if n > 0 else 0
+
+    attempted = _count("payees")        # `payees` counts the ones that SUCCEEDED
+    errors = _count("errors")
+    total = attempted + errors
     if total and errors:
         rate = errors / float(total)
         msg = ("%d of %d payees failed to fetch (%.0f%%) -- they keep their previous rows, "
@@ -158,7 +172,7 @@ def crawl_health(crawl, *, max_error_rate=MAX_CRAWL_ERROR_RATE):
                                  % (max_error_rate * 100))
         else:
             warnings.append(msg)
-    truncated = crawl.get("truncated") or 0
+    truncated = _count("truncated")
     if truncated:
         warnings.append(
             "%d payee(s) hit the page cap -- their history is a recent WINDOW, not a "
