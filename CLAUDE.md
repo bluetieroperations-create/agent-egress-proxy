@@ -47,10 +47,31 @@ sessions. Measured with `compare/{default}...{branch}`:
 Acting on that report would have destroyed ~50 commits of unmerged work. **A branch
 name appearing on a merged PR proves nothing about whether the branch is live.**
 
-The only valid staleness test is `ahead_by == 0` from the compare API. Even then a
-branch is merely a CANDIDATE, and only after confirming it is not the default
-branch, not the head of an open PR, not named in this file, and not the working
-branch of a scheduled Routine -- `claude/cold-start-data-monetization-qucjk2` (MCP
+CORRECTED 2026-09-16 by the Blackwall session's handoff, which measured this
+independently and found the rule above too narrow in the OTHER direction. There are
+three tests, and knowing which one answers which question matters:
+
+  1. `ahead_by == 0` (compare API) -- SUFFICIENT for safety, but NOT necessary. It
+     reports a branch as live whenever its commits are not literal ancestors.
+  2. `git rev-list --count --cherry-pick --right-only main...BRANCH` -- also counts
+     zero when the branch's PATCH already exists on main under a different commit id.
+     Measured: `chore/openclaw-spdx-headers`, `chore/refresh-coverage-census` and
+     `fix/facilitator-timeout-split` are each 1 AHEAD but 0 UNIQUE -- work that
+     reached main by re-authoring rather than merge. Test 1 calls all three live.
+  3. Neither catches content re-authored NON-patch-identically. `feat/approvals-loop`,
+     `fix/pricing-proportionality`, `fix/approval-audit-trail` and
+     `feat/demo-malformed-payee` each still count 2-3 unique, yet their subjects
+     describe work this file documents as already shipped. A unique-commit count is a
+     COMMIT-IDENTITY fact, never a CONTENT fact. Only a content diff against main
+     settles it.
+
+All three err toward KEEP, which is the correct direction for a deletion gate: the
+cost of a false "live" is an extra branch, the cost of a false "stale" is lost work.
+Use 1 as the floor, 2 to find the genuinely spent branches, and 3 before any delete.
+
+Even then a branch is merely a CANDIDATE, and only after confirming it is not the
+default branch, not the head of an open PR, not named in this file, and not the
+working branch of a scheduled Routine -- `claude/cold-start-data-monetization-qucjk2` (MCP
 ecosystem reading, monthly) and `research/mcp-and-ecosystem-history` are both
 claimed that way, and deleting either silently breaks a scheduled job. Record the
 commit SHA in any such report so the decision is reversible.
