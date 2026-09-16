@@ -138,6 +138,22 @@ SCENARIOS = [
           # graph does NOT set captive_sybil above the ceiling -> no gate fires
           payer_graph_signal={"captive_sybil": False, "distinct_payers": 13,
                               "established_payers": 0})),
+    # BATCHED sockpuppet ring: ONE transaction, 12 puppet payers, identical
+    # metered price. Added 2026-09-16 with the settlement-key fix, because that
+    # fix is what makes these 12 payers VISIBLE at all -- under the old key the
+    # whole batch stored as a single row and a single payer, so the graph never
+    # saw the ring and the payee merely looked thin. Being visible is what lets
+    # the graph convict it. Pins that the wider key did not buy an evasion in
+    # the range where the gates work: MEASURED, one batched tx with N puppets is
+    # caught for N in 3..12 and escapes at N >= 13, which is the PRE-EXISTING
+    # CAPTIVE_SYBIL_MAX_DISTINCT ceiling covered by `large captive farm` above --
+    # this change makes that hole cheaper to reach (1 tx instead of 13), not
+    # newly open.
+    ("batched sockpuppet ring (12 payers, one tx)", "sybil-graph", "block", False,
+     dict(amount="0.09", record=dict(GOOD, distinct_payers=12), price_history=STABLE,
+          counterparty=LEGIT,
+          payer_graph_signal={"captive_sybil": True, "sybil_ring": True,
+                              "distinct_payers": 12, "established_payers": 0})),
     ("burst-acquired Sybil (diagnostic)", "temporal", "block", True,
      dict(amount="0.09", record=GOOD, price_history=STABLE, counterparty=LEGIT,
           temporal_signal={"stale": False, "burst_sybil": True, "peak_day_share": 0.95})),
@@ -149,6 +165,17 @@ SCENARIOS = [
     # ring -- one of its payers is reputable (pays a trusted anchor), so sybil_ring is
     # False. Proves the gate keys on reputable_payers==0, NOT on a low distinct count:
     # an established payee with few payers still GOes.
+    # RESTRAINT for the settlement-key fix, and the party it exists to protect:
+    # an HONEST merchant that batches. Its payers are real agents that also pay
+    # OTHER known payees, so `established_payers` is non-zero and neither graph
+    # flag fires -- batching alone must never look like a ring. Under the OLD key
+    # this merchant was the actual victim: 12 real customers in one settlement tx
+    # stored as ONE row and ONE payer, leaving it permanently below the thin gate.
+    ("honest merchant that batches its settlements", "control", "allow", False,
+     dict(amount="0.09", record=dict(GOOD, distinct_payers=12), price_history=STABLE,
+          counterparty=LEGIT,
+          payer_graph_signal={"captive_sybil": False, "sybil_ring": False,
+                              "distinct_payers": 12, "established_payers": 9})),
     ("established payee, few but reputable payers", "control", "allow", False,
      dict(amount="0.09", record=GOOD, price_history=STABLE, counterparty=LEGIT,
           payer_graph_signal={"captive_sybil": False, "sybil_ring": False,

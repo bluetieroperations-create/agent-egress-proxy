@@ -226,7 +226,80 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `CdpFacilitator` in x402.py can settle through the authenticated Coinbase CDP
   facilitator -- the one whose settlements Bazaar catalogs),
   `mcp_server.py` (MCP stdio server wrapping the verdict engine),
-  `reputation_store.py` (SQLite indexed reputation store + record merging),
+  `reputation_store.py` (SQLite indexed reputation store + record merging.
+  THE SETTLEMENT NATURAL KEY NOW INCLUDES THE PAYER (2026-09-16), and leaving it
+  out was a LIVE defect rather than a forecast. The old key was
+  `UNIQUE(tx_hash, counterparty, amount)` under a comment that stated its own
+  assumption out loud -- "one tx can carry one settlement to a counterparty for a
+  given amount". ONE TX CAN CARRY MANY. MEASURED on Base mainnet: tx
+  0xa49466a1d74cd6... pays an identical 0.00001 USDC to one payee from TWO
+  different addresses, and the store kept one, so two real customers counted as
+  one. `chain_backfill.payee_transfers` already deduped on (tx, from, to, amount)
+  with the comment "keep two same-amount transfers in one tx from DIFFERENT
+  senders (real, distinct settlements)" -- so the FETCH stage preserved exactly
+  what the STORE discarded. Two layers disagreeing about what a settlement IS,
+  with the narrower one winning silently.
+  FOUND BY ASKING WHAT `batch-settlement` DOES TO REPUTATION, which is the
+  research item that prompted it: x402's `batch-settlement` scheme and
+  Cloudflare's deferred scheme (shipped in their Agents SDK) exist to collapse
+  many small payments into ONE onchain settlement. A metered endpoint charges ONE
+  price, so under the old key a batch of N payments from N customers stored
+  exactly ONE row whatever N was -- 50% of the evidence lost at N=2, 99% at
+  N=100. EVERY reputation signal is derived from these rows: `settlement_count`
+  (thin gate, >= 20), `distinct_payers` (both Sybil gates, >= 3), the payer
+  graph's edges, and `robust_price_median`. So an honest high-volume merchant
+  that batched would read as a PERMANENT cold start and the graph would be blind
+  to it. Present exposure measured, not assumed: 4 of 371 corpus quotes advertise
+  a deferred/batch scheme (1.1%), the shipped 46,031-row seed holds 10 (tx,payee)
+  groups carrying more than one settlement and ALL TEN survived only because
+  their amounts happened to differ, and a live 3-payee re-fetch lost 1 of 323
+  settlements (0.3%) before the fix and 0 of 323 after.
+  COALESCE IS LOAD-BEARING: SQLite treats NULLs as DISTINCT in a UNIQUE
+  constraint, so a bare `UNIQUE(tx_hash, counterparty, payer, amount)` would let
+  a payer-less row insert without limit -- an idempotency fix turned into an
+  inflation bug. It is a UNIQUE INDEX over
+  `(tx_hash, counterparty, COALESCE(payer,''), amount)` for that reason.
+  MIGRATION, because SQLite cannot ALTER a constraint away and the fix would
+  otherwise be present and INERT on every existing deploy (the eighth instance of
+  that pattern here): `_needs_payer_key_migration` reads the stored CREATE TABLE
+  text and `_migrate_payer_key` rebuilds the table once. FAIL-SOFT on an
+  unwritable DB -- it cannot ingest anyway, so the key is irrelevant to it, and
+  taking the verdict path down over a schema nicety is the worse error
+  (`remote_ledger`'s rule). Verified on the REAL seed: 46031 rows / 281 payees /
+  2511 distinct payers IDENTICAL before and after, old constraint gone, new index
+  present, idempotent. Run at BUILD time in the Dockerfile, not at boot: it costs
+  491ms on the seed, the decompressed DB is baked into an image LAYER, and every
+  container starts from that layer -- so migrating at boot would pay that on
+  every cold start forever. Measured 491ms once at build, 0.59ms per start after.
+  THE SYBIL COST QUESTION, where MY FIRST CLAIM WAS WRONG and measuring the
+  boundary caught it. The docstring read "a batched ring still fails both [graph
+  gates]"; it does not. One batched tx with N puppet payers: N=2 is below
+  MIN_DISTINCT_PAYERS so the payee stays thin anyway, N=3..12 trips BOTH
+  `captive_sybil` and `sybil_ring`, and **N >= 13 escapes both silently**. That
+  13+ hole is PRE-EXISTING and already documented -- it IS
+  `payer_graph.CAPTIVE_SYBIL_MAX_DISTINCT = 12`, its own "audit F1" note, and
+  redteam's `large captive farm (>ceiling)` known_gap -- so this change does not
+  open it, it makes it CHEAPER: 13 distinct payers used to need 13 transactions
+  and now need ONE. Recorded rather than argued away. STILL THE RIGHT TRADE, and
+  the reason is about who gets hurt: dropping real settlements never stopped the
+  attacker (he can pay 13 times; 13 gas fees are not a defense), it only
+  penalised the HONEST batcher and blinded the payer graph to the very edges the
+  Sybil gates are computed from. THE PRINCIPLED FIX IS NOT BUILT and the blocker
+  is concrete: the thin gate is really asking how many INDEPENDENT settlement
+  EVENTS a payee has, and 30 payers across 30 txs is a different claim from 30
+  payers inside 1 tx -- `distinct_txs` would express it, but `merge_records`
+  builds a FIXED dict so a new key is SILENTLY DROPPED on the way to the verdict,
+  the identical defect `advertised_prices.py` documents as the reason its arm sat
+  inert. Scoped as its own change. Redteam: +1 attack (a batched 12-payer ring,
+  CAUGHT -- and it is the key fix that makes those 12 payers VISIBLE for the
+  graph to convict at all) and +1 restraint control (an honest batching merchant
+  whose payers do pay other payees stays CLEAN). Scorecard 31 -> 32 caught, 0
+  false positives. 8 mutations verified killed, one of which SURVIVED the first
+  pass and exposed a weak TEST rather than weak code: the idempotency test
+  asserted only that the DETECTOR reports "nothing to do" afterwards, which stays
+  true even if the rebuild runs unconditionally, so bypassing the guard went
+  unnoticed -- it now asserts the RETURN VALUE, i.e. whether work happened.
+  Tests: `test_reputation_store.py`, 35 tests),
   `facilitator_sim.py` (reference x402 facilitator for the HttpFacilitator path),
   `discovery.py` (x402 service-discovery descriptor -- Blackwall's OWN),
   `x402_challenge.py` (the ONE parser for a 402 challenge -- requirements arrive in
@@ -1860,7 +1933,10 @@ underfunded payer does not gate, and an unreachable RPC fails OPEN. `test_redtea
 guards it -- the caught set may not shrink, no control may become a false positive, and
 any attack that gets GO must be an EXPLICIT `known_gap`. MUTATION-VERIFIED: disabling the
 settlement escalation, the auth replay gate, or the control-attribution each makes the
-suite fail by name. Current: 31 attacks caught, 2 documented gaps, 0 false positives.
+suite fail by name. Current: 32 attacks caught, 3 documented gaps, 0 false positives. One of those
+gaps is DELIBERATE rather than a miss: the payTo-baseline attack gets GO only
+because `PAYTO_BASELINE_GATES` ships off pending calibration -- flipping the
+lock gives 33 caught / 2 gaps / 0 false positives, verified.
 
 ## Standing working practice: ALWAYS deep audit → eval → verify
 

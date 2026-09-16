@@ -64,9 +64,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 #   python3 category_pricing.py --store /tmp/rep.db --out data/category_index.json --max-pages 8
 #   python3 -c "import gzip,shutil; shutil.copyfileobj(open('/tmp/rep.db','rb'), gzip.open('data/reputation_seed.db.gz','wb',9))"
 # then commit data/reputation_seed.db.gz + data/category_index.json and redeploy.
+# The seed is also SCHEMA-MIGRATED here, at BUILD time, not at boot. The
+# settlement natural key gained the PAYER on 2026-09-16 (see
+# reputation_store._PAYER_KEY_INDEX) and SQLite cannot ALTER the old table-level
+# UNIQUE away, so an existing DB needs a rebuild -- measured at 491ms for the
+# 46,031-row seed, which on a ~0.1-CPU free instance is several seconds. This
+# file is baked into an image LAYER and every container starts from that layer,
+# so migrating at boot would pay that cost on every cold start forever. Doing it
+# once here leaves the runtime detector with a single sqlite_master query.
+# The runtime migration stays in place for an operator DB on a persistent disk,
+# which this build never touches.
 COPY data/reputation_seed.db.gz data/category_index.json data/divergence_index.json /app/prebuilt/
+COPY reputation_store.py settlement_watch.py addresses.py /app/prebuilt/lib/
 RUN mkdir -p /app/data \
     && python3 -c "import gzip,shutil; shutil.copyfileobj(gzip.open('/app/prebuilt/reputation_seed.db.gz','rb'), open('/app/data/reputation.db','wb'))" \
+    && PYTHONPATH=/app/prebuilt/lib python3 -c "\
+import reputation_store, sqlite3, sys; \
+s = reputation_store.ReputationStore('/app/data/reputation.db'); \
+sql = sqlite3.connect('/app/data/reputation.db').execute(\
+    \"SELECT sql FROM sqlite_master WHERE name='settlements'\").fetchone()[0]; \
+sys.exit('FATAL: seed migration did not take' if 'UNIQUE' in sql.upper() else 0)" \
     && cp /app/prebuilt/category_index.json /app/data/category_index.json \
     && cp /app/prebuilt/divergence_index.json /app/data/divergence_index.json \
     && rm -rf /app/prebuilt \
