@@ -324,8 +324,17 @@ def main(argv=None):
     if args.out_report:
         json.dump(s, open(args.out_report, "w"), indent=2, default=str)
     if args.out_directory:
-        json.dump([d for d in out["directory"] if d.get("distinct_payers") is not None],
-                  open(args.out_directory, "w"), indent=2, default=str)
+        # EXPLICIT close, because `write_meta` below re-reads this file to hash
+        # it. `json.dump(..., open(path, "w"))` leaves the flush to refcount GC,
+        # which CPython happens to do immediately -- measured correct on a 1.28MB
+        # payload -- but that is an implementation detail, and if it ever did not
+        # hold the sidecar would pin a PARTIAL file. The hash would then never
+        # match and the gate would be silently unreachable, which is the one
+        # failure mode this whole mechanism exists to make impossible.
+        with open(args.out_directory, "w") as _dirfh:
+            json.dump([d for d in out["directory"]
+                       if d.get("distinct_payers") is not None],
+                      _dirfh, indent=2, default=str)
         # DATE IT, in a content-pinned sidecar beside the file. The directory is
         # a bare LIST read by five modules and only two tolerate a dict, so an
         # inline `generated_at` would change a shape `billing_preflight`,

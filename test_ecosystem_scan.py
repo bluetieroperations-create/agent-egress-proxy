@@ -2,6 +2,7 @@
 Tests for ecosystem_scan.py -- profiles + the four derived views. Each test states
 its mutation.
 """
+import os
 import unittest
 
 import ecosystem_scan as E
@@ -226,6 +227,50 @@ class TestCsvSafe(unittest.TestCase):
 
     def test_normal_url_untouched(self):
         self.assertEqual(E._csv_safe("https://svc/x"), "https://svc/x")
+
+
+class TheDirectoryWriteIsClosedBeforeItIsHashed(unittest.TestCase):
+    """`main` writes the directory and then `payto_baseline.write_meta` RE-READS
+    it to compute the sha256 the sidecar pins. So the file has to be flushed
+    before that read, or the sidecar pins a PARTIAL file, the hash never matches
+    the finished artifact, and the payTo gate is silently unreachable -- the one
+    failure mode the whole content-pinning mechanism exists to make impossible.
+
+    PRE-DEPLOY AUDIT 2026-09-16: it was written as
+    `json.dump(..., open(path, "w"))`, which leaves the close to refcount GC.
+    CPython does that immediately, and it MEASURED correct on a 1.28MB payload --
+    so this was never a live bug. It was a correctness argument resting on an
+    implementation detail, for a value that gates payments once the lock flips.
+    """
+
+    def test_the_directory_is_written_under_a_context_manager(self):
+        # kills: reverting to `json.dump(..., open(path, "w"))`. Structural
+        # because the defect is not observable from behaviour on CPython -- the
+        # same reason test_seller_report asserts against its own source.
+        src = open("ecosystem_scan.py").read()
+        self.assertIn('with open(args.out_directory, "w")', src,
+                      "the directory write must close before write_meta hashes it")
+
+    def test_the_write_then_date_round_trip_pins_the_finished_file(self):
+        # kills: any future reordering that dates the artifact before it is
+        # complete. Exercised at a size well past the default buffer.
+        import hashlib
+        import json as _json
+        import tempfile
+
+        import payto_baseline as PB
+        path = os.path.join(tempfile.mkdtemp(), "directory.json")
+        rows = [{"payee": "0x%040x" % i,
+                 "resources": ["https://h%d.example/x" % i] * 5}
+                for i in range(5000)]
+        with open(path, "w") as handle:
+            _json.dump(rows, handle, indent=2, default=str)
+        PB.write_meta(path, "2026-09-16T00:00:00Z")
+        self.assertGreater(os.path.getsize(path), 1_000_000)
+        self.assertEqual(
+            _json.load(open(PB.meta_path(path)))["sha256"],
+            hashlib.sha256(open(path, "rb").read()).hexdigest())
+        self.assertIsNotNone(PB.index_age_days(path))
 
 
 if __name__ == "__main__":

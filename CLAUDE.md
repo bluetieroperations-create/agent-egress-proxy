@@ -1411,6 +1411,48 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   clock -- 18.2 days old against MAX_INDEX_AGE_DAYS=21, so the gate is reachable
   and GOES UNREACHABLE AGAIN in ~2.8 days unless the corpus is refreshed. That is
   the mechanism working, not a bug, and the test says so by name.
+  PRE-DEPLOY AUDIT (2026-09-16), one fix and two things CLEARED rather than
+  changed -- recorded because a cleared concern is worth as much as a fix:
+  (i) LOW, FIXED -- `ecosystem_scan` wrote the directory as
+  `json.dump(..., open(path, "w"))` and `write_meta` then RE-READS that file to
+  hash it, so the flush was left to refcount GC. CPython does it immediately and
+  it MEASURED correct on a 1.28MB payload, so this was never a live bug -- it was
+  a correctness argument resting on an implementation detail, for a value that
+  gates payments once the lock flips. Now an explicit context manager, with a
+  structural guard (the defect is not observable from behaviour on CPython, the
+  same reason `test_seller_report` asserts against its own source).
+  (ii) CLEARED -- `dockerCommand` had NO precedent in this repo's three working
+  blueprints, so the portal blueprint's start-command override was unverified and
+  a wrong key would have silently run the image's default CMD, deploying a SECOND
+  verdict engine under the portal's hostname. Checked against Render's blueprint
+  spec: `dockerCommand` is correct for `runtime: docker`, and `startCommand` is
+  the non-Docker form. Verified, not assumed.
+  (iii) CLEARED, AND MY FIRST READ WAS WRONG -- a misconfigured `PORTAL_STORE`
+  looked silent (boot said "0 with a payer graph" and /healthz stayed ok), which
+  I reported as a finding on the strength of `tail -2`. The FULL log announces it:
+  "payer graph unavailable (OperationalError: unable to open database file)" --
+  the fail-soft-and-LOUD path working. And the sharper case, a store that EXISTS
+  but is EMPTY and raises nothing, is honest too: the report reads "Demand
+  authenticity not assessed" rather than claiming corroboration, which is exactly
+  the rule `seller_report` bug (b) already installed. Truncated output is not
+  evidence of silence.
+  MEASURED at the same time: dating costs 6.45ms at boot (hashing a 330KB
+  corpus), full source construction 21.26ms, and the per-request check is 3.48us
+  with NO hashing and NO I/O -- `index_age_days` is called only from
+  `PayToBaselineSource.__init__`, so the hash can never reach the hot path (the
+  `seller_audit` 221ms lesson, checked rather than assumed).
+  OPEN, NOT FIXED, and the operator should know: NOTHING AUTOMATICALLY REFRESHES
+  `data/directory.json`. The weekly `seed-refresh.yml` regenerates the reputation
+  seed, the category index and the divergence index -- not the directory. So this
+  mechanism UN-REACHES ITSELF: the corpus crosses MAX_INDEX_AGE_DAYS about 2.7
+  days after it was dated, the gate goes back to stale, and nothing announces it
+  because the state is only visible in the boot banner. Not urgent while
+  `PAYTO_BASELINE_GATES` is off (a stale baseline and an off lock both mean "no
+  gate"), and deliberately NOT patched by raising the threshold, which would
+  weaken a safety rule to cover a process gap. The real fix is adding an
+  `ecosystem_scan --out-directory` step to the scheduled refresh -- a network
+  crawl job, its own change -- and the honest interim is that flipping the lock
+  requires checking the corpus age first.
   THREE FINDINGS from making it reachable, each caught before deploying:
   (1) the sidecar was NOT in the Dockerfile's COPY, so production would have read
   the corpus as undated and the gate would have been unreachable there while
