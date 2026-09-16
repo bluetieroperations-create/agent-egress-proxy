@@ -575,3 +575,104 @@ class TestTheBindingHazardIsGuardedForStoresToo(unittest.TestCase):
                          "declared on _Handler and READ by a handler method but "
                          "never bound in serve_forever -- they stay None and the "
                          "feature is silently inert: %s" % sorted(missing))
+
+
+class TestTheBindingIsAssertedAgainstTheRunningServer(unittest.TestCase):
+    """The guard above reads the `_BoundHandler` DICT LITERAL and collects its
+    KEYS, never its values -- so `"x_source": None` is a key that is present
+    and a dependency that is DEAD, which satisfies the check while the feature
+    is exactly as inert as omitting the entry. The same shape as every other
+    check this repo has found aimed slightly to the left of its own property.
+
+    MEASURED 2026-09-16 before writing this, because the gap was worth
+    confirming rather than arguing: binding `aave_source`, `holder_source` or
+    `settlement_sim_source` to None passes the parity guard AND the full
+    2671-test suite. Only `approvals` was killed, by the real server in this
+    file -- so for those three the parity guard was the only thing standing
+    between a forgetful edit and a silently inert gate, and it could not see it.
+
+    THE FIX IS TO STOP READING THE SOURCE THE AUTHOR WRITES. This boots a REAL
+    server with a unique sentinel per dependency and asserts what the RUNNING
+    handler carries. A dict value of None, a `setattr` loop, a comprehension or
+    any other spelling arrives here identically as "the handler does not have
+    the object it was given". The AST is still used for the one thing it is good
+    at -- deciding WHICH names are dependencies -- but the assertion is on
+    post-state, so it cannot be satisfied by the shape of the code.
+    """
+
+    #: Constructor params that are NOT injected dependencies: scalars and
+    #: config the handler reads but a sentinel would misrepresent.
+    NOT_A_DEPENDENCY = frozenset({
+        "host", "port", "max_inflight", "hold_above", "openapi_server_url",
+        "reputation_source",        # drives _source_kind at construction
+    })
+
+    def _dependency_names(self):
+        """The (declared on _Handler AND read by a handler method) set, which is
+        the same rule the parity guard uses -- intersected with what the
+        constructor can actually inject."""
+        import ast
+        import inspect
+
+        import blackwall
+        tree = ast.parse(inspect.getsource(blackwall))
+        declared, used = set(), set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == "_Handler":
+                for stmt in node.body:
+                    if isinstance(stmt, ast.Assign):
+                        for t in stmt.targets:
+                            if isinstance(t, ast.Name) and not t.id.startswith("_"):
+                                declared.add(t.id)
+                for sub in ast.walk(node):
+                    if isinstance(sub, ast.Attribute) and \
+                            isinstance(sub.value, ast.Name) and \
+                            sub.value.id == "self":
+                        used.add(sub.attr)
+                    if isinstance(sub, ast.Call) and \
+                            isinstance(sub.func, ast.Name) and \
+                            sub.func.id == "getattr" and len(sub.args) >= 2 and \
+                            isinstance(sub.args[0], ast.Name) and \
+                            sub.args[0].id == "self" and \
+                            isinstance(sub.args[1], ast.Constant) and \
+                            isinstance(sub.args[1].value, str):
+                        used.add(sub.args[1].value)
+        params = set(inspect.signature(
+            blackwall.BlackwallServer.__init__).parameters) - {"self"}
+        return (declared & used & params) - self.NOT_A_DEPENDENCY
+
+    def test_every_injected_dependency_reaches_the_booted_handler(self):
+        # Kills: `"x_source": None` in the _BoundHandler dict (key present,
+        # value dead) -- which the AST parity guard passes and which the full
+        # suite did not catch for three real sources. Also kills dropping the
+        # line entirely, and any future spelling that binds by a mechanism an
+        # AST literal scan cannot see.
+        import threading
+        import time
+
+        import blackwall
+
+        names = self._dependency_names()
+        self.assertGreater(len(names), 10,
+                           "the dependency set collapsed -- this guard would "
+                           "then assert almost nothing: %s" % sorted(names))
+
+        sentinels = {n: object() for n in names}
+        srv = blackwall.BlackwallServer(host="127.0.0.1", port=0, **sentinels)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            deadline = time.time() + 10
+            while srv._httpd is None and time.time() < deadline:
+                time.sleep(0.01)
+            self.assertIsNotNone(srv._httpd, "server never bound")
+            bound_cls = srv._httpd.RequestHandlerClass
+            dead = sorted(n for n in names
+                          if getattr(bound_cls, n, None) is not sentinels[n])
+            self.assertEqual(
+                dead, [],
+                "given to BlackwallServer but NOT carried by the running "
+                "handler -- the dependency is dead on the wire however the "
+                "dict literal reads: %s" % dead)
+        finally:
+            srv.shutdown()
