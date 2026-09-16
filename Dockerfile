@@ -25,7 +25,12 @@ COPY data/seed_payees.txt data/seed_payees_bake.txt ./data/
 # asset_coverage.json is READ BY seller_report/seller_portal: without it the
 # identifier findings fail soft and a host with a genuinely broken asset id
 # is told everything resolves. Ship it with the directory it accompanies.
-COPY data/directory.json data/asset_coverage.json ./data/
+# directory.meta.json is the CONTENT-PINNED sidecar that dates directory.json.
+# Without it in the image the deployed corpus reads as UNDATED, `payto_baseline`
+# treats it as stale, and the gate is unreachable in production while every
+# local test says reachable -- the wired-and-inert pattern via a missing COPY.
+# Caught before deploying by the guard in test_deploy_manifest.
+COPY data/directory.json data/directory.meta.json data/asset_coverage.json ./data/
 
 # OFAC sanctioned-address snapshot (from the published 0xB10C list). Baked in so
 # screening is ON by default -- Blackwall is a SUPERSET of the free KYT baseline.

@@ -92,6 +92,101 @@ class DeployManifest(unittest.TestCase):
                       "the default advertised-index path is not COPYed into the image")
 
 
+class SellerPortalBlueprint(unittest.TestCase):
+    """The portal is a SEPARATE service on purpose, and the deploy has to keep
+    the reason intact. `seller_portal`'s docstring: it renders HTML from a
+    browser-supplied string, which is an XSS surface the verdict API does not
+    have, and "a defect in a public renderer must not reach the process holding
+    the signing keys". That is only true if the portal's deploy CANNOT SEE THEM.
+    """
+
+    BLUEPRINT = "render-portal.yaml"
+    SECRETS = ("BLACKWALL_SIGNING_SEED", "BLACKWALL_RECEIPT_KEY",
+               "BLACKWALL_LEDGER_KEY", "BLACKWALL_LEDGER_KV_TOKEN",
+               "BLACKWALL_PAY_TO", "CDP_API_KEY_ID", "CDP_API_KEY_SECRET")
+
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(ROOT, cls.BLUEPRINT)) as handle:
+            cls.text = handle.read()
+        cls.keys = re.findall(r"^\s*- key:\s*(\S+)", cls.text, re.M)
+
+    def test_it_declares_no_signing_or_billing_secret(self):
+        # kills: handing the public renderer a key it has no use for. The whole
+        # justification for running it as a separate process is that a defect
+        # here cannot reach the signing keys.
+        leaked = [k for k in self.keys
+                  if any(bad in k for bad in self.SECRETS)]
+        self.assertEqual(leaked, [], "the seller portal blueprint declares a "
+                                     "secret it must not be able to read")
+
+    def test_it_runs_the_portal_not_the_verdict_engine(self):
+        # kills: a blueprint that reuses the image's default CMD and silently
+        # deploys a SECOND copy of blackwall.py under the portal's hostname.
+        self.assertIn("dockerCommand: python seller_portal.py", self.text)
+
+    def test_it_binds_all_interfaces(self):
+        # kills: PORTAL_HOST left at 127.0.0.1, which Render cannot route to.
+        self.assertRegex(self.text, r'key:\s*PORTAL_HOST\s*\n\s*value:\s*"0\.0\.0\.0"')
+
+    def test_it_does_not_pin_a_port(self):
+        # kills: setting PORTAL_PORT, which binds a port the platform does not
+        # route to -- presenting as a failing health check, i.e. a restart loop.
+        self.assertNotIn("PORTAL_PORT", self.keys)
+
+    def test_it_sets_a_store_so_the_flagship_finding_is_reachable(self):
+        # kills: deploying the portal without a store, which still serves and
+        # silently omits the cross-payee demand-authenticity finding -- the one
+        # thing a seller cannot get anywhere else.
+        self.assertIn("PORTAL_STORE", self.keys)
+
+    def test_it_has_a_health_check(self):
+        self.assertIn("healthCheckPath: /healthz", self.text)
+
+    def test_the_portal_honours_the_platform_port(self):
+        # kills: removing the $PORT fallback from seller_portal.main, which is
+        # what makes "do not pin a port" above safe.
+        src = open(os.path.join(ROOT, "seller_portal.py")).read()
+        self.assertIn('os.environ.get("PORT")', src)
+
+
+class DirectoryCorpusIsDatedInTheImage(unittest.TestCase):
+    """`payto_baseline` refuses to gate on a corpus it cannot date, and
+    `data/directory.json` is dated by a CONTENT-PINNED SIDECAR beside it
+    (`directory.meta.json`). If the image ships the corpus without the sidecar,
+    production reads it as undated and the gate is unreachable there while every
+    local test reports it reachable -- the wired-and-inert pattern arriving via a
+    missing COPY line, which is how it was nearly shipped on 2026-09-16."""
+
+    def test_the_sidecar_travels_with_the_corpus(self):
+        # kills: copying directory.json without directory.meta.json.
+        text = open("Dockerfile").read()
+        self.assertIn("data/directory.json", text)
+        self.assertIn("data/directory.meta.json", text,
+                      "the corpus is copied into the image without its date")
+
+    def test_they_are_copied_by_the_same_instruction(self):
+        # kills: adding the sidecar to an unrelated COPY that a later refactor
+        # could drop independently -- they must move together.
+        for line in open("Dockerfile"):
+            if line.startswith("COPY") and "data/directory.json" in line:
+                self.assertIn("data/directory.meta.json", line)
+                return
+        self.fail("no COPY line carries data/directory.json")
+
+    def test_the_committed_pair_is_consistent(self):
+        # kills: committing a sidecar that does not match the corpus, which
+        # reads as undated and silently un-reaches the gate in every deploy.
+        import hashlib
+        import json as _json
+        meta = _json.load(open("data/directory.meta.json"))
+        digest = hashlib.sha256(open("data/directory.json", "rb").read()).hexdigest()
+        self.assertEqual(meta.get("sha256"), digest,
+                         "data/directory.meta.json does not pin the committed "
+                         "data/directory.json -- regenerate it")
+        self.assertIsInstance(meta.get("generated_at"), str)
+
+
 class SeedMigrationBuildStep(unittest.TestCase):
     """The Dockerfile migrates the baked seed at BUILD time (see
     `reputation_store._PAYER_KEY_INDEX`). PRE-MERGE AUDIT 2026-09-16: the first
@@ -163,6 +258,13 @@ class PublicEndpointDefaults(unittest.TestCase):
     call is free to the caller.
     """
 
+    # The VERDICT-engine deploys only. `render-portal.yaml` is deliberately NOT
+    # here: the portal does not read BLACKWALL_RATE_LIMIT at all and its limiter
+    # is ON by default (seller_portal.DEFAULT_RATE = 30/min per client), so this
+    # exact check would fail on it for the wrong reason. Its properties are
+    # guarded by SellerPortalBlueprint instead. NOTE the shape of this tuple is
+    # itself the omission hazard this repo keeps hitting -- a NEW verdict
+    # blueprint is unguarded until someone adds it here.
     CONFIGS = ("render.yaml", "render-free.yaml", "fly.toml")
 
     def test_every_public_deploy_config_sets_a_rate_limit(self):

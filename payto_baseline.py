@@ -132,6 +132,16 @@ MAX_STABLE_PAYEES = 1
 #: is the point at which it stops being current.
 MAX_INDEX_AGE_DAYS = 21
 
+#: Distinguishes "age not provided" from "age explicitly UNKNOWN". Without it
+#: `age_days=None` -- a caller stating it cannot date its index -- fell through
+#: to dating the SHIPPED corpus instead, so a source built from an INJECTED
+#: index (an alternate corpus, a test fixture) inherited an unrelated file's
+#: freshness and could gate on it. FOUND BY DATING `data/directory.json`: three
+#: tests that meant "unknown" had been getting it implicitly from the shipped
+#: corpus being undated, and would have started passing for the wrong reason
+#: the moment it was dated. Same cross-artifact confusion `meta_path` prevents.
+_UNSET = object()
+
 OK = "ok"                       # the recipient is one this host advertises
 UNEXPECTED = "unexpected"       # single-recipient host, different recipient -- GATES
 MULTI_PAYEE = "multi_payee"     # host rotates recipients -- recorded, never gates
@@ -263,13 +273,76 @@ def load_payto_index(path=None):
     return build_payto_index(records)
 
 
+def meta_path(path):
+    """The sidecar beside a corpus file: `directory.json` -> `directory.meta.json`.
+
+    Derived from the path the caller actually passed, never a fixed location, or
+    an operator pointing `BLACKWALL_PAYTO_INDEX` at an alternate corpus would
+    silently be dated by a different file's sidecar.
+    """
+    if not isinstance(path, str) or not path:
+        return ""
+    base = path[:-5] if path.endswith(".json") else path
+    return base + ".meta.json"
+
+
+def _sidecar_age(path, reference):
+    """Read a CONTENT-PINNED sidecar. None unless it provably describes `path`.
+
+    WHY A SIDECAR AT ALL: `data/directory.json` is a bare LIST read by five
+    modules and only two of them tolerate a dict, so carrying `generated_at`
+    inline would mean changing the artifact's shape under `billing_preflight`,
+    `directory_liveness`, `seller_intel` and `seller_report`.
+
+    WHY IT PINS THE CONTENT, which is the part that matters: dating the corpus
+    is what makes the gate REACHABLE, so from here the date is safety-critical.
+    A sidecar's own failure mode is the forgotten refresh -- regenerate the
+    corpus, leave the sidecar, and the date now describes a file that no longer
+    exists, handing a stale baseline permission to gate. That is strictly worse
+    than having no date at all. So the age is trusted ONLY when the recorded
+    sha256 matches the bytes on disk; a mismatch, a missing hash, or an
+    unreadable sidecar all read `unknown`, which means no gate. The pairing is
+    guaranteed by construction rather than by remembering.
+    """
+    import hashlib
+    meta = meta_path(path)
+    try:
+        with open(meta) as handle:
+            blob = json.load(handle)
+        with open(path, "rb") as handle:
+            digest = hashlib.sha256(handle.read()).hexdigest()
+    except (OSError, ValueError):
+        return None
+    if not isinstance(blob, dict):
+        return None
+    # No hash is not "close enough": without it a hand-written date gates.
+    if blob.get("sha256") != digest:
+        return None
+    return _parse_stamp(blob.get("generated_at"), reference)
+
+
+def _parse_stamp(stamp, reference):
+    """An ISO-8601 instant -> age in days, or None. Never raises."""
+    import datetime
+    if not isinstance(stamp, str):
+        return None
+    try:
+        when = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=datetime.timezone.utc)
+    return max((reference - when).total_seconds() / 86400.0, 0.0)
+
+
 def index_age_days(path=None, now=None):
     """How old is the crawl artifact, in days? None when it CANNOT BE KNOWN.
 
-    Reads an explicit `generated_at` (the shape `data/asset_coverage.json`
-    already uses). Returns None for the bare-list shape `data/directory.json`
-    currently has -- which is the honest answer, and is why `check` refuses to
-    gate on it.
+    TWO sources, checked in that order: a CONTENT-PINNED sidecar beside the file
+    (see `_sidecar_age` -- this is how `data/directory.json`, a bare list, gets
+    dated without changing a shape five modules read), or an explicit inline
+    `generated_at` for a dict-shaped corpus (the form `asset_coverage.json`
+    uses). Neither available -> None, which reads as stale and gates nothing.
 
     DELIBERATELY NOT `os.path.getmtime`, and this is the whole point of the
     function. A container clones the repo at build time, so every committed
@@ -282,6 +355,10 @@ def index_age_days(path=None, now=None):
     """
     import datetime
     path = path or os.environ.get(ENV_INDEX_PATH) or DEFAULT_INDEX_PATH
+    reference = now or datetime.datetime.now(datetime.timezone.utc)
+    age = _sidecar_age(path, reference)
+    if age is not None:
+        return age
     try:
         with open(path) as handle:
             blob = json.load(handle)
@@ -289,17 +366,7 @@ def index_age_days(path=None, now=None):
         return None
     if not isinstance(blob, dict):
         return None
-    stamp = blob.get("generated_at")
-    if not isinstance(stamp, str):
-        return None
-    try:
-        when = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=datetime.timezone.utc)
-    reference = now or datetime.datetime.now(datetime.timezone.utc)
-    return max((reference - when).total_seconds() / 86400.0, 0.0)
+    return _parse_stamp(blob.get("generated_at"), reference)
 
 
 def assess_payto(resource, counterparty, index):
@@ -403,6 +470,34 @@ def apply_payto_baseline(verdict, signal, gate=None):
     return v
 
 
+def write_meta(path, generated_at):
+    """Write the content-pinned sidecar for the corpus at `path`.
+
+    `generated_at` is REQUIRED and there is deliberately NO default to "now".
+    Defaulting would let a caller date an artifact it did not generate, which
+    manufactures exactly the lie `_sidecar_age`'s hash guard exists to catch --
+    and unlike a forgotten refresh, that one would VERIFY, because the hash
+    would match a file whose date is simply wrong. The hash protects the pairing
+    of date to bytes; only the caller can vouch for the date itself.
+
+    Returns the sidecar path. Raises on an unwritable location, because a
+    silently-absent sidecar reads as "undated" -- safe, but it would look like
+    the write succeeded.
+    """
+    import hashlib
+    if not isinstance(generated_at, str) or not generated_at.strip():
+        raise ValueError("generated_at is required -- refusing to date an "
+                         "artifact with an assumed timestamp")
+    with open(path, "rb") as handle:
+        digest = hashlib.sha256(handle.read()).hexdigest()
+    target = meta_path(path)
+    with open(target, "w") as handle:
+        json.dump({"generated_at": generated_at.strip(), "sha256": digest},
+                  handle, indent=2)
+        handle.write("\n")
+    return target
+
+
 class PayToBaselineSource:
     """Precomputed host -> recipients snapshot, O(1) on the hot path.
 
@@ -412,12 +507,13 @@ class PayToBaselineSource:
     traffic would let an attacker teach us their address and then pay it.
     """
 
-    def __init__(self, index=None, path=None, age_days=None, max_age_days=None):
+    def __init__(self, index=None, path=None, age_days=_UNSET, max_age_days=None):
         self.index = index if index is not None else load_payto_index(path)
-        # None means "cannot be known", which is NOT the same as fresh -- see
-        # `index_age_days`. An explicitly passed age wins, so a caller that knows
-        # when it crawled can say so.
-        self.age_days = age_days if age_days is not None else index_age_days(path)
+        # `age_days=None` means "explicitly UNKNOWN" and is honoured as such;
+        # only OMITTING it falls back to dating the file. See `_UNSET` -- treating
+        # the two alike let an injected index inherit the shipped corpus's
+        # freshness, which is a stale baseline gating on somebody else's date.
+        self.age_days = (index_age_days(path) if age_days is _UNSET else age_days)
         self.max_age_days = (MAX_INDEX_AGE_DAYS if max_age_days is None
                              else max_age_days)
 

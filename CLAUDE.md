@@ -1161,7 +1161,26 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   every candidate host is cooling down the probe is skipped and the report says
   "not checked" beside the ledger's history, which is more honest than re-hitting
   a stranger to repeat something we already know. Verified live against the real corpus: 266 payees, 266 with
-  a precomputed graph. See `docs/SELLER_SIDE.md`. Tests:
+  a precomputed graph. NOW HAS A DEPLOY (2026-09-16): `render-portal.yaml`, a
+  SEPARATE Render service reusing the SAME image with only
+  `dockerCommand: python seller_portal.py` different -- the module's three
+  reasons for being a separate process are all deploy-relevant, and reason 2 is
+  ENFORCED rather than asserted: the blueprint declares NO signing or billing
+  secret (`test_deploy_manifest.SellerPortalBlueprint` fails if one appears), so
+  a defect in the public HTML renderer structurally cannot reach the process
+  holding the keys. `PORTAL_PORT` is deliberately UNSET and `main` gained a
+  `$PORT` fallback mirroring `blackwall.py:2805` -- without it the container
+  binds 8410 while the platform routes elsewhere, which presents as a failing
+  health check, i.e. a RESTART LOOP, not as a wrong port. `PORTAL_STORE` points
+  at the baked warm store because the flagship cross-payee finding is computed
+  from the payer graph at BOOT, so a store-less portal still serves and silently
+  omits the one finding a seller cannot get anywhere else. `PORTAL_PROXY_DEPTH`
+  stays at the UNDER-STATING default (1) on purpose. VERIFIED by running the
+  blueprint's exact config: boots on $PORT, 266 payees / 266 graphs, a real
+  report for api.bitrefill.com with 7 findings including a live 402 probe and the
+  corroboration finding, `default-src 'none'` CSP, and a
+  `<script>alert(1)</script>` key rendered 0 times raw / 2 times escaped.
+  See `docs/SELLER_SIDE.md`. Tests:
   `test_seller_portal.py`, 46 tests incl. a real server, 27 mutations verified
   killed). PRE-MERGE AUDIT (2026-09-07): the rate-limit identity was wrong for
   the topology this is meant to run in. `ratelimit.client_ip_from` takes the
@@ -1373,6 +1392,46 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   which is the right direction for a poisoning we cannot yet verify against.
   (3) A HOST IS NOT AN OPERATOR: two businesses can share one, and 58 of 266
   corpus payees span hosts.
+  THE CORPUS IS NOW DATED, so the gate is REACHABLE (2026-09-16). The date lives
+  in a CONTENT-PINNED SIDECAR, `data/directory.meta.json`, not inline: the
+  directory is a bare LIST read by FIVE modules and only two tolerate a dict, so
+  an inline `generated_at` would change a shape `billing_preflight`,
+  `directory_liveness`, `seller_intel` and `seller_report` all parse. The sidecar
+  records a sha256 of the corpus and the age is trusted ONLY when it matches --
+  because a sidecar's own failure mode is the FORGOTTEN REFRESH, where the date
+  outlives the file it describes and hands a stale baseline permission to gate,
+  which is strictly worse than no date. A mismatch, a missing hash or an
+  unreadable sidecar all read `unknown`, i.e. no gate, by construction rather
+  than by remembering. `write_meta` REFUSES to default `generated_at` to "now",
+  since that manufactures the one lie the hash cannot catch (it would VERIFY --
+  the hash would match a file whose date is simply wrong); only the caller that
+  generated the file may vouch for the date. `ecosystem_scan` writes the pair on
+  every `--out-directory`. The SHIPPED sidecar is dated 2026-08-28T20:47:52Z,
+  taken from the commit that last refreshed the artifact rather than from the
+  clock -- 18.2 days old against MAX_INDEX_AGE_DAYS=21, so the gate is reachable
+  and GOES UNREACHABLE AGAIN in ~2.8 days unless the corpus is refreshed. That is
+  the mechanism working, not a bug, and the test says so by name.
+  THREE FINDINGS from making it reachable, each caught before deploying:
+  (1) the sidecar was NOT in the Dockerfile's COPY, so production would have read
+  the corpus as undated and the gate would have been unreachable there while
+  every local test reported it reachable -- the wired-and-inert pattern arriving
+  via a missing COPY line. Now copied by the SAME instruction as the corpus and
+  guarded by `test_deploy_manifest.DirectoryCorpusIsDatedInTheImage`, which also
+  asserts the committed pair's hash actually matches.
+  (2) `age_days=None` was INDISTINGUISHABLE from "not provided"
+  (`age_days if age_days is not None else index_age_days(path)`), so a caller
+  stating it could not date its own index silently inherited the SHIPPED corpus's
+  freshness -- an injected index gating on an unrelated file's date, the same
+  cross-artifact confusion `meta_path` exists to prevent. A `_UNSET` sentinel
+  separates them. Found because dating the corpus broke three tests that had been
+  getting "unknown" implicitly from the artifact being undated, and would
+  otherwise have started passing for the wrong reason.
+  (3) THE TRIPWIRE FIRED AS DESIGNED: the old test asserted the corpus was
+  undated and said "when this fails, the lock becomes genuinely reachable --
+  which is the point at which the false-HOLD rate must be measured". It was
+  replaced with tests that pin reachability, the hash pairing, and that
+  `PAYTO_BASELINE_GATES` IS STILL OFF -- dating and flipping in one change is
+  exactly what the graduation discipline forbids. Reachable is not calibrated.
   MEASURED COST: 70.9ms and 261KB to index 514 hosts at boot; 1.1-2.5us per
   verdict against a ~2ms verdict, so ~0.1%. Redteam: 1 attack (KNOWN GAP BY
   DESIGN while the lock is off -- flipping it turns the scorecard to 32 caught /

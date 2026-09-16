@@ -543,6 +543,132 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class TestTheDateMustProvablyDescribeThisArtifact(unittest.TestCase):
+    """Dating the corpus is what makes the gate REACHABLE, so the date itself
+    becomes safety-critical: a date that outlives the file it describes would
+    let a stale baseline gate, which is the exact harm the staleness guard
+    exists to prevent. A LYING DATE IS WORSE THAN NO DATE.
+
+    `data/directory.json` is a bare LIST read by five modules, only two of which
+    tolerate a dict, so an inline `generated_at` would mean changing the shape
+    under `billing_preflight`, `directory_liveness`, `seller_intel` and
+    `seller_report`. The date therefore lives in a SIDECAR -- and a sidecar has
+    its own hazard: refresh the corpus, forget the sidecar, and the date now
+    describes a file that no longer exists. So the sidecar PINS THE CONTENT with
+    a sha256 and the age is trusted only when it matches. A forgotten refresh
+    fails to `unknown`, i.e. no gate, by construction rather than by discipline.
+    """
+
+    def _write(self, rows, meta=None):
+        """Write a corpus (+ optional sidecar) inside a fresh tempdir.
+
+        THE SIDECAR PATH IS COMPUTED HERE, NOT VIA `PB.meta_path`, and that is a
+        real safety property rather than style. AUDIT FINDING 2026-09-16: this
+        helper originally wrote to `PB.meta_path(path)`, so a mutation that
+        hardcoded `meta_path` to "data/directory.meta.json" made the TEST SUITE
+        OVERWRITE THE COMMITTED ARTIFACT -- which then broke unrelated tests and
+        silently invalidated six later mutation results, since they died of that
+        collateral damage instead of the mutation under test. A test must never
+        be able to write outside its own tempdir, however the code under test
+        misbehaves. `meta_path`'s contract is asserted separately, in
+        `test_meta_path_sits_beside_the_corpus`.
+        """
+        import hashlib
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "directory.json")
+        with open(path, "w") as fh:
+            json.dump(rows, fh)
+        if meta is not None:
+            if meta.get("sha256") == "AUTO":
+                meta = dict(meta, sha256=hashlib.sha256(
+                    open(path, "rb").read()).hexdigest())
+            with open(os.path.join(d, "directory.meta.json"), "w") as fh:
+                json.dump(meta, fh)
+        return path
+
+    def test_a_matching_sidecar_dates_the_corpus(self):
+        # Kills: ignoring the sidecar entirely, which leaves the gate forever
+        # unreachable -- a lock that cannot be flipped is not a lock.
+        import datetime
+        stamp = (datetime.datetime(2026, 9, 10, tzinfo=datetime.timezone.utc)
+                 .isoformat().replace("+00:00", "Z"))
+        path = self._write(SINGLE, {"generated_at": stamp, "sha256": "AUTO"})
+        age = PB.index_age_days(
+            path, now=datetime.datetime(2026, 9, 15, tzinfo=datetime.timezone.utc))
+        self.assertAlmostEqual(age, 5.0, places=3)
+
+    def test_a_sidecar_whose_hash_does_not_match_is_refused(self):
+        # Kills: trusting the date without pinning the content. THIS is the
+        # forgotten-refresh case: the corpus was regenerated and the sidecar
+        # still carries the old date. Reading it would date a file that no
+        # longer exists and hand a stale baseline permission to gate.
+        import datetime
+        stamp = (datetime.datetime(2026, 9, 15, tzinfo=datetime.timezone.utc)
+                 .isoformat().replace("+00:00", "Z"))
+        path = self._write(SINGLE, {"generated_at": stamp, "sha256": "0" * 64})
+        self.assertIsNone(PB.index_age_days(path))
+
+    def test_a_refreshed_corpus_invalidates_its_own_sidecar(self):
+        # Kills: the same thing end to end, the way it actually happens -- write
+        # a matching pair, then refresh ONLY the corpus.
+        import datetime
+        stamp = (datetime.datetime(2026, 9, 15, tzinfo=datetime.timezone.utc)
+                 .isoformat().replace("+00:00", "Z"))
+        path = self._write(SINGLE, {"generated_at": stamp, "sha256": "AUTO"})
+        self.assertIsNotNone(PB.index_age_days(path))     # paired
+        with open(path, "w") as fh:                       # corpus refreshed alone
+            json.dump(MULTI, fh)
+        self.assertIsNone(PB.index_age_days(path),
+                          "a refreshed corpus must invalidate a stale sidecar")
+
+    def test_a_sidecar_with_no_hash_is_refused(self):
+        # Kills: treating a hash-less sidecar as good enough. Then a hand-written
+        # date gates, and nothing ties it to the data.
+        path = self._write(SINGLE, {"generated_at": "2026-09-15T00:00:00Z"})
+        self.assertIsNone(PB.index_age_days(path))
+
+    def test_a_missing_or_corrupt_sidecar_is_unknown_not_an_error(self):
+        # Kills: raising when the sidecar is absent, which is the shipped state.
+        self.assertIsNone(PB.index_age_days(self._write(SINGLE)))
+        path = self._write(SINGLE)
+        with open(PB.meta_path(path), "w") as fh:
+            fh.write("{not json")
+        self.assertIsNone(PB.index_age_days(path))
+
+    def test_the_inline_dict_form_still_works(self):
+        # Kills: dropping the dict-shaped support while adding the sidecar. An
+        # alternate corpus may legitimately carry its own generated_at.
+        import datetime
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "alt.json")
+        with open(path, "w") as fh:
+            json.dump({"generated_at": "2026-09-14T00:00:00Z", "payees": SINGLE}, fh)
+        self.assertAlmostEqual(
+            PB.index_age_days(path, now=datetime.datetime(
+                2026, 9, 15, tzinfo=datetime.timezone.utc)), 1.0, places=3)
+
+    def test_meta_path_sits_beside_the_corpus(self):
+        # Kills: a sidecar path that does not follow the --out-directory the
+        # operator actually passed, which would silently read someone else's.
+        self.assertEqual(PB.meta_path("/x/y/directory.json"),
+                         "/x/y/directory.meta.json")
+
+    def test_the_gate_becomes_reachable_once_the_pair_is_written(self):
+        # Kills: a dating mechanism that dates the corpus and STILL cannot gate
+        # -- the whole point of this change is reachability.
+        import datetime
+        stamp = datetime.datetime.now(datetime.timezone.utc).isoformat().replace(
+            "+00:00", "Z")
+        path = self._write(SINGLE, {"generated_at": stamp, "sha256": "AUTO"})
+        src = PB.PayToBaselineSource(index=PB.load_payto_index(path),
+                                     age_days=PB.index_age_days(path))
+        self.assertFalse(src.stale)
+        got = PB.apply_payto_baseline(
+            {"verdict": "GO", "reasons": [], "signals": {}},
+            src.check("https://api.example.com/v1/quote", PAYEE_B), gate=True)
+        self.assertEqual(got["verdict"], "HOLD")
+
+
 class TestItRefusesToGateOnABaselineItCannotDate(unittest.TestCase):
     """AUDIT FINDING, found by measuring the artifact rather than reading the
     code: `data/directory.json` carries NO timestamp and was last touched 18 days
@@ -652,14 +778,47 @@ class TestItRefusesToGateOnABaselineItCannotDate(unittest.TestCase):
         got = source.check("https://api.example.com/v1/quote", PAYEE_B)
         self.assertTrue(any("40 days old" in r for r in got["reasons"]))
 
-    def test_the_shipped_corpus_is_currently_undated_so_the_gate_is_inert(self):
-        # Kills: a future change that dates the artifact without anyone noticing
-        # this precondition. When this fails, `ecosystem_scan` has started
-        # writing `generated_at` and the lock becomes genuinely reachable --
-        # which is the point at which the false-HOLD rate must be measured.
-        self.assertIsNone(PB.index_age_days("data/directory.json"))
-        self.assertTrue(PB.PayToBaselineSource.from_path("data/directory.json").stale)
+    def test_the_shipped_corpus_is_now_dated_and_content_pinned(self):
+        # THE TRIPWIRE FIRED AND WAS REPLACED. Its predecessor asserted the
+        # shipped corpus was UNDATED, and said "when this fails, the lock becomes
+        # genuinely reachable -- which is the point at which the false-HOLD rate
+        # must be measured". That happened 2026-09-16: the corpus now carries a
+        # content-pinned sidecar dated from the commit that last refreshed it.
+        # This now pins REACHABILITY instead, and the lock is still off.
+        self.assertIsNotNone(PB.index_age_days("data/directory.json"),
+                             "the shipped corpus lost its sidecar")
+        self.assertFalse(
+            PB.PayToBaselineSource.from_path("data/directory.json").stale,
+            "the shipped corpus has aged past MAX_INDEX_AGE_DAYS -- refresh it, "
+            "or the payTo gate is unreachable again")
 
+    def test_the_shipped_sidecar_actually_pins_the_shipped_corpus(self):
+        # kills: committing a sidecar whose hash does not match the artifact
+        # beside it, which reads as undated and silently un-reaches the gate.
+        import hashlib
+        meta = json.load(open(PB.meta_path("data/directory.json")))
+        digest = hashlib.sha256(open("data/directory.json", "rb").read()).hexdigest()
+        self.assertEqual(meta["sha256"], digest)
+
+    def test_the_lock_is_still_off_despite_being_reachable(self):
+        # kills: dating the corpus and flipping the lock in one change. Reachable
+        # is not calibrated -- the REQUEST-level false-HOLD rate is still the
+        # only thing the lock waits on.
+        self.assertFalse(PB.PAYTO_BASELINE_GATES)
+
+    def test_an_explicit_unknown_age_is_not_overridden_by_the_shipped_corpus(self):
+        # kills: `age_days if age_days is not None else index_age_days(path)`.
+        # A caller with an INJECTED index that says it cannot date it must not
+        # inherit data/directory.json's freshness and gate on it.
+        source = PB.PayToBaselineSource(index=_index(SINGLE), age_days=None)
+        self.assertIsNone(source.age_days)
+        self.assertTrue(source.stale)
+
+    def test_omitting_the_age_still_dates_the_file(self):
+        # kills: the sentinel swallowing the normal path, which would make every
+        # source permanently stale and the gate permanently unreachable.
+        self.assertIsNotNone(
+            PB.PayToBaselineSource.from_path("data/directory.json").age_days)
 
 class TestTheLiveWire(unittest.TestCase):
     """A REAL server. Everything above is reachable only if it is WIRED.

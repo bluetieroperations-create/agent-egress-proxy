@@ -326,6 +326,26 @@ def main(argv=None):
     if args.out_directory:
         json.dump([d for d in out["directory"] if d.get("distinct_payers") is not None],
                   open(args.out_directory, "w"), indent=2, default=str)
+        # DATE IT, in a content-pinned sidecar beside the file. The directory is
+        # a bare LIST read by five modules and only two tolerate a dict, so an
+        # inline `generated_at` would change a shape `billing_preflight`,
+        # `directory_liveness`, `seller_intel` and `seller_report` all parse.
+        # Without a date `payto_baseline` cannot tell a stale baseline from a
+        # current one and refuses to gate at all -- see
+        # payto_baseline._sidecar_age for why the hash is load-bearing.
+        # THIS is the caller entitled to set the date: it just generated the file.
+        try:
+            import datetime
+
+            import payto_baseline
+            payto_baseline.write_meta(
+                args.out_directory,
+                datetime.datetime.now(datetime.timezone.utc)
+                .isoformat().replace("+00:00", "Z"))
+        except Exception as exc:          # dating must never fail the crawl
+            sys.stderr.write("x402 scan: WARNING could not date the directory "
+                             "(%s) -- the payTo baseline will read it as "
+                             "undated and will not gate\n" % exc)
     if args.out_candidates:
         cands = out["candidates"]
         with open(args.out_candidates, "w", newline="") as f:
