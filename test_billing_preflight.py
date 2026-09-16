@@ -954,12 +954,42 @@ class TestSettlementCostProvenance(unittest.TestCase):
                                          cdp_id="id", cdp_secret="sec")
         self.assertEqual(cost, bp.CDP_SETTLEMENT_COST)
 
-    def test_partial_credentials_do_not_resolve_to_cdp(self):
-        # Mutation: `cdp_id or cdp_secret`. choose_facilitator needs BOTH; with
-        # one set it uses the URL, and the price must model the same selection.
-        cost, _ = bp.settlement_cost_for("https://facilitator.payai.network",
-                                         cdp_id="id")
+    def test_a_half_set_credential_pair_is_INVALID_not_merely_unpriced(self):
+        # THIS TEST PASSED FOR THE WRONG REASON before 2026-09-16. It asserted
+        # only `cost is None`, which was true under the OLD behaviour too --
+        # a half-set pair fell back to the URL, which is simply unpriced. So the
+        # assertion was satisfied by the very fallback that `choose_facilitator`
+        # now REFUSES TO BOOT on, and the report said "no facilitator
+        # configured" for a config that is invalid rather than absent.
+        # Found by running the half-set case end to end, not by a test.
+        # Mutation: re-deriving the selection as `CDP if (id and secret) else url`
+        # instead of calling choose_facilitator.
+        cost, why = bp.settlement_cost_for("https://facilitator.payai.network",
+                                           cdp_id="id")
         self.assertIsNone(cost)
+        self.assertIn("invalid", why)
+        self.assertIn("CDP_API_KEY_SECRET", why)
+
+    def test_the_other_half_set_direction_too(self):
+        cost, why = bp.settlement_cost_for("https://facilitator.payai.network",
+                                           cdp_secret="sec")
+        self.assertIsNone(cost)
+        self.assertIn("invalid", why)
+        self.assertIn("CDP_API_KEY_ID", why)
+
+    def test_settlement_auth_does_not_call_a_half_set_pair_absent(self):
+        # Mutation: the old `if not (cdp_id and cdp_secret)` alone, which reports
+        # "no CDP credentials". That is FALSE when one is set, and it sends an
+        # operator looking for a missing config rather than a broken one.
+        row = bp.check_settlement_auth("id", None, "base", self.PAYEE)
+        self.assertEqual(row["status"], bp.NOTE)
+        self.assertIn("HALF-SET", row["detail"])
+        self.assertNotIn("no CDP credentials", row["detail"])
+
+    def test_settlement_auth_still_reports_genuinely_absent_credentials(self):
+        # The restraint control: neither set is a different, legitimate state.
+        row = bp.check_settlement_auth(None, None, "base", self.PAYEE)
+        self.assertIn("no CDP credentials", row["detail"])
 
     def test_an_unpriced_facilitator_is_unknown_not_cdps_price(self):
         # THE CORRECTION. Mutation: falling back to CDP_SETTLEMENT_COST. That is

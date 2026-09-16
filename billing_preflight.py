@@ -516,6 +516,14 @@ def check_settlement_auth(cdp_id, cdp_secret, network, pay_to, price_atomic=1000
     Anything else -> OK. Unreachable -> WARN, like every other network blip here.
     No CDP credentials -> NOTE, because there is no authentication to prove.
     """
+    if bool(cdp_id) != bool(cdp_secret):
+        # Half-set. Saying "no CDP credentials" here would be false and would
+        # send an operator looking in the wrong place -- the credentials ARE
+        # partly set and the config is invalid. The facilitator check FAILs on
+        # it with the actionable message, so this defers rather than repeating.
+        return _check("settlement_auth", NOTE,
+                      "CDP credentials are HALF-SET, so there is no coherent "
+                      "configuration to prove -- see the facilitator check")
     if not (cdp_id and cdp_secret):
         return _check("settlement_auth", NOTE,
                       "no CDP credentials -- there is no facilitator "
@@ -837,10 +845,22 @@ def settlement_cost_for(facilitator_url, cdp_id=None, cdp_secret=None):
     Returns (None, why) when we have no sourced figure.
     """
     from urllib.parse import urlsplit
-    from x402 import CDP_FACILITATOR_URL
+    from x402 import FacilitatorConfigError, choose_facilitator
 
-    url = CDP_FACILITATOR_URL if (cdp_id and cdp_secret) else (facilitator_url or "")
-    host = (urlsplit(str(url)).hostname or "").lower()
+    # MIRROR choose_facilitator BY CALLING IT, not by re-deriving the selection.
+    # This used to re-derive it as `CDP if (cdp_id and cdp_secret) else url`,
+    # which faithfully modelled the OLD silent fallback and therefore blessed it:
+    # a half-set CDP pair resolved to "the URL", so the cost check reported "no
+    # facilitator configured" for a config the server now REFUSES TO BOOT on.
+    # The same defect `check_facilitator` had, reproduced here independently and
+    # caught only by running the half-set case end to end after cherry-picking
+    # 28c8fc0. Re-deriving a selection is how two functions disagree about which
+    # facilitator you are using.
+    try:
+        selected, _ = choose_facilitator(facilitator_url, cdp_id, cdp_secret)
+    except FacilitatorConfigError as e:
+        return None, "facilitator config is invalid: %s" % _safe_text(e, 200)
+    host = (urlsplit(str(getattr(selected, "base_url", "") or "")).hostname or "").lower()
     if not host:
         return None, "no facilitator configured"
     if host in SETTLEMENT_COSTS:
