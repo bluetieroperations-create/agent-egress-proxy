@@ -536,6 +536,113 @@ class DurableEventLedger(EventLedger):
 # ===========================================================================
 # Wiring
 # ===========================================================================
+#: Upper bound on the reported detail. With HEALTH_REASONS the detail is one of
+#: OUR OWN labels rather than third-party text, so this is now a structural
+#: guard against a future contributor reintroducing an echo, not a sanitizer.
+HEALTH_DETAIL_MAX = 120
+
+#: The four states, most to least durable. `ephemeral` is the dangerous one and
+#: the reason this function exists: a local-only ledger serves verdicts perfectly
+#: and discards every record on a spin-down, so it looks identical to a healthy
+#: deploy from outside.
+HEALTH_STATES = ("durable", "degraded", "ephemeral", "none")
+
+
+#: RECOGNIZED failure classes, reported by NAME. A WHITELIST, not a sanitized
+#: echo, and that choice is the finding: `/healthz` is PUBLIC and
+#: unauthenticated, the reason string comes from a THIRD PARTY, and a REST KV's
+#: error routinely quotes the URL it failed against -- which for Upstash-style
+#: endpoints carries the write token. Escaping an arbitrary string well enough
+#: to publish it is a bet; naming only what we recognise is not. Eight instances
+#: of the untrusted-echo class in this repo say take the safe one.
+#:
+#: These are the classes an operator can ACT on, which is the only reason to
+#: report a detail at all: a permission problem needs a new token, a quota
+#: problem needs a plan change, a timeout needs waiting.
+HEALTH_REASONS = (
+    ("NOPERM", "permission-denied"),
+    ("NOAUTH", "unauthenticated"),
+    ("WRONGPASS", "bad-credential"),
+    ("WRONGTYPE", "wrong-key-type"),
+    ("READONLY", "read-only"),
+    ("quota", "quota-exceeded"),
+    ("max requests", "quota-exceeded"),
+    ("timed out", "timeout"),
+    ("timeout", "timeout"),
+    ("403", "forbidden"),
+    ("401", "unauthenticated"),
+    ("429", "rate-limited"),
+)
+
+
+def _health_detail(reason):
+    """Classify a third-party failure reason. NEVER echoes it.
+
+    FOUND BY RUNNING IT, not by reading it: the first version of this took the
+    reason's FIRST TOKEN, and its test fed a synthetic string beginning
+    "NOPERM", so the test passed. The REAL message from the live boot path is
+    "kv store rejected SET: NOPERM this user has no permissions..." -- so the
+    endpoint reported `"kv"`, which tells an operator nothing. A test aimed one
+    case to the left of the thing it verifies, exactly the shape recorded in
+    `test_seller_audit`'s domain-separation note.
+
+    Returns a short stable token from HEALTH_REASONS, or "unavailable" when the
+    class is not recognised -- deliberately NOT the raw text.
+    """
+    if not isinstance(reason, str) or not reason.strip():
+        return None
+    low = reason.lower()
+    for needle, label in HEALTH_REASONS:
+        if needle.lower() in low:
+            return label
+    return "unavailable"
+
+
+def describe_health(ledger, boot_reason=None):
+    """PURE: is this ledger persisting anywhere that survives a restart?
+
+    Returns {"state": one of HEALTH_STATES, "mirror_failures": int|absent,
+    "detail": str|absent}. NEVER raises and NEVER touches the network -- it is
+    read on `/healthz`, which `bounded_server` deliberately exempts from
+    admission control, so blocking there is the same mistake as blocking the
+    accept loop.
+
+    WHY BOTH INPUTS. `boot_reason` is `verify_writable`'s answer, which PROVED a
+    write at startup -- that is what catches a read-only token, the case that
+    otherwise boots perfectly cleanly. But a boot-time claim GOES STALE: a KV can
+    be revoked or go read-only an hour later, and then the reassurance is worse
+    than no answer. `stats["mirror_failures"]` is the only evidence that is
+    CURRENT, so a non-zero count reports `degraded` whatever the boot probe said.
+    Neither alone is honest.
+
+    `status` at the endpoint stays "ok" for every state on purpose: a platform
+    restarts an instance on a failed health check, so reporting ephemeral as
+    unhealthy would turn a durability warning into a restart loop -- the exact
+    shape of the `/healthz`-shed defect `bounded_server.py` documents.
+    """
+    if ledger is None:
+        return {"state": "none"}
+    backend = getattr(ledger, "backend", None)
+    if backend is None:
+        # A plain EventLedger: a file on a container filesystem. On a host with
+        # no persistent disk that is ephemeral, and saying so is the whole point.
+        return {"state": "ephemeral"}
+    stats = getattr(ledger, "stats", None)
+    failures = 0
+    if isinstance(stats, dict):
+        try:
+            failures = int(stats.get("mirror_failures") or 0)
+        except (TypeError, ValueError):
+            failures = 0
+    out = {"state": "durable", "mirror_failures": failures}
+    detail = _health_detail(boot_reason)
+    if failures > 0 or detail:
+        out["state"] = "degraded"
+    if detail:
+        out["detail"] = detail
+    return out
+
+
 def from_env(path, env=None, logger=None, forbid=()):
     """Build a DurableEventLedger from the environment, or return None.
 

@@ -730,5 +730,215 @@ class Durable(unittest.TestCase):
         self.assertEqual(ids, ["r%d" % i for i in range(25)])
 
 
+class TestHealthIsExternallyVISIBLE(unittest.TestCase):
+    """Is the mirror persisting, answerable WITHOUT dashboard access?
+
+    Before this, the only evidence was a line in the boot log. So the single
+    most consequential question about this deploy -- "is the outcome history
+    surviving a restart?" -- could not be answered by the operator from outside,
+    and the failure mode is silent: a local-only ledger serves verdicts
+    perfectly and discards the moat on every spin-down. That is the same gap
+    `verify_writable` was added to close at boot, left open at runtime.
+    """
+
+    class _Plain:                       # a local-only EventLedger stand-in
+        pass
+
+    class _Mirror:
+        def __init__(self, failures=0, mirrored=3):
+            self.backend = object()
+            self.stats = {"mirrored": mirrored, "mirror_failures": failures,
+                          "undecryptable": 0, "hydrated": 0, "dropped": 0}
+
+    def test_no_ledger_reads_none(self):
+        # kills: reporting durability for a service with no ledger at all.
+        self.assertEqual(rl.describe_health(None)["state"], "none")
+
+    def test_a_local_only_ledger_reads_ephemeral_not_ok(self):
+        # kills: the whole point. A local-only ledger on a diskless host loses
+        # every record on restart, and it must not be able to read as durable.
+        got = rl.describe_health(self._Plain())
+        self.assertEqual(got["state"], "ephemeral")
+
+    def test_a_working_mirror_reads_durable(self):
+        # kills: a function that can only ever say "bad".
+        self.assertEqual(rl.describe_health(self._Mirror())["state"], "durable")
+
+    def test_a_failed_boot_probe_reads_degraded(self):
+        # kills: ignoring the boot write-probe, which is the case that motivated
+        # verify_writable -- a READ-ONLY token boots perfectly cleanly.
+        got = rl.describe_health(self._Mirror(), boot_reason="NOPERM")
+        self.assertEqual(got["state"], "degraded")
+
+    def test_live_failures_override_a_clean_boot(self):
+        # kills: trusting the boot probe forever. A KV can go read-only AFTER
+        # boot, at which point a boot-time claim is a stale reassurance -- the
+        # mirror_failures counter is the only evidence that is CURRENT.
+        got = rl.describe_health(self._Mirror(failures=4), boot_reason=None)
+        self.assertEqual(got["state"], "degraded")
+        self.assertEqual(got["mirror_failures"], 4)
+
+    def test_a_clean_mirror_reports_zero_failures_explicitly(self):
+        # kills: omitting the counter when it is zero, which makes "no field"
+        # and "no failures" indistinguishable to a monitor.
+        self.assertEqual(rl.describe_health(self._Mirror())["mirror_failures"], 0)
+
+    def test_the_detail_never_echoes_a_secret(self):
+        # kills: putting the KV URL or token in the reason. This is served
+        # PUBLICLY and unauthenticated; a connection string in a health probe is
+        # a credential leak. The reason comes from a THIRD PARTY's error string.
+        got = rl.describe_health(
+            self._Mirror(),
+            boot_reason="WRONGTYPE at https://kv.example/db?token=SECRETVALUE")
+        blob = json.dumps(got)
+        self.assertNotIn("SECRETVALUE", blob)
+        self.assertNotIn("kv.example", blob)
+
+    def test_an_unrecognized_reason_is_not_echoed_at_all(self):
+        # kills: reverting to a sanitized ECHO. A whitelist, not escaping: the
+        # endpoint is public and unauthenticated, so an unrecognised third-party
+        # string is reported as a fixed token and its text never appears.
+        marker = "bad\r\nX-Forged: yes" + "z" * 500
+        got = rl.describe_health(self._Mirror(), boot_reason=marker)
+        self.assertEqual(got["detail"], "unavailable")
+        blob = json.dumps(got)
+        self.assertNotIn("X-Forged", blob)
+        self.assertNotIn("zzz", blob)
+        self.assertLessEqual(len(got["detail"]), rl.HEALTH_DETAIL_MAX)
+
+    def test_the_REAL_live_message_format_is_classified_usefully(self):
+        # kills: the defect FOUND BY RUNNING IT. The first implementation took
+        # the reason's FIRST TOKEN and its test fed a synthetic string starting
+        # "NOPERM", so it passed -- while the real boot path produces
+        # "kv store rejected SET: NOPERM ..." and the endpoint reported "kv".
+        # This pins the ACTUAL string the live path emits, verbatim.
+        real = ("kv store rejected SET: NOPERM this user has no permissions to "
+                "run the 'set' command")
+        got = rl.describe_health(self._Mirror(), boot_reason=real)
+        self.assertEqual(got["state"], "degraded")
+        self.assertEqual(got["detail"], "permission-denied")
+
+    def test_each_recognized_class_maps_to_its_own_label(self):
+        # kills: collapsing every class to one label, which loses the only
+        # thing that makes the detail worth publishing -- a permission problem
+        # needs a new token, a quota problem needs a plan, a timeout needs time.
+        for reason, expect in (("NOPERM x", "permission-denied"),
+                               ("WRONGTYPE x", "wrong-key-type"),
+                               ("NOAUTH x", "unauthenticated"),
+                               ("READONLY x", "read-only"),
+                               ("max requests limit exceeded", "quota-exceeded"),
+                               ("The read operation timed out", "timeout"),
+                               ("HTTP Error 403: Forbidden", "forbidden")):
+            self.assertEqual(
+                rl.describe_health(self._Mirror(), boot_reason=reason)["detail"],
+                expect, reason)
+
+    def test_it_never_raises_on_a_junk_ledger(self):
+        # kills: letting a health probe 500. /healthz is what a platform
+        # restarts the instance on.
+        for junk in ("nonsense", 42, object(), self._Mirror.__class__):
+            self.assertIn(rl.describe_health(junk)["state"],
+                          ("none", "ephemeral", "durable", "degraded"))
+
+    def test_a_mirror_with_a_broken_stats_dict_does_not_raise(self):
+        # kills: assuming stats' shape.
+        m = self._Mirror(); m.stats = "not a dict"
+        self.assertIn(rl.describe_health(m)["state"], ("durable", "degraded"))
+
+
+class TestHealthOverRealHTTP(unittest.TestCase):
+    """A REAL server. `ledger_boot_reason` is a handler attribute bound in
+    `serve_forever`'s `_BoundHandler` dict -- omit it and the handler keeps its
+    None class default, /healthz reports `durable` for a DEGRADED mirror, and
+    every unit test above still passes. That is the wired-and-inert pattern
+    reporting the opposite of the truth, on the endpoint an operator trusts."""
+
+    def _serve(self, ledger, boot_reason=None):
+        import threading
+        import blackwall
+        srv = blackwall.BlackwallServer(
+            host="127.0.0.1", port=0,
+            reputation_source=blackwall.MockReputationSource(),
+            ledger=ledger, ledger_boot_reason=boot_reason)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        for _ in range(200):
+            if getattr(srv, "_httpd", None):
+                break
+            time.sleep(0.02)
+        self.addCleanup(lambda: srv._httpd.shutdown())
+        return "http://127.0.0.1:%d" % srv._httpd.server_address[1]
+
+    def _healthz(self, base):
+        import urllib.request
+        with urllib.request.urlopen(base + "/healthz", timeout=10) as r:
+            return r.status, json.loads(r.read())
+
+    def test_a_local_only_ledger_is_reported_ephemeral_over_the_wire(self):
+        # kills: any of the wiring edits, and the whole feature. This is the
+        # configuration the free deploy runs when the KV vars are unset.
+        from ledger import EventLedger
+        path = os.path.join(tempfile.mkdtemp(), "l.jsonl")
+        status, body = self._healthz(self._serve(EventLedger(path)))
+        self.assertEqual(status, 200)
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["ledger"]["state"], "ephemeral")
+
+    def test_no_ledger_is_reported_none_over_the_wire(self):
+        # kills: reporting ephemeral (a warning) for a service that simply has
+        # no ledger, which would send an operator chasing a non-problem.
+        _, body = self._healthz(self._serve(None))
+        self.assertEqual(body["ledger"]["state"], "none")
+
+    def test_a_degraded_mirror_is_reported_degraded_over_the_wire(self):
+        # kills: omitting ledger_boot_reason from the _BoundHandler dict -- the
+        # silent edit. Without it this reads `durable` while the mirror cannot
+        # write, which is worse than not reporting at all.
+        class _M(rl.DurableEventLedger):
+            def __init__(self, path):
+                from ledger import EventLedger
+                EventLedger.__init__(self, path)
+                self.backend = object()
+                self.stats = {"mirrored": 0, "mirror_failures": 0,
+                              "undecryptable": 0, "hydrated": 0, "dropped": 0}
+                self._q = None
+                self._worker = None
+        path = os.path.join(tempfile.mkdtemp(), "l.jsonl")
+        _, body = self._healthz(
+            self._serve(_M(path), boot_reason="NOPERM this user has no permissions"))
+        self.assertEqual(body["ledger"]["state"], "degraded")
+        self.assertEqual(body["ledger"]["detail"], "permission-denied")
+
+    def test_the_public_health_body_leaks_no_credential(self):
+        # kills: echoing the KV error raw. This endpoint is unauthenticated and
+        # a KV client's error routinely quotes the URL it failed against, which
+        # for a REST KV carries the token.
+        class _M(rl.DurableEventLedger):
+            def __init__(self, path):
+                from ledger import EventLedger
+                EventLedger.__init__(self, path)
+                self.backend = object()
+                self.stats = {"mirror_failures": 0}
+                self._q = None
+                self._worker = None
+        path = os.path.join(tempfile.mkdtemp(), "l.jsonl")
+        _, body = self._healthz(self._serve(
+            _M(path), boot_reason="https://kv.example/db?token=SUPERSECRET failed"))
+        blob = json.dumps(body)
+        self.assertNotIn("SUPERSECRET", blob)
+        self.assertNotIn("kv.example", blob)
+
+    def test_health_still_answers_200_in_every_state(self):
+        # kills: grading a durability problem as unhealthy. A platform restarts
+        # an instance on a failed health check, so that turns a warning into an
+        # outage -- the /healthz-shed defect bounded_server.py documents.
+        from ledger import EventLedger
+        path = os.path.join(tempfile.mkdtemp(), "l.jsonl")
+        for led, reason in ((None, None), (EventLedger(path), None),
+                            (EventLedger(path), "NOPERM")):
+            status, body = self._healthz(self._serve(led, reason))
+            self.assertEqual(status, 200)
+            self.assertEqual(body["status"], "ok")
+
+
 if __name__ == "__main__":
     unittest.main()

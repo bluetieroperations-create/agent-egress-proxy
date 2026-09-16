@@ -1498,6 +1498,42 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   end to end against a read-only stub (DEGRADED banner + named cause + verdict
   still served + local row kept) and a healthy one (ON, 3 local == 3 mirrored,
   probe key absent from the log).
+  DURABILITY IS NOW EXTERNALLY VISIBLE (2026-09-16): `/healthz` reports
+  `ledger: {state, mirror_failures, detail?}` where state is
+  durable/degraded/ephemeral/none. ADDED BECAUSE THE ANSWER WAS UNOBTAINABLE
+  FROM OUTSIDE -- the only evidence was a line in the boot log, so the single
+  most consequential question about a diskless deploy ("is the outcome history
+  surviving a restart?") could not be checked without dashboard access, and the
+  failure mode is silent: a local-only ledger serves verdicts perfectly and
+  discards the moat on every spin-down, indistinguishable from a healthy deploy.
+  Exactly the gap `verify_writable` closed at BOOT, left open at RUNTIME.
+  THREE DESIGN POINTS, each a bug done the obvious way: (1) `status` stays "ok"
+  in EVERY state -- a platform restarts an instance on a failed health check, so
+  grading an ephemeral ledger unhealthy converts a durability warning into a
+  RESTART LOOP, the same shape as the /healthz-shed defect `bounded_server.py`
+  documents. (2) BOTH inputs are consulted: the boot write-probe catches a
+  read-only token (which otherwise boots perfectly cleanly) but GOES STALE, so a
+  non-zero live `mirror_failures` reports `degraded` whatever the probe said --
+  neither alone is honest. (3) Zero network on the health path, since
+  `bounded_server` exempts it from admission control and blocking there is the
+  accept-loop mistake again.
+  THE DETAIL IS A WHITELIST, NOT A SANITIZED ECHO, and that was FOUND BY RUNNING
+  IT: the first version took the reason's FIRST TOKEN and its test fed a
+  synthetic string starting "NOPERM", so it passed -- while the real boot path
+  emits "kv store rejected SET: NOPERM ..." and the endpoint published `"kv"`,
+  which tells an operator nothing. A test aimed one case to the left of the
+  thing it verifies. `HEALTH_REASONS` now maps recognised classes to OUR OWN
+  labels (permission-denied / quota-exceeded / timeout / ...) and anything
+  unrecognised reports `unavailable`, so third-party text is never published at
+  all -- the endpoint is PUBLIC and unauthenticated and a REST KV's error
+  routinely quotes the URL it failed against, which carries the write token.
+  Ninth instance of the untrusted-echo class here and the first where the answer
+  is "do not echo" rather than "escape carefully". Verified on the REAL boot
+  path in all four states against a stub KV (healthy -> durable, read-only
+  token -> degraded/permission-denied, local-only -> ephemeral, no ledger ->
+  none). 11 mutations verified killed, including omitting `ledger_boot_reason`
+  from the `_BoundHandler` dict -- the silent edit, which makes a DEGRADED
+  mirror report `durable`, worse than not reporting at all.
   PRE-DEPLOY AUDIT, two more: (1) `close()` was implemented, unit-tested and
   CALLED BY NOTHING -- the wired-and-inert pattern again -- so every record still
   queued at shutdown was lost, and a REDEPLOY is exactly when that queue is

@@ -1840,6 +1840,10 @@ class _Handler(BaseHTTPRequestHandler):
     # Injected by BlackwallServer.
     reputation_source = None
     ledger = None
+    #: `verify_writable`'s answer from BOOT, or None. Carried so /healthz can
+    #: report durability without probing on the health path -- see
+    #: remote_ledger.describe_health.
+    ledger_boot_reason = None
     # Human-in-the-loop approvals. ALWAYS bound (not opt-in): a HOLD with
     # nowhere to send it is the gap this closes. Named `approvals` rather than
     # `*_source` because it is a STORE the server writes to, not a signal source
@@ -1946,7 +1950,28 @@ class _Handler(BaseHTTPRequestHandler):
         path = route_path(self.path)
         try:
             if path == "/healthz":
-                self._send_json(200, {"status": "ok"})
+                # DURABILITY IS REPORTED HERE because it was previously knowable
+                # only from the boot log, which means the one question that
+                # matters most about a diskless deploy -- "is the outcome history
+                # surviving a restart?" -- could not be answered from outside.
+                # A local-only ledger serves verdicts perfectly and discards the
+                # moat on every spin-down, so it is indistinguishable from a
+                # healthy deploy unless it says so.
+                #
+                # `status` stays "ok" in EVERY state, deliberately: a platform
+                # restarts an instance on a failed health check, so grading an
+                # ephemeral ledger unhealthy would convert a durability warning
+                # into a restart loop -- the same shape as the /healthz-shed
+                # defect bounded_server.py documents. No network, no probe, no
+                # blocking: this path is exempt from admission control.
+                body = {"status": "ok"}
+                try:
+                    from remote_ledger import describe_health
+                    body["ledger"] = describe_health(
+                        self.ledger, getattr(self, "ledger_boot_reason", None))
+                except Exception:
+                    pass          # health must never fail on a reporting detail
+                self._send_json(200, body)
             elif path.startswith("/v1/approvals/"):
                 self._do_poll_approval(path.rsplit("/", 1)[-1])
             elif path in ("/.well-known/x402", "/v1/discovery"):
@@ -2567,7 +2592,8 @@ class BlackwallServer:
     """Localhost-only verdict server. Binds 127.0.0.1; not exposed."""
 
     def __init__(self, host="127.0.0.1", port=8402, reputation_source=None,
-                 ledger=None, billing=None, readiness_source=None,
+                 ledger=None, ledger_boot_reason=None,
+                 billing=None, readiness_source=None,
                  hold_above=None, peer_index=None, openapi_server_url=None,
                  seller_registry=None,
                  graph_source=None, velocity_source=None, verdict_anchor=None,
@@ -2586,6 +2612,7 @@ class BlackwallServer:
             else type(reputation_source).__name__
         self.reputation_source = reputation_source or MockReputationSource()
         self.ledger = ledger
+        self.ledger_boot_reason = ledger_boot_reason
         self.billing = billing
         self.readiness_source = readiness_source
         self.hold_above = hold_above
@@ -2632,6 +2659,7 @@ class BlackwallServer:
         handler = type("_BoundHandler", (_Handler,),
                        {"reputation_source": self.reputation_source,
                         "ledger": self.ledger,
+                        "ledger_boot_reason": self.ledger_boot_reason,
                         # THE SEVENTH EDIT honeypot.py warns about. Omitting
                         # this line raises nothing -- the handler keeps its None
                         # default and every approval call 500s while the route
@@ -2839,6 +2867,7 @@ def main(argv=None):
     args.network = normalize_network(args.network) or "base"
 
     led = None
+    ledger_boot_reason = None
     if args.ledger:
         from ledger import EventLedger
         led = EventLedger(args.ledger)
@@ -2878,6 +2907,7 @@ def main(argv=None):
             # claiming one. Not fatal: a KV outage is a third party's problem
             # and must not take the payment path down with it.
             why = led.verify_writable()
+            ledger_boot_reason = why
             if why:
                 sys.stderr.write(
                     "blackwall: WARNING durable ledger mirror CANNOT WRITE: %s\n"
@@ -3528,6 +3558,7 @@ def main(argv=None):
     _max_inflight = _int_env("BLACKWALL_MAX_INFLIGHT", DEFAULT_MAX_INFLIGHT)
     server = BlackwallServer(max_inflight=_max_inflight,
                              host=args.host, port=args.port, ledger=led,
+                             ledger_boot_reason=ledger_boot_reason,
                              billing=billing, reputation_source=reputation_source,
                              readiness_source=readiness_source,
                              hold_above=hold_above,
