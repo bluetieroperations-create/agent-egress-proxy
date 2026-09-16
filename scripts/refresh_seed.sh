@@ -82,14 +82,20 @@ echo "refresh_seed: running the refresh guard (candidate vs committed) ..."
 if python3 refresh_guard.py --old data/reputation_seed.db.gz --new "$TMP_GZ" \
         --crawl "$TMP_CRAWL"; then
     echo "refresh_seed: guard ACCEPTED -- promoting candidate over committed artifacts."
+    # The corpus is a BOUNDED sample and must say so in the artifact, not only in
+    # a docstring someone may not read. Written from the candidate BEFORE the move,
+    # so the record always describes the store it ships beside.
+    python3 seed_provenance.py --store "$TMP_GZ" --crawl "$TMP_CRAWL" \
+        --max-pages "$PAGES" --out "$WORK/reputation_seed.json"
     mv "$TMP_GZ"  data/reputation_seed.db.gz
     mv "$TMP_CAT" data/category_index.json
     mv "$TMP_DIV" data/divergence_index.json
+    mv "$WORK/reputation_seed.json" data/reputation_seed.json
     echo "refresh_seed: done. Freshness:"
     python3 check_seed_age.py || true
     echo ""
     echo "Now commit the refreshed artifacts:"
-    echo "  git add data/reputation_seed.db.gz data/category_index.json data/divergence_index.json"
+    echo "  git add data/reputation_seed.db.gz data/reputation_seed.json data/category_index.json data/divergence_index.json"
     echo "  git commit -m 'data: refresh prebuilt seed store'"
     echo "  # then redeploy (Render rebuilds the image)"
 else

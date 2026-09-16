@@ -50,7 +50,7 @@ test:
 	   test_rpc_node.py test_rwa_aggregate.py test_rwa_backfill.py \
 	   test_rwa_balance.py test_rwa_ledger.py test_rwa_outcomes.py \
 	   test_rwa_readiness.py test_rwa_report.py test_sanctions.py \
-	   test_screen_payer.py test_secp256k1.py test_secret_scan.py \
+	   test_screen_payer.py test_secp256k1.py test_secret_scan.py test_seed_provenance.py \
 	   test_seller_audit.py test_seller_intel.py test_seller_portal.py \
 	   test_seller_report.py test_settlement_sim.py test_settlement_velocity.py \
 	   test_settlement_watch.py test_solana_backfill.py test_solana_rwa.py \
