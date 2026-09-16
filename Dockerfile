@@ -75,12 +75,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 # The runtime migration stays in place for an operator DB on a persistent disk,
 # which this build never touches.
 COPY data/reputation_seed.db.gz data/category_index.json data/divergence_index.json /app/prebuilt/
-COPY reputation_store.py settlement_watch.py addresses.py /app/prebuilt/lib/
+# The migration runs from /app, where `COPY *.py ./` (above) has already placed
+# the WHOLE source tree. PRE-MERGE AUDIT CAUGHT THE FIRST ATTEMPT: it copied
+# reputation_store + settlement_watch + addresses into a private lib dir and set
+# PYTHONPATH at it, which BROKE THE BUILD -- `settlement_watch` imports
+# `user_agent`, added the same day by a parallel session, so the import chain had
+# grown a fourth link that hand-picked list did not carry. Copying the modules a
+# migration happens to need is a list that goes stale silently; using the source
+# that is already in the image cannot.
 RUN mkdir -p /app/data \
     && python3 -c "import gzip,shutil; shutil.copyfileobj(gzip.open('/app/prebuilt/reputation_seed.db.gz','rb'), open('/app/data/reputation.db','wb'))" \
-    && PYTHONPATH=/app/prebuilt/lib python3 -c "\
+    && python3 -c "\
 import reputation_store, sqlite3, sys; \
-s = reputation_store.ReputationStore('/app/data/reputation.db'); \
+reputation_store.ReputationStore('/app/data/reputation.db'); \
 sql = sqlite3.connect('/app/data/reputation.db').execute(\
     \"SELECT sql FROM sqlite_master WHERE name='settlements'\").fetchone()[0]; \
 sys.exit('FATAL: seed migration did not take' if 'UNIQUE' in sql.upper() else 0)" \

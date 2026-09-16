@@ -1967,8 +1967,16 @@ class _Handler(BaseHTTPRequestHandler):
                 body = {"status": "ok"}
                 try:
                     from remote_ledger import describe_health
+                    # `self.ledger_boot_reason`, NOT getattr(self, "...") --
+                    # the class default guarantees the attribute exists, so the
+                    # defensive form buys nothing AND HIDES THE DEPENDENCY from
+                    # `test_approvals`' structural binding guard, which walks
+                    # for `self.X` reads. Found in the pre-merge audit: written
+                    # as getattr, omitting the `_BoundHandler` entry was caught
+                    # only by a behavioural test, so the guard that exists to
+                    # make that impossible was silently opted out of.
                     body["ledger"] = describe_health(
-                        self.ledger, getattr(self, "ledger_boot_reason", None))
+                        self.ledger, self.ledger_boot_reason)
                 except Exception:
                     pass          # health must never fail on a reporting detail
                 self._send_json(200, body)

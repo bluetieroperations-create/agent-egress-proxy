@@ -546,6 +546,23 @@ class TestTheBindingHazardIsGuardedForStoresToo(unittest.TestCase):
                             isinstance(sub.value, ast.Name) and \
                             sub.value.id == "self":
                         used.add(sub.attr)
+                    # ALSO `getattr(self, "name", default)`. PRE-MERGE AUDIT
+                    # FINDING 2026-09-16: that spelling reads an injected
+                    # dependency without ever producing a `self.X` attribute
+                    # node, so it was INVISIBLE here -- `ledger_boot_reason` was
+                    # written that way (defensively, since a class default makes
+                    # it unnecessary) and omitting its `_BoundHandler` entry
+                    # sailed past this guard. A guard whose rule can be opted
+                    # out of by a spelling is the shape of check this repo keeps
+                    # finding aimed slightly to the left of its own property.
+                    if isinstance(sub, ast.Call) and \
+                            isinstance(sub.func, ast.Name) and \
+                            sub.func.id == "getattr" and len(sub.args) >= 2 and \
+                            isinstance(sub.args[0], ast.Name) and \
+                            sub.args[0].id == "self" and \
+                            isinstance(sub.args[1], ast.Constant) and \
+                            isinstance(sub.args[1].value, str):
+                        used.add(sub.args[1].value)
             if isinstance(node, ast.FunctionDef) and node.name == "serve_forever":
                 for d in ast.walk(node):
                     if isinstance(d, ast.Dict):

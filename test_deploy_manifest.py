@@ -92,6 +92,68 @@ class DeployManifest(unittest.TestCase):
                       "the default advertised-index path is not COPYed into the image")
 
 
+class SeedMigrationBuildStep(unittest.TestCase):
+    """The Dockerfile migrates the baked seed at BUILD time (see
+    `reputation_store._PAYER_KEY_INDEX`). PRE-MERGE AUDIT 2026-09-16: the first
+    version of that step COPIED reputation_store + settlement_watch + addresses
+    into a private lib dir and pointed PYTHONPATH at it -- and BROKE THE BUILD,
+    because `settlement_watch` imports `user_agent`, added the same day by a
+    parallel session. The import chain grew a fourth link and the hand-picked
+    list did not. A list of "modules this happens to need" goes stale silently,
+    and it goes stale in the DEPLOY, which is the worst place to find out."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dockerfile = open("Dockerfile").read()
+
+    def test_the_migration_step_is_present(self):
+        # kills: silently dropping the build-time migration, which moves a 491ms
+        # rebuild onto every container cold start.
+        self.assertIn("seed migration did not take", self.dockerfile,
+                      "the build-time seed migration step is gone")
+
+    def test_it_does_not_hand_pick_modules_onto_a_private_pythonpath(self):
+        # kills: reintroducing the defect. The whole source tree is already in
+        # the image via `COPY *.py ./`, so any private lib dir + PYTHONPATH is
+        # both unnecessary and a list that can go stale.
+        self.assertNotIn("prebuilt/lib", self.dockerfile)
+        self.assertNotIn("PYTHONPATH=/app/prebuilt", self.dockerfile)
+
+    def test_the_modules_the_step_imports_resolve_from_the_repo_root(self):
+        # kills: the actual break, and it would have caught it. Walks the REAL
+        # transitive import graph of what the build step imports, and asserts
+        # every module resolves to a file `COPY *.py ./` would place in the
+        # image -- so the next added link fails HERE rather than in a deploy.
+        import ast
+        import glob
+        import os
+        shipped = {os.path.basename(p)[:-3] for p in glob.glob("*.py")}
+        seen, stack = set(), ["reputation_store"]
+        while stack:
+            mod = stack.pop()
+            if mod in seen or mod not in shipped:
+                continue            # stdlib / third-party resolve elsewhere
+            seen.add(mod)
+            tree = ast.parse(open(mod + ".py").read())
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for a in node.names:
+                        stack.append(a.name.split(".")[0])
+                elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                    stack.append(node.module.split(".")[0])
+        # Everything local that the chain touches must be a repo-root module.
+        self.assertIn("settlement_watch", seen)
+        self.assertIn("user_agent", seen,
+                      "the link that broke the first attempt must be in the graph")
+        missing = sorted(m for m in seen if not os.path.exists(m + ".py"))
+        self.assertEqual(missing, [], "build step imports unshipped modules")
+
+    def test_copy_star_py_is_what_puts_them_there(self):
+        # kills: the above passing while the Dockerfile stopped copying the
+        # source wholesale -- then the step would break again for a new reason.
+        self.assertIn("COPY *.py ./", self.dockerfile)
+
+
 class PublicEndpointDefaults(unittest.TestCase):
     """A PUBLIC deploy must not ship with throttling off.
 
