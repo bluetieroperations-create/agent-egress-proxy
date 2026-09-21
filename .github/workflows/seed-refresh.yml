@@ -10,10 +10,20 @@
 # the full test suite (incl. test_coverage_eval's seed-regression gate) on the PR
 # before a human merges. On REJECT it opens/updates a nag issue and changes nothing.
 #
-# NOTE: `schedule:` fires only from the repo's DEFAULT branch, so this cron is dormant
-# until merged there. `workflow_dispatch` works from any branch -- use the "Run
-# workflow" button to exercise it now. The companion seed-freshness.yml stays as the
-# pure nag; this one acts.
+# WHAT THE RUN STATUS MEANS. This is the whole point of the job's exit codes, so read
+# it before "fixing" one: GREEN means there is nothing for a human to do -- either a PR
+# is open/updated with a refreshed corpus, or the guard found nothing worth proposing.
+# RED means a human is needed, and an ISSUE has been filed saying which of the two
+# reasons it is.
+#
+# It did not always work that way. Until 2026-09-21 the reject path filed its nag and
+# then exited 0, while the accept path died on `gh pr create`, so the status was exactly
+# INVERTED: the one green run in five (2026-08-31) was the one where the guard REJECTED
+# the candidate and threw the refresh away, and every red run was a perfectly good
+# corpus that had been crawled, guarded, tested and pushed. Five weeks of that is five
+# weeks of a signal that meant the opposite of what it looked like.
+#
+# The companion seed-freshness.yml stays as the pure nag; this one acts.
 
 name: seed-refresh
 
@@ -64,44 +74,135 @@ jobs:
             test_verdict_oracle.py test_calibration_lock.py
 
       - name: Open / update the refresh PR
+        id: propose
         if: steps.refresh.outputs.code == '0'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -eu
           if git diff --quiet -- data/; then
-            echo "No data changes after guard -- nothing to propose."; exit 0
+            echo "No data changes after guard -- nothing to propose."
+            exit 0
           fi
           BRANCH="auto/seed-refresh"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -B "$BRANCH"
-          git add data/reputation_seed.db.gz data/category_index.json data/divergence_index.json
+
+          # `git add -A data/`, NOT a fixed list of the three store artifacts. The
+          # refresh also writes data/reputation_seed.json (the provenance record) and
+          # DELETES it when seed_provenance.py fails -- refresh_seed.sh removes a stale
+          # record on purpose, because a provenance file describing the PREVIOUS store
+          # sitting beside the new one is confidently wrong rather than merely absent.
+          # A fixed `git add` dropped both the addition and the deletion on the floor,
+          # which is the one outcome that script goes out of its way to prevent.
+          git add -A data/
+
           FRESH="$(python3 check_seed_age.py || true)"
           git commit -m "data: automated guarded seed refresh" \
                      -m "$FRESH" \
                      -m "Refreshed by .github/workflows/seed-refresh.yml; refresh_guard.py ACCEPTed the candidate."
           git push -f origin "$BRANCH"
-          BASE="${GITHUB_REF_NAME}"
-          if ! gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' | grep -q '[0-9]'; then
-            gh pr create --base "$BASE" --head "$BRANCH" \
-              --title "Automated seed refresh" \
-              --body "$FRESH
+          {
+            echo "branch=$BRANCH"
+            echo "sha=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
 
-          Guarded refresh from \`scripts/refresh_seed.sh\` (refresh_guard.py ACCEPTed the candidate: size retained + genuinely fresher). Merging redeploys a fresh free-tier corpus. Automated by \`.github/workflows/seed-refresh.yml\`."
-          else
+          if gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' | grep -q '[0-9]'; then
             echo "PR already open for $BRANCH; force-pushed the update."
+            exit 0
           fi
 
-      - name: Open / update the reject nag issue
+          # Body via --body-file. Inline `--body "$FRESH ..."` inside a YAML block
+          # scalar carried the block's own indentation into the rendered PR body.
+          BODY_FILE="$RUNNER_TEMP/pr-body.md"
+          {
+            printf '%s\n\n' "$FRESH"
+            printf 'Guarded refresh from `scripts/refresh_seed.sh` (refresh_guard.py ACCEPTed the candidate: size retained + genuinely fresher). Merging redeploys a fresh free-tier corpus. Automated by `.github/workflows/seed-refresh.yml`.\n'
+          } > "$BODY_FILE"
+
+          set +e
+          OUT="$(gh pr create --base "${GITHUB_REF_NAME}" --head "$BRANCH" \
+                   --title "Automated seed refresh" --body-file "$BODY_FILE" 2>&1)"
+          RC=$?
+          set -e
+          echo "$OUT"
+          if [ "$RC" = "0" ]; then
+            exit 0
+          fi
+
+          # The refusal we actually hit every week. It is a REPOSITORY SETTING, not a
+          # token scope: no credential available to this workflow can route around it,
+          # so failing here with a raw GraphQL error taught nobody anything. Hand it to
+          # the nag step below, which says what to flip and then fails the job loudly.
+          if printf '%s' "$OUT" | grep -q "not permitted to create or approve pull requests"; then
+            echo "pr_blocked=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          exit "$RC"
+
+      - name: Nag -- refresh is good, but Actions may not open the PR
+        if: steps.propose.outputs.pr_blocked == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          TITLE="Automated seed refresh cannot open its PR"
+          BRANCH="${{ steps.propose.outputs.branch }}"
+          REPO="${{ github.repository }}"
+          BODY_FILE="$RUNNER_TEMP/nag.md"
+          {
+            echo "The guarded refresh **succeeded** and \`refresh_guard.py\` **ACCEPTed** the candidate."
+            echo "The refreshed corpus passed the suite and is pushed, waiting on"
+            echo "[\`$BRANCH\`](https://github.com/$REPO/tree/$BRANCH) at \`${{ steps.propose.outputs.sha }}\`."
+            echo ""
+            echo '```'
+            python3 check_seed_age.py || true
+            echo '```'
+            echo ""
+            echo "Only the pull-request step failed. **Settings -> Actions -> General -> Workflow permissions -> \"Allow GitHub Actions to create and approve pull requests\"** is off for this repository. That is a repository setting a maintainer has to flip; no token available to this workflow can work around it."
+            echo ""
+            echo "Until it is flipped, open the PR by hand:"
+            echo ""
+            echo "<https://github.com/$REPO/compare/${{ github.ref_name }}...$BRANCH?expand=1>"
+            echo ""
+            echo "_Automated from .github/workflows/seed-refresh.yml._"
+          } > "$BODY_FILE"
+          EXISTING="$(gh issue list --state open --json number,title --jq ".[] | select(.title==\"$TITLE\") | .number" | head -n1)"
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body-file "$BODY_FILE"
+          else
+            gh issue create --title "$TITLE" --body-file "$BODY_FILE"
+          fi
+          echo "::error::Refresh succeeded but the PR could not be opened -- see the issue above. The corpus is waiting on $BRANCH."
+          exit 1
+
+      - name: Nag -- the guard rejected the candidate
         if: steps.refresh.outputs.code != '0'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -eu
           TITLE="Automated seed refresh was rejected"
-          BODY="The guarded refresh (\`scripts/refresh_seed.sh\`) ran but \`refresh_guard.py\` REJECTED the candidate (partial crawl / no progress / stale result -- see the job log). The committed store was left untouched. Re-run the workflow, or refresh manually once the on-chain data source is healthy. (Automated from .github/workflows/seed-refresh.yml.)"
+          BODY_FILE="$RUNNER_TEMP/nag.md"
+          {
+            echo "The guarded refresh (\`scripts/refresh_seed.sh\`) ran but \`refresh_guard.py\` **REJECTED** the candidate (partial crawl / no progress / stale result -- the guard prints its reasons in the [job log](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}))."
+            echo ""
+            echo "The committed store was left untouched, so **nothing shipped and nothing broke** -- but the corpus did not get any fresher this week:"
+            echo ""
+            echo '```'
+            python3 check_seed_age.py || true
+            echo '```'
+            echo ""
+            echo "Re-run the workflow, or refresh manually, once the on-chain data source is healthy."
+            echo ""
+            echo "_Automated from .github/workflows/seed-refresh.yml._"
+          } > "$BODY_FILE"
           EXISTING="$(gh issue list --state open --json number,title --jq ".[] | select(.title==\"$TITLE\") | .number" | head -n1)"
           if [ -n "$EXISTING" ]; then
-            gh issue comment "$EXISTING" --body "$BODY"
+            gh issue comment "$EXISTING" --body-file "$BODY_FILE"
           else
-            gh issue create --title "$TITLE" --body "$BODY"
+            gh issue create --title "$TITLE" --body-file "$BODY_FILE"
           fi
+          echo "::error::The refresh guard REJECTED the candidate -- the committed corpus is unchanged. See the issue above."
+          exit 1
