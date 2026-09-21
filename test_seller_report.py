@@ -480,16 +480,96 @@ class TestLiveCorpus(unittest.TestCase):
                          "price"):
             self.assertIn(expected, codes)
 
+    MALFORMED_HOST = "apiwitchcraft.duckdns.org"
+
     def test_the_known_malformed_asset_is_still_reported(self):
         # The seller found in the wild by asset_coverage. Its Solana payTo was
-        # repaired; its 39-hex BSC asset was not, and that is what keeps this
-        # host as live proof rather than a fixture.
+        # repaired; its 39-hex BSC asset was not, and that is what kept this host
+        # as live proof rather than a fixture.
+        #
+        # LIVE PROOF EXPIRES, and on 2026-09-21 this one did: the first automated
+        # directory refresh dropped the host because the Bazaar no longer
+        # advertises it. The payee is not gone -- it still carries 91 settlements
+        # in the reputation store -- the LISTING is. Nothing was lost and nothing
+        # regressed; the ecosystem moved, which is the one thing a live fixture
+        # cannot be pinned against.
+        #
+        # So this test now SAYS that, instead of failing with a bare `[] is not
+        # true` that reads like a broken report builder. The behaviour it used to
+        # be the only proof of is pinned unconditionally by
+        # TestMalformedAssetIsABlocker below, which is where a regression in the
+        # report builder will now be caught. This stays as the live half: while
+        # the host is listed, the assertion runs at full strength.
         rows = sr.load_json(sr.DIRECTORY_PATH, [])
+        # find_rows, NOT resources_for_key: the latter falls back to the whole
+        # row when the host does not match, so it is truthy for every listing and
+        # would have made this check silently useless.
+        listed = sr.find_rows(rows, self.MALFORMED_HOST)
+        if not listed:
+            raise unittest.SkipTest(
+                "%s is no longer advertised in data/directory.json, so there is "
+                "no live malformed-asset seller left to report on. The BEHAVIOUR "
+                "is covered by TestMalformedAssetIsABlocker. To restore live "
+                "proof, point this test at a currently-listed host whose asset "
+                "appears in data/asset_coverage.json's `malformed` list."
+                % self.MALFORMED_HOST)
         coverage = sr.load_json(sr.COVERAGE_PATH, {})
-        report = sr.build_report("apiwitchcraft.duckdns.org", rows,
-                                 coverage=coverage)
+        report = sr.build_report(self.MALFORMED_HOST, rows, coverage=coverage)
         blockers = [f for f in report["findings"] if f["severity"] == sr.BLOCKER]
         self.assertTrue(any(f["code"] == "asset_id" for f in blockers), blockers)
+
+
+class TestMalformedAssetIsABlocker(unittest.TestCase):
+    """A malformed asset identifier must surface as a BLOCKER. UNCONDITIONALLY.
+
+    This is the half that used to ride on one live host staying listed in the
+    Bazaar. It does not any more: a seller advertising an identifier no client can
+    resolve cannot be told their identifiers are fine, and that rule does not stop
+    mattering because the ecosystem delisted the one endpoint that proved it.
+    """
+
+    HOST = "malformed-asset.example"
+    ROWS = [{"payee": "0xabc0000000000000000000000000000000000001",
+             "resources": ["https://malformed-asset.example/quote"],
+             "min_price": "0.01", "max_price": "1.00",
+             "distinct_payers": 7, "settlement_count": 91}]
+    # the real shape, copied from data/asset_coverage.json: a 39-hex BSC asset
+    # (one nibble short of an address), which is what made it unresolvable.
+    MALFORMED = {"asset": "0x8AC76a51cc950d9822D68b83fE43AD4843bA77E",
+                 "hosts": [HOST], "network": "eip155:56", "quotes": 1}
+    DATED = "2026-09-01T00:00:00Z"
+
+    def test_a_malformed_identifier_is_a_blocker(self):
+        # kills: downgrading this finding to a WARNING or an INFO. A buyer cannot
+        # tell which token is wanted, so the sale cannot complete -- that is a
+        # blocker by definition, not advice.
+        report = sr.build_report(
+            self.HOST, self.ROWS,
+            coverage={"generated_at": self.DATED, "malformed": [self.MALFORMED]})
+        blockers = [f for f in report["findings"] if f["severity"] == sr.BLOCKER]
+        self.assertTrue(any(f["code"] == "asset_id" for f in blockers), blockers)
+
+    def test_a_clean_census_does_not_manufacture_the_blocker(self):
+        # kills: emitting asset_id BLOCKER unconditionally, which would make the
+        # test above pass for the wrong reason and tell every honest seller their
+        # identifiers are broken.
+        report = sr.build_report(
+            self.HOST, self.ROWS,
+            coverage={"generated_at": self.DATED, "malformed": []})
+        blockers = [f for f in report["findings"]
+                    if f["severity"] == sr.BLOCKER and f["code"] == "asset_id"]
+        self.assertFalse(blockers, blockers)
+
+    def test_another_hosts_malformed_asset_is_not_attributed_to_this_one(self):
+        # kills: dropping the host filter, which would cross-attribute one
+        # seller's broken identifier to every other seller in the report.
+        other = dict(self.MALFORMED, hosts=["someone-else.example"])
+        report = sr.build_report(
+            self.HOST, self.ROWS,
+            coverage={"generated_at": self.DATED, "malformed": [other]})
+        blockers = [f for f in report["findings"]
+                    if f["severity"] == sr.BLOCKER and f["code"] == "asset_id"]
+        self.assertFalse(blockers, blockers)
 
 
 
