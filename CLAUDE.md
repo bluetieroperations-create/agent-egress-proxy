@@ -1441,18 +1441,37 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   with NO hashing and NO I/O -- `index_age_days` is called only from
   `PayToBaselineSource.__init__`, so the hash can never reach the hot path (the
   `seller_audit` 221ms lesson, checked rather than assumed).
-  OPEN, NOT FIXED, and the operator should know: NOTHING AUTOMATICALLY REFRESHES
-  `data/directory.json`. The weekly `seed-refresh.yml` regenerates the reputation
-  seed, the category index and the divergence index -- not the directory. So this
-  mechanism UN-REACHES ITSELF: the corpus crosses MAX_INDEX_AGE_DAYS about 2.7
-  days after it was dated, the gate goes back to stale, and nothing announces it
-  because the state is only visible in the boot banner. Not urgent while
-  `PAYTO_BASELINE_GATES` is off (a stale baseline and an off lock both mean "no
-  gate"), and deliberately NOT patched by raising the threshold, which would
-  weaken a safety rule to cover a process gap. The real fix is adding an
-  `ecosystem_scan --out-directory` step to the scheduled refresh -- a network
-  crawl job, its own change -- and the honest interim is that flipping the lock
-  requires checking the corpus age first.
+  CLOSED 2026-09-21 by `directory-refresh.yml` + `scripts/refresh_directory.sh` +
+  `directory_guard.py`. It was OPEN long enough to bite twice, and both bites are
+  worth keeping on the record. NOTHING AUTOMATICALLY REFRESHED
+  `data/directory.json`: `seed-refresh.yml` regenerates the reputation seed, the
+  category index and the divergence index -- not the directory. So the mechanism
+  UN-REACHED ITSELF every three weeks, the gate went back to stale, and the note
+  here said nothing announced it because the state was only visible in the boot
+  banner. That was the first bite, and it was the one anticipated.
+  The SECOND bite was not: once `test_payto_baseline`'s reachability tripwire
+  landed (2026-09-16), the same staleness stopped being a quiet gate problem and
+  became a repository-wide CI failure. On 2026-09-18 the corpus dated 2026-08-28
+  crossed 21 days and every open PR started inheriting a red `unittest` job it had
+  no part in -- including the automated seed refresh, whose own corpus was
+  perfectly fresh. A data-freshness tripwire in the test suite converts a process
+  gap into everyone's problem, which is an argument for automating the refresh, not
+  for softening the test.
+  The fix is the one this note already prescribed -- a scheduled
+  `ecosystem_scan --out-directory` crawl -- built as its own workflow rather than a
+  step inside `seed-refresh.yml`, so the two corpora keep independent guards,
+  cadences and PRs: a rejected directory crawl must not be able to hold up a good
+  seed refresh. It is still deliberately NOT patched by raising
+  MAX_INDEX_AGE_DAYS, which would weaken a safety rule to cover a process gap.
+  `directory_guard.py` rejects four ways a refresh can go bad -- partial crawl,
+  payTo-index HOST loss behind a healthy entry count, an undated candidate, and no
+  progress (or progress that is still past the 21-day cliff). Host retention is the
+  utility metric for the same reason `MIN_GATING_RETENTION` is the store's: an
+  absent host reads as `unknown`, so entry count is not coverage.
+  WHAT REMAINS TRUE: the refresh only takes effect when its PR is MERGED. An open
+  `auto/directory-refresh` PR is not a fresh corpus, the weekly cadence leaves room
+  for two consecutive rejects before the cliff, and flipping
+  `PAYTO_BASELINE_GATES` still means checking the corpus age first.
   THREE FINDINGS from making it reachable, each caught before deploying:
   (1) the sidecar was NOT in the Dockerfile's COPY, so production would have read
   the corpus as undated and the gate would have been unreachable there while
@@ -2075,7 +2094,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_payto_baseline.py test_honeypot.py test_billing_preflight.py test_seller_report.py test_seller_portal.py test_reachability_ledger.py test_approvals.py test_token_decimals.py test_hmac_key.py \
+ test_auth_sim.py test_directory_liveness.py test_directory_guard.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_payto_baseline.py test_honeypot.py test_billing_preflight.py test_seller_report.py test_seller_portal.py test_reachability_ledger.py test_approvals.py test_token_decimals.py test_hmac_key.py \
  test_bounded_server.py test_ci_coverage.py test_remote_ledger.py test_seller_intel.py test_solana_backfill.py test_user_agent.py test_volume_integrity.py
 ```
 

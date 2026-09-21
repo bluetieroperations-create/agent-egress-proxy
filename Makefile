@@ -34,7 +34,8 @@ test:
 	  test_category_pricing.py test_cdp_auth.py test_chain_backfill.py \
 	  test_check_seed_age.py test_confidence.py test_coverage_eval.py \
 	  test_creds_local.py test_demo_flywheel.py test_deploy_manifest.py \
-	  test_dex_price.py test_directory_liveness.py test_discovery.py \
+	  test_dex_price.py test_directory_guard.py test_directory_liveness.py \
+	  test_discovery.py \
 	  test_discovery_crawl.py test_ecosystem_scan.py test_egress_proxy.py \
 	  test_eip712.py test_facilitator.py test_fuzz_verdict.py \
 	  test_holder_concentration.py test_honeypot.py test_http_util.py \

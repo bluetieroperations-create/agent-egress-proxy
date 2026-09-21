@@ -66,7 +66,8 @@ jobs:
             test_categories.py test_category_pricing.py test_check_seed_age.py \
             test_price_integrity.py test_ratelimit.py test_fuzz_verdict.py \
             test_blockscout.py test_verdict_oracle.py test_calibration_lock.py \
-            test_coverage_eval.py test_refresh_guard.py test_seed_provenance.py test_secret_scan.py \
+            test_coverage_eval.py test_refresh_guard.py test_directory_guard.py \
+            test_seed_provenance.py test_secret_scan.py \
             test_bench.py test_two_stage_signer.py test_rwa_readiness.py \
             test_tokenized_stock_registry.py test_solana_rwa.py test_pyth_price.py \
             test_rwa_ledger.py test_rwa_outcomes.py test_rwa_balance.py \
