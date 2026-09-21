@@ -12,9 +12,16 @@
 #
 # WHAT THE RUN STATUS MEANS. This is the whole point of the job's exit codes, so read
 # it before "fixing" one: GREEN means there is nothing for a human to do -- either a PR
-# is open/updated with a refreshed corpus, or the guard found nothing worth proposing.
-# RED means a human is needed, and an ISSUE has been filed saying which of the two
+# is open/updated with a refreshed corpus, or the refresh produced no change to data/ at
+# all. RED means a human is needed, and an ISSUE has been filed saying which of the two
 # reasons it is.
+#
+# Note which side a guard REJECT falls on: it is RED. A reject means the corpus did not
+# get fresher this week and is still walking toward the stale cliff, which is a human's
+# problem even though nothing shipped and nothing broke. An earlier draft of this very
+# comment said green covered "the guard found nothing worth proposing", which reads as
+# though a reject were green -- the exact ambiguity this file exists to remove, in the
+# file that removes it.
 #
 # It did not always work that way. Until 2026-09-21 the reject path filed its nag and
 # then exited 0, while the accept path died on `gh pr create`, so the status was exactly
