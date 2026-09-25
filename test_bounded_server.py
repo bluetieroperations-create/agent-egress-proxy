@@ -311,11 +311,49 @@ class Admission(unittest.TestCase):
             t.join(20)
         self.assertIsNotNone(hdrs, "expected a 503 while the permit was held")
 
+    def _await_permits_returned(self, timeout=20):
+        """Block until EVERY permit is back in the semaphore. Returns True on
+        success, False on timeout.
+
+        WHY THIS EXISTS, because a bare `join()` looked sufficient and was not.
+        A client thread finishes when it has read the response; the server
+        releases its permit in a `finally` on a DIFFERENT thread, some moments
+        later. So a round that starts the instant the previous round's clients
+        return can put max_inflight+1 requests in flight and legitimately get
+        one shed -- and the test would report a permit leak that did not happen.
+        Observed as exactly that: unittest (3.11) both PASSED and FAILED on the
+        identical commit (1c41337) in two CI runs on 2026-09-25, `7 != 8`.
+        Chasing it as a product bug would have been chasing the test's own race.
+
+        Acquiring all the permits IS the barrier: the semaphore only hands out
+        max_inflight of them, so holding every one proves nothing is in flight.
+        Held permits never block a release, so this cannot starve the requests
+        it is waiting for. Retries from scratch rather than hoarding, so a
+        request that slips in between acquisitions just costs another pass.
+        """
+        n = self.srv.max_inflight
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            got = 0
+            while got < n and self.srv._permits.acquire(blocking=False):
+                got += 1
+            for _ in range(got):
+                self.srv._permits.release()
+            if got == n:
+                return True
+            time.sleep(0.01)
+        return False
+
     def test_permits_are_returned_so_the_server_recovers(self):
         """MUTATION: never releasing (or releasing only on the happy path). The
         ceiling then ratchets down until the service refuses EVERYTHING -- a
         far worse failure than the one being fixed, and one that only appears
-        after the server has been up a while."""
+        after the server has been up a while.
+
+        The barrier between rounds makes this STRONGER, not weaker: release used
+        to be inferred from eight successes, and is now asserted directly after
+        every round. A never-release mutation fails on the first barrier, naming
+        the actual defect, instead of surfacing four rounds later as a count."""
         url = self.serve(max_inflight=2, hold=False)
         out = {}
         for round_ in range(4):
@@ -325,9 +363,61 @@ class Admission(unittest.TestCase):
                 t.start()
             for t in th:
                 t.join(20)
+            self.assertTrue(self._await_permits_returned(),
+                            "round %d: permits were not returned -- the ceiling is "
+                            "ratcheting down" % round_)
         codes = [v[0] for v in out.values()]
         self.assertEqual(codes.count(200), 8, codes)
         self.assertEqual(self.srv.shed_count, 0)
+
+    def test_a_permit_is_returned_when_the_THREAD_cannot_START(self):
+        """MUTATION: dropping the release in process_request's `except`.
+
+        THE ONE RELEASE SITE THE SUITE DID NOT COVER, found by mutation-testing
+        the flake fix above: neutering this line left the whole module green.
+        The sibling test's docstring claims to kill "releasing only on the happy
+        path" and did not -- it drives every request down the happy path, so the
+        only release it exercises is process_request_thread's `finally`.
+
+        This is the path where the OS refuses the thread. The permit is already
+        acquired, `process_request_thread` will never run, and its `finally`
+        therefore never releases. Without the explicit release the ceiling
+        ratchets down by one per occurrence until the service refuses
+        everything -- and thread exhaustion is exactly the condition under which
+        that happens repeatedly, so the failure compounds precisely when the box
+        is already in trouble.
+        """
+        import socketserver
+        url = self.serve(max_inflight=2, hold=False)
+        self.assertTrue(self._await_permits_returned(), "not idle before the probe")
+
+        original = socketserver.ThreadingMixIn.process_request
+
+        def refuse_to_spawn(self_, request, client_address):
+            raise RuntimeError("can't start new thread")
+
+        socketserver.ThreadingMixIn.process_request = refuse_to_spawn
+        try:
+            try:
+                urllib.request.urlopen(url, timeout=10).read()
+            except Exception:
+                pass                      # the connection dies; that is the point
+        finally:
+            socketserver.ThreadingMixIn.process_request = original
+
+        self.assertTrue(
+            self._await_permits_returned(),
+            "the permit was NOT returned after the thread failed to start -- the "
+            "ceiling has ratcheted down and will keep doing so")
+
+        # And prove the server is genuinely still usable, not merely accounted for.
+        out = {}
+        th = [threading.Thread(target=self.get, args=(url, out, i)) for i in range(2)]
+        for t in th:
+            t.start()
+        for t in th:
+            t.join(20)
+        self.assertEqual([v[0] for v in out.values()].count(200), 2, out)
 
     def test_shedding_is_counted(self):
         """MUTATION: shedding silently. An operator must be able to see that the
