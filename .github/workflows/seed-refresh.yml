@@ -78,7 +78,7 @@ jobs:
           # the artifacts were promoted in-tree by the script; prove the suite still
           # passes on the NEW corpus before proposing it (seed-regression gate included).
           python3 -m unittest test_coverage_eval.py test_refresh_guard.py \
-            test_verdict_oracle.py test_calibration_lock.py
+            test_index_guard.py test_verdict_oracle.py test_calibration_lock.py
 
       - name: Open / update the refresh PR
         id: propose
@@ -193,9 +193,16 @@ jobs:
           TITLE="Automated seed refresh was rejected"
           BODY_FILE="$RUNNER_TEMP/nag.md"
           {
-            echo "The guarded refresh (\`scripts/refresh_seed.sh\`) ran but \`refresh_guard.py\` **REJECTED** the candidate (partial crawl / no progress / stale result -- the guard prints its reasons in the [job log](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}))."
+            echo "The guarded refresh (\`scripts/refresh_seed.sh\`) ran but a guard **REJECTED** the candidate. Which one, and why, is in the [job log](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) -- the script prints both verdicts and names the rejecting guard on stderr."
             echo ""
-            echo "The committed store was left untouched, so **nothing shipped and nothing broke** -- but the corpus did not get any fresher this week:"
+            echo "There are TWO guards and either can reject:"
+            echo ""
+            echo "- \`refresh_guard.py\` gates the STORE -- partial crawl, no progress, stale result, or a crawl whose error rate makes its freshness signal meaningless."
+            echo "- \`index_guard.py\` gates the two INDEXES built from it -- an empty index, or a category-baseline collapse past the retention floor, which usually means a shallow or throttled index crawl. A legitimate thinning (a category dropping under MIN_CATEGORY_PAYEES) is accepted with a warning, so a reject here is a real signal."
+            echo ""
+            echo "An index reject holds the STORE too, deliberately: the indexes are built from it and describe it, so shipping a fresh store beside stale indexes would leave the corpus internally inconsistent."
+            echo ""
+            echo "The committed artifacts were left untouched, so **nothing shipped and nothing broke** -- but the corpus did not get any fresher this week:"
             echo ""
             echo '```'
             python3 check_seed_age.py || true
@@ -211,5 +218,5 @@ jobs:
           else
             gh issue create --title "$TITLE" --body-file "$BODY_FILE"
           fi
-          echo "::error::The refresh guard REJECTED the candidate -- the committed corpus is unchanged. See the issue above."
+          echo "::error::A guard REJECTED the candidate (refresh_guard or index_guard -- the job log names which) -- the committed corpus is unchanged. See the issue above."
           exit 1
