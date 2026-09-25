@@ -39,6 +39,7 @@ test:
 	  test_discovery_crawl.py test_ecosystem_scan.py test_egress_proxy.py \
 	  test_eip712.py test_facilitator.py test_fuzz_verdict.py \
 	  test_holder_concentration.py test_honeypot.py test_http_util.py \
+	  test_index_guard.py \
 	  test_issuer_trust_gate.py test_keccak.py test_ledger.py test_mcp_http.py \
 	  test_mcp_server.py test_payee_syntax.py test_payer_graph.py \
 	  test_payto_baseline.py \

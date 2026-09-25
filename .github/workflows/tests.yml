@@ -64,7 +64,8 @@ jobs:
             test_payer_reputation.py test_settlement_velocity.py test_confidence.py \
             test_redteam.py test_demo_flywheel.py test_verdict_anchor.py \
             test_categories.py test_category_pricing.py test_check_seed_age.py \
-            test_price_integrity.py test_ratelimit.py test_fuzz_verdict.py \
+            test_price_integrity.py test_index_guard.py test_ratelimit.py \
+            test_fuzz_verdict.py \
             test_blockscout.py test_verdict_oracle.py test_calibration_lock.py \
             test_coverage_eval.py test_refresh_guard.py test_directory_guard.py \
             test_seed_provenance.py test_secret_scan.py \
