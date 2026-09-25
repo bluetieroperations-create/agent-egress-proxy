@@ -60,13 +60,16 @@ TMP_CRAWL="$WORK/crawl.json"
 python3 chain_backfill.py --store "$TMP_STORE" \
     --payees-file data/seed_payees.txt --max-pages "$PAGES" | tee "$TMP_CRAWL"
 
-# INDEX DEPTH. The guard below validates the STORE only -- payees, edges, age --
-# so a shallow index build passes it while quietly shrinking coverage. Measured
-# 2026-08-28 on the same store: 8 pages produced FOUR category baselines, 24
-# produced SEVEN, restoring `dev-tools` and surfacing `commerce` and
-# `content-media` that 8 pages never reached. A missing baseline is fail-open, so
-# the cost is a gate that silently does nothing rather than a wrong verdict --
-# which is exactly why it needs saying out loud here.
+# INDEX DEPTH. Measured 2026-08-28 on the same store: 8 pages produced FOUR
+# category baselines, 24 produced SEVEN, restoring `dev-tools` and surfacing
+# `commerce` and `content-media` that 8 pages never reached. A missing baseline is
+# fail-open, so the cost is a gate that silently does nothing rather than a wrong
+# verdict -- which is exactly why it needs saying out loud here.
+#
+# This comment used to end "the guard below validates the STORE only ... so a
+# shallow index build passes it while quietly shrinking coverage". That was true
+# for weeks and is no longer: index_guard.py now gates these two artifacts, and
+# that 4-of-7 measurement is the lower point its threshold was fitted between.
 INDEX_PAGES="${INDEX_PAGES:-24}"
 
 echo "refresh_seed: building per-category price index -> temp (--max-pages $INDEX_PAGES) ..."
@@ -78,10 +81,39 @@ python3 price_integrity.py --store "$TMP_STORE" --out "$TMP_DIV" --max-pages "$I
 echo "refresh_seed: gzipping candidate store ..."
 python3 -c "import gzip,shutil,sys; shutil.copyfileobj(open(sys.argv[1],'rb'), gzip.open(sys.argv[2],'wb',9))" "$TMP_STORE" "$TMP_GZ"
 
-echo "refresh_seed: running the refresh guard (candidate vs committed) ..."
+# TWO GUARDS, and BOTH must accept. refresh_guard validates the STORE -- payees, edges,
+# age, crawl health. index_guard validates the two INDEXES built from it. The comment
+# further up this file named the gap for weeks ("the guard below validates the STORE
+# only ... so a shallow index build passes it while quietly shrinking coverage"), and it
+# stayed open until a refresh was audited by hand on 2026-09-24.
+#
+# Both run UNCONDITIONALLY, rather than short-circuiting on the first reject, so one run
+# shows the operator every verdict. A reject that hides a second reject costs another
+# 25-minute crawl to discover.
+echo "refresh_seed: running the refresh guard (store: candidate vs committed) ..."
 if python3 refresh_guard.py --old data/reputation_seed.db.gz --new "$TMP_GZ" \
         --crawl "$TMP_CRAWL"; then
-    echo "refresh_seed: guard ACCEPTED -- promoting candidate over committed artifacts."
+    STORE_OK=1
+else
+    STORE_OK=0
+fi
+
+echo "refresh_seed: running the index guard (indexes: candidate vs committed) ..."
+if python3 index_guard.py \
+        --old-category   data/category_index.json   --new-category   "$TMP_CAT" \
+        --old-divergence data/divergence_index.json --new-divergence "$TMP_DIV"; then
+    INDEX_OK=1
+else
+    INDEX_OK=0
+fi
+
+# The store rides on the INDEX verdict too, and that is deliberate. The indexes are built
+# FROM this store and describe it, so promoting a good store beside stale indexes ships
+# the same mismatched pairing the provenance record shipped on 2026-09-21 -- a record
+# claiming 46,031 settlements beside a store holding 67,972, confidently wrong rather
+# than absent. Keeping a consistent older set and nagging is the lesser harm.
+if [ "$STORE_OK" = "1" ] && [ "$INDEX_OK" = "1" ]; then
+    echo "refresh_seed: both guards ACCEPTED -- promoting candidate over committed artifacts."
     # The corpus is a BOUNDED sample and must say so in the artifact, not only in
     # a docstring someone may not read. Written from the candidate BEFORE the move,
     # so the record always describes the store it ships beside.
@@ -121,7 +153,9 @@ if python3 refresh_guard.py --old data/reputation_seed.db.gz --new "$TMP_GZ" \
     echo "  git commit -m 'data: refresh prebuilt seed store'"
     echo "  # then redeploy (Render rebuilds the image)"
 else
-    echo "refresh_seed: guard REJECTED the candidate (see reasons above)." >&2
+    echo "refresh_seed: REJECTED the candidate (see reasons above):" >&2
+    [ "$STORE_OK" = "1" ] || echo "refresh_seed:   - refresh_guard rejected the STORE" >&2
+    [ "$INDEX_OK" = "1" ] || echo "refresh_seed:   - index_guard rejected the INDEXES" >&2
     echo "refresh_seed: committed artifacts left UNTOUCHED. Nothing to commit." >&2
     exit 1
 fi
