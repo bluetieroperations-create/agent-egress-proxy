@@ -486,3 +486,56 @@ class TestCanonicalTestCommand(unittest.TestCase):
         import os
         ghosts = sorted(f for f in self._listed() if not os.path.exists(f))
         self.assertEqual(ghosts, [], "listed but absent: %s" % ghosts)
+
+
+class OptionalNativeImportsMustCatchBaseException(unittest.TestCase):
+    """A BROKEN native `cryptography` build imports fine and then raises
+    `pyo3_runtime.PanicException`, which derives from BaseException. So a guard
+    written `except Exception` does NOT catch it, and the panic takes the whole
+    stdlib-only suite down instead of skipping one optional class.
+
+    MEASURED 2026-09-27: on a container carrying cryptography 41.0.7,
+    `import cryptography` succeeded, the ed25519 import panicked, and `make test`
+    died inside `test_seller_audit`'s guard. Three root test files guard this
+    import; two already said BaseException and explained why, and the third did
+    not -- so the canonical check was one word away from being unrunnable on a
+    machine where the optional dependency is merely broken rather than absent.
+    `remote_ledger.py` documents the same class in production code.
+
+    HONEST LIMIT: this is a SOURCE scan, deliberately, because the property IS
+    textual -- which exception clause is written. It follows `test_hmac_key`'s
+    precedent for a blunt scan. It cannot prove the fallback works; the evidence
+    for that is the measured run above plus the skips those classes now report.
+    """
+
+    def test_every_optional_cryptography_guard_names_BaseException(self):
+        # Kills: writing `except Exception` around an optional native import.
+        import ast
+        import glob
+
+        offenders = []
+        for path in sorted(glob.glob(os.path.join(ROOT, "test_*.py"))):
+            tree = ast.parse(open(path).read())
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Try):
+                    continue
+                names = []
+                for sub in ast.walk(node):
+                    if isinstance(sub, ast.ImportFrom) and (sub.module or ""):
+                        names.append(sub.module)
+                    elif isinstance(sub, ast.Import):
+                        names += [a.name for a in sub.names]
+                if not any(n.split(".")[0] == "cryptography" for n in names):
+                    continue
+                for h in node.handlers:
+                    caught = h.type
+                    ok = (isinstance(caught, ast.Name)
+                          and caught.id == "BaseException")
+                    if not ok:
+                        offenders.append("%s:%d" % (os.path.basename(path),
+                                                    h.lineno))
+        self.assertEqual(
+            offenders, [],
+            "an optional `cryptography` import is guarded by a handler that "
+            "does not catch BaseException, so a BROKEN native build panics the "
+            "whole suite instead of skipping: %s" % offenders)

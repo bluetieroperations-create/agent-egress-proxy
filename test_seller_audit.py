@@ -17,7 +17,17 @@ try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
     from cryptography.exceptions import InvalidSignature
     _HAVE_CRYPTO = True
-except Exception:                                        # pragma: no cover
+except BaseException:                                    # pragma: no cover
+    # BaseException, NOT Exception. A BROKEN native `cryptography` build imports
+    # fine and then raises `pyo3_runtime.PanicException`, which derives from
+    # BaseException -- so `except Exception` does not catch it and the panic
+    # takes the ENTIRE stdlib-only suite down instead of skipping one class.
+    # MEASURED 2026-09-27 on a container with cryptography 41.0.7 installed:
+    # `import cryptography` succeeded, the ed25519 import panicked, and
+    # `make test` died at this line. `remote_ledger.py` documents this exact
+    # class ("installed is not working") and `test_cdp_auth` /
+    # `test_receipt_signer` both already say BaseException for this reason;
+    # this file was the one that did not.
     Ed25519PublicKey = None
     InvalidSignature = Exception
     _HAVE_CRYPTO = False
