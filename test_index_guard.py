@@ -230,3 +230,185 @@ class TestTheScriptRunsBothGuards(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# The 2026-09-28 refresh, verified correct by rebuilding it byte-identically from the
+# shipped store against an independent crawl. These are the only MEASURED-LEGITIMATE
+# value moves this repo has, and VALUE_DRIFT_WARN_RATIO is calibrated on them.
+DRIFT_2026_09_28 = {
+    "ai-agents":     ("0.01",     "0.01"),        # 1.00x
+    "content-media": ("0.009104", "0.008552"),    # 1.06x  (store-driven)
+    "dev-tools":     ("0.0045",   "0.002"),       # 2.25x  <- the widest legitimate move
+    "finance":       ("0.005",    "0.005"),       # 1.00x
+    "onchain":       ("0.0025",   "0.0035"),      # 1.40x
+    "search-data":   ("0.008",    "0.01"),        # 1.25x
+}
+
+
+def _vstats(values, divs=DIVS_18, payees=None):
+    """Stats carrying real BASELINE VALUES, which _stats() flattens to 0.01."""
+    return G.index_stats(dict(values), {d: "2.0" for d in divs}, category_payees=payees)
+
+
+class TestValueDrift(unittest.TestCase):
+    """The gap this class exists for: the guard counted keys and never read a price."""
+
+    def test_the_measured_2026_09_28_refresh_does_not_warn(self):
+        # CALIBRATION LOCK, and the most important test here. Every move in that refresh
+        # was verified legitimate, so a threshold that warns on it is a threshold that
+        # cries wolf on correct data -- and the next real drift gets ignored with it.
+        #
+        # Kills: lowering VALUE_DRIFT_WARN_RATIO to or below 2.25.
+        old = _vstats({k: v[0] for k, v in DRIFT_2026_09_28.items()})
+        new = _vstats({k: v[1] for k, v in DRIFT_2026_09_28.items()})
+        r = G.assess_index_refresh(old, new)
+        self.assertTrue(r["accept"], r["reasons"])
+        self.assertEqual([w for w in r["warnings"] if "moved" in w], [])
+
+    def test_the_threshold_sits_above_the_widest_measured_legitimate_move(self):
+        # kills: a threshold invented rather than derived. dev-tools moved 2.25x and was
+        # correct, so the line must sit above it; there is no measured BAD value, which
+        # is exactly why this warns instead of rejecting.
+        self.assertGreater(G.VALUE_DRIFT_WARN_RATIO, 2.25)
+
+    def test_a_baseline_that_moves_past_the_line_warns(self):
+        # kills: deleting the drift check entirely -- i.e. the defect this closes, where
+        # a refresh could keep all six baselines and move every one of them arbitrarily.
+        r = G.assess_index_refresh(_vstats({"dev-tools": "0.01"}),
+                                   _vstats({"dev-tools": "0.001"}))       # 10x down
+        self.assertTrue(any("moved" in w and "dev-tools" in w for w in r["warnings"]),
+                        r["warnings"])
+
+    def test_drift_warns_in_BOTH_directions(self):
+        # kills: comparing new/old only. A baseline that TRIPLES makes the gate more
+        # permissive (quotes that used to hold now pass) and is just as much a signal as
+        # one that collapses.
+        up = G.assess_index_refresh(_vstats({"onchain": "0.001"}),
+                                    _vstats({"onchain": "0.01"}))
+        self.assertTrue(any("moved" in w for w in up["warnings"]), up["warnings"])
+
+    def test_value_drift_is_NEVER_a_reject(self):
+        # kills: promoting drift to `reasons`. A reject fails the whole refresh, STORE
+        # included (refresh_seed.sh gates promotion on both verdicts), so a one-sided
+        # threshold that blocked would trade a measured-good refresh for no detection.
+        r = G.assess_index_refresh(_vstats({"dev-tools": "0.01"}),
+                                   _vstats({"dev-tools": "0.00001"}))     # 1000x down
+        self.assertTrue(r["accept"], r["reasons"])
+        self.assertEqual(r["reasons"], [])
+
+    def test_the_warning_states_the_resulting_HOLD_line(self):
+        # kills: a warning that reports the ratio and leaves the reader to multiply by
+        # CATEGORY_HOLD_RATIO themselves. The baseline is not the operator-visible
+        # quantity; the dollar figure a payment is held at is.
+        r = G.assess_index_refresh(_vstats({"dev-tools": "0.01"}),
+                                   _vstats({"dev-tools": "0.001"}))
+        w = [x for x in r["warnings"] if "moved" in x][0]
+        self.assertIn("0.05", w)     # new hold line: 0.001 * 50
+        self.assertIn("0.5", w)      # old hold line: 0.01  * 50
+
+    def test_a_thin_baseline_is_explained_when_the_sidecar_is_present(self):
+        # kills: dropping _payee_note. "dev-tools moved 10x" and "dev-tools moved 10x and
+        # rests on 7 payees" call for different responses, and only the second one tells
+        # the reader which.
+        r = G.assess_index_refresh(
+            _vstats({"dev-tools": "0.01"}),
+            _vstats({"dev-tools": "0.001"}, payees={"dev-tools": 7}))
+        w = [x for x in r["warnings"] if "moved" in x][0]
+        self.assertIn("7 distinct payee", w)
+
+    def test_drift_is_still_detected_without_the_sidecar(self):
+        # kills: making the counts a prerequisite. The sidecar is new and the indexes are
+        # not; a guard that went quiet without it would stop gating the old artifacts.
+        r = G.assess_index_refresh(_vstats({"dev-tools": "0.01"}),
+                                   _vstats({"dev-tools": "0.001"}))
+        w = [x for x in r["warnings"] if "moved" in x][0]
+        self.assertIn("moved", w)
+        self.assertNotIn("rests on", w)
+
+    def test_a_category_present_on_only_one_side_is_not_a_drift(self):
+        # kills: treating an added or lost baseline as an infinite move. Membership
+        # change is already reported by the lost/gained warnings; double-reporting it as
+        # drift would bury the real signal.
+        r = G.assess_index_refresh(_vstats({"a": "0.01"}),
+                                   _vstats({"a": "0.01", "b": "9.99"}))
+        self.assertEqual([w for w in r["warnings"] if "moved" in w], [])
+
+
+class TestNonPositiveBaseline(unittest.TestCase):
+    """The one value defect that IS unambiguous, and the only one that rejects."""
+
+    def test_a_zero_baseline_is_rejected(self):
+        # kills: allowing 0 through. This is the fail-CLOSED case and the reason it
+        # rejects where a move only warns: blackwall holds at `quoted >= 50 * median`,
+        # so a median of 0 holds EVERY payment in the category. No market rate is zero.
+        r = G.assess_index_refresh(_vstats({"dev-tools": "0.01"}),
+                                   _vstats({"dev-tools": "0"}))
+        self.assertFalse(r["accept"])
+        self.assertTrue(any("not a usable market rate" in x for x in r["reasons"]))
+
+    def test_a_negative_and_an_unparseable_baseline_are_rejected(self):
+        # kills: a check that tests falsiness instead of positivity ("-0.01" and "NaN"
+        # are both truthy strings), or one that lets a crawl artefact through as a rate.
+        for bad in ("-0.01", "NaN", "", "null", "0.00"):
+            r = G.assess_index_refresh(_vstats({"dev-tools": "0.01"}),
+                                       _vstats({"dev-tools": bad}))
+            self.assertFalse(r["accept"], "%r should have been rejected" % bad)
+
+    def test_the_reject_names_the_direction_of_the_failure(self):
+        # kills: a message that says "invalid" and leaves the operator to work out which
+        # way it fails. Fail-CLOSED and fail-open want opposite urgency, and this module
+        # exists because the fail-open one was invisible.
+        r = G.assess_index_refresh(_vstats({"d": "0.01"}), _vstats({"d": "0"}))
+        self.assertIn("fail-CLOSED", " ".join(r["reasons"]))
+
+    def test_the_shipped_index_survives_the_new_check(self):
+        # kills: any of this landing as a false positive on the real artifact. A guard
+        # that rejects the corpus in the repo is worse than no guard: it gets disabled.
+        with open("data/category_index.json") as fh:
+            shipped = json.load(fh)
+        r = G.assess_index_refresh(G.index_stats(shipped, {"0x1": "2.0"}),
+                                   G.index_stats(shipped, {"0x1": "2.0"}))
+        self.assertTrue(r["accept"], r["reasons"])
+
+    def test_a_stats_dict_without_values_still_assesses(self):
+        # kills: indexing category_values directly. assess_index_refresh is public and
+        # older callers pass hand-built stats; a KeyError there would take down the
+        # refresh over a missing annotation.
+        old = {"categories": 2, "category_keys": ["a", "b"],
+               "divergences": 1, "divergence_keys": ["x"]}
+        r = G.assess_index_refresh(old, dict(old))
+        self.assertTrue(r["accept"], r["reasons"])
+
+
+class TestTheShippedSidecar(unittest.TestCase):
+    """A sidecar describing a DIFFERENT index is the mismatched-pairing defect this repo
+    already shipped once (a record claiming 46,031 settlements beside a store holding
+    67,972). These are the tripwires for that."""
+
+    def setUp(self):
+        with open("data/category_index.json") as fh:
+            self.index = json.load(fh)
+        with open("data/category_index.meta.json") as fh:
+            self.meta = json.load(fh)
+
+    def test_the_sidecar_describes_the_index_beside_it(self):
+        # kills: promoting a refreshed index without its sidecar, which would leave the
+        # counts describing the PREVIOUS index -- confidently wrong rather than absent.
+        self.assertEqual(sorted(self.index), sorted(self.meta["indexed"]))
+
+    def test_every_indexed_category_clears_the_floor_it_records(self):
+        # kills: a sidecar built with a different --min-payees than the index it sits
+        # beside, which would make the counts unreadable as an explanation of absence.
+        for cat in self.index:
+            self.assertGreaterEqual(self.meta["payees"][cat], self.meta["min_payees"],
+                                    "%s is indexed but recorded below the floor" % cat)
+
+    def test_it_records_categories_the_index_omits(self):
+        # kills: filtering the counts to indexed categories only. The whole reason this
+        # file exists is to answer "why is commerce missing" without two extra crawls --
+        # measured 2026-09-28: commerce sits at 4 payees, one under the floor of 5.
+        below = {k: v for k, v in self.meta["payees"].items() if k not in self.index}
+        self.assertTrue(below, "the sidecar records nothing about omitted categories")
+        for cat, n in below.items():
+            self.assertLess(n, self.meta["min_payees"],
+                            "%s is below the floor yet absent from the index" % cat)

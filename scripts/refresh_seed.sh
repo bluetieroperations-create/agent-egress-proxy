@@ -32,6 +32,9 @@ trap 'rm -rf "$WORK"' EXIT
 TMP_STORE="$WORK/rep.db"
 TMP_GZ="$WORK/reputation_seed.db.gz"
 TMP_CAT="$WORK/category_index.json"
+# Written by category_pricing alongside TMP_CAT (distinct-payee counts per
+# category). Promoted with it, so the counts always describe THIS index.
+TMP_CAT_META="$WORK/category_index.meta.json"
 TMP_DIV="$WORK/divergence_index.json"
 
 # MERGE, don't REPLACE. Seed the candidate FROM the committed store, then crawl into
@@ -101,7 +104,8 @@ fi
 echo "refresh_seed: running the index guard (indexes: candidate vs committed) ..."
 if python3 index_guard.py \
         --old-category   data/category_index.json   --new-category   "$TMP_CAT" \
-        --old-divergence data/divergence_index.json --new-divergence "$TMP_DIV"; then
+        --old-divergence data/divergence_index.json --new-divergence "$TMP_DIV" \
+        --new-meta       "$TMP_CAT_META"; then
     INDEX_OK=1
 else
     INDEX_OK=0
@@ -139,6 +143,7 @@ if [ "$STORE_OK" = "1" ] && [ "$INDEX_OK" = "1" ]; then
     fi
     mv "$TMP_GZ"  data/reputation_seed.db.gz
     mv "$TMP_CAT" data/category_index.json
+    mv "$TMP_CAT_META" data/category_index.meta.json
     mv "$TMP_DIV" data/divergence_index.json
     if [ "$PROVENANCE_OK" = "1" ]; then
         mv "$WORK/reputation_seed.json" data/reputation_seed.json
@@ -149,7 +154,7 @@ if [ "$STORE_OK" = "1" ] && [ "$INDEX_OK" = "1" ]; then
     python3 check_seed_age.py || true
     echo ""
     echo "Now commit the refreshed artifacts:"
-    echo "  git add data/reputation_seed.db.gz data/reputation_seed.json data/category_index.json data/divergence_index.json"
+    echo "  git add data/reputation_seed.db.gz data/reputation_seed.json data/category_index.json data/category_index.meta.json data/divergence_index.json"
     echo "  git commit -m 'data: refresh prebuilt seed store'"
     echo "  # then redeploy (Render rebuilds the image)"
 else

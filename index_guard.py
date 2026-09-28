@@ -55,6 +55,21 @@ silently gutted index is a price check that stops existing and says nothing. The
 text on every lost baseline is what makes a wrong reject diagnosable in one read instead
 of two crawls.
 
+IT NOW READS VALUES, NOT ONLY KEYS -- added 2026-09-28, and the gap is worth recording
+because it was the same shape one level down. Everything above reasons about how many
+baselines survive. Nothing looked at what a baseline SAID, so a refresh could keep all
+six and move every price arbitrarily and still draw a clean ACCEPT. That is what the
+2026-09-28 refresh did: three of six baselines moved 25-56%, the guard had nothing to
+say, and the moves turned out to track drift in the Bazaar's category MEMBERSHIP rather
+than in settled prices (the old store crawled the same day already yields the new
+values). Two checks came out of it, and they are deliberately asymmetric:
+
+  - VALUE_DRIFT_WARN_RATIO only WARNS, because the only calibration available is a floor
+    (2.25x, measured legitimate) with no measured ceiling.
+  - A non-positive or unparseable baseline REJECTS, because that one is unambiguous and
+    fails CLOSED: `50 * 0` puts the hold line at zero and holds every payment in the
+    category.
+
 WHAT A REJECT DOES, and the cost being accepted. A reject fails the whole refresh --
 store included -- and refresh_seed.sh leaves every committed artifact untouched. That is
 deliberate: the indexes are built FROM the store and describe it, so promoting a good
@@ -68,6 +83,7 @@ and the nag says what happened.
 from __future__ import annotations
 
 import json
+from decimal import Decimal, InvalidOperation
 
 # Category-baseline retention. Between the two measured points above: 7 -> 6 (86%,
 # legitimate thinning) must ACCEPT; 7 -> 4 (57%, a measured shallow crawl) must REJECT.
@@ -88,8 +104,57 @@ MIN_CATEGORY_RETENTION = 0.7
 # loudly and still ships.
 DIVERGENCE_WARN_RETENTION = 0.5
 
+# VALUE drift. This guard counted KEYS and never read a PRICE, so a refresh could keep
+# every baseline and move all of them arbitrarily -- the same fail-open shape the module
+# was built to close, one level down. Found by auditing the 2026-09-28 refresh, which
+# moved three of six baselines 25-56% and drew an ACCEPT with nothing said.
+#
+# CALIBRATED FROM ONE SIDE ONLY, which is exactly why this WARNS and never rejects. That
+# refresh was verified CORRECT -- rebuilt byte-identically from the shipped store against
+# an independent crawl -- and it moved:
+#
+#     dev-tools      0.0045   -> 0.002      2.25x   LEGITIMATE
+#     onchain        0.0025   -> 0.0035     1.40x   LEGITIMATE
+#     search-data    0.008    -> 0.01       1.25x   LEGITIMATE
+#     content-media  0.009104 -> 0.008552   1.06x   LEGITIMATE
+#
+# So 2.25x is a MEASURED-GOOD move and the line has to sit above it. There is no measured
+# BAD value at all. Unlike MIN_CATEGORY_RETENTION, which sits between 7->6 (good) and
+# 7->4 (bad), this has a floor and no ceiling, and a reject built on one anchor would be
+# an invented number blocking a good store refresh. 3.0 annotates; it never gates.
+#
+# Worth recording WHY those three moved, because the artifact suggests otherwise: the OLD
+# store crawled on the same day already yields the NEW values, so they tracked drift in
+# the Bazaar's category MEMBERSHIP, not in settled prices. `category_pricing` takes its
+# payee->category map from a live crawl and its amounts from the store, and the finished
+# index cannot tell you which one moved.
+VALUE_DRIFT_WARN_RATIO = 3.0
 
-def index_stats(category_index, divergence_index):
+
+def _rate(raw):
+    """`raw` as a strictly-positive Decimal rate, else None. FAIL-SOFT by the same
+    argument as index_stats: these files are rebuilt by crawling third parties, so a
+    malformed value must arrive as "not a rate" rather than as an exception."""
+    try:
+        d = Decimal(str(raw))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    # `Decimal("NaN")` PARSES and then raises InvalidOperation on comparison, so the
+    # finiteness check has to come before the `> 0`. Caught by the test rather than by
+    # reading, which is the argument for having written it.
+    return d if d.is_finite() and d > 0 else None
+
+
+def _payee_note(stats, category):
+    """Explain a thin baseline when the sidecar is present, else say nothing."""
+    n = (stats.get("category_payees") or {}).get(category)
+    if not isinstance(n, int):
+        return ""
+    return ("; it rests on %d distinct payee(s), so it is a median-of-medians over a "
+            "small set and moves when one enters or leaves" % n)
+
+
+def index_stats(category_index, divergence_index, category_payees=None):
     """Summarize both indexes for the guard. PURE.
 
     Non-dict inputs read as EMPTY rather than raising: these files are rebuilt by
@@ -98,12 +163,21 @@ def index_stats(category_index, divergence_index):
     """
     cats = category_index if isinstance(category_index, dict) else {}
     divs = divergence_index if isinstance(divergence_index, dict) else {}
+    counts = category_payees if isinstance(category_payees, dict) else {}
     return {"categories": len(cats), "category_keys": sorted(cats),
+            # The BASELINES, not just their names. A guard that reads only keys cannot
+            # see a price move -- see VALUE_DRIFT_WARN_RATIO.
+            "category_values": {str(k): str(v) for k, v in cats.items()},
+            # Optional {category: distinct_payee_count} sidecar from category_pricing.
+            # Absent it, drift is still DETECTED; it just cannot be EXPLAINED.
+            "category_payees": {str(k): v for k, v in counts.items()
+                                if isinstance(v, int) and not isinstance(v, bool)},
             "divergences": len(divs), "divergence_keys": sorted(divs)}
 
 
 def assess_index_refresh(old, new, *, min_category_retention=MIN_CATEGORY_RETENTION,
-                         divergence_warn_retention=DIVERGENCE_WARN_RETENTION):
+                         divergence_warn_retention=DIVERGENCE_WARN_RETENTION,
+                         value_drift_warn_ratio=VALUE_DRIFT_WARN_RATIO):
     """Decide whether freshly-built indexes may REPLACE the committed ones. PURE.
 
     Returns {accept, reasons[], warnings[], old, new}. `reasons` non-empty => REJECT
@@ -140,6 +214,21 @@ def assess_index_refresh(old, new, *, min_category_retention=MIN_CATEGORY_RETENT
                    ", ".join(sorted(set(old["category_keys"]) -
                                     set(new["category_keys"]))) or "(none)"))
 
+    # 3. A NON-POSITIVE or unparseable baseline is a broken build, and this one fails
+    #    CLOSED rather than open, which is why it rejects where a price MOVE only warns.
+    #    blackwall holds at `quoted >= CATEGORY_HOLD_RATIO * median`, so a median of 0
+    #    puts the hold line at 0 and EVERY payment in that category is held. There is
+    #    nothing to calibrate: no market rate is zero, and an unparseable one is not a
+    #    rate at all. Checked on `new` alone -- a bad value is bad regardless of history.
+    for cat in sorted(new.get("category_values") or {}):
+        raw = new["category_values"][cat]
+        if _rate(raw) is None:
+            reasons.append(
+                "category baseline %s is %r -- not a usable market rate; at "
+                "CATEGORY_HOLD_RATIO this puts the hold line at or below zero, which "
+                "holds EVERY payment in the category (fail-CLOSED, not fail-open)"
+                % (cat, raw))
+
     # WARNINGS. A shrink that clears the thresholds is accepted, but it is never silent:
     # every lost category is a check that stops running, and the operator is entitled to
     # see which one without diffing two JSON files by hand.
@@ -154,6 +243,27 @@ def assess_index_refresh(old, new, *, min_category_retention=MIN_CATEGORY_RETENT
     gained_cats = sorted(set(new["category_keys"]) - set(old["category_keys"]))
     if gained_cats:
         warnings.append("category baseline(s) newly indexed: %s" % ", ".join(gained_cats))
+
+    # VALUE DRIFT, on the baselines that SURVIVED. Never a reject: see
+    # VALUE_DRIFT_WARN_RATIO for why this threshold is calibrated from one side only.
+    # A baseline that moves takes the HOLD line with it, so the warning states the line
+    # in dollars rather than leaving the reader to multiply.
+    old_vals = old.get("category_values") or {}
+    new_vals = new.get("category_values") or {}
+    for cat in sorted(set(old_vals) & set(new_vals)):
+        before, after = _rate(old_vals[cat]), _rate(new_vals[cat])
+        if before is None or after is None:
+            continue          # rejected above, or absent from a hand-built stats dict
+        ratio = max(before / after, after / before)
+        if ratio >= Decimal(str(value_drift_warn_ratio)):
+            warnings.append(
+                "category baseline %s moved %s -> %s (%.2fx %s), taking the HOLD line "
+                "with it: a quote is held at >= %s instead of >= %s. NOT a reject -- a "
+                "2.25x move was measured LEGITIMATE on 2026-09-28, so this line only "
+                "annotates%s"
+                % (cat, old_vals[cat], new_vals[cat], ratio,
+                   "down" if after < before else "up",
+                   after * 50, before * 50, _payee_note(new, cat)))
 
     # Divergence membership churns both ways on a healthy refresh; report the shape so an
     # accept still leaves a record, without pretending either direction is a problem.
@@ -195,12 +305,19 @@ def main(argv=None):
     p.add_argument("--new-category", required=True, help="candidate category index")
     p.add_argument("--old-divergence", required=True, help="committed data/divergence_index.json")
     p.add_argument("--new-divergence", required=True, help="candidate divergence index")
+    p.add_argument("--new-meta", help="candidate category_index.meta.json (optional; "
+                   "supplies distinct-payee counts so a drift warning can say whether "
+                   "the baseline was thin)")
     p.add_argument("--json", help="write the assessment JSON here")
     args = p.parse_args(argv)
 
+    # The sidecar is OPTIONAL and only annotates: a guard that refused to run without
+    # it would make a new file a prerequisite for gating an old one.
+    new_meta = _load(args.new_meta) if args.new_meta else {}
     result = assess_index_refresh(
         index_stats(_load(args.old_category), _load(args.old_divergence)),
-        index_stats(_load(args.new_category), _load(args.new_divergence)))
+        index_stats(_load(args.new_category), _load(args.new_divergence),
+                    category_payees=new_meta.get("payees")))
     for label in ("old", "new"):
         print("%s:" % label, {k: result[label][k] for k in ("categories", "divergences")})
     for w in result["warnings"]:
