@@ -603,3 +603,75 @@ class TestNewCarriersNeverShadowOlderOnes(unittest.TestCase):
 
     def test_no_carrier_still_yields_nothing(self):
         self.assertEqual(xc.parse_challenge("", _Msg([("X", "y")])), (None, None))
+
+
+class BazaarEchoIsWhatActuallyCatalogs(unittest.TestCase):
+    """THE MECHANISM, read off the spec on 2026-09-27 after three deployed 402
+    fixes failed to produce a listing (docs.x402.org/extensions/bazaar):
+
+        "Cataloging happens when a facilitator processes a `PaymentPayload` that
+         includes the echoed `bazaar` extension."
+        "A server-side declaration alone catalogs nothing if no paying client
+         echoes it; a settlement whose payload omits the extension catalogs
+         nothing either."
+
+    So the requirement was never on our 402 -- it is on the PAYMENT PAYLOAD, and
+    the echo is the PAYER's job. Both of our CDP settlements were made by
+    `clients/x402_pay.py`, which had no mention of extensions at all, so they
+    catalogued nothing BY DESIGN rather than by defect. This is the pure half,
+    kept out of that client because it is gated behind `eth-account` and would
+    otherwise be untested in the stdlib run.
+    """
+
+    def _body(self, bazaar, extra=None):
+        ext = {}
+        if bazaar is not None:
+            ext["bazaar"] = bazaar
+        if extra:
+            ext.update(extra)
+        return json.dumps({"x402Version": 2, "accepts": [], "extensions": ext})
+
+    def test_the_bazaar_block_is_echoed(self):
+        # Kills: returning None regardless -- i.e. the status quo, which
+        # catalogs nothing.
+        got = xc.bazaar_echo(self._body({"info": {"input": {"method": "POST"}}}))
+        self.assertEqual(got, {"bazaar": {"info": {"input": {"method": "POST"}}}})
+
+    def test_only_bazaar_is_echoed(self):
+        # The challenge is authored by the SELLER and this value goes into a
+        # payload WE sign and a facilitator validates. Echoing every extension
+        # back is the untrusted-passthrough class this repo has now found nine
+        # times. Mutation: echo the whole `extensions` dict -> FAILS.
+        got = xc.bazaar_echo(self._body({"info": {}},
+                                       extra={"evil": {"x": 1}, "other": 2}))
+        self.assertEqual(sorted(got.keys()), ["bazaar"])
+
+    def test_absent_means_no_echo_at_all(self):
+        # Fail-quiet: no bazaar block -> None, so the caller attaches NOTHING
+        # rather than an empty `extensions` object that a validator may reject.
+        # Mutation: return {} or {"bazaar": {}} -> FAILS.
+        self.assertIsNone(xc.bazaar_echo(self._body(None)))
+        self.assertIsNone(xc.bazaar_echo(json.dumps({"accepts": []})))
+
+    def test_oversize_is_REFUSED_not_truncated(self):
+        # A hostile seller can put anything here and we would sign and transmit
+        # it. Truncating would echo something the seller never declared, which a
+        # validating facilitator may reject -- and a mangled echo is worse than
+        # none, because none is merely the status quo. Mutation: truncate, or
+        # drop the cap -> FAILS.
+        huge = {"info": {"pad": "a" * (xc.MAX_BAZAAR_ECHO_BYTES + 100)}}
+        self.assertIsNone(xc.bazaar_echo(self._body(huge)))
+
+    def test_junk_never_raises(self):
+        # Same tolerance rule as the rest of this module: third-party junk is
+        # answered, never raised on. Mutation: drop the guards -> FAILS.
+        for junk in (b"", b"not json", "[]", json.dumps({"extensions": 7}),
+                     json.dumps({"extensions": {"bazaar": None}}),
+                     json.dumps({"extensions": {"bazaar": "a string"}}),
+                     None, 42):
+            self.assertIsNone(xc.bazaar_echo(junk), junk)
+
+    def test_a_non_object_bazaar_is_not_echoed(self):
+        # The spec's shape is an object. A string or list would be echoed into a
+        # payload a facilitator validates; refuse rather than pass it through.
+        self.assertIsNone(xc.bazaar_echo(self._body(["info"])))

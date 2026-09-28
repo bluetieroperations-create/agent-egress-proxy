@@ -189,7 +189,8 @@ def token_domain(asset, network, rpc_url):
             "chainId": cid, "verifyingContract": verifying}, False
 
 
-def build_payment(challenge_req, signer_pk, signer_addr, network, rpc_url):
+def build_payment(challenge_req, signer_pk, signer_addr, network, rpc_url,
+                  extensions=None):
     """Sign an EIP-3009 authorization satisfying `challenge_req` -> payment dict.
 
     The token signed over is the one the SERVER advertises in the 402 challenge
@@ -283,13 +284,28 @@ def build_payment(challenge_req, signer_pk, signer_addr, network, rpc_url):
             },
         },
     }
+    # THE ECHO THAT ACTUALLY CATALOGS. Per the Bazaar extension spec, a
+    # facilitator catalogs when it processes a PaymentPayload CARRYING the
+    # echoed `bazaar` extension -- "a settlement whose payload omits the
+    # extension catalogs nothing". This client omitted it entirely, which is why
+    # two correct-and-deployed 402 fixes produced no listing.
+    #
+    # ATTACHED AS A SIBLING of `accepted` and `payload`, never inside them: the
+    # authorization is what we are SIGNING, and seller-authored metadata must not
+    # be able to touch the amount, the recipient or the terms. `bazaar_echo`
+    # already dropped every non-`bazaar` key and refused an oversize block, so
+    # what arrives here is bounded and narrow.
+    if extensions:
+        payment["extensions"] = extensions
     return payment
 
 
-def payment_header(requirements, signer_pk, signer_addr, network, rpc_url=None):
+def payment_header(requirements, signer_pk, signer_addr, network, rpc_url=None,
+                   extensions=None):
     """Sign a payment satisfying a 402 `accepts[]` entry and return the base64
     `X-PAYMENT` header value (the wire form the server expects)."""
-    payment = build_payment(requirements, signer_pk, signer_addr, network, rpc_url)
+    payment = build_payment(requirements, signer_pk, signer_addr, network, rpc_url,
+                            extensions=extensions)
     return base64.b64encode(json.dumps(payment).encode()).decode()
 
 
@@ -373,7 +389,17 @@ def main(argv=None):
                          "--network is %r; signature will be rejected.\n"
                          % (req.get("network"), args.network))
 
-    x_payment = payment_header(req, pk, signer_addr, args.network, rpc_url)
+    # Echo the seller's `extensions.bazaar` into the payload. THE SEVENTH EDIT:
+    # `build_payment` and `payment_header` both grew an `extensions` parameter,
+    # and omitting it HERE leaves all of it parsed, defaulted and INERT -- the
+    # pattern this repo has now found nine times, most recently one commit ago in
+    # the 402 that this echo is the other half of.
+    echo = x402_challenge.bazaar_echo(raw)
+    sys.stdout.write("bazaar echo: %s\n"
+                     % ("attached (this is what catalogs)" if echo
+                        else "none advertised by the seller -- nothing to echo"))
+    x_payment = payment_header(req, pk, signer_addr, args.network, rpc_url,
+                               extensions=echo)
     sys.stdout.write("signed EIP-3009 authorization; resending with X-PAYMENT...\n")
 
     status, parsed, raw, _ = _http_json(args.url, body, headers={"X-PAYMENT": x_payment})

@@ -197,3 +197,87 @@ dict shape.
 
 Re-run `python cdp_bazaar_check.py` after deploying. Exit codes: **0** listed,
 **1** not yet, **2** inconclusive — so it can be scheduled.
+
+
+## 2026-09-27 — THE MECHANISM, and it was never our 402
+
+Third scan: **still absent, 17,663 entries, full pagination.** Both deployed
+hypotheses had been live and verified for ~11 days. So I stopped guessing and
+read the spec (`docs.x402.org/extensions/bazaar`), which states it outright:
+
+> "Cataloging happens when a facilitator processes a `PaymentPayload` that
+> includes the echoed `bazaar` extension."
+>
+> "A server-side declaration alone catalogs nothing if no paying client echoes
+> it; a settlement whose payload omits the extension catalogs nothing either."
+
+**The requirement is on the PAYMENT PAYLOAD, and the echo is the PAYER's job.**
+A correct 402 is necessary and NOT sufficient. Verified against our own code in
+one grep: `clients/x402_pay.py` — which made both CDP settlements — contained no
+mention of `extensions` at all, and `x402.py` only ever writes `extensions` into
+the 402 *body*. So our settlements catalogued nothing **by design, not by
+defect**, and both 402 fixes were changes to the necessary half while the
+missing half sat on the payer side the whole time.
+
+### Why this went unfound for three rounds
+
+CDP's own Bazaar page documents *consuming* the catalog, not entering it — the
+ingestion rule lives in the x402 extension spec, not in the vendor docs we kept
+re-reading. Two 402-shape hypotheses were each derived by **sampling catalogued
+entries and diffing against ours**, which can only ever produce statements about
+correlates of listing. No amount of sampling recovers a rule about a payload the
+catalog does not publish.
+
+### Not just us — three independent sellers, same symptom
+
+- `coinbase/cdp-sdk` **#824** (2026-09-21, groundtruth-now): validator 25/25,
+  settled CDP Base payment, absent from a full 15,118-row scan. **Closed, no
+  staff answer.**
+- `x402-foundation/x402` **#2112** (2026-04-23, Karl-Keller): 8 USDC settlements,
+  still unlisted, and CDP never emits the `EXTENSION-RESPONSES` header. **Closed,
+  no staff answer.**
+
+That pattern is itself evidence: three unrelated sellers with valid 402s and real
+CDP settlements, all absent, is what "the echo is missing" predicts and what "our
+402 is malformed" does not.
+
+**One correction to #2112's premise, since it matters before quoting it:** the
+spec says a facilitator **MAY** return `EXTENSION-RESPONSES`. CDP not emitting it
+is permitted, so it is a diagnostic gap rather than a violation — real, because it
+is the only documented way to learn whether your metadata was accepted or
+rejected, but weaker than "never emits the documented header" sounds.
+
+### A wrong lead, recorded because it nearly shipped
+
+A search summary asserted that listing requires `extensions.bazaar.discoverable:
+true`. **It is not in the spec.** Reading the spec rather than the summary is what
+stopped a fourth 402-shape guess going out, which would have been the same
+mistake a third time.
+
+### What was built
+
+`x402_challenge.bazaar_echo(body)` — pure, stdlib, tolerant — returns the
+`extensions` a paying client must attach, and `clients/x402_pay.py` now attaches
+it. Three properties, each mutation-verified:
+
+- **Only `bazaar` is carried.** The challenge is authored by the seller being
+  paid and this lands in a payload we SIGN and a third party validates, so every
+  other key is dropped — the untrusted-echo class, tenth instance here.
+- **Oversize is refused, not truncated.** A truncated block is not what the
+  seller declared and a validating facilitator may reject it; a mangled echo is
+  worse than none, because none is merely today's status quo.
+- **The echo is a SIBLING of `accepted` and `payload`, never nested inside.**
+  Seller metadata must not reach the amount, recipient or terms. Asserted on the
+  assignment's AST structure, after the first version of that test grepped a
+  text window that fell just short of the thing it checked.
+
+The pure decision is tested in the stdlib suite deliberately: the client is gated
+behind `eth-account`, so logic placed there would be untested in the container
+that runs the canonical check.
+
+### Still a hypothesis, and what would settle it
+
+This is now the *documented* mechanism plus a verified gap in our stack — not a
+confirmed cause. It needs **one funded settlement through the patched client**,
+then a re-scan. That is the operator's to run, and it is the first test of this
+arc with a stated mechanism behind it rather than a shape diffed off the catalog.
