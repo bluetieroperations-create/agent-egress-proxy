@@ -226,9 +226,30 @@ def assess_refresh(old, new, *, crawl=None, min_retention=MIN_RETENTION,
             reasons.append(
                 "not fresh: new store is %d days old (> %d-day warn) -- crawl produced "
                 "stale timestamps" % (na, warn_days))
-        if oa is not None and na >= oa:
+        # PROGRESS IS NOT ONLY AGE. This read `na >= oa` alone until 2026-09-28, and that
+        # day it threw away a refresh carrying 9,388 NEW SETTLEMENTS (76,544 -> 85,932
+        # edges, +12%) because both stores rounded to 0 days old.
+        #
+        # The failure is structural, not a near-miss: age is measured in WHOLE DAYS, so
+        # the moment a fresh corpus is committed the test `0 >= 0` is unsatisfiable and
+        # EVERY further refresh that day is rejected as "nothing to ship" no matter how
+        # much history it adds. It stayed hidden because the cron runs weekly against a
+        # 7-day-old store, where age always improves; merging a refresh by hand and
+        # letting the cron run the same day is what exposed it.
+        #
+        # So a refresh makes progress if it is FRESHER *or* if it carries MORE HISTORY.
+        # No threshold is invented for "more": the candidate is seeded from the committed
+        # store and re-ingest is idempotent on UNIQUE(tx_hash, counterparty, amount), so a
+        # genuine no-op lands on exactly ZERO new edges while any real crawl lands above
+        # it. Shrinkage is not progress either, and is already rejected by the collapse
+        # check above; this only asks whether anything was gained.
+        oe, ne = old.get("edges"), new.get("edges")
+        gained = (oe is not None and ne is not None and ne > oe)
+        if oa is not None and na >= oa and not gained:
             reasons.append(
-                "no progress: new store age %d d >= current %d d -- nothing to ship" % (na, oa))
+                "no progress: new store age %d d >= current %d d and no new settlements "
+                "(%s -> %s edges) -- nothing to ship"
+                % (na, oa, oe, ne))
 
     # 3. convergence regression -- WARN only (freshness wins; the gate is protected
     #    independently by test_coverage_eval's seed-regression check).

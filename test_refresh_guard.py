@@ -41,12 +41,54 @@ class TestAssessRefresh(unittest.TestCase):
         self.assertTrue(any("edge count" in x for x in r["reasons"]))
 
     def test_rejects_no_progress(self):
-        # crawl produced a store no fresher than the current one -> pointless churn.
-        # Mutation: use `>` instead of `>=` -> an equal-age no-op would ship.
-        new = _stats(300, 24000, age_days=45)
+        # A TRUE no-op: no fresher AND no new settlements -> pointless churn.
+        #
+        # THIS TEST USED TO ASSERT THE BUG. It passed `_stats(300, 24000)` against an OLD
+        # of `_stats(290, 23000)` -- a candidate carrying ONE THOUSAND MORE EDGES -- and
+        # demanded a reject, because it encoded the same "progress means age" assumption
+        # the code did. So the guard and its test agreed with each other and both were
+        # wrong, which is why this survived until production showed it.
+        #
+        # Mutation: use `>` instead of `>=` -> an equal-age genuine no-op would ship.
+        new = _stats(290, 23000, age_days=45)          # identical store, re-crawled
         r = G.assess_refresh(self.OLD, new)
         self.assertFalse(r["accept"])
         self.assertTrue(any("no progress" in x for x in r["reasons"]))
+
+    def test_equal_age_with_NEW_SETTLEMENTS_is_progress(self):
+        # THE 2026-09-28 PRODUCTION REJECT, to the number. Run #9 crawled 9,388 new
+        # settlements (76,544 -> 85,932 edges, +12%) and the guard threw all of it away
+        # because both stores rounded to 0 days old and `0 >= 0`.
+        #
+        # The failure is structural, not a near-miss: age is whole days, so once a fresh
+        # corpus is committed, NO refresh that day can ever show age progress. It hid for
+        # weeks because the cron runs against a 7-day-old store where age always improves.
+        #
+        # kills: reverting to an age-only test, which re-discards every same-day refresh.
+        old = _stats(281, 76544, age_days=0)
+        new = _stats(281, 85932, age_days=0)
+        r = G.assess_refresh(old, new)
+        self.assertTrue(r["accept"], r["reasons"])
+        self.assertFalse(any("no progress" in x for x in r["reasons"]))
+
+    def test_equal_age_and_FEWER_edges_is_never_progress(self):
+        # kills: reading "gained" as "changed". A shrinking store is not progress in any
+        # reading; the collapse check owns the large case, and this pins the small one so
+        # a one-edge loss cannot sneak through as movement.
+        old = _stats(281, 76544, age_days=0)
+        new = _stats(281, 76543, age_days=0)
+        r = G.assess_refresh(old, new)
+        self.assertFalse(r["accept"])
+        self.assertTrue(any("no progress" in x for x in r["reasons"]))
+
+    def test_the_reject_reports_both_halves_it_judged(self):
+        # kills: a message that still says only "age N >= M". The operator's next question
+        # after "nothing to ship" is "did it really find nothing?", and the edge counts
+        # are the answer -- withholding them is what sent this run to the job log.
+        r = G.assess_refresh(_stats(281, 76544, age_days=0),
+                             _stats(281, 76544, age_days=0))
+        msg = [x for x in r["reasons"] if "no progress" in x][0]
+        self.assertIn("76544", msg)
 
     def test_rejects_stale_result(self):
         # even if "fresher" than a very old store, a result past the warn window is not
@@ -338,3 +380,117 @@ class TestRefreshScriptKeepsProvenanceNonFatal(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestTheWorkflowPreservesTheRejectDiagnostic(unittest.TestCase):
+    """A reject files an issue; the issue has to carry the reason.
+
+    Run #9 (2026-09-28) rejected and filed issue #61 saying "which one, and why, is in
+    the job log". The provenance record holds the crawl aggregates but seed_provenance.py
+    runs ONLY on the accept path, so the run that most needed explaining produced the
+    least explanation -- and job logs expire while the issue outlives them.
+    """
+
+    def _wf(self):
+        with open(".github/workflows/seed-refresh.yml") as fh:
+            return fh.read()
+
+    def test_tee_really_does_mask_the_exit_code(self):
+        # BEHAVIOURAL, and the reason the next test matters. Piping into `tee` makes the
+        # pipeline's status `tee`'s, so a plain `$?` reads 0 on a REJECT and the workflow
+        # would take the accept path with nothing to promote. Proven, not asserted from
+        # memory -- this is the trap the transcript change walks straight into.
+        import subprocess
+        masked = subprocess.run(
+            ["bash", "-c", 'set +e; (exit 1) | tee /dev/null >/dev/null; echo $?'],
+            capture_output=True, text=True).stdout.strip()
+        honest = subprocess.run(
+            ["bash", "-c", 'set +e; (exit 1) | tee /dev/null >/dev/null; echo ${PIPESTATUS[0]}'],
+            capture_output=True, text=True).stdout.strip()
+        self.assertEqual(masked, "0")    # tee's status -- the reject vanishes
+        self.assertEqual(honest, "1")    # the script's own status
+
+    def test_the_refresh_step_reads_PIPESTATUS_not_dollar_question(self):
+        # kills: teeing the transcript and keeping `code=$?`, which the test above shows
+        # would report every reject as a success and send the job to the PR path.
+        wf = self._wf()
+        self.assertIn("PIPESTATUS[0]", wf)
+        self.assertNotIn('echo "code=$?"', wf)
+
+    def test_the_reject_nag_quotes_the_guard_verdicts(self):
+        # kills: reverting the nag to a bare pointer at the job log. The issue is the
+        # artifact that survives; it has to contain the verdicts, not a link to them.
+        wf = self._wf()
+        self.assertIn("refresh.log", wf)
+        self.assertIn("What the guards actually said", wf)
+
+    # The real transcript shape, copied from run #9 (2026-09-28), which is the run this
+    # whole change exists because of.
+    RUN_9 = """refresh_seed: running the refresh guard (store: candidate vs committed) ...
+old: {'payees': 281, 'edges': 76544, 'age_days': 0, 'gating_reachable': True}
+new: {'payees': 281, 'edges': 85932, 'age_days': 0, 'gating_reachable': True}
+WARN: 201 payee(s) hit the page cap -- their history is a recent WINDOW
+REJECT -- keep the current store:
+  - no progress: new store age 0 d >= current 0 d -- nothing to ship
+Seeded 292 payee(s): 45517 transfers, 9388 new settlements.
+refresh_seed: REJECTED the candidate (see reasons above):
+refresh_seed:   - refresh_guard rejected the STORE
+"""
+
+    def test_the_extraction_actually_selects_the_verdict_lines(self):
+        # kills: a heading over an EMPTY block -- neutering the grep to `true` leaves the
+        # nag saying "What the guards actually said:" and then saying nothing, which
+        # passes every structural check while carrying exactly as much information as the
+        # pointer-at-the-job-log it replaced. Found by mutation, not by reading.
+        #
+        # Runs the WORKFLOW'S OWN pattern against the real log shape, rather than a copy
+        # of it that could drift.
+        import re, subprocess, tempfile, os
+        wf = self._wf()
+        m = re.search(r'grep -E "([^"]+)"', wf)
+        self.assertIsNotNone(m, "the nag no longer extracts anything")
+        pattern = m.group(1)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "refresh.log")
+            with open(path, "w") as fh:
+                fh.write(self.RUN_9)
+            out = subprocess.run(["grep", "-E", pattern, path],
+                                 capture_output=True, text=True).stdout
+        # the verdict, the reason, and the numbers that justify re-running.
+        #
+        # Assert the VERDICT LINE, not the substring: a mutation narrowing the pattern to
+        # ^(WARN|ACCEPT) still emitted "refresh_seed:   - refresh_guard rejected the
+        # STORE" via the other alternation, and that line CONTAINS "REJECT" -- so a
+        # substring check passed while the guard's own verdict had been dropped.
+        lines = out.splitlines()
+        self.assertTrue(any(l.startswith("REJECT") for l in lines),
+                        "the guard's verdict line itself was not extracted: %r" % lines)
+        self.assertIn("no progress", out)
+        self.assertIn("85932", out)          # the candidate's edge count, from `new:`
+        self.assertIn("refresh_guard rejected the STORE", out)
+        # WARNINGS belong in the issue too. A reject is read alongside them -- "201
+        # payees hit the page cap" is the context that tells an operator whether to
+        # re-run or to go look at the data source.
+        self.assertTrue(any(l.startswith("WARN") for l in lines),
+                        "warnings were dropped from the transcript: %r" % lines)
+
+    def test_the_transcript_is_captured_before_the_nag_needs_it(self):
+        # kills: writing the transcript somewhere the nag step cannot read, or capturing
+        # it after the branch that consumes it.
+        wf = self._wf()
+        self.assertLess(wf.index('tee "$RUNNER_TEMP/refresh.log"'),
+                        wf.index("What the guards actually said"))
+
+
+class TestTheLockfileFallbackIsNotSilent(unittest.TestCase):
+    """`npm ci || npm install` passes CI while the lockfile has drifted."""
+
+    def test_both_integration_steps_announce_a_failed_npm_ci(self):
+        # kills: restoring the bare `npm ci || npm install`. The fallback itself is fine
+        # -- a drifted lockfile should not take CI down -- but silence is not: the suite
+        # then runs against RESOLVED versions while the check reports success for a thing
+        # it did not verify. Same fail-quiet shape as a gate that stops gating.
+        with open(".github/workflows/tests.yml") as fh:
+            wf = fh.read()
+        self.assertEqual(wf.count("::warning::npm ci FAILED here"), 2,
+                         "both the openclaw and lucid steps must warn")
+        self.assertNotIn("npm ci --no-audit --no-fund || npm install", wf)
