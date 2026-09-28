@@ -166,7 +166,16 @@ jobs:
       - name: OpenClaw plugin (vitest)
         working-directory: integrations/openclaw
         run: |
-          npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+          # The fallback stays -- a lockfile that has drifted should not take CI down --
+          # but it no longer passes in SILENCE. `npm ci` failing means the lockfile does
+          # not match package.json, so `npm install` then resolves versions the lockfile
+          # does not pin and the suite runs against something nobody committed. A green
+          # check over a drifted lockfile is the same fail-quiet shape as a gate that
+          # stops gating: it reports success for a thing it did not verify.
+          if ! npm ci --no-audit --no-fund; then
+            echo "::warning::npm ci FAILED here -- the lockfile does not match package.json. Falling back to npm install, so these tests ran against RESOLVED versions, not the pinned ones. Regenerate the lockfile."
+            npm install --no-audit --no-fund
+          fi
           npm test
 
       # Lucid Agents policy gate. IMPORTS ../openclaw/core.js, so this step also
@@ -176,5 +185,14 @@ jobs:
       - name: Lucid Agents policy gate (vitest)
         working-directory: integrations/lucid
         run: |
-          npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+          # The fallback stays -- a lockfile that has drifted should not take CI down --
+          # but it no longer passes in SILENCE. `npm ci` failing means the lockfile does
+          # not match package.json, so `npm install` then resolves versions the lockfile
+          # does not pin and the suite runs against something nobody committed. A green
+          # check over a drifted lockfile is the same fail-quiet shape as a gate that
+          # stops gating: it reports success for a thing it did not verify.
+          if ! npm ci --no-audit --no-fund; then
+            echo "::warning::npm ci FAILED here -- the lockfile does not match package.json. Falling back to npm install, so these tests ran against RESOLVED versions, not the pinned ones. Regenerate the lockfile."
+            npm install --no-audit --no-fund
+          fi
           npm test

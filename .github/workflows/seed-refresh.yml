@@ -68,8 +68,16 @@ jobs:
           BACKFILL_PAGES: ${{ github.event.inputs.max_pages }}
         run: |
           set +e
-          sh scripts/refresh_seed.sh
-          echo "code=$?" >> "$GITHUB_OUTPUT"
+          # TEE, not a bare run. The guards print their verdicts and reasons here and
+          # nowhere else, and on a REJECT that is the only explanation that exists: the
+          # provenance record carries the crawl aggregates but seed_provenance.py runs
+          # ONLY on the accept path, so the run that most needs explaining is the one
+          # that files an issue saying "see the job log". Keeping the transcript lets the
+          # nag quote the actual reasons.
+          sh scripts/refresh_seed.sh 2>&1 | tee "$RUNNER_TEMP/refresh.log"
+          # PIPESTATUS, not $? -- `tee` exits 0 and would mask every reject. bash only;
+          # this step is `shell: bash` by default while the script itself stays POSIX sh.
+          echo "code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
           set -e
 
       - name: Sanity-check the refreshed corpus
@@ -208,6 +216,18 @@ jobs:
             python3 check_seed_age.py || true
             echo '```'
             echo ""
+            # THE VERDICTS THEMSELVES, not a pointer to them. An issue that says "the
+            # reason is in the job log" makes the reader open the log, and logs expire;
+            # the whole point of filing an issue is that it outlives the run.
+            if [ -f "$RUNNER_TEMP/refresh.log" ]; then
+              echo "What the guards actually said:"
+              echo ""
+              echo '```'
+              grep -E "^(old|new):|^(WARN|REJECT|ACCEPT)|^  - |^refresh_seed: " \
+                   "$RUNNER_TEMP/refresh.log" | tail -40 || true
+              echo '```'
+              echo ""
+            fi
             echo "Re-run the workflow, or refresh manually, once the on-chain data source is healthy."
             echo ""
             echo "_Automated from .github/workflows/seed-refresh.yml._"
