@@ -1139,3 +1139,93 @@ class TestFacilitatorTimeoutEnv(unittest.TestCase):
         os.environ["BW_TEST_TIMEOUT"] = ""
         self.assertEqual(blackwall._float_env("BW_TEST_TIMEOUT", 8.0), 8.0)
         os.environ.pop("BW_TEST_TIMEOUT", None)
+
+
+class FacilitatorKindIsReportable(unittest.TestCase):
+    """WHICH FACILITATOR IS THIS SERVICE SETTLING THROUGH? It decides whether a
+    settlement can ever be catalogued -- per the Bazaar spec the FACILITATOR does
+    the cataloguing, and only CDP feeds the Bazaar -- and until now the answer
+    existed ONLY as a `sys.stderr` line at boot, served on no endpoint. So the
+    single most consequential config fact for the listing work could not be
+    checked without dashboard access, which is exactly the gap
+    `remote_ledger.describe_health` closed for ledger durability.
+
+    IT ALSO CANNOT BE READ OFF THE BOOT NOTE RELIABLY: `choose_facilitator` has
+    FOUR branches and the CDP-with-a-stale-URL one says "CDP creds set ... and
+    IGNORING non-CDP BLACKWALL_FACILITATOR=..." with NO mention of Bazaar. So
+    grepping the log for "Bazaar-eligible" reports "not CDP" on a config that IS
+    CDP -- a check aimed slightly to the left of its own property, the class this
+    repo keeps finding. This derives the kind from the OBJECT instead of the prose.
+    """
+
+    def test_each_facilitator_maps_to_its_own_label(self):
+        # Kills: collapsing cdp/keyless/mock, or reporting bazaar_eligible True
+        # for a keyless facilitator (which settles perfectly well and lists
+        # nothing -- the most expensive possible confusion here).
+        cdp = X.CdpFacilitator("id", "secret", base_url=X.CDP_FACILITATOR_URL)
+        self.assertEqual(X.facilitator_health(cdp),
+                         {"kind": "cdp", "bazaar_eligible": True})
+        self.assertEqual(X.facilitator_health(X.HttpFacilitator("https://f.example")),
+                         {"kind": "keyless", "bazaar_eligible": False})
+        self.assertEqual(X.facilitator_health(X.MockFacilitator()),
+                         {"kind": "mock", "bazaar_eligible": False})
+        self.assertEqual(X.facilitator_health(None),
+                         {"kind": "none", "bazaar_eligible": False})
+
+    def test_it_publishes_NO_url_and_NO_credential(self):
+        # The endpoint is PUBLIC and unauthenticated. A facilitator URL is
+        # operator config and a CDP key id is a credential, so the report is a
+        # WHITELIST of our own labels -- `remote_ledger`'s rule, where the answer
+        # was "do not echo" rather than "escape carefully". Mutation: add the
+        # url or the key id to the dict -> FAILS.
+        cdp = X.CdpFacilitator("SECRET-KEY-ID", "secret",
+                               base_url="https://api.cdp.coinbase.com/x")
+        blob = json.dumps(X.facilitator_health(cdp))
+        self.assertNotIn("SECRET-KEY-ID", blob)
+        self.assertNotIn("cdp.coinbase.com", blob)
+        self.assertNotIn("http", blob)
+        self.assertEqual(sorted(X.facilitator_health(cdp)),
+                         ["bazaar_eligible", "kind"])
+
+    def test_an_unknown_facilitator_is_unknown_not_eligible(self):
+        # Fail-safe direction: something we do not recognise must never be
+        # reported as Bazaar-eligible, or a future facilitator class silently
+        # claims a capability nobody verified. Mutation: default to cdp/True
+        # -> FAILS.
+        class _Odd:
+            pass
+        self.assertEqual(X.facilitator_health(_Odd()),
+                         {"kind": "unknown", "bazaar_eligible": False})
+
+    def test_it_never_raises(self):
+        # This runs on the health path, which must not fail on a reporting
+        # detail. Mutation: turn the handler into a re-raise -> FAILS.
+        #
+        # THE FIRST VERSION OF THIS TEST PASSED FOR THE WRONG REASON and mutation
+        # testing caught it: it used a class with a raising `__getattr__`, but
+        # `isinstance` never consults `__getattr__`, so the body never raised and
+        # the except branch was never reached -- the guard could be deleted with
+        # the test still green. A raising `__class__` PROPERTY is what actually
+        # makes `isinstance` raise, so that is what is used here.
+        class _Hostile:
+            @property
+            def __class__(self):
+                raise RuntimeError("boom")
+        self.assertEqual(X.facilitator_health(_Hostile()),
+                         {"kind": "unknown", "bazaar_eligible": False})
+
+
+class TheSubclassOrderIsLoadBearing(unittest.TestCase):
+    def test_cdp_is_an_HttpFacilitator_so_order_decides_the_label(self):
+        # `CdpFacilitator` SUBCLASSES `HttpFacilitator`, so an isinstance chain
+        # that tests the parent first labels a CDP facilitator `keyless` and
+        # reports bazaar_eligible False -- telling an operator their cutover is
+        # not live when it is, which is the most expensive mislabel this function
+        # can produce. Asserted as the RELATIONSHIP, not just the outcome, so the
+        # next person to reorder those branches sees why they must not.
+        # Mutation: swap the CdpFacilitator and HttpFacilitator rows -> FAILS.
+        self.assertTrue(issubclass(X.CdpFacilitator, X.HttpFacilitator),
+                        "if this ever stops being true, re-read facilitator_health")
+        cdp = X.CdpFacilitator("id", "secret", base_url=X.CDP_FACILITATOR_URL)
+        self.assertEqual(X.facilitator_health(cdp)["kind"], "cdp")
+        self.assertTrue(X.facilitator_health(cdp)["bazaar_eligible"])

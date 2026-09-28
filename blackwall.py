@@ -1979,6 +1979,22 @@ class _Handler(BaseHTTPRequestHandler):
                         self.ledger, self.ledger_boot_reason)
                 except Exception:
                     pass          # health must never fail on a reporting detail
+                try:
+                    # WHICH FACILITATOR settles here decides whether any payment
+                    # can be CATALOGUED (the Bazaar spec puts cataloguing in the
+                    # facilitator, and only CDP feeds it), and the answer used to
+                    # live only in a boot line on stderr. `self.billing` already
+                    # carries it, so no new binding: the seventh-edit hazard does
+                    # not apply. Labels only -- no url, no credential.
+                    from x402 import facilitator_health
+                    if self.billing is not None:
+                        body["facilitator"] = facilitator_health(
+                            getattr(self.billing, "facilitator", None))
+                    else:
+                        body["facilitator"] = {"kind": "off",
+                                               "bazaar_eligible": False}
+                except Exception:
+                    pass          # never fail health on a reporting detail
                 self._send_json(200, body)
             elif path.startswith("/v1/approvals/"):
                 self._do_poll_approval(path.rsplit("/", 1)[-1])

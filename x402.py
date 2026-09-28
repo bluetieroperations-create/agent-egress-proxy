@@ -742,6 +742,44 @@ def choose_facilitator(facilitator_url, cdp_id, cdp_secret, timeout=8.0, settle_
     return None, "built-in mock facilitator (no --facilitator, no CDP creds)"
 
 
+def facilitator_health(facilitator):
+    """{"kind", "bazaar_eligible"} for the facilitator this service settles
+    through -- the fact that decides whether a settlement can EVER be catalogued.
+
+    Per the Bazaar extension spec the FACILITATOR does the cataloguing, and only
+    CDP feeds the Bazaar, so a keyless facilitator settles real USDC perfectly
+    well and lists nothing. That answer used to exist only as a `sys.stderr` line
+    at boot, so it could not be checked without dashboard access -- the same gap
+    `remote_ledger.describe_health` closed for ledger durability, left open for
+    the one fact the whole listing effort turns on.
+
+    DERIVED FROM THE OBJECT, NOT THE BOOT NOTE, because the note cannot be
+    grepped reliably: `choose_facilitator`'s CDP-with-a-stale-URL branch says
+    "CDP creds set ... IGNORING non-CDP BLACKWALL_FACILITATOR=..." and never
+    mentions Bazaar, so matching on "Bazaar-eligible" reports "not CDP" for a
+    config that IS CDP.
+
+    A WHITELIST, NOT AN ECHO. `/healthz` is public and unauthenticated; a
+    facilitator URL is operator config and a CDP key id is a credential, so
+    neither appears here -- `remote_ledger`'s rule, where the answer was "do not
+    echo" rather than "escape carefully".
+
+    UNKNOWN IS NEVER ELIGIBLE: a class we do not recognise must not claim a
+    capability nobody verified. Never raises -- it runs on the health path.
+    """
+    try:
+        if facilitator is None:
+            return {"kind": "none", "bazaar_eligible": False}
+        for cls, kind, eligible in ((CdpFacilitator, "cdp", True),
+                                    (HttpFacilitator, "keyless", False),
+                                    (MockFacilitator, "mock", False)):
+            if isinstance(facilitator, cls):
+                return {"kind": kind, "bazaar_eligible": eligible}
+        return {"kind": "unknown", "bazaar_eligible": False}
+    except BaseException:
+        return {"kind": "unknown", "bazaar_eligible": False}
+
+
 # ===========================================================================
 # Idempotency (do not serve one payment's verdict twice)
 # ===========================================================================
