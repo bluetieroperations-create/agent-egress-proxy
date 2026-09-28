@@ -71,6 +71,47 @@ class TestAssessRefresh(unittest.TestCase):
         self.assertTrue(r["accept"], r["reasons"])
         self.assertFalse(any("no progress" in x for x in r["reasons"]))
 
+    def test_more_history_never_rescues_a_STALER_candidate(self):
+        # AUDIT FIX, found attacking the fix itself before merge. The first version read
+        # `na >= oa and not gained`, which accepted a candidate FIVE DAYS OLDER than the
+        # committed store purely on its edge count -- shipping a corpus staler than the
+        # one it replaces, the exact opposite of what this gate protects.
+        #
+        # refresh_seed.sh cannot produce that today (the candidate is seeded FROM the
+        # committed store, so its newest row can never be older). That is a property of
+        # the CALLER, and assess_refresh is public and pure -- a guard correct only while
+        # its one caller behaves is the coupling this repo keeps rediscovering. A deep
+        # historical crawl adding old rows and no new ones lands exactly here.
+        #
+        # kills: folding this back into the equal-age branch.
+        r = G.assess_refresh(_stats(281, 76544, age_days=0),
+                             _stats(281, 85932, age_days=5))
+        self.assertFalse(r["accept"])
+        self.assertTrue(any("BACKWARDS" in x for x in r["reasons"]), r["reasons"])
+
+    def test_the_progress_truth_table(self):
+        # The whole decision in one place, so a future edit has to face every quadrant
+        # rather than the one case it was thinking about.
+        #
+        # kills: any rewrite that gets one row wrong -- notably "fresher but no new
+        # edges", which MUST still ship (a re-crawl that confirms the corpus is current
+        # is progress in the only sense the stale cliff cares about).
+        cases = [
+            # (old_age, new_age, old_edges, new_edges, accept?)
+            (0, 5, 76544, 85932, False),   # staler, bigger      -> backwards
+            (0, 0, 76544, 85932, True),    # same age, bigger    -> 2026-09-28
+            (0, 0, 76544, 76544, False),   # same age, no gain   -> true no-op
+            (0, 0, 76544, 76000, False),   # same age, smaller   -> not progress
+            (7, 0, 76544, 85932, True),    # fresher, bigger     -> ordinary refresh
+            (7, 0, 76544, 76544, True),    # fresher, no gain    -> still progress
+        ]
+        for oa, na, oe, ne, want in cases:
+            r = G.assess_refresh(_stats(281, oe, age_days=oa),
+                                 _stats(281, ne, age_days=na))
+            self.assertEqual(r["accept"], want,
+                             "age %d->%d, edges %d->%d: expected accept=%s, got %s (%s)"
+                             % (oa, na, oe, ne, want, r["accept"], r["reasons"]))
+
     def test_equal_age_and_FEWER_edges_is_never_progress(self):
         # kills: reading "gained" as "changed". A shrinking store is not progress in any
         # reading; the collapse check owns the large case, and this pins the small one so

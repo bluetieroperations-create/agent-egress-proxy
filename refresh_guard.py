@@ -243,9 +243,26 @@ def assess_refresh(old, new, *, crawl=None, min_retention=MIN_RETENTION,
         # genuine no-op lands on exactly ZERO new edges while any real crawl lands above
         # it. Shrinkage is not progress either, and is already rejected by the collapse
         # check above; this only asks whether anything was gained.
+        # `gained` rescues an EQUAL-age refresh, never a STALER one. Caught auditing this
+        # very change: written as `na >= oa and not gained` it accepted a candidate FIVE
+        # DAYS OLDER than the committed store on the strength of its edge count, which
+        # ships a corpus staler than the one it replaces -- the opposite of the freshness
+        # this whole gate exists to protect.
+        #
+        # Not reachable through refresh_seed.sh today, because the candidate is seeded
+        # FROM the committed store and so can never carry an older newest-row. That is a
+        # property of the caller, and assess_refresh is public and pure: a guard that is
+        # only correct while its one caller behaves is the coupling this repo keeps
+        # finding. A deep historical crawl that adds old rows and no new ones lands
+        # exactly here.
         oe, ne = old.get("edges"), new.get("edges")
         gained = (oe is not None and ne is not None and ne > oe)
-        if oa is not None and na >= oa and not gained:
+        if oa is not None and na > oa:
+            reasons.append(
+                "went BACKWARDS: new store is %d days old against the current %d -- a "
+                "candidate cannot be staler than what it replaces, whatever it gained "
+                "(%s -> %s edges)" % (na, oa, oe, ne))
+        elif oa is not None and na >= oa and not gained:
             reasons.append(
                 "no progress: new store age %d d >= current %d d and no new settlements "
                 "(%s -> %s edges) -- nothing to ship"
