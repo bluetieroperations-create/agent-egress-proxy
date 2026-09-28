@@ -145,6 +145,25 @@ def _rate(raw):
     return d if d.is_finite() and d > 0 else None
 
 
+def _hold_ratio():
+    """`blackwall.CATEGORY_HOLD_RATIO`, or 50.0 if blackwall will not import.
+
+    The drift warning quotes the resulting HOLD LINE in dollars, which is a claim ABOUT
+    blackwall's constant -- so hardcoding it here would let this module report a hold line
+    that does not exist the day someone retunes the gate. Imported LAZILY with a fallback
+    rather than at module scope: index_guard runs inside refresh_seed.sh, where staying
+    stdlib-only is the reason it can run at all (blackwall's dependency chain has raised a
+    pyo3 PanicException in constrained environments, which no `except ImportError` catches).
+    test_the_warning_uses_blackwalls_own_ratio pins the fallback to the real constant, so
+    the two cannot drift silently.
+    """
+    try:
+        from blackwall import CATEGORY_HOLD_RATIO
+        return float(CATEGORY_HOLD_RATIO)
+    except BaseException:
+        return 50.0
+
+
 def _payee_note(stats, category):
     """Explain a thin baseline when the sidecar is present, else say nothing."""
     n = (stats.get("category_payees") or {}).get(category)
@@ -256,6 +275,7 @@ def assess_index_refresh(old, new, *, min_category_retention=MIN_CATEGORY_RETENT
             continue          # rejected above, or absent from a hand-built stats dict
         ratio = max(before / after, after / before)
         if ratio >= Decimal(str(value_drift_warn_ratio)):
+            hold = Decimal(str(_hold_ratio()))
             warnings.append(
                 "category baseline %s moved %s -> %s (%.2fx %s), taking the HOLD line "
                 "with it: a quote is held at >= %s instead of >= %s. NOT a reject -- a "
@@ -263,7 +283,7 @@ def assess_index_refresh(old, new, *, min_category_retention=MIN_CATEGORY_RETENT
                 "annotates%s"
                 % (cat, old_vals[cat], new_vals[cat], ratio,
                    "down" if after < before else "up",
-                   after * 50, before * 50, _payee_note(new, cat)))
+                   after * hold, before * hold, _payee_note(new, cat)))
 
     # Divergence membership churns both ways on a healthy refresh; report the shape so an
     # accept still leaves a record, without pretending either direction is a problem.

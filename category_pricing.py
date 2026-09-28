@@ -103,6 +103,25 @@ def observations_from_store(store, payee_category):
     return obs
 
 
+def sidecar_meta(index_text, counts, min_payees, generated_at):
+    """The `category_index.meta.json` payload for an index whose exact bytes are
+    `index_text`. PURE, and separated from main() precisely so the CONTENT PIN can be
+    tested without a live crawl -- an untested pin is the pin that silently stops
+    pinning.
+
+    Hashes the bytes handed in rather than re-reading the path, so the digest cannot
+    describe a file written after it (see payto_baseline._sidecar_age: the sidecar's own
+    failure mode is the forgotten refresh).
+    """
+    import hashlib
+    raw = index_text.encode("utf-8") if isinstance(index_text, str) else index_text
+    return {"generated_at": generated_at,
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "min_payees": min_payees,
+            "indexed": sorted(json.loads(raw.decode("utf-8"))),
+            "payees": dict(counts)}
+
+
 def category_payee_counts(observations):
     """{category: distinct payee count} over the SAME observations the index is built
     from. PURE.
@@ -172,11 +191,15 @@ def main(argv=None):
         # how a sidecar ends up describing a file it does not sit beside.
         from payto_baseline import meta_path as _sidecar_path
         meta_path = _sidecar_path(args.out)
-        meta = {"generated_at": datetime.datetime.now(datetime.timezone.utc)
-                                 .strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "min_payees": args.min_payees,
-                "indexed": sorted(index),
-                "payees": counts}
+        # CONTENT-PINNED over the EXACT bytes written above, by the same argument
+        # payto_baseline._sidecar_age makes for data/directory.meta.json: "a sidecar's own
+        # failure mode is the forgotten refresh -- regenerate the corpus, leave the
+        # sidecar, and the date now describes a file that no longer exists." A key list is
+        # not enough to pin it, which is this change's whole point: a refresh can keep all
+        # six category names and move every price.
+        meta = sidecar_meta(out + "\n", counts, args.min_payees,
+                            datetime.datetime.now(datetime.timezone.utc)
+                                    .strftime("%Y-%m-%dT%H:%M:%SZ"))
         with open(meta_path, "w") as f:
             f.write(json.dumps(meta, indent=2, sort_keys=True) + "\n")
         sys.stderr.write("wrote payee counts for %d category/categories to %s\n"
