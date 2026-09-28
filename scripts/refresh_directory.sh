@@ -30,13 +30,39 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
-# Bazaar crawl depth. The documented full re-scan (docs/FEEDING.md) uses 80; extra pages
-# can only ADD endpoints, and the guard rejects a candidate that lost coverage, so the
-# cost of going deep is time rather than risk.
-PAGES="${BAZAAR_PAGES:-80}"
+# Bazaar crawl depth. Extra pages can only ADD endpoints, and the guard rejects a
+# candidate that lost coverage, so the cost of going deep is time rather than risk.
+PAGES="${BAZAAR_PAGES:-120}"
 # On-chain backfill for the most-active endpoints, which is what populates
 # `distinct_payers` for entries the committed store has not seen.
-TOP="${BACKFILL_TOP:-200}"
+#
+# RAISED 200 -> 800 on 2026-09-28, because 200 STOPPED BEING ENOUGH and the failure is
+# the guard rejecting every run rather than anything visibly breaking. MEASURED that day,
+# both runs against the same committed corpus (331 entries / 702 hosts):
+#
+#   80 pages / top 200  ->  323 entries,  657 hosts  ->  REJECT (94%, floor is 95%)
+#  120 pages / top 800  ->  550 entries, 1068 hosts  ->  ACCEPT (95.7%)
+#
+# Note WHICH number moved. Entries barely fell (331 -> 323) while HOSTS collapsed, which
+# is exactly the case `directory_guard` measures retention for and an entry count cannot
+# see. Coverage is bounded by BACKFILL BREADTH, not crawl depth: the directory keeps only
+# records whose `distinct_payers is not None`, so an endpoint the backfill never reached
+# is simply absent. The crawl now sees ~1200 endpoints and the Bazaar catalog has grown
+# 15,572 -> 16,061 -> 17,784 across the three checks on record; 200 no longer spans it.
+#
+# THE REAL HAZARD IS A RATCHET, and it is why this is set well above the value that
+# merely passed. Each ACCEPTed refresh becomes the baseline the NEXT one is measured
+# against, so the bar rises every time: this run's candidate must now retain >= 95% of
+# 1068 hosts rather than of 702. Meanwhile the ecosystem's own churn was MEASURED at 4.3%
+# (30 of 702 hosts simply gone), which already consumes 85% of the 5% allowance. So a run
+# that merely REPEATS its predecessor's coverage lands on the floor; it has to keep
+# growing. 800 against ~1200 visible endpoints buys that headroom. Expect to raise it
+# again -- and prefer raising it to lowering MIN_GATING_RETENTION, which would weaken a
+# safety rule to cover a capacity problem.
+#
+# COST, measured on the same box: ~14 min at top 500, so ~20 min at 800 -- far inside the
+# Actions job budget. Time, not risk: the guard still rejects anything that lost coverage.
+TOP="${BACKFILL_TOP:-800}"
 BACKFILL_PAGES="${BACKFILL_MAX_PAGES:-3}"
 
 WORK="$(mktemp -d -t dirrefresh.XXXXXX)"

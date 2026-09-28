@@ -39,10 +39,10 @@ on:
   workflow_dispatch:
     inputs:
       bazaar_pages:
-        description: "ecosystem_scan --max-pages for the Bazaar crawl (blank = script default, 80)"
+        description: "ecosystem_scan --max-pages for the Bazaar crawl (blank = script default, 120)"
         default: ""
       backfill_top:
-        description: "backfill the N most-active endpoints (blank = script default, 200)"
+        description: "backfill the N most-active endpoints (blank = script default, 800)"
         default: ""
 
 permissions:
@@ -67,6 +67,12 @@ jobs:
           # blank inputs let the SCRIPT's defaults govern -- one source of truth. A
           # literal default here would silently override them and make these inputs inert,
           # which is exactly the bug seed-refresh.yml shipped with BACKFILL_PAGES=2.
+          #
+          # So when a refresh keeps getting REJECTED for thin coverage, the fix goes in
+          # scripts/refresh_directory.sh, NOT here -- raising BACKFILL_TOP in this file
+          # would fix one week and break the dispatch inputs permanently. Raised there
+          # 200 -> 800 on 2026-09-28 after 200 measured a REJECT; that comment carries the
+          # numbers and the ratchet that makes this recur.
           BAZAAR_PAGES: ${{ github.event.inputs.bazaar_pages }}
           BACKFILL_TOP: ${{ github.event.inputs.backfill_top }}
         run: |
