@@ -296,6 +296,30 @@ class TestValueDrift(unittest.TestCase):
         self.assertTrue(r["accept"], r["reasons"])
         self.assertEqual(r["reasons"], [])
 
+    def test_the_warning_uses_blackwalls_own_ratio_not_a_copy(self):
+        # AUDIT FIX. The warning quotes the HOLD LINE in dollars, which is a claim ABOUT
+        # blackwall.CATEGORY_HOLD_RATIO -- so the 50 was hardcoded here and would have
+        # reported a hold line that does not exist the day someone retunes the gate.
+        #
+        # kills: re-hardcoding the multiplier, and the fallback drifting from the real
+        # constant. The fallback exists because index_guard must stay stdlib-only inside
+        # refresh_seed.sh, so it cannot simply import and be done.
+        import blackwall
+        self.assertEqual(G._hold_ratio(), float(blackwall.CATEGORY_HOLD_RATIO))
+
+        # BEHAVIOURAL, not a grep over the source: a first version of this test asserted
+        # `"* 50" not in index_guard.py` and a mutation to `Decimal("50")` walked straight
+        # past it. Drive the ratio and require the reported hold line to follow.
+        real = G._hold_ratio
+        G._hold_ratio = lambda: 7.0
+        try:
+            r = G.assess_index_refresh(_vstats({"d": "1"}), _vstats({"d": "0.1"}))
+        finally:
+            G._hold_ratio = real
+        w = [x for x in r["warnings"] if "moved" in x][0]
+        self.assertIn("0.7", w)       # 0.1 * 7
+        self.assertNotIn("5.0", w)    # would appear only if 50 were baked in
+
     def test_the_warning_states_the_resulting_HOLD_line(self):
         # kills: a warning that reports the ratio and leaves the reader to multiply by
         # CATEGORY_HOLD_RATIO themselves. The baseline is not the operator-visible
@@ -402,6 +426,19 @@ class TestTheShippedSidecar(unittest.TestCase):
         for cat in self.index:
             self.assertGreaterEqual(self.meta["payees"][cat], self.meta["min_payees"],
                                     "%s is indexed but recorded below the floor" % cat)
+
+    def test_the_sidecar_is_CONTENT_pinned_not_merely_key_pinned(self):
+        # AUDIT FIX, and the sharpest finding against this change: as first written the
+        # sidecar recorded only `indexed`, a KEY LIST. This whole module exists to say
+        # that keys are not enough -- a refresh can keep all six category names and move
+        # every price -- so a sidecar pinned on names alone would keep passing while its
+        # payee counts described the PREVIOUS index. Exactly the forgotten-refresh failure
+        # payto_baseline._sidecar_age pins directory.meta.json against.
+        #
+        # kills: dropping the hash, or recording one over anything but the index bytes.
+        import hashlib
+        with open("data/category_index.json", "rb") as fh:
+            self.assertEqual(self.meta["sha256"], hashlib.sha256(fh.read()).hexdigest())
 
     def test_it_records_categories_the_index_omits(self):
         # kills: filtering the counts to indexed categories only. The whole reason this

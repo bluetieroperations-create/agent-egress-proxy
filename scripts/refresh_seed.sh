@@ -118,6 +118,23 @@ fi
 # than absent. Keeping a consistent older set and nagging is the lesser harm.
 if [ "$STORE_OK" = "1" ] && [ "$INDEX_OK" = "1" ]; then
     echo "refresh_seed: both guards ACCEPTED -- promoting candidate over committed artifacts."
+    # PRECONDITION, before the FIRST mv. Promotion is a sequence of moves under `set -e`,
+    # so one missing candidate aborts the script PART WAY THROUGH -- leaving a new store
+    # and a new index in data/ beside a sidecar describing the previous one. That is the
+    # partially-promoted corpus the temp-candidate design exists to prevent, and it fails
+    # in the direction hardest to notice. Checked as a group so the operator learns every
+    # missing file in one run rather than one crash at a time. The provenance record is
+    # deliberately absent from this list: PROVENANCE_OK already decides whether it moves
+    # or is removed, and an absent record is a handled outcome, not a broken promotion.
+    MISSING=""
+    for f in "$TMP_GZ" "$TMP_CAT" "$TMP_CAT_META" "$TMP_DIV"; do
+        [ -f "$f" ] || MISSING="$MISSING $f"
+    done
+    if [ -n "$MISSING" ]; then
+        echo "refresh_seed: REFUSING to promote -- candidate file(s) missing:$MISSING" >&2
+        echo "refresh_seed: committed artifacts left UNTOUCHED. Nothing was moved." >&2
+        exit 1
+    fi
     # The corpus is a BOUNDED sample and must say so in the artifact, not only in
     # a docstring someone may not read. Written from the candidate BEFORE the move,
     # so the record always describes the store it ships beside.
