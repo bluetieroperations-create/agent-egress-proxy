@@ -130,3 +130,63 @@ class TestStoreJoin(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPayeeCounts(unittest.TestCase):
+    """The number a reader of category_index.json cannot recover and most needs.
+
+    A baseline is a median-of-medians across DISTINCT payees, so one over 7 payees moves
+    when a single payee enters or leaves while one over 29 does not -- and the finished
+    artifact renders both as one price string. Measured 2026-09-28: `dev-tools` rested on
+    7 and moved 2.25x; `ai-agents` rested on 26 and did not move at all.
+    """
+
+    OBS = [
+        {"category": "dev-tools", "payee": "0xa", "amount": "0.01"},
+        {"category": "dev-tools", "payee": "0xa", "amount": "0.02"},   # same payee again
+        {"category": "dev-tools", "payee": "0xb", "amount": "0.03"},
+        {"category": "finance",   "payee": "0xc", "amount": "0.04"},
+    ]
+
+    def test_it_counts_DISTINCT_payees_not_settlements(self):
+        # kills: counting observations. 0xa contributes two settlements and one payee;
+        # counting rows would report dev-tools as 3 and make a thin baseline look deep --
+        # inverting the signal this file exists to carry.
+        self.assertEqual(CP.category_payee_counts(self.OBS),
+                         {"dev-tools": 2, "finance": 1})
+
+    def test_it_counts_categories_the_index_OMITS(self):
+        # kills: filtering to categories that cleared MIN_CATEGORY_PAYEES. The whole
+        # point is to answer "why is commerce missing" without two extra crawls -- and
+        # the answer is only legible if the under-floor count is recorded. Measured on
+        # the shipped corpus: commerce sits at 4, one under the floor of 5.
+        counts = CP.category_payee_counts(self.OBS)
+        index = CP.build_category_index(self.OBS)   # min_payees=5
+        self.assertEqual(index, {})                               # nothing clears it
+        self.assertTrue(counts)                                   # yet counts survive
+
+    def test_unclassified_and_malformed_rows_are_skipped_not_crashed_on(self):
+        # kills: trusting the observation shape. These rows are assembled from a live
+        # third-party crawl joined against the store, so a missing payee or an
+        # unclassified category must read as "nothing to count", never as an exception
+        # that takes down the refresh.
+        obs = self.OBS + [
+            {"category": CP.CATEGORY_UNCLASSIFIED, "payee": "0xz"},
+            {"category": "dev-tools", "payee": None},
+            {"category": None, "payee": "0xy"},
+            "not a dict",
+        ]
+        self.assertEqual(CP.category_payee_counts(obs),
+                         {"dev-tools": 2, "finance": 1})
+        self.assertEqual(CP.category_payee_counts(None), {})
+
+    def test_the_sidecar_path_is_the_one_payto_baseline_already_defines(self):
+        # kills: reintroducing a second sidecar-naming rule here. Two rules that can
+        # drift is precisely how a sidecar ends up describing a file it does not sit
+        # beside -- the mismatched-pairing defect this repo already shipped once.
+        import payto_baseline
+        self.assertEqual(payto_baseline.meta_path("data/category_index.json"),
+                         "data/category_index.meta.json")
+        for p in ("data/category_index.json", "/tmp/x/cat", "a.json.json"):
+            self.assertNotEqual(payto_baseline.meta_path(p), p)
+        self.assertNotIn("_meta_path", open("category_pricing.py").read())

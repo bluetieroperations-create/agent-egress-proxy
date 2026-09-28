@@ -1,0 +1,24 @@
+{
+  "generated_at": "2026-09-28T03:34:08Z",
+  "indexed": [
+    "ai-agents",
+    "content-media",
+    "dev-tools",
+    "finance",
+    "onchain",
+    "search-data"
+  ],
+  "min_payees": 5,
+  "payees": {
+    "ai-agents": 26,
+    "commerce": 4,
+    "content-media": 6,
+    "dev-tools": 7,
+    "email-comms": 1,
+    "finance": 29,
+    "identity-security": 1,
+    "onchain": 10,
+    "search-data": 19,
+    "storage-files": 4
+  }
+}
