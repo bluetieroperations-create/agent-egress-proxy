@@ -924,8 +924,13 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   mainnet needs the authenticated CDP facilitator", which GENERALIZED from two
   measured facilitators to every keyless one. `facilitator.payai.network` is keyless
   and DOES settle Base mainnet -- 33 kinds including `exact`/`eip155:8453` at x402
-  v2, measured live. It is what the live service has been settling through all
-  along. So keylessness is not the property that matters; whether a facilitator
+  v2, measured live. It WAS what the live service settled through -- CORRECTED
+  2026-09-28: production now settles through the AUTHENTICATED CDP facilitator,
+  measured from outside via `/healthz` -> `facilitator: {kind: cdp,
+  bazaar_eligible: true}`, so the CDP cutover has happened and "all along" (as
+  this line used to read) is no longer true of the current config. Left as a
+  correction rather than a rewrite because the PayAI measurement itself still
+  stands and is still the evidence for the sentence that follows. So keylessness is not the property that matters; whether a facilitator
   LISTS your (scheme, network, version) is, which is exactly what the preflight
   checks and what a prose claim about "keyless facilitators" cannot. CDP remains the
   only Bazaar-listing path -- a DIFFERENT claim, and one taken from Coinbase's docs
@@ -970,7 +975,9 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   2026-09-15, reported by the billing session after a real mainnet settlement,
   and the correction is the finding: dating the constant was NOT ENOUGH, because
   the cost belongs to the FACILITATOR YOU CONFIGURED and the check hardcoded
-  CDP's while production settled through PayAI -- so it reported a shortfall
+  CDP's while production settled through PayAI AT THAT TIME (it settles through
+  CDP as of 2026-09-28, so this check now prices the facilitator actually in use
+  -- the mechanism working, not a second defect) -- so it reported a shortfall
   computed from a price sheet nobody was paying. `settlement_cost_for` now reads
   the facilitator the config would actually USE, mirroring `choose_facilitator`
   (both CDP creds present means CDP whatever the URL says, or a config settling

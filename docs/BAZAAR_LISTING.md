@@ -281,3 +281,50 @@ This is now the *documented* mechanism plus a verified gap in our stack — not 
 confirmed cause. It needs **one funded settlement through the patched client**,
 then a re-scan. That is the operator's to run, and it is the first test of this
 arc with a stated mechanism behind it rather than a shape diffed off the catalog.
+
+
+## 2026-09-28 — the precondition is confirmed: production settles through CDP
+
+The mechanism found on 2026-09-27 (the PAYER must echo `extensions.bazaar` into
+the PaymentPayload) has a precondition that could have wasted a funded
+settlement: **cataloguing is done by the facilitator**, and only CDP feeds the
+Bazaar, so an echo that reaches a keyless facilitator lists nothing.
+
+That answer was unobtainable from outside — `choose_facilitator`'s note goes to
+`sys.stderr` at boot — and our own notes disagreed, one calling PayAI "what the
+live service has been settling through all along" while two CDP settlements
+demonstrably happened. `/healthz` now reports it:
+
+```
+"facilitator": {"kind": "cdp", "bazaar_eligible": true}
+```
+
+**Measured on the live deploy. Production settles through the authenticated CDP
+facilitator, so the echo will reach the facilitator that catalogs.** CLAUDE.md's
+PayAI claim is corrected rather than deleted: the PayAI measurement stands, the
+"all along" no longer describes the current config.
+
+Also re-verified in the same pass: `bazaar_echo` against the LIVE 402 yields 711
+bytes, byte-identical to the `extensions.bazaar` the server serves, well under the
+4096-byte cap.
+
+### What `kind: cdp` does NOT prove
+
+It proves the CDP path is SELECTED — both credentials present and
+`CdpFacilitator` chosen. It does **not** prove the credential is VALID. CLAUDE.md
+already records this for the boot banner ("a garbage secret still boots and still
+prints ... Bazaar-eligible") and this field inherits exactly that limit. Validity
+is `billing_preflight.check_settlement_auth`'s 401/403, or the settlement itself.
+
+That failure mode is the benign direction: an invalid credential makes the
+settlement FAIL visibly, rather than silently settling through a facilitator that
+does not catalog. So it costs a retry, not a wasted payment and a wrong
+conclusion.
+
+### Remaining unknown, stated plainly
+
+Every precondition we can check now checks out. What is still untested is the
+mechanism itself: whether a CDP settlement carrying the echoed extension actually
+produces a catalog entry. One funded settlement through the patched client
+answers it, and unlike the two previous attempts it has a documented mechanism
+behind it rather than a shape diffed off the catalog.
