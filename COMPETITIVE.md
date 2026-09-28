@@ -228,12 +228,86 @@ verified set:
 2. **Behavioral counterparty reputation** — Bayesian settlement/dispute history
    from *actual chain-confirmed outcomes*, vs attestation/credential reputation
    (Ontario/EAS, ERC-8004). Harder to game; harder to bootstrap (the trade-off).
+   The "harder to game" half is no longer only our claim — it has now been
+   **measured on the competing approach by a third party**. See
+   *Independent evidence* below.
 3. **OFAC/sanctions folded into one pre-payment verdict** — only AnChain overlaps,
    as a separate compliance product, not a single agent-facing verdict.
 4. **Payee-side, for the buyer.** Most x402 trust tooling scores the **buyer** so
    the **seller** can gate (MolTrust, Larkinsh, Crest, ERC-8004's "sellers check
    an agent's history"). Blackwall scores the **payee** so the **buyer** can
    decide to pay — the rarer direction.
+
+### Independent evidence for the core bet (ERC-8004, peer-reviewed, 2026-06)
+
+Blackwall's central design bet is one sentence: **settled on-chain history is hard
+to fake, and self-reported feedback is not.** Until now that was our own claim
+about our own product — the weakest possible kind of evidence. It has since been
+measured by someone else, on the most credible version of the alternative.
+
+**Xiong, Li, Wei, Wang, Knottenbelt & Wang, "Can Trustless Agents Be Trusted? An
+Empirical Study of the ERC-8004 Decentralized AI Agent Ecosystem", arXiv
+[2606.26028](https://arxiv.org/abs/2606.26028)** (v1 2026-06-24, v2 2026-07-08).
+First empirical study of ERC-8004 across Ethereum, BSC and Base, from protocol
+deployment through **2026-05-13**. They crawl on-chain Identity and Reputation
+events, off-chain registration files, **and x402 payment transactions** — so this
+is our ecosystem, not an adjacent one.
+
+ERC-8004 is the strongest form of the competing approach: an Ethereum standard,
+live on mainnet since 2026-01-29, with an on-chain **Reputation Registry** and
+public integration commitments from ENS, EigenLayer, The Graph and the Ethereum
+Foundation's dAI team. What the study measured:
+
+| Finding | Ethereum | BSC | Base |
+|---|---|---|---|
+| Registrations exposing a valid file **with a live endpoint** | **3%** | 4% | **15%** |
+| Reviewers exhibiting **coordinated Sybil behavior** | **73.5%** | 59.2% | **90.6%** |
+| Rated agents left with **no valid feedback** after Sybil removal | 15.8% | 77.9% | 86.8% |
+
+Their conclusion, quoted: *"the Registry, as currently deployed, cannot function
+as a trust signal: values are not commensurable, feedback records are rarely
+grounded in verifiable interactions, and reputation can be manipulated at minimal
+cost."*
+
+**Why this matters commercially.** The objection Blackwall has always had to
+answer is "why not just read the reputation registry?" The answer is now a
+citation rather than an argument: on Base — the chain x402 actually settles on —
+**90.6% of reviewers are coordinated Sybils, and 86.8% of rated agents have no
+valid feedback left once those are removed.** A registry that records what
+counterparties *say about each other* is exactly as trustworthy as the cheapest
+way to say it. On-chain settlement is not cheap to say.
+
+**WHAT THIS DOES NOT PROVE, and the distinction matters more than the citation.**
+The study validates the **premise** of our differentiation. It says nothing about
+our **implementation**, and citing it as if it did would be the same overreach
+this project has already made twice ("valid checksum" → "right payout address";
+"two testnet facilitators" → "keyless is testnet-only"). Specifically:
+
+- **They did not study Blackwall.** They studied ERC-8004. No part of this is an
+  endorsement, a benchmark, or a comparison.
+- **It says nothing about our false-flag rate.** `payer_reputation.sybil_ring`
+  and `payer_graph.captive_sybil` are *our* detectors, calibrated on *our* corpus
+  (see `docs/DATA_COMPLETENESS.md`); the paper offers no evidence they are any
+  good. It establishes that the thing they look for is **real and prevalent**,
+  not that we find it.
+- **Our approach carries the cost the same sentence names.** "Harder to bootstrap"
+  is not rhetoric — it is the cold-start HOLD that `docs/DATA_COMPLETENESS.md`,
+  `chain_backfill.py` and `confidence.py` all exist to manage. The paper
+  strengthens the numerator of that trade-off, not the denominator.
+
+**OPEN ITEM, not a claim.** The paper's Sybil-detection methodology found these
+rings; ours is independent and has never been compared against it. Worth doing,
+in this order: (1) read their method, (2) run it against our corpus, (3) compare
+the clusters. If theirs finds rings ours misses, that is a free upgrade. If ours
+is stronger, that is a publishable result. Either way it is a **measurement we
+have not taken** — do not assert a conclusion about it before then.
+
+**A second, narrower use.** ERC-8004 is not only a rival, it is a *data source*:
+its Identity Registry is on-chain and permissionless. A signal of the form "this
+counterparty's ERC-8004 reputation is Sybil-dominated **by our own cross-payee
+graph**" is one nobody else can produce, because it needs the payer graph
+`payer_graph.py` already builds. Unbuilt, and it should stay HOLD-only and
+descriptive first if it ever is built.
 
 ## Direct competitor: PaySafe (2026-08) — same job, differentiated on depth + compliance
 
@@ -283,7 +357,8 @@ self-reported, not verified.
 - **Behavioral reputation has a harder cold-start** than attestation reputation.
   That is simultaneously the moat (hard to fake) and the near-term burden (thin
   early data → conservative HOLDs). On-chain ingestion mitigates but doesn't erase
-  it.
+  it. The ERC-8004 study cited above raises the value of the moat side; it does
+  **nothing** for this side, and it is still the honest weakness.
 - **Nothing structural stops Ontario adding** behavioral/price/sanctions signals
   to its existing `can-pay` verdict. They already have the verdict surface and a
   price-benchmark dataset — closing the signal gap is incremental for them.
@@ -417,6 +492,12 @@ coverage + being in the agent's decision path, not the primitive.
 - Ontario Protocol: https://ontarioprotocol.com (service descriptor,
   `/.well-known/openapi.json`, `/.well-known/x402-trust.json`)
 - ERC-8004: https://eips.ethereum.org/EIPS/eip-8004
+- ERC-8004 empirical study (peer-reviewed, the one citation here that is
+  third-party evidence for our own design bet rather than a competitor fact):
+  Xiong, Li, Wei, Wang, Knottenbelt & Wang, "Can Trustless Agents Be
+  Trusted? An Empirical Study of the ERC-8004 Decentralized AI Agent
+  Ecosystem", arXiv:2606.26028 — https://arxiv.org/abs/2606.26028
+  (Ethereum / BSC / Base, through 2026-05-13; accessed 2026-09-16)
 - AnChain.AI x402: https://www.anchain.ai/blog/x402
 - AgentZone: https://agentzone.fun/
 - Crest: https://data.crestsystems.ai

@@ -39,3 +39,13 @@ id_ed25519
 *.keystore
 secrets.json
 credentials.json
+
+# Node dependencies, at the ROOT so it covers EVERY subdirectory.
+# 2026-09-15: 783 files / 34.9 MB of `integrations/lucid/node_modules` were
+# committed -- a third of the repo -- because only two integrations carried
+# their own rule and a `git add -A` inside a rebase-resolution loop staged the
+# present working tree against a commit whose .gitignore predated the
+# directory. Stripped with filter-branch; this rule is why the next TS
+# integration cannot repeat it.
+node_modules/
+.vite/

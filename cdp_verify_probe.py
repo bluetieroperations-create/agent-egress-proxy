@@ -33,9 +33,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "cli
 from creds_local import load_creds  # noqa: E402
 from x402 import BASE_USDC, CdpFacilitator, build_requirements  # noqa: E402
 
-# Public: Blackwall's payTo (recipient). Overridable, defaults to the live one.
-PAY_TO = os.environ.get("BLACKWALL_PAY_TO",
-                        "0x3ec5e0ec1e1cb8e2afa36f3b40eed9057d9004e1")
+# NO DEFAULT PAYEE, deliberately. This used to fall back to
+# 0x3ec5e0ec...9004e1 with the comment "defaults to the live one" -- but that is
+# TRACEIPT's payTo, not Blackwall's (Blackwall collects at
+# BLACKWALL_PAY_TO, confirmed by the operator 2026-09-11 and by the live
+# /.well-known/x402). So the probe proved a CDP key could pay a DIFFERENT
+# product's address, passed, and told you nothing about your own -- a probe that
+# validates the wrong subject is worse than no probe, because it reports
+# success. Two cross-session handoffs repeated that address as "the real payout",
+# which is how a wrong default becomes a wrong belief.
+#
+# Read from the environment, the SAME variable the service itself reads, so the
+# probe cannot be pointed somewhere production is not.
+PAY_TO = os.environ.get("BLACKWALL_PAY_TO")
 # The fee an amount-at-risk of $10.01 charges (10bps) -- the cheapest payable
 # call. Only needs to be <= the burner's balance for the balance check to pass.
 try:
@@ -46,6 +56,11 @@ except ValueError:
 
 def main():
     load_creds()  # auto-load ~/.blackwall-creds so setting env vars by hand is optional
+    if not PAY_TO:
+        print("Set BLACKWALL_PAY_TO to the payout address you actually collect at.")
+        print("There is no default: probing a different product's payee would")
+        print("pass and prove nothing about yours.")
+        return 2
     cdp_id = os.environ.get("CDP_API_KEY_ID")
     cdp_secret = os.environ.get("CDP_API_KEY_SECRET")
     burner = os.environ.get("BAZAAR_WALLET_KEY")
@@ -98,7 +113,7 @@ def main():
         print("\n==> verify returned NOT valid. reason: %s" % reason)
         print("    Interpret before deploying / paying:")
         print("    - 'facilitator unreachable' / auth-ish -> JWT/creds issue "
-              "(re-run cdp_preflight.py).")
+              "(re-run billing_preflight.py).")
         print("    - insufficient balance -> fund the burner above $%.4f."
               % (FEE_ATOMIC / 1e6))
         print("    - signature/authorization invalid -> envelope/domain "
@@ -106,4 +121,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # raise SystemExit(main()), not main(): this returns 2 on a refusal, and
+    # discarding it exited 0 -- so "I declined to probe" was indistinguishable
+    # from "the credential verified". Caught by running it with no payee set.
+    raise SystemExit(main())

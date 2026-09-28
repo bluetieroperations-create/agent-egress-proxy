@@ -52,6 +52,14 @@ ALG = "EdDSA"
 # shape is unchanged, so clients/traceipt-verify still verifies the signature;
 # only the semantic label differs, and it is now accurate.
 TYP = "blackwall-verdict+json"
+#: A SELLER ATTESTATION is a THIRD claim, distinct from both of the above: "this
+#: merchant passed an audit" is neither "we judged this payment" nor "this
+#: payment happened". By the same argument that separates TYP from Traceipt's
+#: label, it gets its own -- otherwise a verifier trusting our key would accept
+#: a verdict where an attestation is expected, and vice versa. One key signs
+#: both, which is safe ONLY because `typ` lives inside the signed `protected`
+#: header (see `signing_input`) and so cannot be relabelled after the fact.
+ATTESTATION_TYP = "blackwall-seller-attestation+json"
 KTY = "OKP"
 CRV = "Ed25519"
 
@@ -212,8 +220,20 @@ def load_backend(prefer_native=True):
     return BACKEND_PURE, ed25519_sign, ed25519_publickey
 
 
-def build_protected(kid):
-    return {"alg": ALG, "kid": kid, "typ": TYP}
+def _check_typ(typ):
+    """Refuse an empty or non-string `typ` rather than defaulting to TYP.
+
+    `typ or TYP` would turn "" and None into a VERDICT label, so a misconfigured
+    attestation signer would quietly emit verdicts -- failing open on the single
+    field that distinguishes two different claims.
+    """
+    if not isinstance(typ, str) or not typ.strip():
+        raise ValueError("typ must be a non-empty string, got %r" % (typ,))
+    return typ
+
+
+def build_protected(kid, typ=TYP):
+    return {"alg": ALG, "kid": kid, "typ": _check_typ(typ)}
 
 
 def signing_input(payload, protected):
@@ -258,7 +278,14 @@ class ReceiptSigner:
     """Signs verdict payloads. `available` is False when no seed is configured."""
 
     def __init__(self, seed=None, environ=None, retired_public_keys=(),
-                 prefer_native=True):
+                 prefer_native=True, typ=TYP):
+        #: BOUND AT CONSTRUCTION, deliberately not a `sign()` argument. A
+        #: per-call typ would let the verdict path emit an attestation label by
+        #: passing one wrong keyword -- exactly the claim confusion the label
+        #: exists to prevent. Two claim types means two signer objects sharing
+        #: one seed, so mislabelling is a construction-time choice a reader can
+        #: see, not a per-request accident.
+        self.typ = _check_typ(typ)
         self._seed = seed if seed is not None else load_seed(environ)
         self.retired = [bytes(k) for k in retired_public_keys or ()]
         self.backend, self._sign, self._publickey = load_backend(prefer_native)
@@ -287,7 +314,7 @@ class ReceiptSigner:
         """
         if not self.available:
             return None
-        protected = build_protected(self.kid)
+        protected = build_protected(self.kid, self.typ)
         signature = self._sign(self._seed, signing_input(payload, protected))
         return {"protected": protected, "payload": payload,
                 "signature": b64url(signature)}

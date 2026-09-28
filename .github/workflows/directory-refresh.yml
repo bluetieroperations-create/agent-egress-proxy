@@ -1,0 +1,212 @@
+# Automated, GUARDED refresh of the committed x402 trust directory -- the sibling of
+# seed-refresh.yml, for the corpus that had no automation at all.
+#
+# WHY THIS EXISTS. `data/directory.json` is dated by a content-pinned sidecar, and
+# `payto_baseline` gates on it only while that date is younger than MAX_INDEX_AGE_DAYS
+# (21). Nothing regenerated it -- seed-refresh.yml covers the reputation seed, the
+# category index and the divergence index, not the directory -- so the mechanism
+# UN-REACHED ITSELF roughly three weeks after every hand refresh, and CLAUDE.md said so
+# in as many words while it stayed open.
+#
+# On 2026-09-18 it stopped being only a silent gate problem: the corpus dated 2026-08-28
+# crossed 21 days, `test_payto_baseline`'s reachability tripwire fired, and the whole
+# repository's CI went red. Every unrelated PR inherited a failure it had no part in.
+#
+# WHAT IT DOES: re-scan the ecosystem into a TEMP candidate, run directory_guard.py
+# against the committed corpus, and ONLY if the guard ACCEPTs, open (or update) a PULL
+# REQUEST. It never pushes to the working branch and never overwrites the committed
+# corpus in place, so a partial Bazaar crawl, a candidate that lost the multi-host payees
+# the gate keys on, or an undated one can never ship. The reputation store is never
+# touched: ecosystem_scan's required --backfill-store is pointed at a throwaway copy.
+#
+# WHAT THE RUN STATUS MEANS, the same contract seed-refresh.yml states: GREEN means there
+# is nothing for a human to do -- a PR is open/updated, or the refresh produced no change
+# to data/ at all. RED means a human is needed, and an ISSUE has been filed saying which
+# of the two reasons it is. Note which side a guard REJECT falls on: it is RED. A reject
+# means the corpus did not get fresher this week and is still walking toward the cliff,
+# which is a human's problem even though nothing broke. Getting that backwards cost five weeks on the seed side; it is
+# written down here so it does not have to be rediscovered.
+#
+# CADENCE: weekly against a 21-day cliff, so two consecutive rejects (or two unmerged
+# PRs) still leave a week of margin before the tripwire fires. The refresh only takes
+# effect when the PR is MERGED -- an open PR is not a fresh corpus.
+
+name: directory-refresh
+
+on:
+  schedule:
+    - cron: "47 9 * * 4"    # weekly, Thursdays 09:47 UTC (away from the Monday seed jobs)
+  workflow_dispatch:
+    inputs:
+      bazaar_pages:
+        description: "ecosystem_scan --max-pages for the Bazaar crawl (blank = script default, 80)"
+        default: ""
+      backfill_top:
+        description: "backfill the N most-active endpoints (blank = script default, 200)"
+        default: ""
+
+permissions:
+  contents: write        # to push the refresh branch
+  pull-requests: write   # to open the PR
+  issues: write          # to open the reject nag
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Guarded directory refresh (temp candidate -> promote only on ACCEPT)
+        id: refresh
+        env:
+          # NO hardcoded fallbacks: `:-` in the script treats an empty value as unset, so
+          # blank inputs let the SCRIPT's defaults govern -- one source of truth. A
+          # literal default here would silently override them and make these inputs inert,
+          # which is exactly the bug seed-refresh.yml shipped with BACKFILL_PAGES=2.
+          BAZAAR_PAGES: ${{ github.event.inputs.bazaar_pages }}
+          BACKFILL_TOP: ${{ github.event.inputs.backfill_top }}
+        run: |
+          set +e
+          sh scripts/refresh_directory.sh
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+          set -e
+
+      - name: Sanity-check the refreshed directory
+        if: steps.refresh.outputs.code == '0'
+        run: |
+          # The artifacts were promoted in-tree by the script. Prove the suite still
+          # passes on the NEW corpus before proposing it -- test_payto_baseline carries
+          # the reachability tripwire this whole workflow exists to keep green, and
+          # test_deploy_manifest checks the sidecar ships beside the corpus.
+          python3 -m unittest test_payto_baseline.py test_directory_guard.py \
+            test_deploy_manifest.py test_directory_liveness.py
+
+      - name: Open / update the refresh PR
+        id: propose
+        if: steps.refresh.outputs.code == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          if git diff --quiet -- data/; then
+            echo "No data changes after guard -- nothing to propose."
+            exit 0
+          fi
+          BRANCH="auto/directory-refresh"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          # -A, so the sidecar travels with the corpus it pins. Committing
+          # directory.json without directory.meta.json leaves the OLD sidecar pinning
+          # bytes that no longer exist, which reads as undated -- the gate silently stops
+          # working, and test_deploy_manifest already guards the same pairing in the image.
+          git add -A data/
+          AGE="$(python3 -c "import payto_baseline as PB; print('directory is %.2f days old (MAX_INDEX_AGE_DAYS %d)' % (PB.index_age_days('data/directory.json'), PB.MAX_INDEX_AGE_DAYS))" || true)"
+          git commit -m "data: automated guarded directory refresh" \
+                     -m "$AGE" \
+                     -m "Refreshed by .github/workflows/directory-refresh.yml; directory_guard.py ACCEPTed the candidate."
+          git push -f origin "$BRANCH"
+          {
+            echo "branch=$BRANCH"
+            echo "sha=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+
+          if gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' | grep -q '[0-9]'; then
+            echo "PR already open for $BRANCH; force-pushed the update."
+            exit 0
+          fi
+
+          BODY_FILE="$RUNNER_TEMP/pr-body.md"
+          {
+            printf '%s\n\n' "$AGE"
+            printf 'Guarded refresh from `scripts/refresh_directory.sh` (directory_guard.py ACCEPTed the candidate: entries and payTo-index hosts retained, dated, genuinely fresher). Merging keeps the payTo baseline reachable -- an unmerged refresh is not a fresh corpus. Automated by `.github/workflows/directory-refresh.yml`.\n'
+          } > "$BODY_FILE"
+
+          set +e
+          OUT="$(gh pr create --base "${GITHUB_REF_NAME}" --head "$BRANCH" \
+                   --title "Automated directory refresh" --body-file "$BODY_FILE" 2>&1)"
+          RC=$?
+          set -e
+          echo "$OUT"
+          if [ "$RC" = "0" ]; then
+            exit 0
+          fi
+
+          # A REPOSITORY SETTING, not a token scope: Settings -> Actions -> General ->
+          # Workflow permissions. seed-refresh.yml died on this raw GraphQL error every
+          # week from 2026-08-17 and taught nobody anything. Name it instead.
+          if printf '%s' "$OUT" | grep -q "not permitted to create or approve pull requests"; then
+            echo "pr_blocked=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          exit "$RC"
+
+      - name: Nag -- refresh is good, but Actions may not open the PR
+        if: steps.propose.outputs.pr_blocked == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          TITLE="Automated directory refresh cannot open its PR"
+          BRANCH="${{ steps.propose.outputs.branch }}"
+          REPO="${{ github.repository }}"
+          BODY_FILE="$RUNNER_TEMP/nag.md"
+          {
+            echo "The guarded directory refresh **succeeded** and \`directory_guard.py\` **ACCEPTed** the candidate."
+            echo "The refreshed corpus passed the suite and is pushed, waiting on"
+            echo "[\`$BRANCH\`](https://github.com/$REPO/tree/$BRANCH) at \`${{ steps.propose.outputs.sha }}\`."
+            echo ""
+            echo '```'
+            python3 -c "import payto_baseline as PB; print('directory is %.2f days old (MAX_INDEX_AGE_DAYS %d)' % (PB.index_age_days('data/directory.json'), PB.MAX_INDEX_AGE_DAYS))" || true
+            echo '```'
+            echo ""
+            echo "Only the pull-request step failed. **Settings -> Actions -> General -> Workflow permissions -> \"Allow GitHub Actions to create and approve pull requests\"** is off for this repository. That is a repository setting a maintainer has to flip; no token available to this workflow can work around it."
+            echo ""
+            echo "Until it is flipped, open the PR by hand:"
+            echo ""
+            echo "<https://github.com/$REPO/compare/${{ github.ref_name }}...$BRANCH?expand=1>"
+            echo ""
+            echo "_Automated from .github/workflows/directory-refresh.yml._"
+          } > "$BODY_FILE"
+          EXISTING="$(gh issue list --state open --json number,title --jq ".[] | select(.title==\"$TITLE\") | .number" | head -n1)"
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body-file "$BODY_FILE"
+          else
+            gh issue create --title "$TITLE" --body-file "$BODY_FILE"
+          fi
+          echo "::error::Directory refresh succeeded but the PR could not be opened -- see the issue above. The corpus is waiting on $BRANCH."
+          exit 1
+
+      - name: Nag -- the guard rejected the candidate
+        if: steps.refresh.outputs.code != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          TITLE="Automated directory refresh was rejected"
+          BODY_FILE="$RUNNER_TEMP/nag.md"
+          {
+            echo "The guarded refresh (\`scripts/refresh_directory.sh\`) ran but \`directory_guard.py\` **REJECTED** the candidate (partial crawl / host loss / undated / no progress -- the guard prints its reasons in the [job log](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}))."
+            echo ""
+            echo "The committed directory was left untouched, so **nothing shipped and nothing broke** -- but the corpus did not get any fresher this week:"
+            echo ""
+            echo '```'
+            python3 -c "import payto_baseline as PB; a=PB.index_age_days('data/directory.json'); print('directory is %s days old (MAX_INDEX_AGE_DAYS %d)' % ('UNDATED' if a is None else '%.2f' % a, PB.MAX_INDEX_AGE_DAYS))" || true
+            echo '```'
+            echo ""
+            echo "Past MAX_INDEX_AGE_DAYS the payTo baseline stops gating and \`test_payto_baseline\`'s reachability tripwire turns CI red for every open PR, so this does not stay cosmetic. Re-run the workflow, or refresh by hand, once the Bazaar crawl is healthy."
+            echo ""
+            echo "_Automated from .github/workflows/directory-refresh.yml._"
+          } > "$BODY_FILE"
+          EXISTING="$(gh issue list --state open --json number,title --jq ".[] | select(.title==\"$TITLE\") | .number" | head -n1)"
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body-file "$BODY_FILE"
+          else
+            gh issue create --title "$TITLE" --body-file "$BODY_FILE"
+          fi
+          echo "::error::The directory guard REJECTED the candidate -- the committed corpus is unchanged. See the issue above."
+          exit 1

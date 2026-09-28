@@ -36,6 +36,7 @@ from __future__ import annotations
 
 from addresses import is_evm_address
 from rwa_readiness import decode_bool, decode_uint, selector
+import user_agent as ua_policy
 
 # Default action if the request doesn't specify one: an agent-initiated ERC-20 transfer.
 _DEFAULT_ACTION = selector("transferFrom(address,address,uint256)")  # 0x + 8 hex (4 bytes)
@@ -152,7 +153,7 @@ class RamsReadinessSource:
         req = urllib.request.Request(
             self.rpc_url, data=json.dumps(body).encode("utf-8"),
             headers={"content-type": "application/json",
-                     "user-agent": "Blackwall-rams/1"})
+                     "user-agent": ua_policy.browser("rams")})
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
             d = json.loads(r.read(1 << 16))
         res = d.get("result") if isinstance(d, dict) else None

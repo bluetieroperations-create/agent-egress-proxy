@@ -275,5 +275,193 @@ class TestProductionSource(unittest.TestCase):
         self.assertIsInstance(src, RS.ReputationStore)
 
 
+class TestBatchedSettlementsAreNotCollapsed(unittest.TestCase):
+    """The natural key must include the PAYER.
+
+    FOUND 2026-09-16 while analysing x402 `batch-settlement`, and it is a LIVE
+    defect, not a forecast. The old key was (tx_hash, counterparty, amount),
+    whose own schema comment stated the assumption out loud: "one tx can carry
+    one settlement to a counterparty for a given amount". A batched settlement
+    breaks exactly that -- and so does ordinary Base traffic TODAY. Measured on
+    mainnet: tx 0xa49466a1d74cd6... carries TWO different payers paying an
+    identical 0.00001 USDC to one payee, and the store kept one of them.
+
+    `payee_transfers` already deduped on (tx, from, to, amount) with the comment
+    "keep two same-amount transfers in one tx from DIFFERENT senders (real,
+    distinct settlements)" -- so the fetch stage preserved them and the store
+    threw them away. The two layers disagreed about what a settlement IS.
+    """
+
+    def _batched(self, payers, amount="1000", tx="0x" + "b" * 64):
+        payee = "0x" + "a" * 40
+        return payee, [{"to": payee, "from": "0x" + c * 40, "amount": amount,
+                        "tx_hash": tx, "timestamp": "2026-09-01T00:00:00Z"}
+                       for c in payers]
+
+    def test_distinct_payers_in_one_tx_all_survive(self):
+        # kills: the whole fix. Five real customers in one batch read as one.
+        store = RS.ReputationStore(":memory:")
+        payee, rows = self._batched("12345")
+        self.assertEqual(store.ingest_transfers(rows), 5)
+        rec = store.lookup(payee)
+        self.assertEqual(rec["settlement_count"], 5)
+        self.assertEqual(rec["distinct_payers"], 5)
+
+    def test_every_payer_keeps_its_graph_edge(self):
+        # kills: storing the rows but losing the payer->payee edges, which is
+        # what payer_graph / payer_reputation read. Without this a batching
+        # payee is invisible to the Sybil gates in BOTH directions.
+        store = RS.ReputationStore(":memory:")
+        payee, rows = self._batched("12345")
+        store.ingest_transfers(rows)
+        edges = [e for e in store.iter_settlement_edges() if e[1] == payee]
+        self.assertEqual(len(edges), 5)
+        self.assertEqual(len({e[0] for e in edges}), 5)
+
+    def test_reingest_is_still_idempotent(self):
+        # kills: widening the key by dropping idempotency instead. Re-ingest is
+        # the property the whole backfill design rests on -- runs accumulate.
+        store = RS.ReputationStore(":memory:")
+        payee, rows = self._batched("12345")
+        store.ingest_transfers(rows)
+        self.assertEqual(store.ingest_transfers(rows), 0)
+        self.assertEqual(store.lookup(payee)["settlement_count"], 5)
+
+    def test_the_same_payer_twice_in_one_tx_at_one_amount_still_collapses(self):
+        # kills: widening the key so far that a byte-identical duplicate row
+        # double-counts. Two identical (tx, payer, payee, amount) tuples are one
+        # settlement reported twice by a re-serving pager, not two payments.
+        store = RS.ReputationStore(":memory:")
+        payee, rows = self._batched("1")
+        self.assertEqual(store.ingest_transfers(rows + rows), 1)
+
+    def test_a_null_payer_does_not_become_an_unbounded_duplicate_key(self):
+        # kills: `UNIQUE(tx, counterparty, payer, amount)` written naively.
+        # SQLite treats NULLs as DISTINCT in a UNIQUE constraint, so a null
+        # payer would let the SAME row insert without limit -- turning an
+        # idempotency fix into an inflation bug. COALESCE is load-bearing.
+        store = RS.ReputationStore(":memory:")
+        payee = "0x" + "a" * 40
+        row = [{"to": payee, "from": None, "amount": "1000",
+                "tx_hash": "0x" + "b" * 64, "timestamp": None}]
+        store.ingest_transfers(row)
+        store.ingest_transfers(row)
+        store.ingest_transfers(row)
+        self.assertEqual(store.lookup(payee)["settlement_count"], 1)
+
+    def test_a_blank_payer_and_a_null_payer_are_the_same_key(self):
+        # kills: coalescing on one side only, which reopens the hole above via
+        # the empty string. iter_settlement_edges already excludes both.
+        store = RS.ReputationStore(":memory:")
+        payee = "0x" + "a" * 40
+        base = {"to": payee, "amount": "1000", "tx_hash": "0x" + "b" * 64,
+                "timestamp": None}
+        store.ingest_transfers([dict(base, **{"from": None})])
+        store.ingest_transfers([dict(base, **{"from": ""})])
+        self.assertEqual(store.lookup(payee)["settlement_count"], 1)
+
+    def test_batching_does_not_change_an_unbatched_corpus(self):
+        # RESTRAINT: the same payments spread over separate txs must be
+        # unaffected. kills: a key change that alters today's behaviour.
+        store = RS.ReputationStore(":memory:")
+        payee = "0x" + "a" * 40
+        rows = [{"to": payee, "from": "0x" + c * 40, "amount": "1000",
+                 "tx_hash": "0x" + c * 64, "timestamp": None} for c in "12345"]
+        self.assertEqual(store.ingest_transfers(rows), 5)
+        rec = store.lookup(payee)
+        self.assertEqual((rec["settlement_count"], rec["distinct_payers"]), (5, 5))
+
+
+class TestTheSchemaMigration(unittest.TestCase):
+    """An existing DB carries the OLD table-level UNIQUE, which SQLite cannot
+    ALTER away -- so the fix is inert without a rebuild. The shipped
+    `data/reputation_seed.db.gz` is 46,031 rows, so this runs on every deploy
+    and has to be idempotent, cheap, and non-destructive."""
+
+    def _legacy_db(self, path, rows=()):
+        import sqlite3 as s3
+        c = s3.connect(path)
+        c.execute("""CREATE TABLE settlements (
+                        counterparty TEXT NOT NULL, payer TEXT,
+                        amount TEXT NOT NULL, tx_hash TEXT, ts TEXT,
+                        UNIQUE(tx_hash, counterparty, amount))""")
+        c.executemany("INSERT OR IGNORE INTO settlements "
+                      "(counterparty, payer, amount, tx_hash, ts) VALUES (?,?,?,?,?)",
+                      rows)
+        c.commit(); c.close()
+
+    def test_a_legacy_db_is_migrated_and_then_accepts_batched_rows(self):
+        # kills: shipping the new key without a migration, which leaves every
+        # existing deploy on the old constraint -- the fix present and INERT.
+        import os, tempfile
+        path = os.path.join(tempfile.mkdtemp(), "legacy.db")
+        payee = "0x" + "a" * 40
+        self._legacy_db(path, [(payee, "0x" + "1" * 40, "1000", "0x" + "b" * 64, None)])
+        store = RS.ReputationStore(path)
+        extra = [{"to": payee, "from": "0x" + "2" * 40, "amount": "1000",
+                  "tx_hash": "0x" + "b" * 64, "timestamp": None}]
+        self.assertEqual(store.ingest_transfers(extra), 1)
+        self.assertEqual(store.lookup(payee)["distinct_payers"], 2)
+
+    def test_migration_preserves_every_existing_row(self):
+        # kills: a rebuild that drops or mangles data. This runs against a real
+        # 46k-row corpus in production.
+        import os, tempfile
+        path = os.path.join(tempfile.mkdtemp(), "legacy.db")
+        payee = "0x" + "a" * 40
+        rows = [(payee, "0x" + ("%040x" % i), str(100 + i), "0x" + ("%064x" % i),
+                 "2026-01-01T00:00:00Z") for i in range(50)]
+        self._legacy_db(path, rows)
+        store = RS.ReputationStore(path)
+        self.assertEqual(store.lookup(payee)["settlement_count"], 50)
+        self.assertEqual(store.lookup(payee)["distinct_payers"], 50)
+
+    def test_migration_is_idempotent(self):
+        # kills: rebuilding on every open, which would rewrite the 7.5MB / 46k-row
+        # seed on each container start (measured 491ms locally, seconds on a
+        # ~0.1-CPU instance) and reopen a window where the table is dropped.
+        #
+        # MUTATION-TESTING FOUND THIS TEST TOO WEAK: it asserted only that the
+        # DETECTOR reports "no migration needed" afterwards, which stays true
+        # even if the rebuild runs unconditionally -- the rebuilt table has no
+        # UNIQUE either way. So bypassing the guard survived. The honest signal
+        # is whether WORK HAPPENED, which is what the return value means.
+        import os, tempfile
+        path = os.path.join(tempfile.mkdtemp(), "legacy.db")
+        payee = "0x" + "a" * 40
+        self._legacy_db(path, [(payee, "0x" + "1" * 40, "1000", "0x" + "b" * 64, None)])
+        first = RS.ReputationStore(path)
+        self.assertTrue(first._migrate_payer_key() is False)   # already done at open
+        second = RS.ReputationStore(path)
+        self.assertFalse(second._needs_payer_key_migration())
+        self.assertFalse(second._migrate_payer_key(), "rebuilt an already-migrated db")
+
+    def test_a_fresh_db_never_rebuilds(self):
+        # kills: the same bypass on the common path -- every in-memory store in
+        # this test suite, and every fresh deploy, would pay a needless rebuild.
+        store = RS.ReputationStore(":memory:")
+        self.assertFalse(store._migrate_payer_key())
+
+    def test_a_fresh_db_needs_no_migration(self):
+        # kills: a detector that always reports "migrate me".
+        self.assertFalse(RS.ReputationStore(":memory:")._needs_payer_key_migration())
+
+    def test_an_unwritable_db_still_serves_reads(self):
+        # kills: making the migration fatal. A read-only store cannot ingest
+        # anyway, so the key is irrelevant to it -- and taking the verdict path
+        # down over a schema nicety is the worse error (the remote_ledger rule).
+        import os, sqlite3, tempfile
+        path = os.path.join(tempfile.mkdtemp(), "legacy.db")
+        payee = "0x" + "a" * 40
+        self._legacy_db(path, [(payee, "0x" + "1" * 40, "1000", "0x" + "b" * 64, None)])
+        conn = sqlite3.connect("file:%s?mode=ro" % path, uri=True)
+        store = RS.ReputationStore.__new__(RS.ReputationStore)
+        import threading
+        store._conn, store._lock = conn, threading.RLock()
+        store.sanctioned, store.known_bad = set(), set()
+        store._migrate_payer_key()          # must not raise
+        self.assertEqual(store.lookup(payee)["settlement_count"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -199,6 +199,10 @@ PUBLIC_GET_ROUTES = (
     "/jwks.json",
     "/.well-known/blackwall-receipt-key.json",
     "/v1/price-index",
+    # The PUBLISHED revocation list for verified-merchant attestations. Public
+    # because a signed badge whose revocation nobody can see is only as good as
+    # its TTL -- see seller_audit.SellerRegistry.published_revocations.
+    "/v1/seller/revocations",
     "/openapi.json",
     "/stats",
 )
@@ -225,6 +229,10 @@ PUBLIC_POST_ROUTES = (
     # obvious way to try to grow the store.
     "/v1/approvals",
     "/v1/approvals/decide",
+    # Withdraw a verified-merchant badge. Owner-only and ONE-WAY (there is no
+    # un-revoke route), so it is rate-limited like every other POST but the
+    # worst a stolen token achieves is removing trust from one merchant.
+    "/v1/seller/revoke",
     "/v1/approvals/redeem",
 )
 

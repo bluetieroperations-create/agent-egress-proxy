@@ -46,15 +46,31 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import x402_challenge          # noqa: E402
+import user_agent as ua_policy  # noqa: E402
 
+#: eth-account is the ONE third-party dependency in this repo, and it is needed
+#: only to SIGN. Importing must therefore not be fatal.
+#:
+#: It used to `raise SystemExit(2)` right here, at import time. That does not
+#: fail one test -- it kills the entire `python -m unittest ...` run before a
+#: single test executes, on any machine without the package. Reproduced: with
+#: eth-account unavailable, `unittest test_x402_pay.py test_addresses.py` exited
+#: 2 and test_addresses never ran. Harmless while this file sat outside the
+#: canonical command; fatal the moment it was added to it.
+#:
+#: So the module imports cleanly, `HAVE_ETH_ACCOUNT` records the truth, the
+#: tests skip on it, and the CLI -- the only caller that actually needs to sign
+#: -- refuses with the same message in `main()`.
+NEEDS_ETH_ACCOUNT = ("x402_pay: needs eth-account. Install it:\n"
+                     "    pip install -r clients/requirements.txt\n")
 try:
     from eth_account import Account
     from eth_account.messages import encode_typed_data
+    HAVE_ETH_ACCOUNT = True
 except ImportError:
-    sys.stderr.write(
-        "x402_pay: needs eth-account. Install it:\n"
-        "    pip install -r clients/requirements.txt\n")
-    raise SystemExit(2)
+    Account = None
+    encode_typed_data = None
+    HAVE_ETH_ACCOUNT = False
 
 # Known chain ids + public RPCs (override with --rpc).
 CHAIN_IDS = {"base": 8453, "base-sepolia": 84532}
@@ -128,7 +144,7 @@ def _rpc(rpc_url, method, params, timeout=20):
         rpc_url, data=json.dumps(payload).encode(),
         headers={"content-type": "application/json",
                  "accept": "application/json",
-                 "user-agent": "Mozilla/5.0 (x402-pay test client)"})
+                 "user-agent": ua_policy.browser("x402-pay")})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         out = json.loads(r.read())
     if "error" in out:
@@ -173,7 +189,8 @@ def token_domain(asset, network, rpc_url):
             "chainId": cid, "verifyingContract": verifying}, False
 
 
-def build_payment(challenge_req, signer_pk, signer_addr, network, rpc_url):
+def build_payment(challenge_req, signer_pk, signer_addr, network, rpc_url,
+                  extensions=None):
     """Sign an EIP-3009 authorization satisfying `challenge_req` -> payment dict.
 
     The token signed over is the one the SERVER advertises in the 402 challenge
@@ -267,13 +284,28 @@ def build_payment(challenge_req, signer_pk, signer_addr, network, rpc_url):
             },
         },
     }
+    # THE ECHO THAT ACTUALLY CATALOGS. Per the Bazaar extension spec, a
+    # facilitator catalogs when it processes a PaymentPayload CARRYING the
+    # echoed `bazaar` extension -- "a settlement whose payload omits the
+    # extension catalogs nothing". This client omitted it entirely, which is why
+    # two correct-and-deployed 402 fixes produced no listing.
+    #
+    # ATTACHED AS A SIBLING of `accepted` and `payload`, never inside them: the
+    # authorization is what we are SIGNING, and seller-authored metadata must not
+    # be able to touch the amount, the recipient or the terms. `bazaar_echo`
+    # already dropped every non-`bazaar` key and refused an oversize block, so
+    # what arrives here is bounded and narrow.
+    if extensions:
+        payment["extensions"] = extensions
     return payment
 
 
-def payment_header(requirements, signer_pk, signer_addr, network, rpc_url=None):
+def payment_header(requirements, signer_pk, signer_addr, network, rpc_url=None,
+                   extensions=None):
     """Sign a payment satisfying a 402 `accepts[]` entry and return the base64
     `X-PAYMENT` header value (the wire form the server expects)."""
-    payment = build_payment(requirements, signer_pk, signer_addr, network, rpc_url)
+    payment = build_payment(requirements, signer_pk, signer_addr, network, rpc_url,
+                            extensions=extensions)
     return base64.b64encode(json.dumps(payment).encode()).decode()
 
 
@@ -289,6 +321,9 @@ def make_pay(signer_pk, network="base", rpc_url=None):
 
 
 def main(argv=None):
+    if not HAVE_ETH_ACCOUNT:
+        sys.stderr.write(NEEDS_ETH_ACCOUNT)
+        return 2
     p = argparse.ArgumentParser(description="Funded-signer x402 test client for Blackwall.")
     p.add_argument("--url", required=True, help="Blackwall forecast endpoint URL")
     p.add_argument("--counterparty", required=True, help="counterparty EVM address to score")
@@ -354,7 +389,17 @@ def main(argv=None):
                          "--network is %r; signature will be rejected.\n"
                          % (req.get("network"), args.network))
 
-    x_payment = payment_header(req, pk, signer_addr, args.network, rpc_url)
+    # Echo the seller's `extensions.bazaar` into the payload. THE SEVENTH EDIT:
+    # `build_payment` and `payment_header` both grew an `extensions` parameter,
+    # and omitting it HERE leaves all of it parsed, defaulted and INERT -- the
+    # pattern this repo has now found nine times, most recently one commit ago in
+    # the 402 that this echo is the other half of.
+    echo = x402_challenge.bazaar_echo(raw)
+    sys.stdout.write("bazaar echo: %s\n"
+                     % ("attached (this is what catalogs)" if echo
+                        else "none advertised by the seller -- nothing to echo"))
+    x_payment = payment_header(req, pk, signer_addr, args.network, rpc_url,
+                               extensions=echo)
     sys.stdout.write("signed EIP-3009 authorization; resending with X-PAYMENT...\n")
 
     status, parsed, raw, _ = _http_json(args.url, body, headers={"X-PAYMENT": x_payment})

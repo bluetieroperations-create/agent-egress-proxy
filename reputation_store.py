@@ -43,6 +43,79 @@ class ReputationStore:
         self.sanctioned = {s.lower() for s in (sanctioned or ())}
         self.known_bad = {k.lower() for k in (known_bad or ())}
 
+    #: The natural key, as a UNIQUE INDEX rather than a table constraint.
+    #:
+    #: THE PAYER IS PART OF IT, and leaving it out was a live defect (fixed
+    #: 2026-09-16). The old key was (tx_hash, counterparty, amount) under a
+    #: comment that stated its own assumption out loud -- "one tx can carry one
+    #: settlement to a counterparty for a given amount". ONE TX CAN CARRY MANY.
+    #: Measured on Base mainnet: tx 0xa49466a1d74cd6... pays an identical
+    #: 0.00001 USDC to one payee from TWO different addresses, and the store kept
+    #: one of them, so two real customers counted as one.
+    #:
+    #: `chain_backfill.payee_transfers` already deduped on (tx, from, to, amount)
+    #: with the comment "keep two same-amount transfers in one tx from DIFFERENT
+    #: senders (real, distinct settlements)" -- so the fetch stage preserved
+    #: exactly what the store discarded. Two layers disagreeing about what a
+    #: settlement IS, with the narrower one winning silently.
+    #:
+    #: WHY IT MATTERS MORE FROM HERE, and why this was found now: x402's
+    #: `batch-settlement` scheme (and Cloudflare's deferred scheme, shipped in
+    #: their Agents SDK) exist to collapse many small payments into ONE onchain
+    #: settlement. A metered endpoint charges ONE price, so under the old key a
+    #: batch of N payments from N customers stored exactly ONE row regardless of
+    #: N -- 50% of the evidence lost at N=2, 99% at N=100. Every reputation
+    #: signal is derived from these rows: `settlement_count` (thin gate, >= 20),
+    #: `distinct_payers` (both Sybil gates, >= 3), the payer graph's edges, and
+    #: `robust_price_median`. An honest high-volume merchant that batched would
+    #: read as a permanent cold start, and the graph would be blind to it.
+    #:
+    #: COALESCE IS LOAD-BEARING: SQLite treats NULLs as DISTINCT in a UNIQUE
+    #: constraint, so a bare `UNIQUE(tx_hash, counterparty, payer, amount)` would
+    #: let a payer-less row insert without limit -- turning an idempotency fix
+    #: into an inflation bug. Expression indexes are how SQLite expresses this.
+    #:
+    #: THE SYBIL COST QUESTION, and the first answer here was WRONG -- it read
+    #: "a batched ring still fails both [graph gates]", which is false and was
+    #: caught by MEASURING the boundary instead of trusting the sentence:
+    #:
+    #:     one batched tx, N sockpuppet payers, identical price
+    #:       N = 2       -> below MIN_DISTINCT_PAYERS, payee stays thin anyway
+    #:       N = 3..12   -> captive_sybil AND sybil_ring both fire (caught)
+    #:       N >= 13     -> BOTH SILENT (escapes)
+    #:
+    #: The 13+ hole is PRE-EXISTING and already documented: it is
+    #: `payer_graph.CAPTIVE_SYBIL_MAX_DISTINCT = 12`, its own "audit F1" note
+    #: ("a farm LARGER than this still escapes the graph Sybil gate"), and
+    #: redteam's `large captive farm (>ceiling)` known_gap. This change does NOT
+    #: open it. What it does is make it CHEAPER: 13 distinct payers used to
+    #: require 13 separate transactions and now require ONE. That is a real
+    #: reduction in attacker cost and is recorded rather than argued away.
+    #:
+    #: IT IS STILL THE RIGHT TRADE, for a reason that is about who gets hurt.
+    #: Dropping real settlements does not stop the attacker -- he can pay 13
+    #: times, and 13 gas fees are not a defense -- it only penalises the HONEST
+    #: batcher, who reads as a permanent cold start, and blinds the payer graph
+    #: to the very edges the Sybil gates are computed from. So the old key cost
+    #: us recall against real merchants and bought no security.
+    #:
+    #: THE PRINCIPLED FIX, NOT BUILT: the thin gate is really asking how many
+    #: INDEPENDENT settlement EVENTS a payee has, and batching is precisely the
+    #: collapse of many payments into one event. 30 payers across 30 txs and 30
+    #: payers inside 1 tx are different claims, and nothing here can currently
+    #: tell them apart. `distinct_txs` alongside `distinct_payers` would express
+    #: it. Deliberately left undone, and the blocker is CONCRETE rather than a
+    #: matter of appetite: `merge_records` builds a FIXED dict, so a new key is
+    #: SILENTLY DROPPED on the way to the verdict -- the identical defect
+    #: `advertised_prices.py` documents as the reason its arm sat inert. Adding
+    #: `distinct_txs` therefore means touching the merge too, and then deciding
+    #: what gates on it; adding a gate to an un-measured signal is how a safety
+    #: change becomes a false-HOLD class (see EXCESSIVE_GATES, SYBIL_RING_GATES).
+    #: Scoped as its own change, not bolted onto a key fix.
+    _PAYER_KEY_INDEX = ("CREATE UNIQUE INDEX IF NOT EXISTS idx_settlement_key "
+                        "ON settlements "
+                        "(tx_hash, counterparty, COALESCE(payer,''), amount)")
+
     def _init_schema(self):
         with self._lock:
             self._conn.execute("""
@@ -51,23 +124,83 @@ class ReputationStore:
                     payer        TEXT,
                     amount       TEXT NOT NULL,
                     tx_hash      TEXT,
-                    ts           TEXT,
-                    -- natural key: one tx can carry one settlement to a
-                    -- counterparty for a given amount; re-ingest is idempotent.
-                    UNIQUE(tx_hash, counterparty, amount)
+                    ts           TEXT
                 )
             """)
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_cp ON settlements(counterparty)")
+            self._conn.execute(self._PAYER_KEY_INDEX)
             self._conn.commit()
+        self._migrate_payer_key()
+
+    def _needs_payer_key_migration(self):
+        """Does this database still carry the OLD table-level UNIQUE?
+
+        Read off the stored CREATE TABLE text, because SQLite cannot ALTER a
+        constraint away: an existing DB keeps rejecting the rows the new index
+        is meant to admit, so without this the fix would be present and INERT --
+        the pattern this repo has hit seven times.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='table' AND name='settlements'").fetchone()
+        sql = (row[0] if row and row[0] else "")
+        return "UNIQUE" in sql.upper()
+
+    def _migrate_payer_key(self):
+        """Rebuild `settlements` without the old table-level UNIQUE. Idempotent.
+
+        FAIL-SOFT, deliberately: a read-only or otherwise unwritable database
+        cannot ingest at all, so the key is irrelevant to it, and taking the
+        verdict path down over a schema nicety is the worse error. Same rule
+        `remote_ledger` applies to a KV it cannot write.
+        """
+        if not self._needs_payer_key_migration():
+            return False
+        try:
+            with self._lock:
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._conn.execute("""
+                    CREATE TABLE settlements_new (
+                        counterparty TEXT NOT NULL,
+                        payer        TEXT,
+                        amount       TEXT NOT NULL,
+                        tx_hash      TEXT,
+                        ts           TEXT
+                    )
+                """)
+                # Every row is carried over. The old key was NARROWER, so no row
+                # can collide under the wider one -- nothing is dropped here.
+                self._conn.execute(
+                    "INSERT INTO settlements_new "
+                    "(counterparty, payer, amount, tx_hash, ts) "
+                    "SELECT counterparty, payer, amount, tx_hash, ts FROM settlements")
+                self._conn.execute("DROP TABLE settlements")
+                self._conn.execute(
+                    "ALTER TABLE settlements_new RENAME TO settlements")
+                self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_cp ON settlements(counterparty)")
+                self._conn.execute(self._PAYER_KEY_INDEX)
+                self._conn.commit()
+            return True
+        except sqlite3.Error:
+            try:
+                self._conn.rollback()
+            except sqlite3.Error:
+                pass
+            return False
 
     # ---- ingest (background / off the hot path) ----
     def ingest_transfers(self, transfers):
         """Upsert normalized USDC transfers (from extract_usdc_transfers).
         Returns the number of NEW rows inserted."""
-        # Require tx_hash: it is the dedup key (SQLite treats NULLs as distinct,
-        # so a null tx_hash would double-count on re-ingest), and a settlement
-        # without a tx reference is useless to the watcher anyway.
+        # Require tx_hash: it is part of the dedup key (SQLite treats NULLs as
+        # distinct, so a null tx_hash would double-count on re-ingest), and a
+        # settlement without a tx reference is useless to the watcher anyway.
+        # The payer is NOT required -- it is COALESCEd in the key instead, so a
+        # payer-less row stays idempotent rather than duplicating. See
+        # `_PAYER_KEY_INDEX` for why the payer belongs in that key at all.
         rows = [(t["to"], t.get("from"), str(t["amount"]),
                  t["tx_hash"], t.get("timestamp"))
                 for t in transfers

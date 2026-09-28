@@ -138,6 +138,22 @@ SCENARIOS = [
           # graph does NOT set captive_sybil above the ceiling -> no gate fires
           payer_graph_signal={"captive_sybil": False, "distinct_payers": 13,
                               "established_payers": 0})),
+    # BATCHED sockpuppet ring: ONE transaction, 12 puppet payers, identical
+    # metered price. Added 2026-09-16 with the settlement-key fix, because that
+    # fix is what makes these 12 payers VISIBLE at all -- under the old key the
+    # whole batch stored as a single row and a single payer, so the graph never
+    # saw the ring and the payee merely looked thin. Being visible is what lets
+    # the graph convict it. Pins that the wider key did not buy an evasion in
+    # the range where the gates work: MEASURED, one batched tx with N puppets is
+    # caught for N in 3..12 and escapes at N >= 13, which is the PRE-EXISTING
+    # CAPTIVE_SYBIL_MAX_DISTINCT ceiling covered by `large captive farm` above --
+    # this change makes that hole cheaper to reach (1 tx instead of 13), not
+    # newly open.
+    ("batched sockpuppet ring (12 payers, one tx)", "sybil-graph", "block", False,
+     dict(amount="0.09", record=dict(GOOD, distinct_payers=12), price_history=STABLE,
+          counterparty=LEGIT,
+          payer_graph_signal={"captive_sybil": True, "sybil_ring": True,
+                              "distinct_payers": 12, "established_payers": 0})),
     ("burst-acquired Sybil (diagnostic)", "temporal", "block", True,
      dict(amount="0.09", record=GOOD, price_history=STABLE, counterparty=LEGIT,
           temporal_signal={"stale": False, "burst_sybil": True, "peak_day_share": 0.95})),
@@ -149,6 +165,17 @@ SCENARIOS = [
     # ring -- one of its payers is reputable (pays a trusted anchor), so sybil_ring is
     # False. Proves the gate keys on reputable_payers==0, NOT on a low distinct count:
     # an established payee with few payers still GOes.
+    # RESTRAINT for the settlement-key fix, and the party it exists to protect:
+    # an HONEST merchant that batches. Its payers are real agents that also pay
+    # OTHER known payees, so `established_payers` is non-zero and neither graph
+    # flag fires -- batching alone must never look like a ring. Under the OLD key
+    # this merchant was the actual victim: 12 real customers in one settlement tx
+    # stored as ONE row and ONE payer, leaving it permanently below the thin gate.
+    ("honest merchant that batches its settlements", "control", "allow", False,
+     dict(amount="0.09", record=dict(GOOD, distinct_payers=12), price_history=STABLE,
+          counterparty=LEGIT,
+          payer_graph_signal={"captive_sybil": False, "sybil_ring": False,
+                              "distinct_payers": 12, "established_payers": 9})),
     ("established payee, few but reputable payers", "control", "allow", False,
      dict(amount="0.09", record=GOOD, price_history=STABLE, counterparty=LEGIT,
           payer_graph_signal={"captive_sybil": False, "sybil_ring": False,
@@ -273,6 +300,19 @@ def _signed(auth_over=None):
          "payload": {"authorization": auth, "signature": SIG65}}).encode()).decode()
 
 
+def _payto_source(hosts=None, age_days=1.0):
+    """A payTo baseline over a synthetic directory. `age_days` fresh by default:
+    the STALENESS guard (payto_baseline.MAX_INDEX_AGE_DAYS) refuses to gate on a
+    corpus it cannot date, and the shipped `data/directory.json` is undated -- so
+    a source built from the real artifact would test the guard, not the gate.
+    """
+    import payto_baseline as _pb
+    records = hosts if hosts is not None else [
+        {"payee": LEGIT.lower(), "resources": ["https://api.seller.test/v1/quote"]}]
+    return _pb.PayToBaselineSource(index=_pb.build_payto_index(records),
+                                   age_days=age_days)
+
+
 # (name, category, expect, known_gap, payload, forecast-source kwargs)
 from transfer_sim import OK as TS_OK
 from transfer_sim import RECEIVER_BLOCKED as TS_RECEIVER_BLOCKED
@@ -352,6 +392,26 @@ SIM_SCENARIOS = [
               chain="eip155:8453", price_history=["5.00"] * 20),
      lambda: {}),
 
+    # x402 v2 made `payTo` per-request ("no longer static"), so a compromised or
+    # hostile endpoint can name an attacker's wallet and be paid the RIGHT PRICE
+    # by the WRONG PARTY. Every spending control in this market sees a payment
+    # that is in budget, in the right asset, correctly signed. The published
+    # mitigations are a static recipient allowlist, or an alert on every
+    # first-seen address -- a cold-start problem restated as a control.
+    #
+    # KNOWN GAP BY DESIGN, not by oversight: the detection works (70 unit tests
+    # and a live-wire test), but `PAYTO_BASELINE_GATES` ships OFF. 1.6% is the
+    # HOST-level false-flag ceiling measured on the corpus; the REQUEST-level
+    # rate cannot be derived from it, so the gate has to earn it on real traffic
+    # first -- the way SYBIL_RING_GATES graduated. This line flips to
+    # `known_gap=False` when the lock does, and the scorecard is the right place
+    # for that to be visible rather than buried in a docstring.
+    ("swapped payTo on a single-recipient endpoint", "payto-baseline", "block",
+     True,
+     _payload(counterparty="0x" + "d" * 40,
+              resource="https://api.seller.test/v1/quote"),
+     lambda: {"payto_source": _payto_source()}),
+
     # --- controls: these must NOT be blocked (over-blocking is the real risk here) ---
     # RESTRAINT for the widened screen: an ordinary `exact` payment with a
     # proportionate allowance must stay clean. Widening what gets screened is only
@@ -402,6 +462,47 @@ SIM_SCENARIOS = [
     ("non-EVM payee is not condemned", "control", "allow", False,
      _payload(counterparty="2DgEL95L8DtaRb4ubYqrrnMbX7Zxgjxq7k8Ed9XAWYcp"),
      lambda: {}),
+    # RESTRAINT #1 for the payTo baseline, and the one it would be easiest to get
+    # wrong: the recipient the endpoint ACTUALLY advertises must stay clean. A
+    # join-key bug here (EIP-55 checksummed on the wire vs lowercase in the
+    # crawl -- the join that silently missed 64 of 69 live endpoints in
+    # advertised_prices) would flag the real recipient of every EVM endpoint in
+    # the ecosystem as an attack. Deliberately CHECKSUMMED to pin that.
+    ("the endpoint's own advertised recipient", "control", "allow", False,
+     _payload(counterparty=LEGIT.upper().replace("0X", "0x"),
+              resource="https://api.seller.test/v1/quote"),
+     lambda: {"payto_source": _payto_source()}),
+    # RESTRAINT #2, and the measured false-flag class: 8 of 514 corpus hosts
+    # (1.6%) advertise more than one payTo -- marketplaces and multi-tenant APIs,
+    # api.aidress.ai with six of them. For those, a recipient we have not seen is
+    # indistinguishable from a tenant being onboarded, so the host has no stable
+    # baseline and this declines to judge. If it ever blocks, the gate has become
+    # the revert_scan mistake with a new name: convicting an endpoint for working
+    # as designed.
+    ("unseen recipient on a multi-tenant endpoint", "control", "allow", False,
+     _payload(counterparty="0x" + "d" * 40,
+              resource="https://api.market.test/v1/quote"),
+     lambda: {"payto_source": _payto_source([
+         {"payee": LEGIT.lower(),
+          "resources": ["https://api.market.test/v1/quote"]},
+         {"payee": "0x" + "e" * 40,
+          "resources": ["https://api.market.test/v1/other"]}])}),
+    # RESTRAINT #3: an endpoint absent from our crawl must NOT be penalised. The
+    # live ecosystem is larger than 514 hosts, so most real endpoints land here,
+    # and gating on absence would HOLD nearly everything -- our own missing data
+    # becoming a case against a seller (the reachability_ledger rule).
+    ("an uncrawled endpoint is not penalised", "control", "allow", False,
+     _payload(resource="https://never-crawled.test/v1/quote"),
+     lambda: {"payto_source": _payto_source()}),
+    # RESTRAINT #4: the STALENESS guard. `data/directory.json` carries no
+    # timestamp, and a seller that legitimately rotated its payout wallet is
+    # indistinguishable from a swapped recipient against a baseline we cannot
+    # date. So an undated corpus RECORDS and never gates, even with the lock on.
+    ("a mismatch against an undated baseline is not gated", "control", "allow",
+     False,
+     _payload(counterparty="0x" + "d" * 40,
+              resource="https://api.seller.test/v1/quote"),
+     lambda: {"payto_source": _payto_source(age_days=None)}),
     # RESTRAINT for the currency gate, and the reason it is knowledge-based: an
     # asset we have simply never seen must NOT be condemned for being unfamiliar.
     # Only assets KNOWN not to be dollars gate; "not known to be USD" is not the

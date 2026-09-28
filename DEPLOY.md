@@ -40,6 +40,7 @@ has **no pip dependencies**.
 | `BLACKWALL_READINESS_LOCAL` | set to score endpoint readiness **ourselves** from public signals (no third-party call, no query-stream leak). Preferred over `BLACKWALL_READINESS`. |
 | `BLACKWALL_READINESS` | base URL of an EXTERNAL readiness oracle (e.g. `https://ontarioprotocol.com`); folds its grade in, but calls a third party per request and reveals your query stream. Prefer `BLACKWALL_READINESS_LOCAL`. |
 | `BLACKWALL_RECEIPT_KEY` | **secret** for signing receipts + report tokens (set a strong random value) |
+| `BLACKWALL_LEDGER_KV_URL` / `BLACKWALL_LEDGER_KV_TOKEN` / `BLACKWALL_LEDGER_KEY` | **durable ledger mirror** for a host with no persistent disk: every ledger event is AES-256-GCM sealed and mirrored to a Redis-REST KV, and replayed at boot. All three required together (partial config is fatal). `BLACKWALL_LEDGER_KEY` is 32 bytes (64 hex) and must differ from every other secret — **lose it and the log is unreadable**. See `docs/DURABLE_LEDGER.md`. |
 | `BLACKWALL_SIGNING_SEED` | **secret**, base64url 32 bytes — turns on the INDEPENDENTLY-VERIFIABLE Ed25519 receipt. Absent, verdicts carry no `receipt` field and the claim the product advertises is simply off. Must NOT equal `BLACKWALL_RECEIPT_KEY` (the service refuses to boot if they match). Generate: `python -c "import os,base64;print(base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip('='))"` |
 
 > ### ⚠️ Check that your facilitator actually settles Base MAINNET
@@ -74,6 +75,62 @@ has **no pip dependencies**.
 > `python billing_preflight.py --pay-to 0x... --facilitator ...` checks this, and
 > a facilitator that answers but does not list your (scheme, network) is a hard
 > FAIL — it is a config error that never starts working.
+>
+> ### ⚠️ The boot banner cannot tell you which facilitator SETTLED. The transaction can.
+>
+> The banner proves the two CDP variables are **present**, not that the credential
+> is **valid** and not that CDP did the settling: a garbage secret still boots and
+> still prints `CDP facilitator (authenticated) … Bazaar-eligible`. And until
+> `choose_facilitator` learned to refuse a half-set pair, setting only
+> `CDP_API_KEY_ID` fell back to a keyless facilitator that settles mainnet fine —
+> so a real settlement could look exactly like a successful CDP cutover while CDP
+> never touched it. **Verify from the chain, not the log.**
+>
+> Each facilitator leaves a distinct fingerprint. Measured on Base mainnet, same
+> payer, same payee, same asset, 2026-09-15 — the ONLY thing that changed between
+> these two rows is the facilitator:
+>
+> | | payai (keyless) | CDP (authenticated) |
+> |---|---|---|
+> | relayer (`tx.from`) | `0xb2bd2992…f371b` | `0x625d8a65…6ac39` |
+> | `tx.to` | Multicall3 `0xca11bde0…76ca11` | **USDC directly** `0x833589fC…02913` |
+> | selector | `0xcf092995` `transferWithAuthorization` (bytes sig) | `0xe3ee160e` same fn (v/r/s sig) |
+> | gasUsed | 109,400 | 86,250 (no Multicall3 wrapper) |
+> | logs | 2 — `AuthorizationUsed` + one `Transfer` | identical shape |
+> | tx | `0x5cee6276…70b1b` | `0x96559181…44bfd` |
+>
+> Three independent signals move together, so one mismatched relayer address is
+> enough to catch a silent fallback. Both relayers are long-lived production
+> addresses (nonces 4,020,491 and 1,515,416), so neither is a throwaway.
+>
+> **The relayer address is not a promise, and CDP DOES rotate it -- observed.**
+> A second CDP settlement on 2026-09-15 (`0xc04e425b…a6450`) came from
+> `0x68a96f41…07863`, a different address from the first
+> (`0x625d8a65…6ac39`). Both are long-lived production senders (nonces 3.2M and
+> 1.5M). So of the three signals, only two are durable:
+>
+> | signal | durable? |
+> |---|---|
+> | `tx.to` = **USDC directly**, not Multicall3 | ✅ held on both |
+> | selector `0xe3ee160e` (v/r/s), not `0xcf092995` | ✅ held on both |
+> | a specific relayer address | ⚠️ **rotates** |
+>
+> Check the ROUTE and the SELECTOR. Use the relayer only as "it differs from the
+> one my previous facilitator used".
+>
+> ### Settlement cost is NOT visible on-chain
+>
+> Both settlements above moved the **full quoted amount** to `BLACKWALL_PAY_TO` —
+> `1000` raw advertised, `1000` raw received — with **two logs and no fee
+> transfer**. Gas was paid by the relayer, not deducted from the payment
+> (0.000000766 ETH via payai, 0.000000431 ETH via CDP).
+>
+> So a transaction receipt **cannot** tell you what settling cost you. CDP prices
+> settlement at $0.001 past a free first 1,000/month and bills the CDP account
+> off-chain, which is invisible here. `billing_preflight.check_settlement_cost`
+> can therefore only ever **cite** that price sheet, never measure it — which is
+> why it is `--settlement-cost`-overridable and dated in the source rather than
+> treated as a constant. The honest figure for the payai path is `0`.
 
 ## Build & run (any container host)
 

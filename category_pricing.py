@@ -103,6 +103,49 @@ def observations_from_store(store, payee_category):
     return obs
 
 
+def sidecar_meta(index_text, counts, min_payees, generated_at):
+    """The `category_index.meta.json` payload for an index whose exact bytes are
+    `index_text`. PURE, and separated from main() precisely so the CONTENT PIN can be
+    tested without a live crawl -- an untested pin is the pin that silently stops
+    pinning.
+
+    Hashes the bytes handed in rather than re-reading the path, so the digest cannot
+    describe a file written after it (see payto_baseline._sidecar_age: the sidecar's own
+    failure mode is the forgotten refresh).
+    """
+    import hashlib
+    raw = index_text.encode("utf-8") if isinstance(index_text, str) else index_text
+    return {"generated_at": generated_at,
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "min_payees": min_payees,
+            "indexed": sorted(json.loads(raw.decode("utf-8"))),
+            "payees": dict(counts)}
+
+
+def category_payee_counts(observations):
+    """{category: distinct payee count} over the SAME observations the index is built
+    from. PURE.
+
+    This is the number a reader of `category_index.json` cannot recover and most needs.
+    A baseline is a median-of-medians across distinct payees, so one computed over 7
+    payees moves when a single payee enters or leaves while one over 29 does not -- and
+    the finished artifact renders both as one price string. Measured on the 2026-09-28
+    corpus: `dev-tools` rested on 7 payees and moved 2.25x; `ai-agents` rested on 26 and
+    did not move at all. Counts are emitted for EVERY category present in the
+    observations, including those under MIN_CATEGORY_PAYEES that the index omits, since
+    "4 payees, just under the floor" is exactly what explains a category's absence.
+    """
+    by = {}
+    for o in observations or []:
+        if not isinstance(o, dict):
+            continue
+        cat, payee = o.get("category"), o.get("payee")
+        if cat in (None, CATEGORY_UNCLASSIFIED) or not payee:
+            continue
+        by.setdefault(cat, set()).add(payee)
+    return {cat: len(payees) for cat, payees in sorted(by.items())}
+
+
 def build_index(store, resources, *, min_payees=MIN_CATEGORY_PAYEES):
     """End-to-end: classify payees from `resources`, pull their on-chain settled
     amounts from `store`, and build the {category: median} index. PURE given inputs."""
@@ -123,15 +166,44 @@ def main(argv=None):
     p.add_argument("--out", help="write the index JSON here (default stdout)")
     args = p.parse_args(argv)
 
+    import datetime
     import discovery_crawl
     from reputation_store import ReputationStore
     resources = discovery_crawl.crawl_all(max_pages=args.max_pages)
-    index = build_index(ReputationStore(args.store), resources, min_payees=args.min_payees)
+    # build_index's two steps, inlined, so the observations can be counted as well as
+    # priced without crawling or querying the store twice.
+    pc = payee_categories_from_resources(resources)
+    observations = observations_from_store(ReputationStore(args.store), pc)
+    index = build_category_index(observations, min_payees=args.min_payees)
+    counts = category_payee_counts(observations)
     out = json.dumps(index, indent=2, sort_keys=True)
     if args.out:
         with open(args.out, "w") as f:
             f.write(out + "\n")
         sys.stderr.write("wrote %d category baselines to %s\n" % (len(index), args.out))
+        # SIDECAR, not extra keys in the index. `load_category_index` coerces the index
+        # with {str(k): str(v)} and five modules parse those values as Decimals, so a
+        # nested count would arrive downstream as the string "{'payees': 7}". Same shape
+        # as data/directory.meta.json, and for the same reason: a bare artifact cannot
+        # carry its own provenance without breaking the readers that already parse it.
+        # REUSE, not a second copy: payto_baseline.meta_path already derives this for
+        # data/directory.json, and two sidecar-naming rules that could drift is exactly
+        # how a sidecar ends up describing a file it does not sit beside.
+        from payto_baseline import meta_path as _sidecar_path
+        meta_path = _sidecar_path(args.out)
+        # CONTENT-PINNED over the EXACT bytes written above, by the same argument
+        # payto_baseline._sidecar_age makes for data/directory.meta.json: "a sidecar's own
+        # failure mode is the forgotten refresh -- regenerate the corpus, leave the
+        # sidecar, and the date now describes a file that no longer exists." A key list is
+        # not enough to pin it, which is this change's whole point: a refresh can keep all
+        # six category names and move every price.
+        meta = sidecar_meta(out + "\n", counts, args.min_payees,
+                            datetime.datetime.now(datetime.timezone.utc)
+                                    .strftime("%Y-%m-%dT%H:%M:%SZ"))
+        with open(meta_path, "w") as f:
+            f.write(json.dumps(meta, indent=2, sort_keys=True) + "\n")
+        sys.stderr.write("wrote payee counts for %d category/categories to %s\n"
+                         % (len(counts), meta_path))
     else:
         sys.stdout.write(out + "\n")
     return 0

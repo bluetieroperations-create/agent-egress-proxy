@@ -25,6 +25,7 @@ from __future__ import annotations
 from addresses import is_evm_address
 from rwa_readiness import decode_uint, eth_call_data
 from solana_rwa import is_solana_address
+import user_agent as ua_policy
 
 
 class BalanceReader:
@@ -79,7 +80,7 @@ class BalanceReader:
         req = urllib.request.Request(
             self.evm_rpc_url, data=json.dumps(body).encode("utf-8"),
             headers={"content-type": "application/json",
-                     "user-agent": "Blackwall-rwa-balance/1"})
+                     "user-agent": ua_policy.browser("rwa-balance")})
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
             d = json.loads(r.read(1 << 16))
         return d.get("result") if isinstance(d, dict) else None
@@ -117,7 +118,7 @@ class BalanceReader:
         req = urllib.request.Request(
             self.solana_rpc_url, data=json.dumps(body).encode("utf-8"),
             headers={"content-type": "application/json",
-                     "user-agent": "Blackwall-rwa-balance/1"})
+                     "user-agent": ua_policy.browser("rwa-balance")})
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
             d = json.loads(r.read(1 << 17))
         return d.get("result") if isinstance(d, dict) else None

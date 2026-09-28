@@ -42,15 +42,264 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `settlement_watch.py` (trustless on-chain settlement confirmation),
   `chain_backfill.py` (seed reputation from PUBLIC Base USDC history with zero
   customers -- paginate a KNOWN x402 payee's inbound USDC via Blockscout and ingest;
-  targeted not firehose; idempotent),
+  targeted not firehose; idempotent. TRUNCATION IS REPORTED, NOT SWALLOWED:
+  `collect_paged` returns `(items, truncated)` and `backfill`'s summary carries a
+  `truncated` count plus a per-payee flag, because the bare list it used to return
+  let a capped walk read as a complete history. MEASURED COST of that: the shipped
+  `data/reputation_seed.db.gz` holds 239 of Bitrefill's 29,231 Base transfers
+  (0.8%) and 70 of 281 payees (25%) sit on an exact 50-multiple >= 100 -- the page
+  cap, not the ecosystem. No verdict flips on it (the thin/Sybil gates need >= 20
+  and >= 3, and a capped payee has >= 100; `stale` reads `last_seen`, which is
+  exact because the pager walks newest-first), but `age_days` INVERTS -- Bitrefill
+  reads as a 4-day-old merchant -- and `burst_sybil` was calibrated on the
+  artifact. `strict=True` / `--strict` raises `IncompleteHistory` for a deliberate
+  full-depth pull, where a capped payee means the run is wrong rather than merely
+  bounded -- and it covers a payee that FAILED TO FETCH too, which is more
+  incomplete than a truncated one (audit finding: it originally enforced only the
+  page-cap half of its own promise). EXIT CODES: 3 = refused to ship (--strict),
+  1 = incomplete AND the caller passed `--fail-on-incomplete`, 0 otherwise. The
+  non-zero exit is OPT-IN because making it the default was a REGRESSION, caught
+  by audit and reproduced before fixing: `scripts/refresh_seed.sh` runs `set -eu`
+  at `--max-pages 4`, so the bounded walk that script ASKS FOR killed the
+  scheduled refresh at that line every run -- and that refresh is what keeps the
+  corpus off the 90-day `stale` cliff, so the safety change disabled the safety
+  mechanism. A cap you passed being reached is not a failure; the warning and the
+  `truncated` field print either way. `rwa_backfill.collect_paged` still has the
+  old shape and says so in its docstring. Tests: `test_chain_backfill.py`, 41
+  tests, 30 mutations verified killed (incl. guards for that regression and for
+  the discarded-partial defect).
+  A TRANSPORT FAILURE MID-WALK IS ALSO TRUNCATION, not an error: the
+  exception used to unwind `collect_paged` and DISCARD every page already
+  fetched -- measured, 3 good pages became 0 rows ingested and the payee was
+  filed as `{"error": ...}`, which downstream is indistinguishable from "this
+  payee has no history". Reported by the corpus-depth session against 4add6e6.
+  Now the partial is KEPT and marked truncated; only a failure on page ONE
+  re-raises, because then there is no partial to label and it is a genuine
+  fetch failure. Plus a bounded per-PAGE retry (`--retries`, default 2,
+  exponential backoff) on top of `http_util`'s own transient retries: the
+  indexer fails ~2% of page fetches when healthy (n=45), so a 5-page walk
+  completes only 0.98^5 = 90.4% of the time -- ~27 of 281 payees fetching
+  NOTHING per run. Invisible in the shipped corpus because runs accumulate and
+  ingest is idempotent; fatal for the ONE-SHOT full-depth pull, which has no
+  next run to fill the gap. The retry lives in `_fetch_page`, separate from the
+  walk, so it can never advance the cursor past a page it did not read --
+  retrying with `params` already rebound would skip history and call the result
+  complete. MUTATION-TESTING HAZARD found here: restoring a SAME-SIZE mutation
+  lets CPython reuse the MUTANT's `.pyc` (invalidation is mtime+size, and `cp`
+  preserves mtime within the second), which can report a phantom failure or a
+  phantom SURVIVAL -- clear `__pycache__` between mutations. A second hazard
+  found the same way: three mutants survived because no test asserted the
+  BACKOFF DELAY -- the guard only gates the sleep, so removing it left retries
+  working and every test green, while retrying instantly against a
+  rate-limited indexer is what produces the 429s. And a retry with no injected
+  clock quietly turned this suite from 0.1s into 12s via one PRE-EXISTING test
+  that had no sleep seam),
   `addresses.py` (EVM address validation/normalization),
+  `hmac_key.py` (the ONE owner of the HMAC capability secret. THREE separate
+  modules each grew their own COMMITTED fallback for it and each was found as a
+  separate audit finding -- `blackwall._DEV_RECEIPT_KEY`, `approvals._key()`'s
+  placeholder, and `seller_audit._DEV_AUDIT_KEY`. A COMMITTED SECRET IS NOT A
+  SECRET, and every capability token here is an HMAC under this one:
+  `sign_report_token` (authorizes writing an OUTCOME, which feeds the reputation
+  ledger the entire product is built on), `approvals` decide/redeem (marks a
+  HOLD human-approved), and `seller_audit.sign_revoke_token`. With the fallbacks
+  in force anyone who could read the public repo could mint all three.
+  MEASURED ON THE LIVE DEPLOY BEFORE FIXING: a dev-key-forged report token was
+  REFUSED with 403, so `BLACKWALL_RECEIPT_KEY` is set in production and this was
+  LATENT rather than breached -- which is why it could be fixed properly instead
+  of as an emergency, and why the fix could afford to change boot behaviour.
+  WHY A RANDOM PER-PROCESS KEY rather than refusing to boot: `receipt_signer`
+  can turn signing OFF when unset because a verdict without a receipt is still a
+  valid verdict, and that option does not exist here -- `receipt_id` is emitted
+  on EVERY verdict and is the ledger join key, so the capability is MANDATORY.
+  Refusing to boot would break every deploy that has not set it, including the
+  free public smoke-test configuration whose own blueprint says to leave the
+  secret blank. The one real cost of the random key is that tokens DO NOT SURVIVE
+  A RESTART, and that cost FAILS SAFE: after a redeploy an in-flight outcome
+  report is REJECTED, never accepted as a forgery. It is confusing if
+  unexplained -- intermittent "invalid report_token" with no cause -- so
+  `describe()` says exactly that and the boot banner prints it. A SHORT secret is
+  ACCEPTED and reported WEAK rather than refused, because an operator's existing
+  short secret must not stop a deploy and turning that into a boot failure would
+  be a breaking change dressed as a security fix. REVOCATION IS THE ONE
+  CAPABILITY THAT STILL REFUSES an ephemeral key (`RevocationNotConfigured`): a
+  revoke token that works only until the next redeploy is worse than none, since
+  an operator would mint one, hand it to whoever does the revoking, and it would
+  silently stop working in precisely the situation where trust needs
+  withdrawing. An explicitly-set secret ALWAYS wins over an
+  already-generated ephemeral one, or a call-order accident would keep the random
+  key after the operator configured a real one. `test_hmac_key` also SCANS THE
+  SOURCE for the three literals, and that scan is deliberately BLUNT -- it cannot
+  tell a mention from a use, which it proved by failing on the docstrings that
+  explain the fix. That is the right trade: a scan clever enough to allow
+  mentions can be talked into allowing a use, so the convention is to DESCRIBE
+  these constants in prose and never quote them. Verified on the real boot path
+  in all three states (unset -> WARNING ephemeral, set -> configured, short ->
+  WARNING weak). 7 mutations verified killed),
   `x402.py` (Blackwall's own x402 billing: 402 challenge, facilitator seam,
-  replay guard, sessions),
+  replay guard, sessions. A HALF-SET CDP PAIR IS NOW A BOOT ERROR
+  (`FacilitatorConfigError`), not a silent fallback -- found 2026-09-15 by the
+  parallel Migrations session while reviewing the CDP cutover plan, and confirmed
+  end to end before fixing. `choose_facilitator` gated on
+  `if cdp_id and cdp_secret`, so setting ONE of them fell through to
+  `facilitator_url` -- which reads as harmless and is not: on MAINNET that URL is
+  a keyless facilitator that settles real USDC perfectly well. So an operator who
+  pasted `CDP_API_KEY_ID` and fumbled the secret got a service taking real
+  payments through the OLD facilitator while believing they had cut over, and
+  their evidence that CDP worked was a settlement CDP never touched. The failure
+  mode is not "it doesn't work", it is "it works and proves the wrong thing" --
+  the same shape as `cdp_preflight.py` defaulting to TRACEIPT's `payTo` under a
+  comment asserting it was the live one. Setting either variable states the
+  operator's intent; honouring half of it answers a different question. Same rule
+  `receipt_signer.py` already applies to a malformed signing seed: set-but-bad
+  means they intended the feature, so fail LOUD at boot. Bounded blast radius --
+  the caller is inside `if args.pay_to`, so it can only stop the deploy that turns
+  billing ON. `billing_preflight.check_facilitator` catches it and grades FAIL
+  (never WARN: no amount of waiting fixes a misconfiguration), which mattered
+  because that module MODELLED the old fallback faithfully and therefore BLESSED
+  it -- with the secret missing it probed the keyless URL, found mainnet
+  supported, and returned OK, so the check whose entire job is "what happens if I
+  flip billing on?" PASSED the most likely way a cutover fails. TWO TESTS encoded
+  the old behaviour and were replaced, one of them (`test_partial_creds_fall_back_
+  to_the_url_path`) asserting OK as correct. MEASURED LIMIT, so the operator is
+  not misled twice: the boot banner proves the vars are PRESENT, not that the
+  credential is VALID -- a garbage secret still boots and still prints
+  "CDP facilitator (authenticated) ... Bazaar-eligible". Validity is
+  `check_settlement_auth`'s 401/403 -> FAIL, or the settlement itself. Restraint
+  controls: neither var set still boots keyless, and billing OFF is unaffected.
+  6 mutations verified killed),
+  THE 402's `resource.url` IS OURS, NOT THE CALLER'S (2026-09-15,
+  `canonical_resource_url`). Found while fixing the Bazaar listing and it is the
+  more serious half: `_challenge` passed the request's `resource` field into
+  `build_resource_info` VERBATIM, and that field is CLIENT-SUPPLIED. MEASURED ON
+  THE LIVE SERVICE before fixing -- `https://evil.example/owned`,
+  `javascript:alert(1)` and `//evil.example/x` each came back inside a real 402
+  advertising our `payTo`. The 402 is the document CDP indexes into the Bazaar,
+  so an attacker could pay 0.001 USDC with a foreign `resource` and have THEIR
+  url catalogued against OUR payout address, borrowing our settlement history for
+  one call; and `javascript:` in a field a catalog UI renders is an XSS primitive
+  we would publish ourselves. THE ORIGIN IS OURS, THE PATH IS THEIRS: scheme and
+  netloc are discarded unconditionally (which also disposes of javascript:/data:/
+  file: and of `//host/x`, whose netloc urlsplit parses out), traversal segments
+  normalize away, control characters are stripped (the value is echoed into a
+  base64 header where a newline forges header structure -- the untrusted-echo
+  class again), and the length is capped. The PATH still comes from the request
+  because different paths are different priced resources. Fed from
+  `BLACKWALL_ORIGIN`/`--origin`, which ALREADY EXISTED for openapi.json's
+  `servers[]` and was simply never used here -- which is also why our url was
+  RELATIVE and why we are not in the Bazaar (measured: 2000/2000 catalogued
+  entries carry an ABSOLUTE url, and an indexer cannot invent a host from a
+  path). CORRECTION TO MY OWN FIRST DIAGNOSIS: `build_resource_info` returns a
+  v2-spec ResourceInfo OBJECT, so the object shape was right all along and CDP's
+  string is its projection of `.url`; the fix is absoluteness, not stringness.
+  ONE TEST encoded the old behaviour (`resource.url == "https://r"` -- i.e. it
+  pinned the caller's own url being echoed) and was replaced. Restraint: with no
+  origin configured the path is unchanged, so no existing deploy breaks, and a
+  hostile origin is discarded either way. `extensions.bazaar.info` is present in
+  2000/2000 catalogued entries and we emit only `schema` -- DELIBERATELY left
+  alone, because the absolute url is the one change with a mechanism behind it
+  and changing two things at once means a listing that appears tells you nothing
+  about which mattered. POST-MERGE FUZZ of `canonical_resource_url` (43 cases: unicode, percent-
+  encoding, NUL, bidi overrides, backslashes, 5KB paths, non-string types) --
+  THE ORIGIN GUARD HELD IN EVERY CASE, verified by netloc rather than by
+  substring. ONE real finding, LOW: `%2f`/`%5c` are not literal separators, so
+  `/..%2f..` was ONE segment that merely CONTAINED ".." and the traversal text
+  reached the advertised url. Not a host escape -- every case stayed on our own
+  origin -- but a consumer that percent-decodes then resolves would land outside
+  the path space we serve. Encoded separators are now decoded ONCE before
+  splitting, deliberately NOT to a fixed point: then the number of rounds is the
+  attacker's choice and each round can synthesize separators the previous one
+  lacked, which is why double-encoded `%255c..` correctly stays literal text.
+  TWO OF THE THREE FUZZ FLAGS WERE FALSE POSITIVES IN THE ASSERTION, not
+  defects: `https:///evil.example/x` and a backslash-prefixed host land as a
+  PATH on our own origin, and a substring grep for a hostname cannot tell a host
+  from a path. Corrected to assert `urlsplit(got).netloc`. The corrected
+  assertion then swung TOO LOOSE -- mutation testing showed the segment check
+  ALONE passes with the decode deleted -- so BOTH halves are asserted now: no
+  `..` SEGMENT and no encoded separator remaining. LOOSENING AN ASSERTION TO
+  KILL A FALSE POSITIVE CAN WALK STRAIGHT PAST THE TRUE ONE, which is the lesson
+  worth keeping. 9 mutations verified killed, three of which caught a TEST
+  defect rather than a code one: the control-character case held LITERAL
+  backslash-r-n from a heredoc, so stripping could be removed with the test still
+  green; it is built from `chr()` now. See `docs/BAZAAR_LISTING.md`.
   `cdp_auth.py` (pure-Python Ed25519 (RFC 8032) + CDP Bearer-JWT, so the
   `CdpFacilitator` in x402.py can settle through the authenticated Coinbase CDP
   facilitator -- the one whose settlements Bazaar catalogs),
   `mcp_server.py` (MCP stdio server wrapping the verdict engine),
-  `reputation_store.py` (SQLite indexed reputation store + record merging),
+  `reputation_store.py` (SQLite indexed reputation store + record merging.
+  THE SETTLEMENT NATURAL KEY NOW INCLUDES THE PAYER (2026-09-16), and leaving it
+  out was a LIVE defect rather than a forecast. The old key was
+  `UNIQUE(tx_hash, counterparty, amount)` under a comment that stated its own
+  assumption out loud -- "one tx can carry one settlement to a counterparty for a
+  given amount". ONE TX CAN CARRY MANY. MEASURED on Base mainnet: tx
+  0xa49466a1d74cd6... pays an identical 0.00001 USDC to one payee from TWO
+  different addresses, and the store kept one, so two real customers counted as
+  one. `chain_backfill.payee_transfers` already deduped on (tx, from, to, amount)
+  with the comment "keep two same-amount transfers in one tx from DIFFERENT
+  senders (real, distinct settlements)" -- so the FETCH stage preserved exactly
+  what the STORE discarded. Two layers disagreeing about what a settlement IS,
+  with the narrower one winning silently.
+  FOUND BY ASKING WHAT `batch-settlement` DOES TO REPUTATION, which is the
+  research item that prompted it: x402's `batch-settlement` scheme and
+  Cloudflare's deferred scheme (shipped in their Agents SDK) exist to collapse
+  many small payments into ONE onchain settlement. A metered endpoint charges ONE
+  price, so under the old key a batch of N payments from N customers stored
+  exactly ONE row whatever N was -- 50% of the evidence lost at N=2, 99% at
+  N=100. EVERY reputation signal is derived from these rows: `settlement_count`
+  (thin gate, >= 20), `distinct_payers` (both Sybil gates, >= 3), the payer
+  graph's edges, and `robust_price_median`. So an honest high-volume merchant
+  that batched would read as a PERMANENT cold start and the graph would be blind
+  to it. Present exposure measured, not assumed: 4 of 371 corpus quotes advertise
+  a deferred/batch scheme (1.1%), the shipped 46,031-row seed holds 10 (tx,payee)
+  groups carrying more than one settlement and ALL TEN survived only because
+  their amounts happened to differ, and a live 3-payee re-fetch lost 1 of 323
+  settlements (0.3%) before the fix and 0 of 323 after.
+  COALESCE IS LOAD-BEARING: SQLite treats NULLs as DISTINCT in a UNIQUE
+  constraint, so a bare `UNIQUE(tx_hash, counterparty, payer, amount)` would let
+  a payer-less row insert without limit -- an idempotency fix turned into an
+  inflation bug. It is a UNIQUE INDEX over
+  `(tx_hash, counterparty, COALESCE(payer,''), amount)` for that reason.
+  MIGRATION, because SQLite cannot ALTER a constraint away and the fix would
+  otherwise be present and INERT on every existing deploy (the eighth instance of
+  that pattern here): `_needs_payer_key_migration` reads the stored CREATE TABLE
+  text and `_migrate_payer_key` rebuilds the table once. FAIL-SOFT on an
+  unwritable DB -- it cannot ingest anyway, so the key is irrelevant to it, and
+  taking the verdict path down over a schema nicety is the worse error
+  (`remote_ledger`'s rule). Verified on the REAL seed: 46031 rows / 281 payees /
+  2511 distinct payers IDENTICAL before and after, old constraint gone, new index
+  present, idempotent. Run at BUILD time in the Dockerfile, not at boot: it costs
+  491ms on the seed, the decompressed DB is baked into an image LAYER, and every
+  container starts from that layer -- so migrating at boot would pay that on
+  every cold start forever. Measured 491ms once at build, 0.59ms per start after.
+  THE SYBIL COST QUESTION, where MY FIRST CLAIM WAS WRONG and measuring the
+  boundary caught it. The docstring read "a batched ring still fails both [graph
+  gates]"; it does not. One batched tx with N puppet payers: N=2 is below
+  MIN_DISTINCT_PAYERS so the payee stays thin anyway, N=3..12 trips BOTH
+  `captive_sybil` and `sybil_ring`, and **N >= 13 escapes both silently**. That
+  13+ hole is PRE-EXISTING and already documented -- it IS
+  `payer_graph.CAPTIVE_SYBIL_MAX_DISTINCT = 12`, its own "audit F1" note, and
+  redteam's `large captive farm (>ceiling)` known_gap -- so this change does not
+  open it, it makes it CHEAPER: 13 distinct payers used to need 13 transactions
+  and now need ONE. Recorded rather than argued away. STILL THE RIGHT TRADE, and
+  the reason is about who gets hurt: dropping real settlements never stopped the
+  attacker (he can pay 13 times; 13 gas fees are not a defense), it only
+  penalised the HONEST batcher and blinded the payer graph to the very edges the
+  Sybil gates are computed from. THE PRINCIPLED FIX IS NOT BUILT and the blocker
+  is concrete: the thin gate is really asking how many INDEPENDENT settlement
+  EVENTS a payee has, and 30 payers across 30 txs is a different claim from 30
+  payers inside 1 tx -- `distinct_txs` would express it, but `merge_records`
+  builds a FIXED dict so a new key is SILENTLY DROPPED on the way to the verdict,
+  the identical defect `advertised_prices.py` documents as the reason its arm sat
+  inert. Scoped as its own change. Redteam: +1 attack (a batched 12-payer ring,
+  CAUGHT -- and it is the key fix that makes those 12 payers VISIBLE for the
+  graph to convict at all) and +1 restraint control (an honest batching merchant
+  whose payers do pay other payees stays CLEAN). Scorecard 31 -> 32 caught, 0
+  false positives. 8 mutations verified killed, one of which SURVIVED the first
+  pass and exposed a weak TEST rather than weak code: the idempotency test
+  asserted only that the DETECTOR reports "nothing to do" afterwards, which stays
+  true even if the rebuild runs unconditionally, so bypassing the guard went
+  unnoticed -- it now asserts the RETURN VALUE, i.e. whether work happened.
+  Tests: `test_reputation_store.py`, 35 tests),
   `facilitator_sim.py` (reference x402 facilitator for the HttpFacilitator path),
   `discovery.py` (x402 service-discovery descriptor -- Blackwall's OWN),
   `x402_challenge.py` (the ONE parser for a 402 challenge -- requirements arrive in
@@ -114,13 +363,69 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   under AWS's own spelling so `upto_scheme` sees the allowance a spend cap cannot.
   Dependency-free core `agentcore_guard.py` + thin `strands_plugin.py` /
   `langgraph_middleware.py`; own tests run from that dir),
+  `integrations/lucid/` (Lucid Agents Commerce SDK gate (daydreamsai/lucid-agents)
+  -- an ADAPTER, not a clone. Lucid's buyer path composes fetch wrappers and its
+  own `wrapBaseFetchWithPolicy` inspects the unpaid x402 requirement and reserves
+  budget BEFORE a signature exists, refusing with `403 policy_violation` -- the
+  right place to stand, which is why this is a fetch wrapper too. THE GAP is the
+  one `integrations/agentcore/` documents about AWS: their budget tier constrains
+  `allowedRecipients` (a STATIC allowlist), `maxPaymentUsd` and
+  `maxTotalUsd`/`windowMs`, so it enforces HOW MUCH and WHO only from a list a
+  human typed. An allowlist cannot say a payee is a wash-trading Sybil ring,
+  OFAC-sanctioned, quoting 50x its category median, silent for 90 days, or
+  advertising a `payTo` that is not a possible address. TWO DESIGN POINTS THE
+  WRAPPER POSITION FORCES, both bugs if done the obvious way: (1) SCORE EVERY
+  `accepts[]` ENTRY -- the client picks a requirement later, INSIDE
+  `wrapFetchWithPayment`, so scoring `accepts[0]` and letting it pay `accepts[1]`
+  scores a payment that never happened; the choice is unknowable here so the only
+  sound rule is "safe for whichever it picks" and the combined decision is the
+  MOST CONSERVATIVE across entries (openclaw reads `accepts[0]` and is RIGHT to:
+  it sits at a tool-call boundary where the payload is already chosen). (2) READ
+  ALL THREE CARRIERS -- MEASURED, the body alone leaves 86 of 195 live hosts
+  unreadable and 80 of those serve a complete v2 challenge in `payment-required`
+  with `{}` as the body, so a body-only gate fails OPEN on ~41% of the live
+  ecosystem while looking healthy. Turns a 402 into a 403, the same currency
+  Lucid's policy already speaks, so no signature is ever created; never signs,
+  holds a key or moves money. FAIL-CLOSED default (an unscored payment is
+  irreversible, a stopped agent is not) and `mode: "observe"` overrides
+  everything. `decide` is IMPORTED from `../openclaw/core.js`, not copied -- ONE
+  place where GO/HOLD/STOP becomes allow/confirm/block. THAT IMPORT FORCED A
+  SPLIT worth noting: openclaw's `index.ts` had one
+  `import ... from "openclaw/plugin-sdk/plugin-entry"` holding the claim parsing
+  AND the decision hostage, making the module unimportable outside an OpenClaw
+  plugin -- so the dependency-free half moved to `core.ts` and `index.ts` became
+  the thin host adapter that re-exports it, which is the shape
+  `blackwall_guard.py` / `wallet_guard.py` / `agentcore_guard.py` already had and
+  this one did not. VERIFIED LIVE against the real endpoint: a sanctioned payee
+  -> 403 STOP, a cold-start payee -> 403 HOLD, and one clean + one sanctioned
+  entry -> STOP with both entries' reasons merged. HONEST LIMITS in its README:
+  the thin shim is UNVERIFIED against a live Lucid install (composition order and
+  the 403 convention come from their published docs), amounts assume 6 decimals,
+  and A2A/ERC-8004 are untouched. TypeScript + vitest; own tests run from that
+  dir. POST-MERGE AUDIT finding (MEDIUM), reproduced before fixing: the
+  challenge is authored by the SELLER BEING SCREENED and every `accepts[]` entry
+  cost one forecast request, so a hostile 402 with 500 entries produced exactly
+  500 parallel calls against the operator's own Blackwall -- one-request-to-N
+  amplification, and money on a paid endpoint. `MAX_ACCEPTS = 16` is DERIVED
+  FROM THE CORPUS, not taste: 370 priced quotes across 177 answering hosts is a
+  mean of 2.09 entries per host, and our own live endpoint serves 2, so 16 is
+  ~8x the mean. OVER THE CAP IS A REFUSAL, NOT A TRUNCATION -- scoring the first
+  16 and allowing would let an attacker put the bad entry at position 17, which
+  is the ordering bug design point 1 exists to avoid; a challenge advertising
+  more than 16 payment options is itself anomalous. Restraint control: 1, 2, 3,
+  8 and 16 entries all pass unaffected. 30 tests, 14 mutations verified killed),
   `integrations/openclaw/` (OpenClaw/NemoClaw plugin -- a `before_tool_call` hook
   that recognizes payment-shaped tool calls (flat payTo/amount, 402-challenge
   accepts[], or a signed X-PAYMENT header -> passed through for payload-sim),
   forecasts them, and blocks non-GO. Enforce + fail-closed by default; keyless
   (free-tier endpoint), claim-only egress. TypeScript + vitest; own tests run
   from that dir (`npm install && npm test`), not the root command. Canonical
-  source for the nemoclaw-community `blackwall-x402-payment-gate` example),
+  source for the nemoclaw-community `blackwall-x402-payment-gate` example. SPLIT
+  2026-09-15 into `core.ts` (dependency-free: claim parsing, `decide`, `postJson`,
+  config) and `index.ts` (the thin OpenClaw host adapter, re-exporting the core),
+  because a single host-only import made the decision logic unimportable from
+  `integrations/lucid` -- the alternative was a second copy of "what does a
+  verdict mean". Its 38 tests pass unchanged),
   `BLACKWALL.md`, `DISCOVERY.md`, `DEPLOY.md`, `COMPETITIVE.md`, `PRICING.md`,
   `ap_gate.py` (treasury/AP payout gate -- folds the verdict into a
   RELEASE/REVIEW/BLOCK decision at the approve-&-release step; see
@@ -129,7 +434,136 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   an endpoint from readiness + on-chain history + sanctions + price-fairness, issue a
   signed/expiring/revocable attestation granting a bounded trust FLOOR that waives the
   thin-count gate but never the Sybil gate and never overrides a STOP; folds into
-  decide_payment via `verified_floor` + forecast via a `SellerRegistry`),
+  decide_payment via `verified_floor` + forecast via a `SellerRegistry`.
+  SIGNING IS Ed25519 AS OF 2026-09-15 (was HMAC-SHA256), and TWO DEFECTS WERE FIXED
+  TOGETHER because either alone is worse than both. (1) HMAC IS SYMMETRIC: the
+  badge's whole selling point is that a merchant shows it and a buyer checks it,
+  and only the holder of the secret could do either -- who could also forge one.
+  (2) `_audit_key` FELL BACK TO A COMMITTED KEY, `_DEV_AUDIT_KEY =
+  b"blackwall-dev-audit-key-not-for-prod"`, in the PUBLIC repo; with
+  `BLACKWALL_AUDIT_KEY` unset -- the shipped default -- any reader of GitHub could
+  forge a badge granting a trust floor. `receipt_signer.py` documents exactly this
+  lesson ("a receipt signed with a committed key is WORSE than none -- it looks
+  verifiable") and this module never got it. UNEXPLOITABLE IN PRODUCTION ONLY
+  BECAUSE `seller_registry` IS NEVER BOUND in `serve_forever` -- two defects
+  cancelling, and the FIFTH instance of the wired-and-inert pattern here. Which is
+  also why the signing fix had to land BEFORE wiring the registry: doing them in
+  the other order would have activated the forgeable badge. NO FALLBACK now -- an
+  unconfigured signer RAISES `AttestationUnavailable` rather than issuing an
+  unsigned badge, deliberately asymmetric with `ReceiptSigner.sign()` returning
+  None, because a verdict without a receipt is still a valid verdict while an
+  unsigned attestation is pure assertion that would still grant a floor. The
+  envelope is byte-compatible with `receipt_signer`'s, so ONE verifier reads
+  verdicts, Traceipt receipts and attestations, and the key is ALREADY published at
+  `/jwks.json` -- no new key to manage. `typ` is
+  `blackwall-seller-attestation+json`: one key signs both claim types, so the label
+  is the only thing separating "we vouch for this merchant" from "we judged this
+  payment", and since ANY anonymous caller can get a verdict signed,
+  `verify_attestation` CHECKS typ FIRST -- without it a signed verdict is a valid
+  badge, and the signature is genuine so nothing else catches it. Required
+  parameterizing `receipt_signer.TYP`, which is BOUND AT CONSTRUCTION and
+  deliberately NOT a `sign()` argument (a per-call typ lets the verdict path
+  mislabel a verdict with one wrong keyword; a structural test asserts `sign()`
+  takes only `payload`). FLOATS NOW TRAVEL AS DECIMAL STRINGS (`_decimalize`): the
+  HMAC version signed raw floats and got away with it ONLY because we were the
+  only possible verifier -- floats have no canonical JSON form and `canonical_json`
+  refuses them, so `sign_attestation` RAISED the moment it reached the real signer.
+  `floor` is now "0.850000"; `blackwall.py` applies it through `float()` and is
+  unaffected. Verification for the SEED HOLDER is a re-sign-and-compare, sound
+  because Ed25519 is DETERMINISTIC and dependency-free (`cdp_auth`'s Ed25519 is
+  sign-only by design); a THIRD PARTY never calls `verify_attestation` -- they take
+  the envelope plus the public key and use any standard implementation, which
+  `TestThirdPartyVerifiable` does against `cryptography`, a test that was
+  IMPOSSIBLE to write under HMAC and is the whole finding. `SellerRegistry.add`
+  keys off the SIGNED subject, never an outer field, or an envelope claiming a
+  different subject than its own signature gets filed under the attacker's
+  address. NO DOWNGRADE PATH: a legacy flat `sig` attestation is refused outright
+  rather than kept for compatibility, which would be algorithm confusion -- safe
+  because the registry was never wired, so none exists in the wild.
+  NOW WIRED AND REVOCABLE (2026-09-15, the same day, because the two had to land
+  in this order). The tier was `seller_registry` -- a `forecast` PARAMETER bound
+  by NOTHING -- so for its entire life no badge could be issued, consulted or
+  revoked on the wire while every unit test passed. Wiring it took the SEVEN
+  edits `honeypot.py` counts, and the SIXTH (the `BlackwallServer.__init__`
+  parameter) was caught by an AttributeError AT BOOT: the loudest of the seven
+  and the only one that is not silent. The seventh (`_BoundHandler`) is covered
+  by `test_approvals`' parity guard, and `test_seller_audit.TestTheLiveWire`
+  drives a REAL server because five earlier instances of this pattern were all
+  invisible to unit tests. Loaded from `BLACKWALL_SELLER_REGISTRY`;
+  revocations persist to `BLACKWALL_SELLER_REVOCATIONS`.
+  REVOCATION IS DURABLE, and the old in-memory `_revoked` was not a fail-open --
+  fail-open means declining to add caution, while a restart RESTORED every
+  revoked badge along with its trust floor, actively granting trust the operator
+  had withdrawn. Bounded by the badge TTL rather than unbounded, which is what
+  made it easy to under-rate. `FileRevocationStore` is append-only, fsynced, and
+  FAILS CLOSED on write -- deliberately opposite to `reachability_ledger`'s
+  fail-soft, because a diagnostic that cannot log should still answer while a
+  revocation that silently did not persist leaves the operator believing trust
+  was withdrawn. Keys are NORMALIZED (lower+strip) or a revoked merchant reads as
+  trusted again under EIP-55 capitalization -- the join that missed 64 of 69
+  endpoints in `advertised_prices`, here as an evasion. `load_registry`'s failure
+  is ASYMMETRIC and that is the design: a bad ATTESTATION file costs a merchant
+  its floor (conservative -> fail-open, tier still runs), an unreadable
+  REVOCATION list means loading badges we cannot check revocation for (-> refuse
+  outright). Verified at BOOT in both directions.
+  MONOTONICALLY SAFE BY CONSTRUCTION: there is NO un-revoke, on the store, the
+  registry or the wire, so whoever holds a token can only REMOVE trust from ONE
+  merchant, never grant it. `sign_revoke_token` is PER-SUBJECT (a leak is not the
+  whole registry) and domain-separated with "revoke:"; `POST /v1/seller/revoke`
+  returns the SAME 403 for a known and an unknown subject so it is not an
+  enumeration oracle for who holds a badge, and 503 rather than 200 when the
+  store refused. Issuance is deliberately NOT exposed -- granting a floor stays
+  an operator act. `GET /v1/seller/revocations` PUBLISHES the list, which is what
+  completes 3b: a badge anyone can verify against `/jwks.json` whose revocation
+  nobody can see is only as good as its TTL.
+  POST-MERGE AUDIT (2026-09-15), three findings, all fixed, and the first was
+  found by MEASURING the hot path rather than reading it:
+  (1) HIGH -- `credential_for` called `verify_attestation`, whose signature check
+  is a RE-SIGN-AND-COMPARE, so every verdict naming a badged counterparty
+  performed an Ed25519 signing operation, reachable by any anonymous caller of
+  `/v1/forecast-payment`. MEASURED: 0.133ms on the native backend and
+  **221.864ms on the pure-Python fallback**, against a 0.109ms verdict -- ~2000x
+  the thing it decorates, which on a 0.1-CPU box is a self-inflicted outage, not
+  a slow path. It was ALSO a variable-time oracle (`_scalarmult` leaks the
+  nonce's Hamming weight and the nonce derives from the secret prefix), though
+  that half was already covered INCIDENTALLY: the attestation signer shares
+  `BLACKWALL_SIGNING_SEED` with receipt signing, so the existing public-bind
+  boot guard fires. The LATENCY was covered by nothing, and the FATAL message's
+  "~170ms per verdict" understated it. THE FIX IS ALSO THE RIGHT DESIGN: the
+  signature protects against a tampered FILE, which is a load-time concern, and
+  nothing mutates the in-memory envelope between entry and use -- so
+  `verify_envelope` (shape/typ/signature) runs ONCE in `add`/`issue`, which now
+  REFUSES an unverifiable envelope, and `check_window` (expiry/revocation) runs
+  per request because those are functions of the clock and of operator state.
+  RE-MEASURED: 221,864us -> 0.87us, and BACKEND-INDEPENDENT, so the oracle is
+  gone rather than mitigated. `verify_attestation` still composes both halves as
+  the full public check. Verified on the REAL boot path: a file with one good and
+  one tampered row reports "1 badge(s) loaded, 1 skipped".
+  (2) MEDIUM -- `sign_revoke_token` fell back to `blackwall._receipt_key()`,
+  which returns `_DEV_RECEIPT_KEY` (`b"blackwall-dev-receipt-key-not-for-
+  production"`, IN THE PUBLIC REPO) when `BLACKWALL_RECEIPT_KEY` is unset.
+  MEASURED: a token forged from that constant was ACCEPTED, so any reader of
+  GitHub could strip any merchant's badge. Bounded by this module's
+  monotonic-safety design -- revocation only ever REMOVES trust, so it is
+  merchant griefing rather than escalation -- hence medium. THIRD instance of
+  this root cause here after `_DEV_AUDIT_KEY` and the reason `receipt_signer`
+  refuses to have one. `_revoke_key` now has NO fallback and raises
+  `RevocationNotConfigured`; the route answers 503 "revocation not configured"
+  rather than a misleading 403. Verified live: the dev-key forgery gets 403, the
+  real operator token gets 200.
+  (3) See `integrations/lucid` for the third (fan-out amplification).
+  7 further mutations verified killed, one of which SURVIVED and was a real gap:
+  the 503-when-unconfigured branch was implemented and no test reached it over
+  HTTP.
+  12 mutations verified killed, TWO of which SURVIVED the first pass and were
+  real test gaps worth naming: the domain-separation test compared against
+  `approvals.sign_approval_token`, which carries its OWN prefix, so deleting
+  "revoke:" left them unequal and the test PASSING -- a check aimed slightly to
+  the left of the thing it verifies, same shape as `cdp_preflight`'s wrong
+  default payee; and the asymmetric-failure rule was implemented with no test
+  reaching either branch, because bad LINES in a readable file are skipped
+  line-by-line and never touch the unreadable-FILE path. A DIRECTORY in place of
+  the file is how both are now exercised, since `chmod` does nothing as root),
   `payload_sim.py` (payload simulation: cross-check the agent's ACTUAL signed x402
   payment -- from the request-body `payment_authorization`, NOT the fee header --
   against the claim being scored. Phase 1: recipient/amount/asset/chain field match;
@@ -490,8 +924,13 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   mainnet needs the authenticated CDP facilitator", which GENERALIZED from two
   measured facilitators to every keyless one. `facilitator.payai.network` is keyless
   and DOES settle Base mainnet -- 33 kinds including `exact`/`eip155:8453` at x402
-  v2, measured live. It is what the live service has been settling through all
-  along. So keylessness is not the property that matters; whether a facilitator
+  v2, measured live. It WAS what the live service settled through -- CORRECTED
+  2026-09-28: production now settles through the AUTHENTICATED CDP facilitator,
+  measured from outside via `/healthz` -> `facilitator: {kind: cdp,
+  bazaar_eligible: true}`, so the CDP cutover has happened and "all along" (as
+  this line used to read) is no longer true of the current config. Left as a
+  correction rather than a rewrite because the PayAI measurement itself still
+  stands and is still the evidence for the sentence that follows. So keylessness is not the property that matters; whether a facilitator
   LISTS your (scheme, network, version) is, which is exactly what the preflight
   checks and what a prose claim about "keyless facilitators" cannot. CDP remains the
   only Bazaar-listing path -- a DIFFERENT claim, and one taken from Coinbase's docs
@@ -532,7 +971,27 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   exists to accumulate). The real fix at volume is CDP's `batch-settlement`
   scheme, which collapses the per-payment cost instead of raising the price.
   `SETTLEMENT_COST` is a THIRD PARTY'S price, so it is DATED and overridable via
-  `--settlement-cost` rather than treated as a constant of nature. Two mutations
+  `--settlement-cost` rather than treated as a constant of nature. CORRECTED
+  2026-09-15, reported by the billing session after a real mainnet settlement,
+  and the correction is the finding: dating the constant was NOT ENOUGH, because
+  the cost belongs to the FACILITATOR YOU CONFIGURED and the check hardcoded
+  CDP's while production settled through PayAI AT THAT TIME (it settles through
+  CDP as of 2026-09-28, so this check now prices the facilitator actually in use
+  -- the mechanism working, not a second defect) -- so it reported a shortfall
+  computed from a price sheet nobody was paying. `settlement_cost_for` now reads
+  the facilitator the config would actually USE, mirroring `choose_facilitator`
+  (both CDP creds present means CDP whatever the URL says, or a config settling
+  through CDP would be priced as PayAI). A facilitator absent from
+  `SETTLEMENT_COSTS` yields UNKNOWN and the check DECLINES TO GRADE -- NOTE,
+  reporting the break-even (a property of pricing alone, true regardless) and
+  asking for `--settlement-cost`, rather than borrowing another facilitator's
+  number. PayAI is deliberately NOT recorded as $0: two settlements showed no
+  ON-CHAIN deduction, which is evidence about the chain and not about commercial
+  terms, and a fee billed off-chain looks identical from a receipt -- calling it
+  free would be the same leap as "valid checksum" -> "right payout address" and
+  "two testnet facilitators" -> "keyless is testnet-only", both of which this
+  project has already made. An explicit `--settlement-cost` always wins: that is
+  the operator's measured number and it beats anything on file. Two mutations
   survived the first pass and both were the wired-and-inert pattern in miniature:
   the flag could be dropped from the assembly leaving it parsed, documented and
   INERT, and the mean shortfall could be hardcoded to zero. (11) SETTLEMENT AUTH, folded 2026-09-11 from the PARALLEL SESSION's
@@ -565,6 +1024,24 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   core; network and corpus injected; exits 0/1/2 (ready / a person should look / it
   would not work) so a scheduled run is actionable. Tests:
   `test_billing_preflight.py`, 115 tests, 63 mutations verified killed),
+  THE PAYOUT ADDRESS is `BLACKWALL_PAY_TO`, dashboard-set (`sync: false` in both
+  blueprints) and deliberately NOT in code -- a hardcoded payout is a wrong
+  payout waiting to ship. Confirmed by the operator 2026-09-11 and by the live
+  `/.well-known/x402`. `cdp_preflight.py` is DELETED: its unique half (the
+  `POST /verify` probe) is folded into `check_settlement_auth` above and tested
+  there, nothing imported it, and it DEFAULTED its payee to
+  `0x3ec5e0ec...9004e1` under the comment "defaults to the live one" -- which is
+  TRACEIPT's payTo. So it proved a CDP key could pay a DIFFERENT product's
+  address and reported success; two cross-session handoffs then repeated that
+  address as Blackwall's "real payout address", which is how a wrong default
+  becomes a wrong belief. `cdp_verify_probe.py` now has NO default payee and
+  refuses without one, and it `raise SystemExit(main())` -- it returned 2 on a
+  refusal and discarded it, so "I declined to probe" exited 0, indistinguishable
+  from "the credential verified". Found by running it, not by reading it.
+  `billing_preflight.py` was never affected: it reads `BLACKWALL_PAY_TO` from the
+  environment and hardcodes nothing, so the other session's "passes every check"
+  was a config problem in their shell, not a defect in the module.
+
   `seller_report.py` (the SELLER side -- "why agents are not paying you". Every
   other gate here serves the BUYER; this is the first thing that serves the party
   being screened, and it needs no new data: one payee or host, the committed
@@ -691,7 +1168,26 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   every candidate host is cooling down the probe is skipped and the report says
   "not checked" beside the ledger's history, which is more honest than re-hitting
   a stranger to repeat something we already know. Verified live against the real corpus: 266 payees, 266 with
-  a precomputed graph. See `docs/SELLER_SIDE.md`. Tests:
+  a precomputed graph. NOW HAS A DEPLOY (2026-09-16): `render-portal.yaml`, a
+  SEPARATE Render service reusing the SAME image with only
+  `dockerCommand: python seller_portal.py` different -- the module's three
+  reasons for being a separate process are all deploy-relevant, and reason 2 is
+  ENFORCED rather than asserted: the blueprint declares NO signing or billing
+  secret (`test_deploy_manifest.SellerPortalBlueprint` fails if one appears), so
+  a defect in the public HTML renderer structurally cannot reach the process
+  holding the keys. `PORTAL_PORT` is deliberately UNSET and `main` gained a
+  `$PORT` fallback mirroring `blackwall.py:2805` -- without it the container
+  binds 8410 while the platform routes elsewhere, which presents as a failing
+  health check, i.e. a RESTART LOOP, not as a wrong port. `PORTAL_STORE` points
+  at the baked warm store because the flagship cross-payee finding is computed
+  from the payer graph at BOOT, so a store-less portal still serves and silently
+  omits the one finding a seller cannot get anywhere else. `PORTAL_PROXY_DEPTH`
+  stays at the UNDER-STATING default (1) on purpose. VERIFIED by running the
+  blueprint's exact config: boots on $PORT, 266 payees / 266 graphs, a real
+  report for api.bitrefill.com with 7 findings including a live 402 probe and the
+  corroboration finding, `default-src 'none'` CSP, and a
+  `<script>alert(1)</script>` key rendered 0 times raw / 2 times escaped.
+  See `docs/SELLER_SIDE.md`. Tests:
   `test_seller_portal.py`, 46 tests incl. a real server, 27 mutations verified
   killed). PRE-MERGE AUDIT (2026-09-07): the rate-limit identity was wrong for
   the topology this is meant to run in. `ratelimit.client_ip_from` takes the
@@ -827,6 +1323,357 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   claim: AgentCore forwards `payTo` VERBATIM into the signature, so it never asks
   whether the payee is an address at all.
   Tests: `test_payee_syntax.py`),
+  `payto_baseline.py` (IS THIS THE RECIPIENT THIS ENDPOINT HAS ALWAYS USED?
+  x402 v2 made `payTo` DYNAMIC -- per-request routing "to addresses, roles, or
+  callback-based payout logic", and the field "is no longer static". A real
+  feature for marketplaces, and a new attack: a compromised or hostile endpoint
+  names an attacker's wallet and is paid the RIGHT PRICE by the WRONG PARTY. The
+  amount is in budget, the asset is right, the signature is valid, and NO
+  SPENDING CONTROL IN THIS MARKET SEES IT. The ecosystem's published mitigations
+  are "implement recipient allowlists" and "log and alert on first-seen payment
+  addresses" -- the THIRD instance of the gap `integrations/agentcore/` documents
+  about AWS and `integrations/lucid/` about Lucid (a STATIC LIST A HUMAN TYPED),
+  and the second half is a COLD-START PROBLEM STATED AS A CONTROL: it fires on
+  every legitimate new counterparty, which is how an alert gets turned off.
+  Blackwall already scores whatever `payTo` arrives per request and never assumed
+  a stable recipient; what it could not say is the ENDPOINT-RELATIVE fact. A
+  cold-start HOLD is NOT that claim -- it clears the moment the swapped address
+  has any history, and it says nothing about the endpoint.
+  `ecosystem_scan` already writes per-payee resources to `data/directory.json`;
+  inverting that gives host -> {advertised payees}. Built ONCE AT BOOT from OUR
+  OWN COMMITTED CRAWL -- never from the request, never from a live fetch, and
+  NEVER LEARNED FROM TRAFFIC, because a baseline learned from requests would let
+  an attacker teach us their address and then pay it (the `advertised_prices`
+  rule). MEASURED BEFORE SHIPPING, the way sybil_ring graduated: 266 payees, 514
+  distinct hosts, and **8 hosts (1.6%)** advertise more than one payTo
+  (api.aidress.ai 6, blockrun.ai 3, api.arkm.com 2, four gedx402 subdomains 2
+  each). So 506 of 514 (98.4%) have exactly ONE recipient on record, and 0 of
+  3827 (host, payee) pairs the crawl itself recorded flag -- in lowercase AND in
+  EIP-55 checksummed form, which is the join that silently missed 64 of 69 live
+  endpoints in `advertised_prices` and would here read as an ATTACK on the real
+  recipient of every EVM endpoint in the ecosystem. `test_payto_baseline`
+  COMPUTES those figures from the artifact rather than restating them.
+  A HOST THAT ROTATES HAS NO BASELINE -- the one judgement call, and the hardest
+  case is the one that LOOKS most like the attack: a known multi-payee host names
+  a recipient we have never seen. From here that is indistinguishable from a
+  marketplace onboarding a tenant, so it grades `multi_payee` and is NEVER gated.
+  Gating it would put api.aidress.ai permanently on the wrong side. The
+  `payee_syntax.invalid_hex` discipline: record what you cannot defend gating on.
+  DEFAULT OFF (`PAYTO_BASELINE_GATES`): 1.6% is the HOST-level false-flag
+  ceiling and the REQUEST-level rate cannot be derived from the corpus -- one
+  high-traffic multi-tenant host could dominate live traffic while being one row
+  here. HOLD-only, never STOP (inference from our own crawl, not proof).
+  Fail-open in every direction -- unknown host, missing artifact, relative
+  resource, absent counterparty all read `unknown`, because the live ecosystem is
+  larger than 514 hosts and gating on absence would HOLD nearly everything (the
+  `reachability_ledger` rule: our own missing data must never become a case
+  against a seller).
+  AUDIT FINDING, found by MEASURING the artifact rather than reading the code:
+  `data/directory.json` CARRIES NO TIMESTAMP and was last touched 18 days before
+  this landed. A seller may legitimately rotate its payout wallet, and against a
+  stale baseline that ordinary event is indistinguishable from a swapped
+  recipient -- so the gate would manufacture evidence against a seller who did
+  nothing wrong. `index_age_days` reads an explicit `generated_at` (the shape
+  `asset_coverage.json` already uses) and returns None for the bare-list shape;
+  an UNKNOWN age counts as STALE, and a stale baseline RECORDS but never gates
+  even with the lock on. DELIBERATELY NOT `getmtime`, which is the obvious
+  implementation and is wrong here: a container clones the repo at build time, so
+  every committed artifact's mtime is the BUILD date and an arbitrarily old
+  corpus would read as minutes old -- the `chain_backfill` `age_days` inversion
+  exactly, and the same shape as `payee_syntax`'s "0 malformed" meaning 0 SEEN.
+  So dating the artifact is a PRECONDITION for the lock, not just flipping it;
+  the boot banner reports the lock and the corpus age SEPARATELY because two of
+  the three states look like "on", and a test asserts the shipped corpus is
+  currently undated so a future change cannot quietly make the gate live.
+  KNOWN LIMITS, all three stated in the module: (1) `resource` is
+  CLIENT-SUPPLIED, so this defends an HONEST agent against a HOSTILE ENDPOINT --
+  which is the v2 attack -- but a caller that forwards the value out of the 402
+  CHALLENGE rather than the url it DIALED lets the endpoint choose the host key;
+  `x402.canonical_resource_url` exists because we learned this field is
+  attacker-influenced on our own server. (2) A SELLER CAN OPT OUT by advertising
+  two payTos and becoming `multi_payee`; acceptable because the gate is strictly
+  additive, so evading it returns the payee to the STATUS QUO (cold-start HOLD,
+  sanctions, price anomaly and the Sybil gates all still apply) and grants
+  nothing. Same mechanism means an attacker who gets a resource claim on someone
+  else's host into our crawl can DISABLE the gate for that host -- fail-open,
+  which is the right direction for a poisoning we cannot yet verify against.
+  (3) A HOST IS NOT AN OPERATOR: two businesses can share one, and 58 of 266
+  corpus payees span hosts.
+  THE CORPUS IS NOW DATED, so the gate is REACHABLE (2026-09-16). The date lives
+  in a CONTENT-PINNED SIDECAR, `data/directory.meta.json`, not inline: the
+  directory is a bare LIST read by FIVE modules and only two tolerate a dict, so
+  an inline `generated_at` would change a shape `billing_preflight`,
+  `directory_liveness`, `seller_intel` and `seller_report` all parse. The sidecar
+  records a sha256 of the corpus and the age is trusted ONLY when it matches --
+  because a sidecar's own failure mode is the FORGOTTEN REFRESH, where the date
+  outlives the file it describes and hands a stale baseline permission to gate,
+  which is strictly worse than no date. A mismatch, a missing hash or an
+  unreadable sidecar all read `unknown`, i.e. no gate, by construction rather
+  than by remembering. `write_meta` REFUSES to default `generated_at` to "now",
+  since that manufactures the one lie the hash cannot catch (it would VERIFY --
+  the hash would match a file whose date is simply wrong); only the caller that
+  generated the file may vouch for the date. `ecosystem_scan` writes the pair on
+  every `--out-directory`. The SHIPPED sidecar is dated 2026-08-28T20:47:52Z,
+  taken from the commit that last refreshed the artifact rather than from the
+  clock -- 18.2 days old against MAX_INDEX_AGE_DAYS=21, so the gate is reachable
+  and GOES UNREACHABLE AGAIN in ~2.8 days unless the corpus is refreshed. That is
+  the mechanism working, not a bug, and the test says so by name.
+  PRE-DEPLOY AUDIT (2026-09-16), one fix and two things CLEARED rather than
+  changed -- recorded because a cleared concern is worth as much as a fix:
+  (i) LOW, FIXED -- `ecosystem_scan` wrote the directory as
+  `json.dump(..., open(path, "w"))` and `write_meta` then RE-READS that file to
+  hash it, so the flush was left to refcount GC. CPython does it immediately and
+  it MEASURED correct on a 1.28MB payload, so this was never a live bug -- it was
+  a correctness argument resting on an implementation detail, for a value that
+  gates payments once the lock flips. Now an explicit context manager, with a
+  structural guard (the defect is not observable from behaviour on CPython, the
+  same reason `test_seller_report` asserts against its own source).
+  (ii) CLEARED -- `dockerCommand` had NO precedent in this repo's three working
+  blueprints, so the portal blueprint's start-command override was unverified and
+  a wrong key would have silently run the image's default CMD, deploying a SECOND
+  verdict engine under the portal's hostname. Checked against Render's blueprint
+  spec: `dockerCommand` is correct for `runtime: docker`, and `startCommand` is
+  the non-Docker form. Verified, not assumed.
+  (iii) CLEARED, AND MY FIRST READ WAS WRONG -- a misconfigured `PORTAL_STORE`
+  looked silent (boot said "0 with a payer graph" and /healthz stayed ok), which
+  I reported as a finding on the strength of `tail -2`. The FULL log announces it:
+  "payer graph unavailable (OperationalError: unable to open database file)" --
+  the fail-soft-and-LOUD path working. And the sharper case, a store that EXISTS
+  but is EMPTY and raises nothing, is honest too: the report reads "Demand
+  authenticity not assessed" rather than claiming corroboration, which is exactly
+  the rule `seller_report` bug (b) already installed. Truncated output is not
+  evidence of silence.
+  MEASURED at the same time: dating costs 6.45ms at boot (hashing a 330KB
+  corpus), full source construction 21.26ms, and the per-request check is 3.48us
+  with NO hashing and NO I/O -- `index_age_days` is called only from
+  `PayToBaselineSource.__init__`, so the hash can never reach the hot path (the
+  `seller_audit` 221ms lesson, checked rather than assumed).
+  CLOSED 2026-09-21 by `directory-refresh.yml` + `scripts/refresh_directory.sh` +
+  `directory_guard.py`. It was OPEN long enough to bite twice, and both bites are
+  worth keeping on the record. NOTHING AUTOMATICALLY REFRESHED
+  `data/directory.json`: `seed-refresh.yml` regenerates the reputation seed, the
+  category index and the divergence index -- not the directory. So the mechanism
+  UN-REACHED ITSELF every three weeks, the gate went back to stale, and the note
+  here said nothing announced it because the state was only visible in the boot
+  banner. That was the first bite, and it was the one anticipated.
+  The SECOND bite was not: once `test_payto_baseline`'s reachability tripwire
+  landed (2026-09-16), the same staleness stopped being a quiet gate problem and
+  became a repository-wide CI failure. On 2026-09-18 the corpus dated 2026-08-28
+  crossed 21 days and every open PR started inheriting a red `unittest` job it had
+  no part in -- including the automated seed refresh, whose own corpus was
+  perfectly fresh. A data-freshness tripwire in the test suite converts a process
+  gap into everyone's problem, which is an argument for automating the refresh, not
+  for softening the test.
+  The fix is the one this note already prescribed -- a scheduled
+  `ecosystem_scan --out-directory` crawl -- built as its own workflow rather than a
+  step inside `seed-refresh.yml`, so the two corpora keep independent guards,
+  cadences and PRs: a rejected directory crawl must not be able to hold up a good
+  seed refresh. It is still deliberately NOT patched by raising
+  MAX_INDEX_AGE_DAYS, which would weaken a safety rule to cover a process gap.
+  `directory_guard.py` rejects four ways a refresh can go bad -- partial crawl,
+  payTo-index HOST loss behind a healthy entry count, an undated candidate, and no
+  progress (or progress that is still past the 21-day cliff). Host retention is the
+  utility metric for the same reason `MIN_GATING_RETENTION` is the store's: an
+  absent host reads as `unknown`, so entry count is not coverage.
+  WHAT REMAINS TRUE: the refresh only takes effect when its PR is MERGED. An open
+  `auto/directory-refresh` PR is not a fresh corpus, the weekly cadence leaves room
+  for two consecutive rejects before the cliff, and flipping
+  `PAYTO_BASELINE_GATES` still means checking the corpus age first.
+  THREE FINDINGS from making it reachable, each caught before deploying:
+  (1) the sidecar was NOT in the Dockerfile's COPY, so production would have read
+  the corpus as undated and the gate would have been unreachable there while
+  every local test reported it reachable -- the wired-and-inert pattern arriving
+  via a missing COPY line. Now copied by the SAME instruction as the corpus and
+  guarded by `test_deploy_manifest.DirectoryCorpusIsDatedInTheImage`, which also
+  asserts the committed pair's hash actually matches.
+  (2) `age_days=None` was INDISTINGUISHABLE from "not provided"
+  (`age_days if age_days is not None else index_age_days(path)`), so a caller
+  stating it could not date its own index silently inherited the SHIPPED corpus's
+  freshness -- an injected index gating on an unrelated file's date, the same
+  cross-artifact confusion `meta_path` exists to prevent. A `_UNSET` sentinel
+  separates them. Found because dating the corpus broke three tests that had been
+  getting "unknown" implicitly from the artifact being undated, and would
+  otherwise have started passing for the wrong reason.
+  (3) THE TRIPWIRE FIRED AS DESIGNED: the old test asserted the corpus was
+  undated and said "when this fails, the lock becomes genuinely reachable --
+  which is the point at which the false-HOLD rate must be measured". It was
+  replaced with tests that pin reachability, the hash pairing, and that
+  `PAYTO_BASELINE_GATES` IS STILL OFF -- dating and flipping in one change is
+  exactly what the graduation discipline forbids. Reachable is not calibrated.
+  MEASURED COST: 70.9ms and 261KB to index 514 hosts at boot; 1.1-2.5us per
+  verdict against a ~2ms verdict, so ~0.1%. Redteam: 1 attack (KNOWN GAP BY
+  DESIGN while the lock is off -- flipping it turns the scorecard to 32 caught /
+  2 gaps / 0 false positives, verified) + 4 restraint controls (the endpoint's
+  own EIP-55 recipient, an unseen recipient on a multi-tenant host, an uncrawled
+  endpoint, and a mismatch against an undated baseline). Verified on the REAL
+  boot path in all four states and over REAL HTTP. 25 mutations verified killed,
+  TWO of which SURVIVED the first pass and were both test defects worth naming:
+  the host-sanitizer test asserted `_safe_text` DIRECTLY and claimed a control
+  character "cannot survive into a host key at all", so deleting the sanitizer
+  from `assess_payto` left every test green -- `urlsplit` strips ONLY CR, LF and
+  TAB, and NUL, ESC and DEL pass straight into `.hostname`, making that sanitizer
+  LOAD-BEARING rather than defense-in-depth (a COMPLETE ANSI sequence is refused
+  one layer down because `[` makes urlsplit raise "Invalid IPv6 URL", but that is
+  an accident of a bracket, not a guard this module owns); and the empty-set
+  branch had no test, so `if not advertised` -> `if advertised is None` let a
+  host mapped to an empty set reach the single-element unpack and raise
+  ValueError out of a function documented never to raise. A THIRD test was wrong
+  on first run and caught by the suite itself: it demanded `multi_payee` for a
+  recipient the fixture explicitly advertised. Tests:
+  `test_payto_baseline.py`, 70 tests incl. a REAL server),
+  `bounded_server.py` (ADMISSION CONTROL -- a ceiling on requests IN FLIGHT.
+  MEASURED on the live free deploy: at 120 concurrent, 43% of verdicts failed
+  while p50 stayed FLAT at ~2s. The service was not getting slow, it was
+  DROPPING work -- as an edge 502, which a caller cannot distinguish from
+  "broken". `ThreadingHTTPServer` is thread-per-request with no cap.
+  DIAGNOSIS, measured not assumed: `/healthz` served 100/100 concurrent cleanly
+  while verdicts shed 26% at 80, so the saturating resource is per-request
+  COMPUTE, not connections. But the verdict is only 3.4ms server-side (2.05ms
+  profiled locally) -- the real constraint is that a Render free instance is
+  ~0.1 CPU, so 3.4ms of work costs ~34ms of wall clock: ~29/s theoretical,
+  ~14/s measured. NOTHING IN OUR CODE CHANGES THAT ORDER OF MAGNITUDE, and this
+  module does NOT claim to: it adds ZERO throughput. What it changes is the
+  SHAPE of overload -- admitted requests keep their latency, excess ones get an
+  immediate honest `503` + `Retry-After` instead of being timed out into a 502.
+  For a PAID endpoint that is the difference between a caller retrying and a
+  caller concluding the service is down. BoundedSemaphore (not Semaphore) so an
+  unbalanced release raises instead of silently restoring the unbounded
+  behaviour; acquire BEFORE the thread is spawned; release in
+  `process_request_thread`'s finally, the one place that runs for every admitted
+  request. TWO BUGS FOUND BY RUNNING IT, both invisible to the unit tests:
+  (1) 50 concurrent POSTs produced 5 TRANSPORT ERRORS (3 broken pipe, 2 RST) --
+  socketserver's default listen backlog is 5, and closing a socket that still
+  holds unread inbound data makes the kernel RST away the 503 we just wrote;
+  fixed with `request_queue_size=256` + half-close-and-drain, measured 5 -> 0.
+  (2) that drain then ran ON THE ACCEPT-LOOP THREAD, so shedding stalled new
+  accepts by up to 0.5s EACH -- load-shedding as a self-inflicted outage; moved
+  to short-lived capped threads, measured /healthz at 1-2ms while 31 requests
+  shed. HONEST TEST LIMITATION, found by mutation testing and left documented
+  rather than papered over: the backlog and RST fixes are NOT killed by any unit
+  test -- loopback accepts too fast to overflow a backlog and a 200KB body fits
+  in local socket buffers, so neither condition reproduces. Their evidence is
+  the real-path measurement, and `test_every_client_gets_an_HTTP_RESPONSE_not_a_reset`
+  says so in its docstring instead of implying coverage it does not have.
+  PRE-DEPLOY AUDIT found a HIGH one this had introduced: `/healthz` went through
+  the SAME ceiling, so under saturation a health check could be shed with 503 --
+  and a platform that restarts an instance on a failed health check turns
+  load-shedding into an OUTAGE, strictly worse than the 502s being replaced. It
+  measured clean live (25/25 while 34 verdicts shed) purely by timing luck, since
+  verdicts are 3.4ms and permits turned over between probes. Health is now exempt
+  via a NON-BLOCKING MSG_PEEK at bytes the kernel already holds (never waits --
+  blocking on the accept loop is the same mistake as the drain above), and the
+  exemption is ITSELF capped (`MAX_EXEMPT_INFLIGHT`) because an exemption is not
+  a bypass: a flood of GET /healthz would otherwise restore unbounded threads.
+  Verified under REAL saturation: ceiling=1 with 50 flooding threads (2391 shed,
+  2318 served) and 40/40 health probes returned 200.
+  Also fixed: `_refusing` leaked if `Thread.start()` raised, so after
+  MAX_REFUSE_THREADS such failures NO refusal would ever drain again and the
+  RSTs returned permanently.
+  Ceiling via `BLACKWALL_MAX_INFLIGHT` (default 40, the last clean rung
+  measured); always re-measure on the box you actually run on.
+  Tests: `test_bounded_server.py`, 7 tests, 5 of 7 mutations killed (the 2
+  unkillable ones named above)),
+  `remote_ledger.py` (durable ENCRYPTED mirror of the append-only verdict ledger --
+  the answer to "no persistent disk". MEASURED on the live free-tier deploy, not
+  assumed: the SQLite reputation store needs NO durability (its only writer,
+  `reputation_store.ingest_from_chain`, is gated behind `BLACKWALL_INGEST=0`, and
+  five payees' settlement/distinct-payer counts came back byte-identical to the
+  baked 46,031-row seed), while the LEDGER is the only thing that accumulates --
+  and `aggregate_counterparties` folds it into the recency-weighted
+  `recent_dispute_rate` behind `going_bad`. So the problem is not "persist a
+  database", it is "persist an append-only log". Subclasses `EventLedger` and
+  overrides exactly TWO things -- the single write point (`_append`) and boot
+  (`hydrate`) -- so every reader keeps reading the LOCAL file unchanged.
+  AES-256-GCM per record with a random nonce and the envelope version bound as
+  AAD; key DERIVED (`HMAC-SHA256(secret, label)`) not used raw, and `load_key`
+  refuses a secret reused from the signing seed / receipt key. AT-LEAST-ONCE
+  DELIBERATELY: a duplicate row is harmless because settlements dedupe by tx hash
+  (`ledger.py:134`), while a LOST row erases an outcome and a missing dispute
+  makes a bad counterparty look BETTER than it is -- so a transient failure is
+  retried. FAIL-OPEN on the payment path (local write first and unconditional;
+  one serialized worker; failures counted, never raised; a bounded queue with
+  `put_nowait` so the durability feature cannot OOM or block the service it
+  protects). NO PLAINTEXT FALLBACK: AES-GCM is not stdlib and this does not
+  hand-roll one -- if the cipher is unusable the service REFUSES TO BOOT (exit 2).
+  AUDIT FINDING, found by RUNNING it against a genuinely broken `cryptography`
+  install rather than by reading the code: "installed" is not "working" -- a
+  broken native build imports fine then raises `pyo3_runtime.PanicException`,
+  which derives from `BaseException`, so `except Exception` did NOT catch it; it
+  escaped every fail-open guard and surfaced as a 500 on the payment path. Now
+  `_guard` converts it (passing KeyboardInterrupt/SystemExit through) and
+  `ensure_cipher()` proves the cipher round-trips AT BOOT. Restore is BYTE-EXACT
+  (`seal` serializes exactly as `_append`), so an operator can verify with `diff`.
+  Verified end to end against a real HTTP KV: 16 events restored byte-for-byte
+  across a full container wipe, with zero plaintext (not the counterparty, amount,
+  asset, outcome, or even the JSON field names) visible to the provider. SHARP
+  EDGE: lose `BLACKWALL_LEDGER_KEY` and the log is unreadable -- rows under an old
+  key are skipped, counted, and announced in the boot banner.
+  LIVE AUDIT (2026-09-07), found by the mirror writing NOTHING while every log
+  line looked healthy: (1) a Redis-REST store reports a COMMAND-level failure in
+  the response BODY with HTTP 200 -- a READ-ONLY token, NOPERM, WRONGTYPE, a
+  quota refusal -- and `_cmd` read only `result`, so each became `None`; `append`
+  ignores its return, so `_mirror` counted the record MIRRORED. Silent total data
+  loss with the banner still reading ON, which is exactly the failure this module
+  exists to prevent. An `error` body now raises, naming the command and quoting
+  the store. (2) the banner asserted a capability it never tested: `hydrate` only
+  READS, so a read-only token / wrong database / revoked permission all boot
+  clean. `verify_writable()` probes a real write at boot (`SET <list_key>:probe
+  ... EX 60` then `GET` -- a separate self-expiring key, never the log) and the
+  banner reports DEGRADED -- NOT WRITABLE instead of ON. NOT fatal: one probe
+  cannot separate a bad token from a KV outage, and taking the payment path down
+  over a third party is the worse error, so it warns and keeps serving. Verified
+  end to end against a read-only stub (DEGRADED banner + named cause + verdict
+  still served + local row kept) and a healthy one (ON, 3 local == 3 mirrored,
+  probe key absent from the log).
+  DURABILITY IS NOW EXTERNALLY VISIBLE (2026-09-16): `/healthz` reports
+  `ledger: {state, mirror_failures, detail?}` where state is
+  durable/degraded/ephemeral/none. ADDED BECAUSE THE ANSWER WAS UNOBTAINABLE
+  FROM OUTSIDE -- the only evidence was a line in the boot log, so the single
+  most consequential question about a diskless deploy ("is the outcome history
+  surviving a restart?") could not be checked without dashboard access, and the
+  failure mode is silent: a local-only ledger serves verdicts perfectly and
+  discards the moat on every spin-down, indistinguishable from a healthy deploy.
+  Exactly the gap `verify_writable` closed at BOOT, left open at RUNTIME.
+  THREE DESIGN POINTS, each a bug done the obvious way: (1) `status` stays "ok"
+  in EVERY state -- a platform restarts an instance on a failed health check, so
+  grading an ephemeral ledger unhealthy converts a durability warning into a
+  RESTART LOOP, the same shape as the /healthz-shed defect `bounded_server.py`
+  documents. (2) BOTH inputs are consulted: the boot write-probe catches a
+  read-only token (which otherwise boots perfectly cleanly) but GOES STALE, so a
+  non-zero live `mirror_failures` reports `degraded` whatever the probe said --
+  neither alone is honest. (3) Zero network on the health path, since
+  `bounded_server` exempts it from admission control and blocking there is the
+  accept-loop mistake again.
+  THE DETAIL IS A WHITELIST, NOT A SANITIZED ECHO, and that was FOUND BY RUNNING
+  IT: the first version took the reason's FIRST TOKEN and its test fed a
+  synthetic string starting "NOPERM", so it passed -- while the real boot path
+  emits "kv store rejected SET: NOPERM ..." and the endpoint published `"kv"`,
+  which tells an operator nothing. A test aimed one case to the left of the
+  thing it verifies. `HEALTH_REASONS` now maps recognised classes to OUR OWN
+  labels (permission-denied / quota-exceeded / timeout / ...) and anything
+  unrecognised reports `unavailable`, so third-party text is never published at
+  all -- the endpoint is PUBLIC and unauthenticated and a REST KV's error
+  routinely quotes the URL it failed against, which carries the write token.
+  Ninth instance of the untrusted-echo class here and the first where the answer
+  is "do not echo" rather than "escape carefully". Verified on the REAL boot
+  path in all four states against a stub KV (healthy -> durable, read-only
+  token -> degraded/permission-denied, local-only -> ephemeral, no ledger ->
+  none). 11 mutations verified killed, including omitting `ledger_boot_reason`
+  from the `_BoundHandler` dict -- the silent edit, which makes a DEGRADED
+  mirror report `durable`, worse than not reporting at all.
+  PRE-DEPLOY AUDIT, two more: (1) `close()` was implemented, unit-tested and
+  CALLED BY NOTHING -- the wired-and-inert pattern again -- so every record still
+  queued at shutdown was lost, and a REDEPLOY is exactly when that queue is
+  non-empty; and the obvious fix would have been inert too, because it only ran
+  on KeyboardInterrupt while a platform stops a container with SIGTERM. Both
+  wired; verified 12/12 rows mirrored on a real SIGTERM. (2) the KV response was
+  read with an unbounded `r.read()` -- the store is a THIRD PARTY, and a broken
+  or hostile one could be buffered straight into a 512MB box; `http_util.py`
+  caps its reads for exactly this reason and this path did not. Capped at 64MB,
+  with a restraint control so an over-tight cap cannot silently disable
+  mirroring. See
+  `docs/DURABLE_LEDGER.md`. Tests: `test_remote_ledger.py`, 48 tests, 31 mutations
+  verified killed),
   `http_util.py` (hardened JSON GET for the live data path: retry+backoff on
   transient 429/5xx/timeout -- honors `Retry-After`, permanent 4xx not retried --
   plus a read-size cap; transport+clock injectable. Used by `chain_backfill`'s
@@ -1163,6 +2010,55 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   independent lock `REVERT_AXIS_GATES` (default False) -- `build_issuer_grades(...,
   revert_summaries=)` attaches it per issuer, `_fold_revert_axis` drags to LOW only when the
   lock is on AND evidence is sufficient AND the rate is material; dormant on today's corpus),
+  `cdp_bazaar_check.py` (are we in the CDP Bazaar catalog yet? NEEDS NO
+  CREDENTIALS -- it used to mint a Bearer JWT and refuse to run without
+  `CDP_API_KEY_ID`/`CDP_API_KEY_SECRET`, so the check went unrun for that reason
+  alone; MEASURED 2026-09-15 both `/discovery/resources` and `/discovery/search`
+  answer 200 UNAUTHENTICATED, which makes sense for a marketplace. THE SEARCH
+  ENDPOINT CANNOT PROVE ABSENCE and that is the trap: `?q=` IS honoured when
+  there are matches (`q=onesource` -> 19 of 20 contain it) but on a MISS it
+  silently returns 20 ARBITRARY entries with `partialResults: true`, so a miss
+  looks like a page of unrelated sellers -- search may only CONFIRM a hit, and
+  absence is settled by the full offset-paginated scan against the
+  `pagination.total` the API states (15,572 entries). Needles are now a host and
+  the payout address ONLY: the bare product name was one, and since matching is a
+  substring test over each entry's whole JSON, the search miss-fallback could
+  match somebody else's description and report us LISTED when absent. Exit codes
+  0/1/2 (listed / not yet / inconclusive) -- every outcome used to exit 0, so a
+  scheduled run could not tell them apart. FIRST RUN after the first CDP
+  settlement: NOT listed, full 15,572 scanned. Likely cause MEASURED against
+  2000 listed entries -- `resource` is an absolute URL STRING in 2000/2000 and
+  `extensions.bazaar.info` present in 2000/2000, while we advertise a DICT whose
+  `.url` is RELATIVE and emit only `schema`. Stated as a hypothesis, not a proof:
+  the catalog entry is what CDP stores and may be normalized, but an indexer
+  cannot invent our host from a relative path.
+  SECOND RUN 2026-09-16 (~25h after the first CDP settlement, absolute url live
+  and re-verified in production): STILL NOT LISTED, full 16,061 entries scanned
+  -- and the catalog GREW 15,572 -> 16,061 between the two checks, so indexing
+  is live for other sellers and the absence is about us. So
+  `extensions.bazaar.info` was added, the half deliberately held back. THE
+  MEASUREMENT CORRECTED OUR OWN DOC: `docs/BAZAAR_LISTING.md` recorded
+  `info.input` as `{method, type, queryParams}`, but sampling 100 live entries
+  shows that is the GET form (80/100) while the POST form (16/100) -- OURS -- is
+  `{body, bodyType, method, type}` with `output {example, type}`. Copying our own
+  summary would have advertised query params on an endpoint that reads a JSON
+  body, on an entry an indexer can INVOKE. `info` is the worked EXAMPLE and
+  `schema` is the JSON SCHEMA: two halves the catalog carries, so `info` is
+  purely additive and `schema` (what marks a resource invocable) is untouched.
+  THE ADVERTISED EXAMPLE MUST BE ONE OUR OWN ENGINE ACCEPTS -- `BLACKWALL.md`'s
+  curl uses `0xKNOWNGOOD000...`, which `payee_syntax` grades `invalid_hex`, so
+  publishing it would advertise an example the gate answering it would flag;
+  a test asserts every REQUIRED schema field is present AND that the
+  counterparty is not flagged, and the body was POSTed verbatim at a real server
+  (200, `payee_syntax: ok`, cold-start HOLD). 6 mutations verified killed, ONE OF
+  WHICH SURVIVED THE FIRST PASS and was the seventh-edit hazard inside the change
+  that introduced it: the unit tests call `build_bazaar_extension` DIRECTLY with
+  an example, so dropping `self.cfg.input_example` at the ONE call site left
+  `info` absent from the real 402 with every test green. Now asserted on the body
+  the gate actually SERVES. HONEST LIMIT: at ~25h the 24-48h window is not
+  closed, so a listing appearing now cannot fully separate "`info` mattered" from
+  "indexing took longer" -- an operator wanting a clean read can hold the deploy
+  past 48h, since the change is additive. See `docs/BAZAAR_LISTING.md`),
   `ROADMAP.md`, `docs/DATA_SOURCE_SPIKE.md`. Tests:
   `test_blackwall.py`, `test_ledger.py`, `test_reputation_onchain.py`,
   `test_settlement_watch.py`, `test_addresses.py`, `test_x402.py`,
@@ -1178,6 +2074,18 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
 > security suite, never ran in the documented check. `test_deploy_manifest.py`
 > now asserts the list matches the directory, because a canonical command that
 > silently skips files is worse than no canonical command.
+>
+> **The guard checks for OMISSIONS, not for DUPLICATES**, and that gap hid one:
+> `test_billing_preflight.py` was listed TWICE in the `Makefile` `test` target,
+> so its 115 tests ran twice and the reported total read 2725 instead of 2601.
+> Found 2026-09-15 by refusing to accept a count discrepancy between two runs of
+> what looked like the same file set -- not by any test. Harmless to correctness
+> and actively misleading about coverage, which is the same failure mode as the
+> omission above pointing the other way. Note the three lists are legitimately
+> NOT identical in length: `Makefile:test` and the CI step carry 100 files, while
+> CLAUDE.md's command carries 101 -- `test_remote_ledger.py` needs
+> `cryptography` and runs in `make test-native`, deliberately kept out of the
+> stdlib-only run.
 
 Convention: the security/decision-critical logic lives in small **pure functions**
 at the top of each module, unit-tested TDD-first with **mutation notes** (each
@@ -1185,7 +2093,7 @@ test states the mutation it kills). Keep new code stdlib-only and match this sty
 
 Run all tests:
 ```sh
-python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py test_aa_cosigner.py test_chain_backfill.py test_discovery_crawl.py test_ecosystem_scan.py test_http_util.py test_payer_graph.py test_payer_reputation.py test_settlement_velocity.py test_confidence.py test_redteam.py test_demo_flywheel.py test_verdict_anchor.py test_categories.py test_category_pricing.py test_check_seed_age.py test_price_integrity.py test_ratelimit.py test_fuzz_verdict.py test_blockscout.py test_verdict_oracle.py test_calibration_lock.py test_coverage_eval.py test_refresh_guard.py test_secret_scan.py test_bench.py test_two_stage_signer.py test_rwa_readiness.py test_tokenized_stock_registry.py \
+python -m unittest test_egress_proxy.py test_blackwall.py test_ledger.py test_reputation_onchain.py test_settlement_watch.py test_addresses.py test_x402.py test_mcp_server.py test_reputation_store.py test_facilitator.py test_discovery.py test_sanctions.py test_readiness.py test_ap_gate.py test_cdp_auth.py test_creds_local.py test_traceipt_attest.py test_traceipt_ingest.py test_traceipt_verify.py test_payload_sim.py test_traceipt_pull.py test_keccak.py test_secp256k1.py test_eip712.py test_calldata.py test_seller_audit.py test_aa_cosigner.py test_chain_backfill.py test_discovery_crawl.py test_ecosystem_scan.py test_http_util.py test_payer_graph.py test_payer_reputation.py test_settlement_velocity.py test_confidence.py test_redteam.py test_demo_flywheel.py test_verdict_anchor.py test_categories.py test_category_pricing.py test_check_seed_age.py test_price_integrity.py test_ratelimit.py test_fuzz_verdict.py test_blockscout.py test_verdict_oracle.py test_calibration_lock.py test_coverage_eval.py test_refresh_guard.py test_index_guard.py test_seed_provenance.py test_secret_scan.py test_bench.py test_two_stage_signer.py test_rwa_readiness.py test_tokenized_stock_registry.py \
 test_solana_rwa.py test_pyth_price.py test_rwa_ledger.py test_rwa_outcomes.py \
 test_rwa_balance.py test_rwa_report.py \
  test_backed_oracle.py test_rams_readiness.py \
@@ -1193,7 +2101,8 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_aggregate.py test_aave_reserve.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
- test_auth_sim.py test_directory_liveness.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_honeypot.py test_billing_preflight.py test_seller_report.py test_seller_portal.py test_reachability_ledger.py test_approvals.py test_token_decimals.py
+ test_auth_sim.py test_directory_liveness.py test_directory_guard.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_payto_baseline.py test_honeypot.py test_billing_preflight.py test_seller_report.py test_seller_portal.py test_reachability_ledger.py test_approvals.py test_token_decimals.py test_hmac_key.py \
+ test_bounded_server.py test_ci_coverage.py test_remote_ledger.py test_seller_intel.py test_solana_backfill.py test_user_agent.py test_volume_integrity.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop
@@ -1214,7 +2123,10 @@ underfunded payer does not gate, and an unreachable RPC fails OPEN. `test_redtea
 guards it -- the caught set may not shrink, no control may become a false positive, and
 any attack that gets GO must be an EXPLICIT `known_gap`. MUTATION-VERIFIED: disabling the
 settlement escalation, the auth replay gate, or the control-attribution each makes the
-suite fail by name. Current: 31 attacks caught, 2 documented gaps, 0 false positives.
+suite fail by name. Current: 32 attacks caught, 3 documented gaps, 0 false positives. One of those
+gaps is DELIBERATE rather than a miss: the payTo-baseline attack gets GO only
+because `PAYTO_BASELINE_GATES` ships off pending calibration -- flipping the
+lock gives 33 caught / 2 gaps / 0 false positives, verified.
 
 ## Standing working practice: ALWAYS deep audit → eval → verify
 

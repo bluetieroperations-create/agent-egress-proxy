@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 import urllib.parse
 
 import http_util
@@ -35,26 +36,119 @@ from settlement_watch import (BASE_USDC, DEFAULT_BASE_URL, DEFAULT_UA, HTTP_TIME
                               extract_usdc_transfers)
 
 
-def collect_paged(fetch, address, max_pages):
+# Retries for ONE page, on top of `http_util`'s own transient retries. The
+# indexer's measured per-page failure rate is ~2% when healthy (n=45), and a
+# 5-page walk therefore completes only 0.98^5 = 90.4% of the time -- about 27 of
+# 281 payees fetching nothing per run. Runs accumulate and ingest is idempotent,
+# so that has never shown up in the shipped corpus; a ONE-SHOT full-depth pull
+# has no next run to fill the gap. Two extra attempts take a page's failure odds
+# from 2% to 0.0008%.
+PAGE_RETRIES = 2
+PAGE_RETRY_BACKOFF = 1.0          # seconds, doubled per attempt
+
+
+class IncompleteHistory(Exception):
+    """The walk stopped at its page cap, so the result is a WINDOW, not a history.
+
+    Deliberately an exception (in `strict` mode) rather than a partial return: a
+    truncated corpus that presents as complete silently corrupts every statistic
+    computed from it. Same reasoning, and the same name, as
+    `solana_backfill.IncompleteHistory` -- that module raises rather than
+    truncating, which is why the Solana corpus is exhaustive and this one was not.
+    """
+
+
+def collect_paged(fetch, address, max_pages, *, strict=False,
+                  retries=PAGE_RETRIES, sleep=time.sleep):
     """Walk up to `max_pages` of `fetch(address, page_params) -> (items,
-    next_params)` and return all raw items. Stops when `next_params` is falsy or
-    the page cap is hit (the cap also bounds a misbehaving pager)."""
+    next_params)`. Returns **(items, truncated)**.
+
+    TRUNCATION IS REPORTED, NOT SWALLOWED -- and the tuple is the point. This
+    used to return a bare list and stop at the cap with no signal, so a caller
+    could not tell "history exhausted" from "there is much more and I quit".
+    MEASURED CONSEQUENCE: the committed Base seed captured 0.8% of its
+    highest-value payee (239 of 29,231 transfers) and looked complete; 70 of 281
+    payees (25%) sit on an exact 50-multiple >= 100, which is the page cap, not
+    the ecosystem. Returning a tuple forces every caller to acknowledge the
+    question, which is what a bare list let everyone skip.
+
+    `strict=True` raises `IncompleteHistory` instead. Off by default because
+    `backfill` is fail-soft per payee: raising there would discard the window we
+    DID fetch and record the payee as an error, which is strictly worse than a
+    flagged partial. Turn it on for a deliberate full-depth pull, where hitting
+    the cap means the run is wrong rather than merely bounded.
+    """
+    # `exhausted` is set ONLY when the pager itself says there is no more. Every
+    # other way out -- the cap, or `max_pages=0` -- leaves it False, so the
+    # default answer is "I did not confirm this is complete". Deriving it the
+    # other way round (from the page count, or by returning early on the last
+    # page) makes the completeness claim unreachable in exactly the cases worth
+    # testing; mutation testing caught three surviving mutants on that shape.
     items, params, pages = [], None, 0
+    exhausted = False
+    failure = None
     while pages < max_pages:
-        page_items, params = fetch(address, params)
+        try:
+            page_items, params = _fetch_page(fetch, address, params, retries, sleep)
+        except Exception as e:
+            # TRANSPORT DIED MID-WALK. Keep the pages already fetched: this is a
+            # TRUNCATED walk, not a failed one. Letting the exception unwind
+            # discarded everything -- measured, 3 good pages became 0 rows
+            # ingested, and the payee was filed as an error, which downstream is
+            # indistinguishable from "this payee has no history". A labelled
+            # partial is strictly better than a silent nothing.
+            failure = e
+            break
         items.extend(page_items or [])
         pages += 1
         if not params:
+            exhausted = True              # the pager said there is no more
             break
-    return items
+    truncated = not exhausted
+    # Page ONE died, so there is no partial to keep and nothing to label. That
+    # is a genuine fetch FAILURE, not a window: re-raise so `backfill` records it
+    # in `errors` rather than reporting a payee with zero rows as merely capped.
+    if failure is not None and not items:
+        raise failure
+    if truncated and strict:
+        raise IncompleteHistory(
+            "%s: %s" % (address,
+                        "transport failed mid-walk after %d page(s): %s"
+                        % (pages, failure) if failure is not None
+                        else "stopped at the %d-page cap with more history "
+                             "available" % max_pages))
+    return items, truncated
 
 
-def payee_transfers(fetch, address, *, usdc=BASE_USDC, max_pages=5):
+def _fetch_page(fetch, address, params, retries, sleep):
+    """One page, retried. Raises the LAST exception if every attempt fails.
+
+    Separate from the walk so a retry can never advance `params` past a page it
+    did not actually read -- retrying inside the loop body with the cursor
+    already reassigned would skip history and call the result complete.
+    """
+    last = None
+    for attempt in range(int(retries) + 1):
+        try:
+            return fetch(address, params)
+        except Exception as e:
+            last = e
+            if attempt < int(retries):
+                sleep(PAGE_RETRY_BACKOFF * (2 ** attempt))
+    raise last
+
+
+def payee_transfers(fetch, address, *, usdc=BASE_USDC, max_pages=5, strict=False,
+                    retries=PAGE_RETRIES, sleep=time.sleep):
     """Inbound USDC transfers to `address`, paged + normalized + inbound-only, and
-    DEDUPED. A pager that re-serves a page (non-advancing, or Blockscout offset
+    DEDUPED. Returns **(transfers, truncated)** -- see `collect_paged` for why the
+    truncation flag is carried rather than dropped.
+
+    A pager that re-serves a page (non-advancing, or Blockscout offset
     overlap as new txs land) would otherwise double-count `fetched`; the store's
     idempotent key protects `ingested` but not the reported transfer count."""
-    raw = collect_paged(fetch, address, max_pages)
+    raw, truncated = collect_paged(fetch, address, max_pages, strict=strict,
+                                   retries=retries, sleep=sleep)
     inbound = [t for t in extract_usdc_transfers(raw, usdc)
                if t.get("to") and addresses_equal(t["to"], address)]
     seen, out = set(), []
@@ -66,16 +160,25 @@ def payee_transfers(fetch, address, *, usdc=BASE_USDC, max_pages=5):
             continue
         seen.add(key)
         out.append(t)
-    return out
+    return out, truncated
 
 
-def backfill(store, payees, fetch, *, usdc=BASE_USDC, max_pages=5):
+def backfill(store, payees, fetch, *, usdc=BASE_USDC, max_pages=5, strict=False,
+             retries=PAGE_RETRIES, sleep=time.sleep):
     """Ingest inbound USDC for each valid payee. Returns a stage summary
-    {payees, fetched, ingested, errors, per_payee}. Invalid addresses are skipped
-    (not silently ingested); a duplicate payee is processed once; a transport error
-    on one payee is recorded and the run CONTINUES (fail-soft), so one 429/timeout
-    can't abort the whole scan."""
+    {payees, fetched, ingested, errors, truncated, per_payee}. Invalid addresses
+    are skipped (not silently ingested); a duplicate payee is processed once; a
+    transport error on one payee is recorded and the run CONTINUES (fail-soft),
+    so one 429/timeout can't abort the whole scan.
+
+    `truncated` is the COUNT of payees that hit the page cap, and each such
+    per-payee entry carries `truncated: True`. Without it a run reports
+    "281 payees, 46,031 settlements" and reads as a complete corpus when it is a
+    250-row window per payee -- the defect that produced the shipped seed.
+    `strict=True` propagates `IncompleteHistory` instead, for a full-depth pull
+    where a capped payee means the run is wrong rather than merely bounded."""
     per, total_fetched, total_ingested, ok, errors, seen = {}, 0, 0, 0, 0, set()
+    truncated_payees = 0
     for p in payees or []:
         if not is_evm_address(p):
             per[str(p)] = {"skipped": "not a valid EVM address"}
@@ -85,18 +188,27 @@ def backfill(store, payees, fetch, *, usdc=BASE_USDC, max_pages=5):
             continue
         seen.add(low)
         try:
-            xfers = payee_transfers(fetch, p, usdc=usdc, max_pages=max_pages)
+            xfers, was_truncated = payee_transfers(fetch, p, usdc=usdc,
+                                                   max_pages=max_pages, strict=strict,
+                                                   retries=retries, sleep=sleep)
+        except IncompleteHistory:
+            # strict mode: a capped payee invalidates the RUN, so do not bury it
+            # in per_payee alongside ordinary transport errors.
+            raise
         except Exception as e:                # fail-soft: one bad payee != dead scan
             per[low] = {"error": type(e).__name__}
             errors += 1
             continue
         ingested = store.ingest_transfers(xfers) if xfers else 0
         per[low] = {"fetched": len(xfers), "ingested": ingested}
+        if was_truncated:
+            per[low]["truncated"] = True
+            truncated_payees += 1
         total_fetched += len(xfers)
         total_ingested += ingested
         ok += 1
     return {"payees": ok, "fetched": total_fetched, "ingested": total_ingested,
-            "errors": errors, "per_payee": per}
+            "errors": errors, "truncated": truncated_payees, "per_payee": per}
 
 
 class BlockscoutPager:
@@ -153,6 +265,27 @@ def main(argv=None):
                    help="pages per payee (~50 transfers/page; default 5)")
     p.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Blockscout base URL")
     p.add_argument("--usdc", default=BASE_USDC, help="USDC contract address")
+    p.add_argument("--retries", type=int, default=PAGE_RETRIES,
+                   help="extra attempts per PAGE on a transport failure "
+                        "(default %d, on top of http_util's own transient "
+                        "retries). The indexer fails ~2%% of page fetches when "
+                        "healthy, which drops ~1 payee in 10 from a 5-page walk; "
+                        "retries take that to ~0. Set 0 to disable."
+                        % PAGE_RETRIES)
+    p.add_argument("--fail-on-incomplete", action="store_true",
+                   help="exit 1 when the corpus came back incomplete (page cap "
+                        "hit, or a payee failed to fetch). OFF by default: a "
+                        "bounded walk is the DESIGNED behaviour of a run that "
+                        "passes --max-pages, and `scripts/refresh_seed.sh` runs "
+                        "under `set -e` at --max-pages 4, so a non-zero exit "
+                        "there kills the scheduled refresh on every run. The "
+                        "warning and the `truncated` field are printed either "
+                        "way -- this only changes the exit code.")
+    p.add_argument("--strict", action="store_true",
+                   help="FAIL the run if any payee hits the page cap, instead of "
+                        "recording a flagged partial. Use for a deliberate "
+                        "full-depth pull, where a capped payee means the corpus "
+                        "is a window and every statistic from it is wrong.")
     args = p.parse_args(argv)
 
     payees = _read_payees(args)
@@ -162,12 +295,68 @@ def main(argv=None):
     from reputation_store import ReputationStore
     store = ReputationStore(args.store)
     pager = BlockscoutPager(base_url=args.base_url, usdc=args.usdc)
-    summary = backfill(store, payees, pager.fetch, usdc=args.usdc,
-                       max_pages=args.max_pages)
+    try:
+        summary = backfill(store, payees, pager.fetch, usdc=args.usdc,
+                           max_pages=args.max_pages, strict=args.strict,
+                           retries=max(0, args.retries))
+    except IncompleteHistory as e:
+        sys.stderr.write("chain_backfill: INCOMPLETE -- %s\n"
+                         "Raise --max-pages or drop --strict; the corpus this "
+                         "would have written is a window, not a history.\n" % e)
+        return 3
     sys.stdout.write(json.dumps(summary, indent=2) + "\n")
     sys.stdout.write("Seeded %d payee(s): %d transfers, %d new settlements.\n"
                      % (summary["payees"], summary["fetched"], summary["ingested"]))
-    return 0
+    # AUDIT FINDING. --strict raises IncompleteHistory from the page cap, but
+    # `backfill` is fail-soft on TRANSPORT errors, so a payee that could not be
+    # fetched at all fell straight through and the run exited 0. That payee is
+    # MORE incomplete than a truncated one -- it contributes nothing, and
+    # downstream that reads as a counterparty with no settlements rather than
+    # one we failed to reach. A flag that promises to refuse a window has to
+    # refuse this too, or it is only enforcing the cheaper half of its promise.
+    if args.strict and summary["errors"]:
+        sys.stderr.write(
+            "chain_backfill: INCOMPLETE -- %d payee(s) could not be fetched; "
+            "--strict will not ship a corpus that is missing them.\n"
+            % summary["errors"])
+        return 3
+    # LOUD, on stderr, and it sets the exit code: the shipped seed captured 0.8%
+    # of its top payee while reporting a healthy-looking total, because nothing
+    # ever said this. A run that silently truncates must not exit 0.
+    incomplete = False
+    if summary["truncated"]:
+        sys.stderr.write(
+            "chain_backfill: WARNING %d of %d payee(s) hit the %d-page cap -- "
+            "their history is TRUNCATED, not complete. Statistics derived from "
+            "this corpus (age_days, first_seen, burst detection, medians) "
+            "describe the crawl window, not the ecosystem. Re-run with a higher "
+            "--max-pages for full depth.\n"
+            % (summary["truncated"], summary["payees"], args.max_pages))
+        incomplete = True
+    # SAME CLASS as the page cap: `backfill` is fail-soft per payee, so a run
+    # where every payee 429s returns errors=N and otherwise looks like a normal
+    # result. Reported, for the same reason -- but see the exit-code note below
+    # for why reporting is where it stops by default.
+    if summary["errors"]:
+        sys.stderr.write(
+            "chain_backfill: WARNING %d payee(s) FAILED to fetch (transport "
+            "errors); their history is missing from this corpus entirely, which "
+            "reads downstream as a payee with no settlements.\n"
+            % summary["errors"])
+        incomplete = True
+    # EXIT CODE, and the default is deliberate. An earlier version of this
+    # returned 1 whenever the corpus was incomplete, which read as rigour and was
+    # a REGRESSION: `scripts/refresh_seed.sh` runs `set -eu` and invokes this at
+    # --max-pages 4, so a bounded walk -- the behaviour that script ASKS FOR --
+    # killed the scheduled refresh at that line every time. Reproduced before
+    # fixing. That refresh is what keeps the corpus off the 90-day `stale` cliff,
+    # so the "safety" change disabled the safety mechanism.
+    #
+    # A cap you passed on the command line being reached is not a failure, and a
+    # warning that fires on every healthy run is one operators learn to ignore.
+    # The diagnosis is in stderr and in the `truncated` field regardless; only
+    # the exit code is opt-in.
+    return 1 if (incomplete and args.fail_on_incomplete) else 0
 
 
 if __name__ == "__main__":

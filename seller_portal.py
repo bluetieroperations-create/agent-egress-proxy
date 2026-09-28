@@ -554,8 +554,14 @@ def main(argv=None):
 
     p = argparse.ArgumentParser(description="Serve the seller diagnostic.")
     p.add_argument("--host", default=os.environ.get("PORTAL_HOST", "127.0.0.1"))
+    # $PORT fallback mirrors blackwall.py:2805 exactly. WITHOUT IT a Render /
+    # Cloud Run / Heroku deploy binds 8410 while the platform routes to $PORT,
+    # so the service is up and unreachable -- and it presents as a failing health
+    # check, i.e. a restart loop, not as a wrong port.
     p.add_argument("--port", type=int,
-                   default=int(os.environ.get("PORTAL_PORT", "8410")))
+                   default=int(os.environ.get("PORTAL_PORT")
+                               or os.environ.get("PORT") or "8410"),
+                   help="listen port (default: $PORTAL_PORT, else $PORT, else 8410)")
     p.add_argument("--store", default=os.environ.get("PORTAL_STORE"),
                    help="reputation store; enables the demand-authenticity "
                         "finding (built once at startup)")

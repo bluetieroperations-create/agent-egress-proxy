@@ -80,6 +80,12 @@ PAYMENT_REQUIRED_HEADER = "payment-required"
 #: guards the normal fetch path for the same reason; an error body reached
 #: through a raised HTTPError bypasses it, so the cap has to live here too.
 MAX_CHALLENGE_BYTES = 1024 * 1024
+#: Cap on the `extensions.bazaar` block we will ECHO back into a payment payload.
+#: The block is authored by the SELLER, and echoing puts it inside a payload WE
+#: sign and a facilitator validates, so it is untrusted content on an outbound
+#: path. 4KB is ~8x the largest block we have measured in the wild (our own is
+#: ~400 bytes) and well under any plausible header/body budget.
+MAX_BAZAAR_ECHO_BYTES = 4096
 
 #: The FOURTH carrier: `WWW-Authenticate: Payment id="..." realm="..."
 #: method="evm" request="<base64url json>"`.
@@ -398,3 +404,50 @@ def accepts_from_http_error(err):
     if body is not None and len(body) > MAX_CHALLENGE_BYTES:
         body = b""
     return parse_challenge(body, getattr(err, "headers", None))
+
+
+def bazaar_echo(body, max_bytes=MAX_BAZAAR_ECHO_BYTES):
+    """The `extensions` a PAYING CLIENT must attach to its PaymentPayload for a
+    facilitator to catalog the resource, or None to attach nothing.
+
+    THIS IS WHAT ACTUALLY CATALOGS. Per the Bazaar extension spec, "cataloging
+    happens when a facilitator processes a PaymentPayload that includes the
+    echoed `bazaar` extension", and "a server-side declaration alone catalogs
+    nothing if no paying client echoes it". So a correct 402 is NECESSARY AND NOT
+    SUFFICIENT -- which is why two deployed, verified 402 fixes (an absolute
+    `resource.url`, then `extensions.bazaar.info`) each changed nothing: the
+    missing half was on the PAYER side the whole time, and our own paying client
+    had no mention of extensions at all.
+
+    ONLY `bazaar` IS CARRIED. The challenge is authored by the seller being paid,
+    so every other key is dropped rather than passed through: this value ends up
+    inside a payload we sign and a third party validates, which is the
+    untrusted-echo class this repo has found nine times.
+
+    OVERSIZE IS REFUSED, NOT TRUNCATED -- a truncated block is not what the
+    seller declared, a validating facilitator may reject it, and a mangled echo
+    is strictly worse than none, since none is merely the status quo (no listing).
+
+    TOLERANT like the rest of this module: any junk answers None, never raises.
+    """
+    try:
+        doc = body
+        if isinstance(doc, (bytes, bytearray)):
+            doc = doc.decode("utf-8", "replace")
+        if isinstance(doc, str):
+            doc = json.loads(doc)
+        if not isinstance(doc, dict):
+            return None
+        ext = doc.get("extensions")
+        if not isinstance(ext, dict):
+            return None
+        bazaar = ext.get("bazaar")
+        # The spec's shape is an object. A string/list would still serialize, so
+        # refusing here is deliberate rather than incidental.
+        if not isinstance(bazaar, dict) or not bazaar:
+            return None
+        if len(json.dumps(bazaar, separators=(",", ":"))) > max_bytes:
+            return None
+        return {"bazaar": bazaar}
+    except Exception:
+        return None

@@ -34,6 +34,32 @@ except SystemExit as exc:                   # pragma: no cover - env-dependent
     _MISSING_DEP = "x402_pay needs eth-account: %s" % (exc,)
 
 
+
+# HONEST TEST LIMITATION, documented rather than papered over (the same call
+# `bounded_server.py` makes about its backlog fix).
+#
+# `clients/x402_pay.py` used to `raise SystemExit(2)` at IMPORT time when
+# eth-account was absent. That does not fail one test: unittest imports every
+# named module before running anything, so it killed the whole
+# `python -m unittest ...` invocation before a single test executed. A box
+# missing one optional package therefore ran ZERO of this repo's ~2200 tests.
+# Harmless while this file sat outside CLAUDE.md's canonical command; fatal the
+# moment it was added to it, which is how it surfaced.
+#
+# MEASURED, not asserted. With the import poisoned:
+#     before:  exit 2, "Ran 0 tests"   -- test_addresses never executed
+#     after:   exit 0, "Ran 16 tests"  -- x402_pay's parsing tests + the sibling
+#
+# There is NO unit test for it here, deliberately. The property needs a fresh
+# interpreter with the dep absent, and this module is one of the modules such a
+# child would run -- so the child re-enters the probe and forks again. The first
+# attempt did exactly that and spawned processes until it was killed. A test that
+# can fork unboundedly in CI is a worse defect than the gap it covers, and an
+# env-var sentinel to break the recursion is a second mechanism to get wrong.
+# The guard that actually holds the line is structural: `HAVE_ETH_ACCOUNT` is a
+# flag, and the only `SystemExit` left is inside `main()`, where signing happens.
+
+
 ACCEPT = {"payTo": "0x" + "ab" * 20, "amount": "25000",
           "asset": "0x" + "cd" * 20, "network": "eip155:8453"}
 
@@ -113,3 +139,75 @@ class HttpJsonSurfacesHeaders(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheEchoIsActuallyWired(unittest.TestCase):
+    """`build_payment` and `payment_header` both grew an `extensions` parameter
+    for the Bazaar echo. Omitting it at the ONE call site in `main` leaves the
+    whole thing parsed, defaulted and INERT -- the wired-and-inert pattern, whose
+    most recent instance was one commit earlier in the 402 this echo is the other
+    half of, and which was caught there by mutation rather than by a test.
+
+    This file's runtime tests are gated behind `eth-account`, which the
+    stdlib container does not have, so the property is asserted STRUCTURALLY
+    against the source -- otherwise the guard would itself be inert exactly where
+    it is needed. The pure decision is tested for real in
+    `test_x402_challenge.BazaarEchoIsWhatActuallyCatalogs`.
+    """
+
+    def _src(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "clients", "x402_pay.py")
+        with open(path) as fh:
+            return fh.read()
+
+    def test_main_computes_and_passes_the_echo(self):
+        # Kills: dropping `extensions=echo` at the call site, or never calling
+        # bazaar_echo at all.
+        import ast
+        tree = ast.parse(self._src())
+        main = next(n for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef) and n.name == "main")
+        calls = [c for c in ast.walk(main) if isinstance(c, ast.Call)]
+        self.assertTrue(
+            any(isinstance(c.func, ast.Attribute) and c.func.attr == "bazaar_echo"
+                for c in calls),
+            "main never asks x402_challenge for the echo")
+        header_calls = [c for c in calls
+                        if isinstance(c.func, ast.Name)
+                        and c.func.id == "payment_header"]
+        self.assertTrue(header_calls, "main no longer builds an X-PAYMENT header")
+        self.assertTrue(
+            any(any(k.arg == "extensions" for k in c.keywords)
+                for c in header_calls),
+            "main signs a payment WITHOUT passing the bazaar echo -- the echo is "
+            "then inert and no settlement of ours can ever catalog")
+
+    def test_the_echo_is_never_inside_the_signed_authorization(self):
+        # Seller-authored metadata must not be able to reach the amount, the
+        # recipient or the terms, so the echo is a SIBLING of `accepted` and
+        # `payload`, never nested inside either. Asserted on the assignment's
+        # STRUCTURE: the first version of this test grepped an 800-character
+        # window for `"accepted"` and failed because the window fell just short
+        # of it -- a check aimed slightly to the left of its own property, which
+        # is the class this repo keeps finding. Mutation: assign into
+        # payment["payload"]["extensions"] or the authorization -> FAILS.
+        import ast
+        tree = ast.parse(self._src())
+        targets = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            for t in node.targets:
+                if (isinstance(t, ast.Subscript)
+                        and isinstance(t.slice, ast.Constant)
+                        and t.slice.value == "extensions"):
+                    targets.append(t.value)
+        self.assertEqual(len(targets), 1,
+                         "expected exactly one place that attaches the echo")
+        base = targets[0]
+        self.assertIsInstance(
+            base, ast.Name,
+            "the echo is attached to a NESTED dict, so seller-authored metadata "
+            "sits inside the signed material")
+        self.assertEqual(base.id, "payment")

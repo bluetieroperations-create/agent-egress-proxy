@@ -22,6 +22,7 @@ Stdlib only.
 """
 import json
 import urllib.request
+import user_agent as ua_policy
 
 # Ontario's verdict (allow/review/deny) maps onto readiness grades when an
 # explicit grade is absent.
@@ -230,7 +231,7 @@ class LocalReadinessSource:
         import urllib.error
         try:
             req = urllib.request.Request(
-                url, headers={"user-agent": "Blackwall-readiness/1",
+                url, headers={"user-agent": ua_policy.browser("readiness"),
                               "accept": "application/json, */*"})
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 return (r.status, dict(r.headers), r.read(_READINESS_MAX_BODY))
@@ -278,6 +279,6 @@ class OntarioReadinessSource:
             self.base_url + path, data=data,
             headers={"content-type": "application/json",
                      "accept": "application/json",
-                     "user-agent": "Mozilla/5.0 (compatible; Blackwall/0.1)"})
+                     "user-agent": ua_policy.browser()})
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
             return json.loads(r.read())

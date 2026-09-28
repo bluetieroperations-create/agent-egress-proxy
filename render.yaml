@@ -93,11 +93,34 @@ services:
         value: "25"
       # Secrets -- Render prompts for these; left unset, billing stays OFF and
       # the service runs free/public (the server prints a loud warning).
+      # OUR public origin. Makes the 402's `resource.url` ABSOLUTE, which is
+      # what CDP's Bazaar indexes (measured: 2000/2000 catalogued entries carry
+      # an absolute url; ours was the relative path and we are not listed). It
+      # is ALSO the security fix -- `resource` is client-supplied, and without a
+      # configured origin a caller's own absolute url was echoed into our 402,
+      # so an attacker could have THEIR url catalogued against OUR payTo for the
+      # price of one 0.001 USDC call. Set this to the public URL of THIS service.
+      - key: BLACKWALL_ORIGIN
+        sync: false
       - key: BLACKWALL_PAY_TO
         sync: false
       - key: BLACKWALL_FACILITATOR
         sync: false
       - key: BLACKWALL_RECEIPT_KEY
+        sync: false
+      # DURABLE LEDGER MIRROR (remote_ledger.py). Only needed on a host with NO
+      # persistent disk -- with the disk above, the ledger already survives a
+      # restart and these should stay unset. All three are required together;
+      # setting some but not all is a FATAL config error, because an operator who
+      # set two of three believes their data is durable.
+      # BLACKWALL_LEDGER_KEY must be 32 bytes (64 hex) and must DIFFER from every
+      # other secret here -- load_key refuses a reused one. Lose it and the
+      # mirrored log is unreadable. See docs/DURABLE_LEDGER.md.
+      - key: BLACKWALL_LEDGER_KV_URL
+        sync: false
+      - key: BLACKWALL_LEDGER_KV_TOKEN
+        sync: false
+      - key: BLACKWALL_LEDGER_KEY
         sync: false
       # Ed25519 seed for INDEPENDENTLY-VERIFIABLE receipts (base64url, 32 bytes):
       #   python -c "import os,base64;print(base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip('='))"

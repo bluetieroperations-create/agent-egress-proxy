@@ -23,6 +23,7 @@ from __future__ import annotations
 import urllib.request
 
 from addresses import is_evm_address
+import user_agent as ua_policy
 
 # Canonical OFAC digital-currency address list (EVM addresses; usable on Base).
 DEFAULT_OFAC_URL = ("https://raw.githubusercontent.com/0xB10C/"
@@ -114,7 +115,7 @@ class SanctionsList:
         We RAISE on overflow (caller fails open to the current list) rather than
         truncate -- truncation could silently drop real addresses (fail-open)."""
         req = urllib.request.Request(
-            url, headers={"User-Agent": "blackwall-sanctions/0.1",
+            url, headers={"User-Agent": ua_policy.browser("sanctions"),
                           "Accept": "text/plain"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
             raw = r.read(max_bytes + 1)  # one past the cap to DETECT overflow

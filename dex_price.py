@@ -39,6 +39,7 @@ import math
 
 from addresses import is_evm_address
 from rwa_readiness import decode_address, decode_uint, eth_call_data, selector
+import user_agent as ua_policy
 
 _Q96 = 2 ** 96
 
@@ -340,7 +341,7 @@ class DexPriceSource:
         req = urllib.request.Request(
             self.rpc_url, data=json.dumps(body).encode("utf-8"),
             headers={"content-type": "application/json",
-                     "user-agent": "Blackwall-dex/1"})
+                     "user-agent": ua_policy.browser("dex")})
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
             d = json.loads(r.read(1 << 16))
         res = d.get("result") if isinstance(d, dict) else None

@@ -92,6 +92,163 @@ class DeployManifest(unittest.TestCase):
                       "the default advertised-index path is not COPYed into the image")
 
 
+class SellerPortalBlueprint(unittest.TestCase):
+    """The portal is a SEPARATE service on purpose, and the deploy has to keep
+    the reason intact. `seller_portal`'s docstring: it renders HTML from a
+    browser-supplied string, which is an XSS surface the verdict API does not
+    have, and "a defect in a public renderer must not reach the process holding
+    the signing keys". That is only true if the portal's deploy CANNOT SEE THEM.
+    """
+
+    BLUEPRINT = "render-portal.yaml"
+    SECRETS = ("BLACKWALL_SIGNING_SEED", "BLACKWALL_RECEIPT_KEY",
+               "BLACKWALL_LEDGER_KEY", "BLACKWALL_LEDGER_KV_TOKEN",
+               "BLACKWALL_PAY_TO", "CDP_API_KEY_ID", "CDP_API_KEY_SECRET")
+
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(ROOT, cls.BLUEPRINT)) as handle:
+            cls.text = handle.read()
+        cls.keys = re.findall(r"^\s*- key:\s*(\S+)", cls.text, re.M)
+
+    def test_it_declares_no_signing_or_billing_secret(self):
+        # kills: handing the public renderer a key it has no use for. The whole
+        # justification for running it as a separate process is that a defect
+        # here cannot reach the signing keys.
+        leaked = [k for k in self.keys
+                  if any(bad in k for bad in self.SECRETS)]
+        self.assertEqual(leaked, [], "the seller portal blueprint declares a "
+                                     "secret it must not be able to read")
+
+    def test_it_runs_the_portal_not_the_verdict_engine(self):
+        # kills: a blueprint that reuses the image's default CMD and silently
+        # deploys a SECOND copy of blackwall.py under the portal's hostname.
+        self.assertIn("dockerCommand: python seller_portal.py", self.text)
+
+    def test_it_binds_all_interfaces(self):
+        # kills: PORTAL_HOST left at 127.0.0.1, which Render cannot route to.
+        self.assertRegex(self.text, r'key:\s*PORTAL_HOST\s*\n\s*value:\s*"0\.0\.0\.0"')
+
+    def test_it_does_not_pin_a_port(self):
+        # kills: setting PORTAL_PORT, which binds a port the platform does not
+        # route to -- presenting as a failing health check, i.e. a restart loop.
+        self.assertNotIn("PORTAL_PORT", self.keys)
+
+    def test_it_sets_a_store_so_the_flagship_finding_is_reachable(self):
+        # kills: deploying the portal without a store, which still serves and
+        # silently omits the cross-payee demand-authenticity finding -- the one
+        # thing a seller cannot get anywhere else.
+        self.assertIn("PORTAL_STORE", self.keys)
+
+    def test_it_has_a_health_check(self):
+        self.assertIn("healthCheckPath: /healthz", self.text)
+
+    def test_the_portal_honours_the_platform_port(self):
+        # kills: removing the $PORT fallback from seller_portal.main, which is
+        # what makes "do not pin a port" above safe.
+        src = open(os.path.join(ROOT, "seller_portal.py")).read()
+        self.assertIn('os.environ.get("PORT")', src)
+
+
+class DirectoryCorpusIsDatedInTheImage(unittest.TestCase):
+    """`payto_baseline` refuses to gate on a corpus it cannot date, and
+    `data/directory.json` is dated by a CONTENT-PINNED SIDECAR beside it
+    (`directory.meta.json`). If the image ships the corpus without the sidecar,
+    production reads it as undated and the gate is unreachable there while every
+    local test reports it reachable -- the wired-and-inert pattern arriving via a
+    missing COPY line, which is how it was nearly shipped on 2026-09-16."""
+
+    def test_the_sidecar_travels_with_the_corpus(self):
+        # kills: copying directory.json without directory.meta.json.
+        text = open("Dockerfile").read()
+        self.assertIn("data/directory.json", text)
+        self.assertIn("data/directory.meta.json", text,
+                      "the corpus is copied into the image without its date")
+
+    def test_they_are_copied_by_the_same_instruction(self):
+        # kills: adding the sidecar to an unrelated COPY that a later refactor
+        # could drop independently -- they must move together.
+        for line in open("Dockerfile"):
+            if line.startswith("COPY") and "data/directory.json" in line:
+                self.assertIn("data/directory.meta.json", line)
+                return
+        self.fail("no COPY line carries data/directory.json")
+
+    def test_the_committed_pair_is_consistent(self):
+        # kills: committing a sidecar that does not match the corpus, which
+        # reads as undated and silently un-reaches the gate in every deploy.
+        import hashlib
+        import json as _json
+        meta = _json.load(open("data/directory.meta.json"))
+        digest = hashlib.sha256(open("data/directory.json", "rb").read()).hexdigest()
+        self.assertEqual(meta.get("sha256"), digest,
+                         "data/directory.meta.json does not pin the committed "
+                         "data/directory.json -- regenerate it")
+        self.assertIsInstance(meta.get("generated_at"), str)
+
+
+class SeedMigrationBuildStep(unittest.TestCase):
+    """The Dockerfile migrates the baked seed at BUILD time (see
+    `reputation_store._PAYER_KEY_INDEX`). PRE-MERGE AUDIT 2026-09-16: the first
+    version of that step COPIED reputation_store + settlement_watch + addresses
+    into a private lib dir and pointed PYTHONPATH at it -- and BROKE THE BUILD,
+    because `settlement_watch` imports `user_agent`, added the same day by a
+    parallel session. The import chain grew a fourth link and the hand-picked
+    list did not. A list of "modules this happens to need" goes stale silently,
+    and it goes stale in the DEPLOY, which is the worst place to find out."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dockerfile = open("Dockerfile").read()
+
+    def test_the_migration_step_is_present(self):
+        # kills: silently dropping the build-time migration, which moves a 491ms
+        # rebuild onto every container cold start.
+        self.assertIn("seed migration did not take", self.dockerfile,
+                      "the build-time seed migration step is gone")
+
+    def test_it_does_not_hand_pick_modules_onto_a_private_pythonpath(self):
+        # kills: reintroducing the defect. The whole source tree is already in
+        # the image via `COPY *.py ./`, so any private lib dir + PYTHONPATH is
+        # both unnecessary and a list that can go stale.
+        self.assertNotIn("prebuilt/lib", self.dockerfile)
+        self.assertNotIn("PYTHONPATH=/app/prebuilt", self.dockerfile)
+
+    def test_the_modules_the_step_imports_resolve_from_the_repo_root(self):
+        # kills: the actual break, and it would have caught it. Walks the REAL
+        # transitive import graph of what the build step imports, and asserts
+        # every module resolves to a file `COPY *.py ./` would place in the
+        # image -- so the next added link fails HERE rather than in a deploy.
+        import ast
+        import glob
+        import os
+        shipped = {os.path.basename(p)[:-3] for p in glob.glob("*.py")}
+        seen, stack = set(), ["reputation_store"]
+        while stack:
+            mod = stack.pop()
+            if mod in seen or mod not in shipped:
+                continue            # stdlib / third-party resolve elsewhere
+            seen.add(mod)
+            tree = ast.parse(open(mod + ".py").read())
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for a in node.names:
+                        stack.append(a.name.split(".")[0])
+                elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                    stack.append(node.module.split(".")[0])
+        # Everything local that the chain touches must be a repo-root module.
+        self.assertIn("settlement_watch", seen)
+        self.assertIn("user_agent", seen,
+                      "the link that broke the first attempt must be in the graph")
+        missing = sorted(m for m in seen if not os.path.exists(m + ".py"))
+        self.assertEqual(missing, [], "build step imports unshipped modules")
+
+    def test_copy_star_py_is_what_puts_them_there(self):
+        # kills: the above passing while the Dockerfile stopped copying the
+        # source wholesale -- then the step would break again for a new reason.
+        self.assertIn("COPY *.py ./", self.dockerfile)
+
+
 class PublicEndpointDefaults(unittest.TestCase):
     """A PUBLIC deploy must not ship with throttling off.
 
@@ -101,6 +258,13 @@ class PublicEndpointDefaults(unittest.TestCase):
     call is free to the caller.
     """
 
+    # The VERDICT-engine deploys only. `render-portal.yaml` is deliberately NOT
+    # here: the portal does not read BLACKWALL_RATE_LIMIT at all and its limiter
+    # is ON by default (seller_portal.DEFAULT_RATE = 30/min per client), so this
+    # exact check would fail on it for the wrong reason. Its properties are
+    # guarded by SellerPortalBlueprint instead. NOTE the shape of this tuple is
+    # itself the omission hazard this repo keeps hitting -- a NEW verdict
+    # blueprint is unguarded until someone adds it here.
     CONFIGS = ("render.yaml", "render-free.yaml", "fly.toml")
 
     def test_every_public_deploy_config_sets_a_rate_limit(self):
@@ -322,3 +486,56 @@ class TestCanonicalTestCommand(unittest.TestCase):
         import os
         ghosts = sorted(f for f in self._listed() if not os.path.exists(f))
         self.assertEqual(ghosts, [], "listed but absent: %s" % ghosts)
+
+
+class OptionalNativeImportsMustCatchBaseException(unittest.TestCase):
+    """A BROKEN native `cryptography` build imports fine and then raises
+    `pyo3_runtime.PanicException`, which derives from BaseException. So a guard
+    written `except Exception` does NOT catch it, and the panic takes the whole
+    stdlib-only suite down instead of skipping one optional class.
+
+    MEASURED 2026-09-27: on a container carrying cryptography 41.0.7,
+    `import cryptography` succeeded, the ed25519 import panicked, and `make test`
+    died inside `test_seller_audit`'s guard. Three root test files guard this
+    import; two already said BaseException and explained why, and the third did
+    not -- so the canonical check was one word away from being unrunnable on a
+    machine where the optional dependency is merely broken rather than absent.
+    `remote_ledger.py` documents the same class in production code.
+
+    HONEST LIMIT: this is a SOURCE scan, deliberately, because the property IS
+    textual -- which exception clause is written. It follows `test_hmac_key`'s
+    precedent for a blunt scan. It cannot prove the fallback works; the evidence
+    for that is the measured run above plus the skips those classes now report.
+    """
+
+    def test_every_optional_cryptography_guard_names_BaseException(self):
+        # Kills: writing `except Exception` around an optional native import.
+        import ast
+        import glob
+
+        offenders = []
+        for path in sorted(glob.glob(os.path.join(ROOT, "test_*.py"))):
+            tree = ast.parse(open(path).read())
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Try):
+                    continue
+                names = []
+                for sub in ast.walk(node):
+                    if isinstance(sub, ast.ImportFrom) and (sub.module or ""):
+                        names.append(sub.module)
+                    elif isinstance(sub, ast.Import):
+                        names += [a.name for a in sub.names]
+                if not any(n.split(".")[0] == "cryptography" for n in names):
+                    continue
+                for h in node.handlers:
+                    caught = h.type
+                    ok = (isinstance(caught, ast.Name)
+                          and caught.id == "BaseException")
+                    if not ok:
+                        offenders.append("%s:%d" % (os.path.basename(path),
+                                                    h.lineno))
+        self.assertEqual(
+            offenders, [],
+            "an optional `cryptography` import is guarded by a handler that "
+            "does not catch BaseException, so a BROKEN native build panics the "
+            "whole suite instead of skipping: %s" % offenders)

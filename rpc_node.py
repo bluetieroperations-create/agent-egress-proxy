@@ -40,6 +40,7 @@ import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import user_agent as ua_policy
 
 # Read-only methods Blackwall actually uses. Everything else is refused -- this endpoint
 # is a narrow tool, not a general RPC. Adding a WRITE method here would let a caller
@@ -195,7 +196,7 @@ def forward_upstream(url, body, timeout=8.0, opener=None):
     req = urllib.request.Request(
         url, data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json", "Accept": "application/json",
-                 "User-Agent": "blackwall-rpc/1.0"})
+                 "User-Agent": ua_policy.browser("rpc")})
     op = opener or urllib.request.urlopen
     with op(req, timeout=timeout) as r:
         return json.loads(r.read())

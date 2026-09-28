@@ -8,7 +8,8 @@
 # regression from reaching main.
 #
 # No dependencies to install: everything under test is stdlib-only by design. The
-# integration plugins (integrations/langchain, integrations/wallets, integrations/openclaw)
+# integration plugins (integrations/langchain, integrations/wallets, integrations/openclaw,
+# integrations/lucid)
 # need third-party packages and run from their own directories -- they are deliberately
 # NOT part of this job.
 #
@@ -63,9 +64,11 @@ jobs:
             test_payer_reputation.py test_settlement_velocity.py test_confidence.py \
             test_redteam.py test_demo_flywheel.py test_verdict_anchor.py \
             test_categories.py test_category_pricing.py test_check_seed_age.py \
-            test_price_integrity.py test_ratelimit.py test_fuzz_verdict.py \
+            test_price_integrity.py test_index_guard.py test_ratelimit.py \
+            test_fuzz_verdict.py \
             test_blockscout.py test_verdict_oracle.py test_calibration_lock.py \
-            test_coverage_eval.py test_refresh_guard.py test_secret_scan.py \
+            test_coverage_eval.py test_refresh_guard.py test_directory_guard.py \
+            test_seed_provenance.py test_secret_scan.py \
             test_bench.py test_two_stage_signer.py test_rwa_readiness.py \
             test_tokenized_stock_registry.py test_solana_rwa.py test_pyth_price.py \
             test_rwa_ledger.py test_rwa_outcomes.py test_rwa_balance.py \
@@ -77,22 +80,41 @@ jobs:
             test_directory_liveness.py test_price_corroboration.py \
             test_advertised_prices.py test_deploy_manifest.py \
             test_receipt_signer.py \
-            test_approvals.py test_token_decimals.py test_asset_coverage.py \
-            test_billing_preflight.py test_honeypot.py test_mcp_http.py \
-            test_payee_syntax.py test_reachability_ledger.py \
-            test_screen_payer.py test_seller_portal.py test_seller_report.py \
-            test_upto_scheme.py test_x402_challenge.py test_x402_pay.py
+            test_approvals.py test_asset_coverage.py \
+            test_billing_preflight.py test_bounded_server.py \
+            test_ci_coverage.py test_hmac_key.py test_honeypot.py \
+            test_mcp_http.py test_payee_syntax.py test_payto_baseline.py \
+            test_reachability_ledger.py test_screen_payer.py \
+            test_seller_intel.py test_seller_portal.py test_seller_report.py \
+            test_solana_backfill.py test_token_decimals.py \
+            test_upto_scheme.py test_user_agent.py test_volume_integrity.py \
+            test_x402_challenge.py test_x402_pay.py
 
       # The engine is stdlib-only and the suite above proves it runs that way.
       # Production installs a NATIVE Ed25519 backend (requirements-signing.txt),
       # which takes a different code path in receipt_signer -- and signatures from
       # the two backends must be byte-identical, or a receipt would verify or not
       # depending on which box signed it. Run the signer suite both ways.
-      - name: Receipt signer against the native backend (production path)
+      #
+      # remote_ledger rides along here because it REQUIRES the same package by
+      # design: it mirrors settlement records to a third-party KV under AES-GCM
+      # and refuses to boot rather than fall back to plaintext, so there is no
+      # stdlib path to test. Keeping it out of the stdlib job above is what keeps
+      # that job's "engine is stdlib-only" guarantee honest.
+      - name: Native-crypto suites (production path)
         run: |
           python3 -m pip install --quiet --only-binary :all: -r requirements-signing.txt
-          python3 -m unittest test_receipt_signer.py
+          python3 -m unittest test_receipt_signer.py test_remote_ledger.py
           python3 -m pip uninstall -y --quiet cryptography
+
+      # The funded-signer dry-run client is the only root-level module needing a
+      # third-party package (eth-account). It is how a real payment gets signed in
+      # a mainnet rehearsal, so a break here is silent until money is involved.
+      - name: x402 payment client (needs eth-account)
+        run: |
+          python3 -m pip install --quiet -r clients/requirements.txt
+          python3 -m unittest test_x402_pay.py
+          python3 -m pip uninstall -y --quiet eth-account
 
       - name: Adversarial scorecard (must have no false positives or misses)
         # redteam.py exits non-zero on a FALSE POSITIVE or an unmarked MISS, so this is
@@ -123,6 +145,12 @@ jobs:
         working-directory: integrations/wallets
         run: python3 -m unittest test_wallet_guard.py test_turnkey_signer.py test_privy_signer.py
 
+      # Bedrock AgentCore gates a ProcessPayment call on a Blackwall verdict. Its
+      # 41 tests ran in no CI job at all until test_ci_coverage.py found them.
+      - name: Bedrock AgentCore guard (stdlib)
+        working-directory: integrations/agentcore
+        run: python3 -m unittest test_agentcore_guard.py
+
       # The thin adapter needs langchain-core; a failure here means the published plugin
       # is broken against the current langchain release.
       - name: LangChain adapter
@@ -137,6 +165,16 @@ jobs:
 
       - name: OpenClaw plugin (vitest)
         working-directory: integrations/openclaw
+        run: |
+          npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+          npm test
+
+      # Lucid Agents policy gate. IMPORTS ../openclaw/core.js, so this step also
+      # guards that split: if the dependency-free core ever re-acquires a
+      # host-only import, this fails to collect while openclaw's own tests still
+      # pass -- which is exactly how the coupling was found in the first place.
+      - name: Lucid Agents policy gate (vitest)
+        working-directory: integrations/lucid
         run: |
           npm ci --no-audit --no-fund || npm install --no-audit --no-fund
           npm test

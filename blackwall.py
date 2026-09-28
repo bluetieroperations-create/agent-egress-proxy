@@ -35,12 +35,15 @@ import hashlib
 import hmac
 import json
 import os
+import signal
 import re
 import sys
 import threading
 import time
 from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from bounded_server import (DEFAULT_MAX_INFLIGHT,
+                            BoundedThreadingHTTPServer)
 
 from addresses import addresses_equal, is_evm_address, normalize_address
 from categories import classify_resource
@@ -120,7 +123,6 @@ MAX_BODY_BYTES = 64 * 1024        # request-body cap (oversize guard)
 
 # Receipts are signed so the agent can keep a tamper-evident audit trail. This
 # is a DEV key; a real deployment supplies BLACKWALL_RECEIPT_KEY from a secret.
-_DEV_RECEIPT_KEY = b"blackwall-dev-receipt-key-not-for-production"
 
 
 # ===========================================================================
@@ -991,7 +993,7 @@ def sign_receipt(verdict_obj, key=None):
     """
     if key is None:
         key = os.environ.get("BLACKWALL_RECEIPT_KEY", "").encode("utf-8") \
-            or _DEV_RECEIPT_KEY
+            or _receipt_key()
     canonical = json.dumps(verdict_obj, sort_keys=True,
                            separators=(",", ":")).encode("utf-8")
     digest = hmac.new(key, canonical, hashlib.sha256).hexdigest()
@@ -999,8 +1001,11 @@ def sign_receipt(verdict_obj, key=None):
 
 
 def _receipt_key():
-    return os.environ.get("BLACKWALL_RECEIPT_KEY", "").encode("utf-8") \
-        or _DEV_RECEIPT_KEY
+    """The HMAC capability secret. Owned by `hmac_key` -- see that module for why
+    the committed fallback that used to live here was a real defect and why the
+    replacement is a random per-process key rather than a boot refusal."""
+    import hmac_key
+    return hmac_key.load_key()[0]
 
 
 def sign_report_token(receipt_id, key=None):
@@ -1257,7 +1262,7 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
              rwa_source=None, stock_registry=None, pyth_source=None, rwa_ledger=None,
              balance_reader=None, backing_index=None, dex_source=None,
              holder_source=None, aave_source=None, issuer_trust_source=None,
-             honeypot_source=None,
+             honeypot_source=None, payto_source=None,
              settlement_sim_source=None, auth_sim_source=None,
              receipt_signer=None):
     """
@@ -1589,6 +1594,25 @@ def forecast(payload, reputation_source, ledger=None, readiness_source=None,
     from payee_syntax import apply_payee_syntax, assess_payee
     verdict = apply_payee_syntax(verdict, assess_payee(clean.get("counterparty")))
 
+    # payTo-vs-endpoint baseline (payto_baseline.py): x402 v2 makes `payTo`
+    # per-request, so a hostile endpoint can name an attacker's wallet and be paid
+    # the RIGHT PRICE by the WRONG PARTY -- invisible to every spending control,
+    # and a cold-start HOLD is not the same claim (it clears once the swapped
+    # address has any history). This says the endpoint-relative thing: this host
+    # has only ever advertised one recipient in our crawl, and this is not it.
+    # Index is built ONCE at boot from OUR committed corpus, never from the
+    # request and never learned from traffic. DESCRIPTIVE by default -- the
+    # PAYTO_BASELINE_GATES lock is off until the false-HOLD rate is measured on
+    # real traffic. Needs `resource`; a payment without one never reaches it.
+    if payto_source is not None and clean.get("resource"):
+        try:
+            _pb = payto_source.check(clean["resource"], clean.get("counterparty"))
+        except Exception:
+            _pb = None                      # fail-open: never blocks a verdict
+        if _pb:
+            from payto_baseline import apply_payto_baseline
+            verdict = apply_payto_baseline(verdict, _pb)
+
     # Holder-concentration rug-check (holder_concentration.py): a single non-contract
     # wallet holding a dominant share of the token supply -> dump/manipulation risk.
     # Keyless Blockscout; HOLD-only, fail-open, contract holders excluded (issuer custody).
@@ -1816,6 +1840,10 @@ class _Handler(BaseHTTPRequestHandler):
     # Injected by BlackwallServer.
     reputation_source = None
     ledger = None
+    #: `verify_writable`'s answer from BOOT, or None. Carried so /healthz can
+    #: report durability without probing on the health path -- see
+    #: remote_ledger.describe_health.
+    ledger_boot_reason = None
     # Human-in-the-loop approvals. ALWAYS bound (not opt-in): a HOLD with
     # nowhere to send it is the gap this closes. Named `approvals` rather than
     # `*_source` because it is a STORE the server writes to, not a signal source
@@ -1838,11 +1866,13 @@ class _Handler(BaseHTTPRequestHandler):
     dex_source = None  # dex_price.DexPriceSource (market-vs-NAV peg), or None
     holder_source = None  # holder_concentration.HolderConcentrationSource (rug-check), or None
     honeypot_source = None  # honeypot.HoneypotSource (sell-path / exit check), or None
+    payto_source = None  # payto_baseline.PayToBaselineSource (recipient baseline), or None
     aave_source = None  # aave_reserve.AaveReserveSource (advisory quality), or None
     issuer_trust_source = None  # issuer_trust_gate.IssuerTrustSource (earned grade), or None
     settlement_sim_source = None  # settlement_sim.SettlementSimSource (pre-sig feasibility)
     auth_sim_source = None  # auth_sim.AuthorizationSimSource (EIP-3009 replay/window)
     graph_source = None  # payer_reputation.PayerReputationSource (Sybil corroboration)
+    seller_registry = None  # seller_audit.SellerRegistry (verified-merchant tier)
     velocity_source = None  # settlement_velocity.VelocitySource (stale gate)
     openapi_server_url = None  # public origin for the openapi.json servers[] (or None)
     verdict_anchor = None  # verdict_anchor.VerdictAnchor, or None (opt-in audit trail)
@@ -1920,7 +1950,52 @@ class _Handler(BaseHTTPRequestHandler):
         path = route_path(self.path)
         try:
             if path == "/healthz":
-                self._send_json(200, {"status": "ok"})
+                # DURABILITY IS REPORTED HERE because it was previously knowable
+                # only from the boot log, which means the one question that
+                # matters most about a diskless deploy -- "is the outcome history
+                # surviving a restart?" -- could not be answered from outside.
+                # A local-only ledger serves verdicts perfectly and discards the
+                # moat on every spin-down, so it is indistinguishable from a
+                # healthy deploy unless it says so.
+                #
+                # `status` stays "ok" in EVERY state, deliberately: a platform
+                # restarts an instance on a failed health check, so grading an
+                # ephemeral ledger unhealthy would convert a durability warning
+                # into a restart loop -- the same shape as the /healthz-shed
+                # defect bounded_server.py documents. No network, no probe, no
+                # blocking: this path is exempt from admission control.
+                body = {"status": "ok"}
+                try:
+                    from remote_ledger import describe_health
+                    # `self.ledger_boot_reason`, NOT getattr(self, "...") --
+                    # the class default guarantees the attribute exists, so the
+                    # defensive form buys nothing AND HIDES THE DEPENDENCY from
+                    # `test_approvals`' structural binding guard, which walks
+                    # for `self.X` reads. Found in the pre-merge audit: written
+                    # as getattr, omitting the `_BoundHandler` entry was caught
+                    # only by a behavioural test, so the guard that exists to
+                    # make that impossible was silently opted out of.
+                    body["ledger"] = describe_health(
+                        self.ledger, self.ledger_boot_reason)
+                except Exception:
+                    pass          # health must never fail on a reporting detail
+                try:
+                    # WHICH FACILITATOR settles here decides whether any payment
+                    # can be CATALOGUED (the Bazaar spec puts cataloguing in the
+                    # facilitator, and only CDP feeds it), and the answer used to
+                    # live only in a boot line on stderr. `self.billing` already
+                    # carries it, so no new binding: the seventh-edit hazard does
+                    # not apply. Labels only -- no url, no credential.
+                    from x402 import facilitator_health
+                    if self.billing is not None:
+                        body["facilitator"] = facilitator_health(
+                            getattr(self.billing, "facilitator", None))
+                    else:
+                        body["facilitator"] = {"kind": "off",
+                                               "bazaar_eligible": False}
+                except Exception:
+                    pass          # never fail health on a reporting detail
+                self._send_json(200, body)
             elif path.startswith("/v1/approvals/"):
                 self._do_poll_approval(path.rsplit("/", 1)[-1])
             elif path in ("/.well-known/x402", "/v1/discovery"):
@@ -1934,6 +2009,17 @@ class _Handler(BaseHTTPRequestHandler):
                 # dependency without needing a coordinated deploy.
                 signer = getattr(self, "receipt_signer", None)
                 self._send_json(200, signer.jwks() if signer else {"keys": []})
+            elif path == "/v1/seller/revocations":
+                # PUBLIC on purpose, and the completion of third-party
+                # verifiability. `seller_audit.sign_attestation` makes a badge
+                # anyone can check against /jwks.json -- and a signed badge
+                # whose revocation nobody can see is only as good as its TTL.
+                # Publishing it discloses nothing: a revoked merchant's verdict
+                # is already what any anonymous caller of /v1/forecast-payment
+                # gets about that payee.
+                reg = getattr(self, "seller_registry", None)
+                self._send_json(200, reg.published_revocations() if reg
+                                else {"revoked": [], "count": 0})
             elif path == "/v1/price-index":
                 # PUBLIC GOOD, and the cheapest distribution asset we have: a price
                 # index for agent services computed from SETTLED on-chain reality
@@ -2013,6 +2099,13 @@ class _Handler(BaseHTTPRequestHandler):
         configured = {
             "settlement_simulation": self.settlement_sim_source is not None,
             "honeypot_check": self.honeypot_source is not None,
+            # NOTE: this dict is build_descriptor()'s KWARGS, not a free-form
+            # capability report -- adding a key here breaks /.well-known/x402
+            # with a TypeError (found by test_discovery, not by reading). So
+            # `payto_baseline` is deliberately NOT advertised: it is DESCRIPTIVE
+            # while PAYTO_BASELINE_GATES is off, and advertising a signal that
+            # cannot change a verdict is the "banner says ON, feature is inert"
+            # failure in its public-facing form. Advertise it when the lock flips.
             "rwa_readiness": self.rwa_source is not None,
             "market_peg": self.dex_source is not None,
             "holder_concentration": self.holder_source is not None,
@@ -2103,6 +2196,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._do_verify_signer()
             elif self.path == "/v1/report-outcome":
                 self._do_report_outcome()
+            elif self.path == "/v1/seller/revoke":
+                self._do_revoke_seller()
             elif self.path == "/v1/session":
                 self._do_session()
             elif self.path == "/v1/screen-payer":
@@ -2265,6 +2360,58 @@ class _Handler(BaseHTTPRequestHandler):
             self.approvals.put(record)
         self._send_json(200, approvals.public_view(record))
 
+    def _do_revoke_seller(self):
+        """Withdraw a merchant's verified badge. OWNER-ONLY, one-way.
+
+        MONOTONICALLY SAFE BY CONSTRUCTION: there is no un-revoke route, so the
+        worst a stolen token can do is REMOVE trust from one merchant. The token
+        is per-subject (`seller_audit.sign_revoke_token`), so a leak cannot
+        revoke the whole registry, and it is domain-separated with "revoke:" so
+        a report token cannot become the right to revoke a badge.
+
+        Takes effect for a subject with NO badge loaded -- pre-emptive
+        revocation, because the operator learns a merchant went bad before the
+        next boot reads its attestation off disk.
+        """
+        import seller_audit
+        if self.seller_registry is None:
+            self._send_json(404, {"error": "no seller registry configured"})
+            return
+        body, err = self._read_json_body()
+        if err is not None:
+            self._send_json(400, {"error": err})
+            return
+        subject = body.get("subject") or body.get("attestation_id")
+        if not subject or not isinstance(subject, str):
+            self._send_json(400, {"error": "subject or attestation_id required"})
+            return
+        try:
+            seller_audit._revoke_key()
+        except seller_audit.RevocationNotConfigured as e:
+            # Distinguish an OPERATOR MISCONFIGURATION from a bad token. 403 for
+            # both would send someone hunting a token problem that does not
+            # exist; this leaks nothing, since it is a fact about our own config.
+            self._send_json(503, {"error": "revocation not configured",
+                                  "detail": str(e)})
+            return
+        if not seller_audit.verify_revoke_token(subject, body.get("token")):
+            # Same 403 whether the subject is known or not, so this is not an
+            # enumeration oracle for who holds a badge (the approvals-endpoint
+            # rule).
+            self._send_json(403, {"error": "invalid token"})
+            return
+        try:
+            key = self.seller_registry.revoke(subject)
+        except Exception as e:
+            # The store FAILS CLOSED: a revocation that did not persist must not
+            # report success, or the operator believes trust was withdrawn when
+            # a restart will restore it.
+            self._send_json(503, {"error": "revocation not persisted",
+                                  "detail": type(e).__name__})
+            return
+        self._send_json(200, {"revoked": key, "durable":
+                              self.seller_registry._store is not None})
+
     def _do_screen_payer(self):
         """Screen a PAYER over HTTP -- the buyer side of the graph.
 
@@ -2367,6 +2514,7 @@ class _Handler(BaseHTTPRequestHandler):
                                  readiness_source=self.readiness_source,
                                  hold_above=self.hold_above,
                                  peer_index=self.peer_index,
+                                 seller_registry=self.seller_registry,
                                  graph_source=self.graph_source,
                                  velocity_source=self.velocity_source,
                                  category_index=self.category_index,
@@ -2381,6 +2529,7 @@ class _Handler(BaseHTTPRequestHandler):
                                  dex_source=self.dex_source,
                                  holder_source=self.holder_source,
                                  honeypot_source=self.honeypot_source,
+                                 payto_source=self.payto_source,
                                  aave_source=self.aave_source,
                                  issuer_trust_source=self.issuer_trust_source,
                                  settlement_sim_source=self.settlement_sim_source,
@@ -2467,31 +2616,43 @@ class BlackwallServer:
     """Localhost-only verdict server. Binds 127.0.0.1; not exposed."""
 
     def __init__(self, host="127.0.0.1", port=8402, reputation_source=None,
-                 ledger=None, billing=None, readiness_source=None,
+                 ledger=None, ledger_boot_reason=None,
+                 billing=None, readiness_source=None,
                  hold_above=None, peer_index=None, openapi_server_url=None,
+                 seller_registry=None,
                  graph_source=None, velocity_source=None, verdict_anchor=None,
                  receipt_signer=None,
                  category_index=None, divergence_index=None, rate_limiter=None,
                  enrichment_source=None, rwa_source=None, stock_registry=None,
                  pyth_source=None, rwa_ledger=None, balance_reader=None,
                  backing_index=None, dex_source=None, holder_source=None,
-                 honeypot_source=None,
+                 honeypot_source=None, payto_source=None,
                  aave_source=None, issuer_trust_source=None,
-                 settlement_sim_source=None, auth_sim_source=None):
+                 settlement_sim_source=None, auth_sim_source=None,
+                 max_inflight=DEFAULT_MAX_INFLIGHT):
         self.host = host
         self.port = port
         self._source_kind = "MOCK" if reputation_source is None \
             else type(reputation_source).__name__
         self.reputation_source = reputation_source or MockReputationSource()
         self.ledger = ledger
+        self.ledger_boot_reason = ledger_boot_reason
         self.billing = billing
         self.readiness_source = readiness_source
         self.hold_above = hold_above
         self.peer_index = peer_index
+        # SIXTH of the seven edits honeypot.py counts. Adding the class
+        # attribute, the route, the handler method, the forecast kwarg and the
+        # _BoundHandler line still leaves the server unable to START without
+        # this one -- which is how it was caught: an AttributeError at boot,
+        # the loudest of the seven failure modes and the only one that is not
+        # silent.
+        self.seller_registry = seller_registry
         self.graph_source = graph_source
         self.velocity_source = velocity_source
         self.openapi_server_url = openapi_server_url
         self.receipt_signer = receipt_signer
+        self.max_inflight = max_inflight
         self.verdict_anchor = verdict_anchor
         self.category_index = category_index
         self.divergence_index = divergence_index
@@ -2506,6 +2667,7 @@ class BlackwallServer:
         self.dex_source = dex_source
         self.holder_source = holder_source
         self.honeypot_source = honeypot_source
+        self.payto_source = payto_source
         # ALWAYS on. Constructed here rather than injected because a HOLD with
         # nowhere to send it is the defect, and an opt-in flag reproduces it.
         import approvals as _approvals
@@ -2521,6 +2683,7 @@ class BlackwallServer:
         handler = type("_BoundHandler", (_Handler,),
                        {"reputation_source": self.reputation_source,
                         "ledger": self.ledger,
+                        "ledger_boot_reason": self.ledger_boot_reason,
                         # THE SEVENTH EDIT honeypot.py warns about. Omitting
                         # this line raises nothing -- the handler keeps its None
                         # default and every approval call 500s while the route
@@ -2531,6 +2694,7 @@ class BlackwallServer:
                         "hold_above": self.hold_above,
                         "peer_index": self.peer_index,
                         "graph_source": self.graph_source,
+                        "seller_registry": self.seller_registry,
                         "velocity_source": self.velocity_source,
                         "verdict_anchor": self.verdict_anchor,
                         "category_index": self.category_index,
@@ -2546,6 +2710,7 @@ class BlackwallServer:
                         "dex_source": self.dex_source,
                         "holder_source": self.holder_source,
                         "honeypot_source": self.honeypot_source,
+                        "payto_source": self.payto_source,
                         "aave_source": self.aave_source,
                         "issuer_trust_source": self.issuer_trust_source,
                         "settlement_sim_source": self.settlement_sim_source,
@@ -2553,7 +2718,16 @@ class BlackwallServer:
                         "receipt_signer": self.receipt_signer,
                         "stats": self.stats,
                         "openapi_server_url": self.openapi_server_url})
-        self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
+        # ADMISSION CONTROL (bounded_server.py). ThreadingHTTPServer is
+        # thread-per-request with no cap, so overload does not slow down -- it
+        # DROPS. Measured on the free deploy: at 120 concurrent, 43% of verdicts
+        # failed while p50 stayed flat at ~2s, i.e. work was admitted, paid for,
+        # and then thrown away as an edge 502 the caller cannot tell from
+        # "broken". A ceiling turns that into an honest 503 + Retry-After.
+        # Measured on the same deploy, /healthz served 100/100 concurrent
+        # cleanly, so the limit belongs on WORK IN FLIGHT, not on connections.
+        self._httpd = BoundedThreadingHTTPServer(
+            (self.host, self.port), handler, max_inflight=self.max_inflight)
         self.port = self._httpd.server_address[1]
         sys.stdout.write(
             "blackwall verdict service on %s:%d  "
@@ -2605,6 +2779,24 @@ def _float_env(name, default):
         raise ValueError("%s=%r is not finite" % (name, raw))
     if v <= 0:
         raise ValueError("%s=%r must be greater than 0" % (name, raw))
+    return v
+
+
+def _int_env(name, default):
+    """A positive-integer BLACKWALL_* env var, validated AT BOOT.
+
+    Same posture as _float_env: a malformed value should stop the boot rather
+    than surface later as a mysteriously throttled (or unbounded) server.
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return int(default)
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError("%s=%r is not an integer" % (name, raw))
+    if v < 1:
+        raise ValueError("%s=%r must be >= 1" % (name, raw))
     return v
 
 
@@ -2699,9 +2891,61 @@ def main(argv=None):
     args.network = normalize_network(args.network) or "base"
 
     led = None
+    ledger_boot_reason = None
     if args.ledger:
         from ledger import EventLedger
         led = EventLedger(args.ledger)
+        # OPT-IN durable mirror (remote_ledger.py). On a host with no persistent
+        # disk the container filesystem resets on every restart and spin-down,
+        # and the ledger is the ONLY thing the engine accumulates -- the SQLite
+        # store is read-only in production (its writer is behind BLACKWALL_INGEST).
+        # So without this, every restart discards the outcome history that
+        # recent_dispute_rate / going_bad are built from.
+        #
+        # FAIL LOUD on misconfiguration, like the signing seed below: an operator
+        # who set two of the three vars believes their data is durable, and a
+        # silent fallback to a local-only ledger would keep looking healthy right
+        # up until the restart that loses it.
+        try:
+            import remote_ledger
+            durable = remote_ledger.from_env(
+                args.ledger,
+                logger=lambda m: sys.stderr.write("blackwall: %s\n" % m),
+                # Domain separation: refuse to reuse another configured secret.
+                forbid=(os.environ.get("BLACKWALL_SIGNING_SEED"),
+                        os.environ.get("BLACKWALL_RECEIPT_KEY")))
+        except (ValueError, remote_ledger.RemoteLedgerError) as e:
+            # RemoteLedgerError covers the cipher self-test: a BROKEN (not
+            # merely absent) `cryptography` build must stop the boot, not
+            # degrade to a mirror that silently persists nothing while the
+            # startup banner still reports it as ON.
+            sys.stderr.write("blackwall: FATAL ledger mirror config: %s\n" % e)
+            sys.stderr.flush()
+            return 2
+        if durable is not None:
+            led = durable
+            n = led.hydrate()
+            # hydrate only READS. A read-only token, a wrong database or a
+            # revoked permission all boot perfectly cleanly and then persist
+            # NOTHING, while this banner says ON -- so prove a write before
+            # claiming one. Not fatal: a KV outage is a third party's problem
+            # and must not take the payment path down with it.
+            why = led.verify_writable()
+            ledger_boot_reason = why
+            if why:
+                sys.stderr.write(
+                    "blackwall: WARNING durable ledger mirror CANNOT WRITE: %s\n"
+                    "blackwall: verdicts are being recorded LOCALLY ONLY and "
+                    "WILL BE LOST on restart -- check BLACKWALL_LEDGER_KV_TOKEN "
+                    "is a WRITE token and the URL is the right database\n" % why)
+                sys.stderr.flush()
+            sys.stdout.write(
+                "blackwall: durable ledger mirror %s (encrypted; restored %d "
+                "event(s)%s)\n"
+                % ("ON" if not why else "DEGRADED -- NOT WRITABLE", n,
+                   "" if not led.stats["undecryptable"]
+                   else ", skipped %d undecryptable" % led.stats["undecryptable"]))
+            sys.stdout.flush()
 
     # Ed25519 receipt signing (receipt_signer.py). FAIL LOUD, not soft: if the
     # operator set BLACKWALL_SIGNING_SEED they intended verifiable receipts, so a
@@ -2847,6 +3091,11 @@ def main(argv=None):
         billing = BillingGate(
             BillingConfig(price=args.price, pay_to=args.pay_to,
                           network=args.network,
+                          # Makes the 402's `resource.url` ABSOLUTE. BLACKWALL_ORIGIN
+                          # / --origin already existed for openapi.json's servers[]
+                          # and was simply never used here, which is why our url was
+                          # relative and (measured) no Bazaar entry looks like that.
+                          origin=args.origin,
                           asset=default_billing_asset(args.network, args.asset,
                                                        BASE_USDC, BASE_SEPOLIA_USDC)),
             facilitator=facilitator, pricing=pricing)
@@ -2907,6 +3156,50 @@ def main(argv=None):
         sys.stderr.write("blackwall: WARNING category index unusable (%s) -- "
                          "category price signal OFF\n" % _cat_err)
         sys.stderr.flush()
+
+    # THE HMAC CAPABILITY SECRET (hmac_key.py). Report tokens, approval
+    # decide/redeem tokens and seller revoke tokens are all HMACs under one
+    # secret. It used to fall back to a COMMITTED constant in three separate
+    # modules, which made all three forgeable by anyone who could read the repo.
+    # Now an unset secret yields a random PER-PROCESS key: unforgeable, but the
+    # tokens do not survive a restart. Said out loud here, because the symptom
+    # otherwise is intermittent "invalid report_token" with no visible cause.
+    import hmac_key as _hmac_key
+    _cap_key, _cap_ephemeral = _hmac_key.load_key()
+    if _cap_ephemeral or _hmac_key.is_weak(_cap_key):
+        sys.stderr.write("blackwall: WARNING %s\n" % _hmac_key.describe())
+        sys.stderr.flush()
+    else:
+        sys.stdout.write("blackwall: %s\n" % _hmac_key.describe())
+
+    # Verified-merchant tier (seller_audit.py). Badges load from
+    # BLACKWALL_SELLER_REGISTRY, revocations persist to
+    # BLACKWALL_SELLER_REVOCATIONS. Unset = the tier is OFF, which is the
+    # shipped default and was the ONLY state available before: `seller_registry`
+    # was a `forecast` parameter bound by nothing, so the whole tier was inert.
+    # ASYMMETRIC FAILURE, deliberately: a bad attestation file costs a floor
+    # (conservative), while an unreadable REVOCATION list would mean loading
+    # badges we cannot check revocation for -- granting trust the operator
+    # withdrew -- so that disables the tier outright.
+    import seller_audit as _seller_audit
+    seller_registry, _sr_err = _seller_audit.load_registry(
+        os.environ.get("BLACKWALL_SELLER_REGISTRY"),
+        os.environ.get("BLACKWALL_SELLER_REVOCATIONS"),
+        signer=_seller_audit.attestation_signer())
+    if _sr_err:
+        sys.stderr.write("blackwall: WARNING verified-merchant tier %s\n" % _sr_err)
+        sys.stderr.flush()
+    elif seller_registry is not None:
+        # The decision lives in seller_audit.describe_registry (PURE), because
+        # mutation testing showed a banner branch buried here was reachable by
+        # no test: the "do not say ON for an inert tier" guard could be deleted
+        # with every test still green.
+        _level, _msg = _seller_audit.describe_registry(seller_registry)
+        if _level == "warn":
+            sys.stderr.write("blackwall: WARNING %s\n" % _msg)
+            sys.stderr.flush()
+        else:
+            sys.stdout.write("blackwall: %s\n" % _msg)
 
     # Advertised-vs-settled price-divergence watch-list (price_integrity.py); fail-open.
     divergence_index, _div_err = load_index_json(
@@ -3100,6 +3393,59 @@ def main(argv=None):
                              "HOLD, permissioned securities deferred)\n")
             sys.stdout.flush()
 
+    # ALWAYS LOADED, never gating by default -- payto_baseline.py. x402 v2 made
+    # `payTo` per-request ("no longer static"), so a hostile or compromised
+    # endpoint can name an attacker's wallet and collect the correct price from
+    # the wrong party; the published mitigations are a static recipient allowlist
+    # or an alert on every first-seen address, which is a cold-start problem
+    # restated as a control. This supplies the endpoint-relative fact instead.
+    #
+    # No flag, because there is nothing to opt into: the index is one dict built
+    # from OUR OWN committed crawl, the lookup is O(1), no network is touched, and
+    # the GATE is behind the PAYTO_BASELINE_GATES constant (default off). A
+    # missing artifact yields an empty index and every lookup answers `unknown` --
+    # identical to today's behaviour. The signal is recorded from day one because
+    # that is the traffic the gate has to be calibrated on.
+    payto_source = None
+    try:
+        from payto_baseline import (MAX_STABLE_PAYEES, PAYTO_BASELINE_GATES,
+                                    PayToBaselineSource)
+        payto_source = PayToBaselineSource.from_path(
+            os.environ.get("BLACKWALL_PAYTO_INDEX"))
+        _pb_hosts = len(payto_source)
+        _pb_multi = sum(1 for v in payto_source.index.values()
+                        if len(v) > MAX_STABLE_PAYEES)
+        if _pb_hosts:
+            # Say which of the THREE things is actually true, because two of them
+            # look like "on". The lock can be flipped and the gate still not
+            # fire, if the directory cannot be dated -- so the banner reports the
+            # lock and the corpus age separately rather than one word for both.
+            if not PAYTO_BASELINE_GATES:
+                _pb_state = "RECORDED ONLY (PAYTO_BASELINE_GATES off)"
+            elif payto_source.stale:
+                _pb_state = ("RECORDED ONLY -- the lock is ON but the directory "
+                             "is %s, so a seller that rotated wallets cannot be "
+                             "told from a swapped recipient"
+                             % ("undated" if payto_source.age_days is None
+                                else "%.0f days old" % payto_source.age_days))
+            else:
+                _pb_state = "HOLDs"
+            sys.stdout.write(
+                "blackwall: payTo baseline loaded -- %d endpoint host(s), %d "
+                "advertising more than one recipient (no baseline, never "
+                "gated); recipient mismatch %s\n"
+                % (_pb_hosts, _pb_multi, _pb_state))
+        else:
+            # Say so rather than announcing a feature that answers `unknown` to
+            # everything -- the wired-and-inert failure mode, stated at boot.
+            sys.stdout.write("blackwall: payTo baseline INERT -- no crawl "
+                             "artifact found, every endpoint reads as unknown\n")
+        sys.stdout.flush()
+    except Exception as _exc:              # never let a descriptive signal stop boot
+        sys.stderr.write("blackwall: payTo baseline unavailable (%s)\n" % _exc)
+        sys.stderr.flush()
+        payto_source = None
+
     # OPT-IN (BLACKWALL_AAVE=1, needs an EVM RPC): Aave reserve quality (advisory). A
     # token Aave has frozen -> risk note (feeds the aggregate); listed -> positive note.
     aave_source = None
@@ -3228,13 +3574,22 @@ def main(argv=None):
                "" if anchor.pay else "; NO signer -> will 402/fail-open unsigned"))
         sys.stdout.flush()
 
-    server = BlackwallServer(host=args.host, port=args.port, ledger=led,
+    # Ceiling on requests IN FLIGHT. Measured on the free deploy: /healthz
+    # served 100/100 concurrent cleanly while verdicts shed 26% at 80, so the
+    # saturating resource is per-request COMPUTE, not connections -- and work
+    # admitted past the ceiling is not slow, it is discarded as an edge 502.
+    # The right value is always measured on the box you actually run on.
+    _max_inflight = _int_env("BLACKWALL_MAX_INFLIGHT", DEFAULT_MAX_INFLIGHT)
+    server = BlackwallServer(max_inflight=_max_inflight,
+                             host=args.host, port=args.port, ledger=led,
+                             ledger_boot_reason=ledger_boot_reason,
                              billing=billing, reputation_source=reputation_source,
                              readiness_source=readiness_source,
                              hold_above=hold_above,
                              graph_source=graph_source,
                              velocity_source=velocity_source,
                              verdict_anchor=anchor,
+                             seller_registry=seller_registry,
                              category_index=category_index,
                              divergence_index=divergence_index,
                              rate_limiter=rate_limiter,
@@ -3248,18 +3603,55 @@ def main(argv=None):
                              dex_source=dex_source,
                              holder_source=holder_source,
                              honeypot_source=honeypot_source,
+                             payto_source=payto_source,
                              aave_source=aave_source,
                              issuer_trust_source=issuer_trust_source,
                              settlement_sim_source=settlement_sim_source,
                              auth_sim_source=auth_sim_source,
                              openapi_server_url=origin,
                              receipt_signer=signer)
+    def _drain_ledger():
+        """Flush the durable ledger's mirror queue on the way out.
+
+        DurableEventLedger.close() was implemented and unit-tested and CALLED BY
+        NOTHING -- the wired-and-inert pattern (see approvals.redeem, and the
+        honeypot source). Without this, every record still queued at shutdown is
+        lost, and a redeploy is EXACTLY when that queue is non-empty. Fail-soft:
+        a shutdown must not hang or raise on the way out.
+        """
+        closer = getattr(led, "close", None)
+        if closer is None:
+            return
+        try:
+            closer()
+            st = getattr(led, "stats", None)
+            if st:
+                sys.stdout.write(
+                    "blackwall: ledger mirror drained (mirrored %d, failed %d, "
+                    "dropped %d)\n" % (st.get("mirrored", 0),
+                                       st.get("mirror_failures", 0),
+                                       st.get("dropped", 0)))
+                sys.stdout.flush()
+        except Exception as e:
+            sys.stderr.write("blackwall: ledger drain failed: %s\n" % e)
+
+    # SIGTERM is how a platform stops a container on redeploy -- Ctrl-C alone
+    # would only cover a local run, i.e. never the case that matters.
+    def _on_sigterm(_sig, _frm):
+        raise KeyboardInterrupt
+    try:
+        signal.signal(signal.SIGTERM, _on_sigterm)
+    except (ValueError, OSError, AttributeError):
+        pass                      # not the main thread / unsupported platform
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        sys.stdout.write("\nblackwall: shutting down (Ctrl-C)\n")
+        sys.stdout.write("\nblackwall: shutting down\n")
         server.shutdown()
+        _drain_ledger()
         return 0
+    _drain_ledger()
     return 0
 
 

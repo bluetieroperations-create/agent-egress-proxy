@@ -51,6 +51,7 @@ import time
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from addresses import addresses_equal, is_evm_address
+import user_agent as ua_policy
 
 X402_VERSION = 2
 DEFAULT_SCHEME = "exact"          # EIP-3009 transferWithAuthorization
@@ -143,6 +144,19 @@ DEFAULT_FORECAST_INPUT_SCHEMA = {
     },
 }
 DEFAULT_FORECAST_OUTPUT_EXAMPLE = {"verdict": "GO", "receipt_id": "..."}
+#: The example request advertised in `extensions.bazaar.info`. A catalog entry is
+#: INVOCABLE -- an indexer may POST exactly this body -- so the example must be
+#: one THIS engine accepts. BLACKWALL.md's curl uses `0xKNOWNGOOD000...`, which
+#: `payee_syntax` grades `invalid_hex`; advertising it would publish an example
+#: the gate answering it would flag. Every REQUIRED field of
+#: DEFAULT_FORECAST_INPUT_SCHEMA is present, and a test asserts both properties
+#: rather than trusting this comment.
+DEFAULT_FORECAST_INPUT_EXAMPLE = {
+    "counterparty": "0x0000000000000000000000000000000000000001",
+    "amount": "0.09",
+    "asset": "USDC",
+    "chain": "base",
+}
 
 
 # ===========================================================================
@@ -198,6 +212,75 @@ def build_requirements(price_atomic, pay_to, resource=None, asset=BASE_USDC,
 MAX_RESOURCE_URL = 2048  # cap the (attacker-controlled) resource url
 
 
+def canonical_resource_url(origin, requested, max_len=MAX_RESOURCE_URL):
+    """Build the 402's `resource.url`: OUR origin + the REQUEST's path.
+
+    THE ORIGIN CAN NEVER COME FROM THE REQUEST. `_challenge` used to pass the
+    client-supplied `resource` field straight through, and MEASURED on the live
+    service that meant a caller chose what our 402 advertised -- verified with
+    `https://evil.example/owned`, `javascript:alert(1)` and
+    `//evil.example/x`, each echoed back inside a real 402 carrying our payTo.
+
+    Why that matters beyond tidiness: the 402 is the document CDP indexes into
+    the Bazaar catalog, so an attacker could pay 0.001 USDC with a foreign
+    `resource` and have THEIR url catalogued against OUR payout address,
+    borrowing our settlement history for the price of one call.
+
+    The same change fixes the listing. Our own url was RELATIVE
+    ("/v1/forecast-payment") and no indexer can invent a host from a path --
+    measured, 2000 of 2000 catalogued entries carry an absolute url.
+
+    The PATH is still taken from the request, because different paths are
+    different priced resources. Only the origin is ours to decide.
+
+    With no `origin` configured the path is returned as-is, so an existing
+    deploy is unchanged -- but a client-supplied origin is discarded either way,
+    since that was never legitimate.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+    if not isinstance(requested, str):
+        requested = ""
+    # Strip control characters first: this value is echoed into a base64 response
+    # header and into a public catalog, and a newline forges header structure.
+    requested = "".join(ch for ch in requested
+                        if ch.isprintable() and not ch.isspace()) or "/"
+    # PERCENT-ENCODED SEPARATORS BECOME SEPARATORS before anything splits on
+    # "/". Found by fuzzing: `/..%2f..` and `/v1/x%2f..%2f..%2fetc` slipped
+    # through normalization, because %2f is not a literal slash -- segment
+    # splitting saw ONE segment that merely CONTAINS "..", so the traversal text
+    # reached the advertised url. NOT a host escape (every fuzz case stayed on
+    # our own origin, verified), but a consumer that percent-decodes and then
+    # resolves would land outside the path space we serve. Decoded ONCE, so a
+    # double-encoded `%252f` becomes the literal text `%2f` rather than a
+    # separator -- decoding to a fixed point would let an attacker choose how
+    # many rounds we do.
+    for enc in ("%2f", "%2F", "%5c", "%5C"):
+        requested = requested.replace(enc, "/")
+    parts = urlsplit(requested)
+    # DISCARD scheme and netloc unconditionally -- that is the whole guard. It
+    # also disposes of javascript:/data:/file: and of "//host/x", whose netloc
+    # urlsplit already parses out.
+    path = parts.path or "/"
+    if not path.startswith("/"):
+        path = "/" + path
+    # Normalize away traversal so a caller cannot name a url outside the path
+    # space we serve.
+    segments = []
+    for seg in path.split("/"):
+        if seg in ("", "."):
+            continue
+        if seg == "..":
+            if segments:
+                segments.pop()
+            continue
+        segments.append(seg)
+    path = "/" + "/".join(segments)
+    tail = urlunsplit(("", "", path, parts.query, ""))
+    base = (origin or "").strip().rstrip("/")
+    url = (base + tail) if base else tail
+    return url[:max_len]
+
+
 def build_resource_info(url, description="Blackwall payment forecast",
                         mime_type="application/json", service_name="Blackwall",
                         tags=None):
@@ -227,7 +310,8 @@ def build_resource_info(url, description="Blackwall payment forecast",
     return info
 
 
-def build_bazaar_extension(input_schema=None, output_example=None):
+def build_bazaar_extension(input_schema=None, output_example=None,
+                           input_example=None):
     """The `extensions.bazaar` block that makes a v2 402 challenge INVOCABLE.
 
     x402scan's v2 validator (validatePaymentRequiredDetailed) reads the endpoint's
@@ -246,7 +330,25 @@ def build_bazaar_extension(input_schema=None, output_example=None):
         props["input"] = {"properties": {"body": input_schema}}
     if output_example is not None:
         props["output"] = {"properties": {"example": output_example}}
-    return {"bazaar": {"schema": {"properties": props}}}
+    out = {"schema": {"properties": props}}
+    # `info` is the OTHER half the catalog carries: `schema` is the machine
+    # contract (JSON Schema), `info` is the worked example. MEASURED on 100 live
+    # entries 2026-09-16: info present in 100/100, and its shape depends on the
+    # METHOD -- `queryParams` in 80/100 (the GET form) versus `body`+`bodyType`
+    # in the 16/100 that are POST. Ours is POST, so this emits the POST form;
+    # docs/BAZAAR_LISTING.md had summarised the GET form as universal, which
+    # would have advertised query params on an endpoint that reads a JSON body.
+    # ADDITIVE ONLY: `schema` above is what x402scan's validator reads to mark a
+    # resource invocable, and nothing here moves or rewrites it.
+    if input_example is not None:
+        out["info"] = {
+            "input": {"method": "POST", "type": "http", "bodyType": "json",
+                      "body": input_example},
+            "output": {"type": "json",
+                       "example": output_example if output_example is not None
+                       else {}},
+        }
+    return {"bazaar": out}
 
 
 def make_402_body(requirements_list, error=None, resource=None, extensions=None):
@@ -484,7 +586,7 @@ class HttpFacilitator:
         # default Python-urllib UA (manifests as a timeout). Send a browser UA.
         headers = {"Content-Type": "application/json",
                    "Accept": "application/json",
-                   "User-Agent": "Mozilla/5.0 (Blackwall x402 facilitator client)"}
+                   "User-Agent": ua_policy.browser("x402")}
         headers.update(self._auth_headers(path))
         req = urllib.request.Request(self.base_url + path, data=body,
                                      headers=headers)
@@ -574,6 +676,15 @@ class CdpFacilitator(HttpFacilitator):
         return {"Authorization": "Bearer " + token}
 
 
+class FacilitatorConfigError(ValueError):
+    """The facilitator configuration is internally inconsistent.
+
+    Raised for a state no operator can have intended, where guessing which half
+    they meant would route real money. Currently one case: exactly ONE of
+    CDP_API_KEY_ID / CDP_API_KEY_SECRET set.
+    """
+
+
 def choose_facilitator(facilitator_url, cdp_id, cdp_secret, timeout=8.0, settle_timeout=25.0):
     """
     Pick the facilitator from config, returning (facilitator_or_None, note).
@@ -584,7 +695,31 @@ def choose_facilitator(facilitator_url, cdp_id, cdp_secret, timeout=8.0, settle_
     misroute settlement and leak an auth token, so a non-CDP `facilitator_url` is
     explicitly ignored (with a note) rather than silently honored. An explicit
     CDP host in `facilitator_url` (e.g. a staging endpoint) IS honored.
+
+    A HALF-SET CDP PAIR RAISES `FacilitatorConfigError` rather than falling back.
+    This used to fall through to `facilitator_url`, which reads as harmless and
+    is not: on MAINNET that URL is a keyless facilitator which settles real USDC
+    perfectly well, so an operator who pasted the key id and fumbled the secret
+    got a service that took real payments through the OLD facilitator while they
+    believed they had cut over to CDP. The settlement succeeds, so success is
+    indistinguishable from a successful cutover -- and the operator's evidence
+    that CDP works is a payment CDP never touched. Setting either variable states
+    the intent; honouring half of it answers a different question. Same rule
+    receipt_signer.py applies to a malformed signing seed: set-but-bad means the
+    operator intended the feature, so fail LOUD at boot. Bounded blast radius --
+    the caller only reaches here when billing is ON (`if args.pay_to`), so this
+    can only stop the deploy that turns billing on, which is the one that matters.
     """
+    if bool(cdp_id) != bool(cdp_secret):
+        missing = "CDP_API_KEY_SECRET" if cdp_id else "CDP_API_KEY_ID"
+        present = "CDP_API_KEY_ID" if cdp_id else "CDP_API_KEY_SECRET"
+        raise FacilitatorConfigError(
+            "half-configured CDP facilitator: %s is set but %s is missing. "
+            "Refusing to fall back to a keyless facilitator -- on mainnet that "
+            "would settle real payments through the wrong facilitator while "
+            "looking like a successful CDP cutover. Set both "
+            "CDP_API_KEY_ID and CDP_API_KEY_SECRET, or unset both to run "
+            "deliberately keyless." % (present, missing))
     if cdp_id and cdp_secret:
         if facilitator_url and _is_cdp_host(facilitator_url):
             url = facilitator_url
@@ -605,6 +740,44 @@ def choose_facilitator(facilitator_url, cdp_id, cdp_secret, timeout=8.0, settle_
                 "HTTP facilitator at %s (keyless -- settles but NOT Bazaar-listed)"
                 % facilitator_url)
     return None, "built-in mock facilitator (no --facilitator, no CDP creds)"
+
+
+def facilitator_health(facilitator):
+    """{"kind", "bazaar_eligible"} for the facilitator this service settles
+    through -- the fact that decides whether a settlement can EVER be catalogued.
+
+    Per the Bazaar extension spec the FACILITATOR does the cataloguing, and only
+    CDP feeds the Bazaar, so a keyless facilitator settles real USDC perfectly
+    well and lists nothing. That answer used to exist only as a `sys.stderr` line
+    at boot, so it could not be checked without dashboard access -- the same gap
+    `remote_ledger.describe_health` closed for ledger durability, left open for
+    the one fact the whole listing effort turns on.
+
+    DERIVED FROM THE OBJECT, NOT THE BOOT NOTE, because the note cannot be
+    grepped reliably: `choose_facilitator`'s CDP-with-a-stale-URL branch says
+    "CDP creds set ... IGNORING non-CDP BLACKWALL_FACILITATOR=..." and never
+    mentions Bazaar, so matching on "Bazaar-eligible" reports "not CDP" for a
+    config that IS CDP.
+
+    A WHITELIST, NOT AN ECHO. `/healthz` is public and unauthenticated; a
+    facilitator URL is operator config and a CDP key id is a credential, so
+    neither appears here -- `remote_ledger`'s rule, where the answer was "do not
+    echo" rather than "escape carefully".
+
+    UNKNOWN IS NEVER ELIGIBLE: a class we do not recognise must not claim a
+    capability nobody verified. Never raises -- it runs on the health path.
+    """
+    try:
+        if facilitator is None:
+            return {"kind": "none", "bazaar_eligible": False}
+        for cls, kind, eligible in ((CdpFacilitator, "cdp", True),
+                                    (HttpFacilitator, "keyless", False),
+                                    (MockFacilitator, "mock", False)):
+            if isinstance(facilitator, cls):
+                return {"kind": kind, "bazaar_eligible": eligible}
+        return {"kind": "unknown", "bazaar_eligible": False}
+    except BaseException:
+        return {"kind": "unknown", "bazaar_eligible": False}
 
 
 # ===========================================================================
@@ -827,12 +1000,19 @@ class BillingConfig:
                  pay_to=None, decimals=6, session_credits=1000,
                  session_price=None, session_ttl=86400,
                  service_name="Blackwall",
+                 #: OUR public origin, used to make the 402's `resource.url`
+                 #: absolute. Fed from BLACKWALL_ORIGIN / --origin, which
+                 #: already existed for openapi.json's servers[] and was simply
+                 #: never used here. NEVER taken from a request -- see
+                 #: canonical_resource_url.
+                 origin=None,
                  resource_description="Blackwall payment forecast",
                  resource_tags=("x402", "payments", "risk"),
-                 input_schema=None, output_example=None):
+                 input_schema=None, output_example=None, input_example=None):
         if not is_evm_address(pay_to or ""):
             raise ValueError("BillingConfig.pay_to must be a valid EVM address")
         self.service_name = service_name
+        self.origin = origin
         self.resource_description = resource_description
         self.resource_tags = resource_tags
         # The forecast input schema (for the Bazaar extension on the 402 body) so
@@ -841,6 +1021,8 @@ class BillingConfig:
                              else DEFAULT_FORECAST_INPUT_SCHEMA)
         self.output_example = (output_example if output_example is not None
                               else DEFAULT_FORECAST_OUTPUT_EXAMPLE)
+        self.input_example = (input_example if input_example is not None
+                              else DEFAULT_FORECAST_INPUT_EXAMPLE)
         self.price_atomic = to_atomic(price, decimals)
         if self.price_atomic is None or self.price_atomic <= 0:
             raise ValueError("invalid price")
@@ -891,7 +1073,7 @@ class BillingGate:
         # v2: the resource/description/mimeType live in a top-level ResourceInfo,
         # not inside each accept. Build it from the resource URL being paid for.
         info = build_resource_info(
-            resource,
+            canonical_resource_url(getattr(self.cfg, "origin", None), resource),
             description=self.cfg.resource_description,
             service_name=self.cfg.service_name,
             tags=self.cfg.resource_tags)
@@ -900,7 +1082,8 @@ class BillingGate:
         ext = None
         if self.cfg.input_schema is not None:
             ext = build_bazaar_extension(self.cfg.input_schema,
-                                         self.cfg.output_example)
+                                         self.cfg.output_example,
+                                         self.cfg.input_example)
         return BillingResult(
             False, status=402,
             body=make_402_body([self._requirements(resource, price_atomic)],

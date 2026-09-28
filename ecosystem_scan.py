@@ -300,8 +300,15 @@ def main(argv=None):
     rc = collections.Counter(r["payTo"] for r in resources if r.get("payTo"))
     sample = [a for a, _ in rc.most_common(args.backfill_top)]
     store = ReputationStore(args.backfill_store)                       # <- the #1 corpus
-    chain_backfill.backfill(store, sample, chain_backfill.BlockscoutPager().fetch,
-                            max_pages=args.backfill_max_pages)
+    _bf = chain_backfill.backfill(store, sample, chain_backfill.BlockscoutPager().fetch,
+                                  max_pages=args.backfill_max_pages)
+    if _bf.get("truncated"):
+        # This store is the shipped reputation corpus. A truncated build is what
+        # produced a seed holding 0.8% of its top payee while looking complete.
+        sys.stderr.write("WARNING: %d of %d payee(s) hit the %d-page cap -- the "
+                         "corpus is a crawl WINDOW, not full history; age/first_seen "
+                         "and burst statistics derived from it are artifacts.\n"
+                         % (_bf["truncated"], _bf["payees"], args.backfill_max_pages))
     sanc, screened = _load_sanctioned()
     if not screened:
         sys.stderr.write("WARNING: sanctions list unavailable -- 'sanctioned: 0' means "
@@ -317,8 +324,37 @@ def main(argv=None):
     if args.out_report:
         json.dump(s, open(args.out_report, "w"), indent=2, default=str)
     if args.out_directory:
-        json.dump([d for d in out["directory"] if d.get("distinct_payers") is not None],
-                  open(args.out_directory, "w"), indent=2, default=str)
+        # EXPLICIT close, because `write_meta` below re-reads this file to hash
+        # it. `json.dump(..., open(path, "w"))` leaves the flush to refcount GC,
+        # which CPython happens to do immediately -- measured correct on a 1.28MB
+        # payload -- but that is an implementation detail, and if it ever did not
+        # hold the sidecar would pin a PARTIAL file. The hash would then never
+        # match and the gate would be silently unreachable, which is the one
+        # failure mode this whole mechanism exists to make impossible.
+        with open(args.out_directory, "w") as _dirfh:
+            json.dump([d for d in out["directory"]
+                       if d.get("distinct_payers") is not None],
+                      _dirfh, indent=2, default=str)
+        # DATE IT, in a content-pinned sidecar beside the file. The directory is
+        # a bare LIST read by five modules and only two tolerate a dict, so an
+        # inline `generated_at` would change a shape `billing_preflight`,
+        # `directory_liveness`, `seller_intel` and `seller_report` all parse.
+        # Without a date `payto_baseline` cannot tell a stale baseline from a
+        # current one and refuses to gate at all -- see
+        # payto_baseline._sidecar_age for why the hash is load-bearing.
+        # THIS is the caller entitled to set the date: it just generated the file.
+        try:
+            import datetime
+
+            import payto_baseline
+            payto_baseline.write_meta(
+                args.out_directory,
+                datetime.datetime.now(datetime.timezone.utc)
+                .isoformat().replace("+00:00", "Z"))
+        except Exception as exc:          # dating must never fail the crawl
+            sys.stderr.write("x402 scan: WARNING could not date the directory "
+                             "(%s) -- the payTo baseline will read it as "
+                             "undated and will not gate\n" % exc)
     if args.out_candidates:
         cands = out["candidates"]
         with open(args.out_candidates, "w", newline="") as f:

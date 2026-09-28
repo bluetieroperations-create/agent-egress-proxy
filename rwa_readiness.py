@@ -60,6 +60,7 @@ from __future__ import annotations
 
 from addresses import is_evm_address
 from keccak import keccak256
+import user_agent as ua_policy
 
 RWA_GRADES = ("ready", "blocked", "unknown")
 
@@ -457,7 +458,7 @@ class RwaReadinessSource:
         req = urllib.request.Request(
             self.rpc_url, data=json.dumps(body).encode("utf-8"),
             headers={"content-type": "application/json",
-                     "user-agent": "Blackwall-rwa-readiness/1"})
+                     "user-agent": ua_policy.browser("rwa-readiness")})
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
             d = json.loads(r.read(1 << 16))
         res = d.get("result") if isinstance(d, dict) else None

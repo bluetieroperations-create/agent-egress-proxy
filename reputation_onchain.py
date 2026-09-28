@@ -33,11 +33,12 @@ import json
 import time
 import urllib.request
 from decimal import Decimal
+import user_agent as ua_policy
 
 # Native USDC on Base (not bridged USDbC).
 BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 DEFAULT_BASE_URL = "https://base.blockscout.com"
-DEFAULT_UA = "Mozilla/5.0 (compatible; Blackwall-reputation/0.1)"  # browser-prefixed: avoid Cloudflare 403
+DEFAULT_UA = ua_policy.browser("reputation")
 # Two timeouts on purpose: /counters is fast and reliable; the transfers page
 # is slow and variable on a free indexer (token-filtered queries can exceed
 # 20s -- see the spike memo), so it is fetched BEST-EFFORT and the lookup

@@ -1,0 +1,81 @@
+# Render blueprint -- the SELLER PORTAL (seller_portal.py).
+#
+# A SEPARATE SERVICE from the verdict endpoint, and deliberately so. The module
+# docstring gives three reasons and all three are deploy-relevant:
+#
+#   1. `seller_report`'s rule 3 is that the verdict engine must never import the
+#      report, or the diagnostic becomes an input to the gate that scores the
+#      same seller. Serving it from blackwall.py would make that structural test
+#      a lie.
+#   2. The threat surfaces differ. The verdict API takes JSON from an agent; this
+#      takes a string from a BROWSER and renders HTML back, which is an XSS
+#      surface the verdict API does not have. A defect in a public renderer must
+#      not run in the process holding the signing keys -- which is why NO SECRET
+#      IS DECLARED BELOW. Not an oversight: the portal needs none, and
+#      test_deploy_manifest asserts this blueprint stays secret-free.
+#   3. It can be deployed, restarted or switched off without touching the
+#      endpoint agents depend on.
+#
+# Reuses the SAME image -- `COPY *.py` already ships seller_portal.py and the
+# build bakes the corpus and the warm reputation store -- so only the start
+# command differs.
+#
+# Deploy: New > Blueprint, Branch = main, Blueprint Path = render-portal.yaml
+services:
+  - type: web
+    name: blackwall-seller
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    # Only the command differs from the verdict service.
+    dockerCommand: python seller_portal.py
+    plan: free
+    region: oregon
+    autoDeploy: false
+    healthCheckPath: /healthz
+
+    envVars:
+      - key: PORTAL_HOST
+        value: "0.0.0.0"          # Render routes to the container; 127.0.0.1 is unreachable
+      # PORTAL_PORT is intentionally UNSET: seller_portal falls back to the
+      # platform's $PORT (mirroring blackwall.py), so the image binds whatever
+      # Render routes to. Setting it wrong binds a port nothing reaches, which
+      # presents as a failing health check -- i.e. a restart loop.
+
+      # THE FLAGSHIP FINDING NEEDS THIS. The cross-payee demand-authenticity
+      # check ("200 addresses paid you and not one ever paid anybody else") is
+      # computed from the payer graph, which is built from the store ONCE AT
+      # BOOT because building it takes minutes over the real corpus. Without a
+      # store the portal still serves, but the one finding a seller cannot get
+      # anywhere else is silently absent.
+      - key: PORTAL_STORE
+        value: /app/data/reputation.db
+
+      # HOW MANY PROXIES ARE IN FRONT OF THIS SERVICE. 1 = Render alone,
+      # 2 = Cloudflare in front of Render. DO NOT OVERSTATE IT: each claimed hop
+      # treats one more client-written X-Forwarded-For entry as trustworthy and
+      # hands every visitor a forgeable rate-limit identity. Understating is
+      # safe -- a short chain falls back to the raw TCP peer, which cannot be
+      # forged. Left at the under-stating default deliberately; raise to 2 only
+      # once Cloudflare actually fronts this hostname.
+      - key: PORTAL_PROXY_DEPTH
+        value: "1"
+
+      # Reachability memory (reachability_ledger.py). Its whole value is being
+      # able to tell a single timeout from a three-week silence, which needs the
+      # log to SURVIVE. On `free` there is no persistent disk, so this resets on
+      # every spin-down and the portal falls back to "not checked" -- honest, but
+      # the memory is the feature. Point it at a disk on a paid plan.
+      - key: BLACKWALL_REACHABILITY
+        value: /app/data/reachability.jsonl
+
+      # Read by seller_report for the price-fairness and coverage findings.
+      - key: BLACKWALL_ADVERTISED_INDEX
+        value: /app/data/directory.json
+
+      # NO SECRETS HERE, ON PURPOSE -- see reason 2 above. The portal never
+      # signs, never mints a capability token and never settles, so it must not
+      # be able to: BLACKWALL_SIGNING_SEED, BLACKWALL_RECEIPT_KEY,
+      # BLACKWALL_LEDGER_KEY, BLACKWALL_PAY_TO and the CDP credentials are all
+      # deliberately absent. Rate limiting is ON by default here
+      # (seller_portal.DEFAULT_RATE = 30/min per client), unlike the verdict
+      # endpoint whose limiter defaults to disabled.

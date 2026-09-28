@@ -519,7 +519,34 @@ class TestV2WireFormat(unittest.TestCase):
                              facilitator=X.MockFacilitator())
         r = gate.check("https://r")
         self.assertEqual(r.body["x402Version"], 2)
-        self.assertEqual(r.body["resource"]["url"], "https://r")
+        # THIS ASSERTION USED TO READ `== "https://r"` -- i.e. it pinned the
+        # caller's own absolute url being echoed into our 402. That was the
+        # vulnerability, not the contract: the `resource` field is
+        # client-supplied, so honouring its ORIGIN let a caller choose what our
+        # 402 (and the Bazaar entry bound to our payTo) pointed at. Measured
+        # live with https://evil.example/owned before the fix.
+        # With no origin configured, only the PATH survives.
+        self.assertEqual(r.body["resource"]["url"], "/")
+
+    def test_a_configured_origin_makes_the_402_resource_ABSOLUTE(self):
+        # The listing half: 2000/2000 catalogued Bazaar entries carry an
+        # absolute url, and an indexer cannot invent our host from a path.
+        gate = X.BillingGate(
+            X.BillingConfig(price="0.001", pay_to=PAY_TO,
+                            origin="https://blackwall-free.onrender.com"),
+            facilitator=X.MockFacilitator())
+        r = gate.check("/v1/forecast-payment")
+        self.assertEqual(r.body["resource"]["url"],
+                         "https://blackwall-free.onrender.com/v1/forecast-payment")
+
+    def test_a_configured_origin_still_discards_a_hostile_one(self):
+        gate = X.BillingGate(
+            X.BillingConfig(price="0.001", pay_to=PAY_TO,
+                            origin="https://blackwall-free.onrender.com"),
+            facilitator=X.MockFacilitator())
+        r = gate.check("https://evil.example/v1/forecast-payment")
+        self.assertEqual(r.body["resource"]["url"],
+                         "https://blackwall-free.onrender.com/v1/forecast-payment")
         acc = r.body["accepts"][0]
         self.assertEqual(acc["amount"], "1000")
         self.assertEqual(acc["network"], "eip155:8453")
@@ -550,6 +577,78 @@ class TestV2WireFormat(unittest.TestCase):
                          ["properties"]["body"], {"type": "object"})
         self.assertEqual(ext["bazaar"]["schema"]["properties"]["output"]
                          ["properties"]["example"], {"verdict": "GO"})
+
+    def test_bazaar_info_matches_the_POST_shape_the_catalog_carries(self):
+        # `extensions.bazaar.info` is present in 2000/2000 catalogued entries
+        # while we emitted only `schema`. MEASURED on 100 live catalog entries
+        # 2026-09-16, and the measurement CORRECTED our own notes: `queryParams`
+        # is the GET form (80/100) and docs/BAZAAR_LISTING.md had summarised it
+        # as the universal shape. The POST form (16/100), which is ours, is
+        # {body, bodyType, method, type} with output {example, type}. Copying
+        # the note would have advertised a POST endpoint with query params.
+        # Mutation: emit `queryParams` instead of `body`/`bodyType` -> FAILS.
+        ext = X.build_bazaar_extension({"type": "object"}, {"verdict": "GO"},
+                                       input_example={"counterparty": "0x1"})
+        info = ext["bazaar"]["info"]
+        self.assertEqual(info["input"]["method"], "POST")
+        self.assertEqual(info["input"]["type"], "http")
+        self.assertEqual(info["input"]["bodyType"], "json")
+        self.assertEqual(info["input"]["body"], {"counterparty": "0x1"})
+        self.assertEqual(info["output"]["example"], {"verdict": "GO"})
+        self.assertEqual(info["output"]["type"], "json")
+        self.assertNotIn("queryParams", info["input"])
+
+    def test_bazaar_info_is_absent_without_an_example(self):
+        # Fail-quiet: no example -> no `info` block at all, rather than an
+        # `info` advertising an empty body. Mutation: emit info unconditionally
+        # -> FAILS. `schema` must still be emitted, so the existing listing
+        # behaviour is unchanged for a caller that supplies no example.
+        ext = X.build_bazaar_extension({"type": "object"}, {"verdict": "GO"})
+        self.assertNotIn("info", ext["bazaar"])
+        self.assertIn("schema", ext["bazaar"])
+
+    def test_schema_block_is_untouched_by_info(self):
+        # `schema` is what x402scan's validator reads to mark a resource
+        # INVOCABLE; `info` is additive and must not disturb it. Mutation:
+        # build info by MOVING the schema fields -> FAILS.
+        ext = X.build_bazaar_extension({"type": "object"}, {"verdict": "GO"},
+                                       input_example={"a": 1})
+        self.assertEqual(ext["bazaar"]["schema"]["properties"]["input"]
+                         ["properties"]["body"], {"type": "object"})
+        self.assertEqual(ext["bazaar"]["schema"]["properties"]["output"]
+                         ["properties"]["example"], {"verdict": "GO"})
+
+    def test_the_advertised_example_is_one_our_own_engine_accepts(self):
+        # A catalog entry is INVOCABLE -- an indexer may send exactly this body.
+        # Our own docs use `0xKNOWNGOOD000...`, which `payee_syntax` grades
+        # `invalid_hex`, so publishing that would advertise an example the
+        # engine that answers it would flag. Mutation: put a placeholder that
+        # is not a possible address in DEFAULT_FORECAST_INPUT_EXAMPLE -> FAILS.
+        import payee_syntax
+        ex = X.DEFAULT_FORECAST_INPUT_EXAMPLE
+        for field in X.DEFAULT_FORECAST_INPUT_SCHEMA["required"]:
+            self.assertIn(field, ex, "advertised example omits a REQUIRED field")
+        grade = payee_syntax.assess_payee(ex["counterparty"])["grade"]
+        self.assertNotIn(grade, ("malformed", "invalid_hex"),
+                         "we would advertise a counterparty our own gate flags")
+
+    def test_the_SERVED_402_carries_info_not_just_the_helper(self):
+        # THE SEVENTH-EDIT HAZARD, caught by mutation on the very change that
+        # introduced it: the three tests above call build_bazaar_extension
+        # DIRECTLY with an input_example, so dropping `self.cfg.input_example`
+        # at the one call site leaves `info` absent from the REAL 402 with every
+        # one of them still green -- measured, it SURVIVED the first pass. The
+        # property is about what a stranger receives, so it is asserted on the
+        # body the gate actually serves, through the config default.
+        # Mutation: drop the argument at the call site -> FAILS.
+        cfg = X.BillingConfig(price="0.001", pay_to=PAY_TO)
+        gate = X.BillingGate(cfg, facilitator=X.MockFacilitator(approve=True))
+        body = gate.check("/v1/forecast-payment").body
+        info = body["extensions"]["bazaar"]["info"]
+        self.assertEqual(info["input"]["body"], X.DEFAULT_FORECAST_INPUT_EXAMPLE)
+        self.assertEqual(info["input"]["method"], "POST")
+        # and `schema` -- what marks the resource invocable -- is still there.
+        self.assertIn("schema", body["extensions"]["bazaar"])
 
     def test_facilitator_envelope_is_v2(self):
         # The facilitator POST envelope must carry x402Version: 2.
@@ -658,6 +757,177 @@ class TestCdpFacilitator(unittest.TestCase):
         self.assertFalse(fac.settle(make_payment(), req)["success"])
 
 
+class TestCanonicalResourceUrl(unittest.TestCase):
+    """The 402's `resource.url` must be OURS, never the caller's.
+
+    FOUND while fixing the Bazaar listing, and it is the more serious half.
+    `_challenge` passed the request's `resource` field into
+    `build_resource_info` verbatim, and that field is CLIENT-SUPPLIED.
+    MEASURED ON THE LIVE SERVICE before fixing -- every one of these came back
+    inside a real 402 advertising our payTo:
+
+        resource=https://evil.example/owned  -> url 'https://evil.example/owned'
+        resource=javascript:alert(1)         -> url 'javascript:alert(1)'
+        resource=//evil.example/x            -> url '//evil.example/x'
+
+    Two consequences. (1) The 402 is the document CDP indexes into the Bazaar
+    catalog, so an attacker could pay us 0.001 USDC with a foreign `resource`
+    and have THEIR url catalogued against OUR payout address -- cheap, and it
+    borrows our settlement history. (2) Our own url was RELATIVE
+    ("/v1/forecast-payment"), which is why we are not indexed: an indexer cannot
+    invent our host from a path.
+
+    One change fixes both: the ORIGIN comes from our config and the PATH is all
+    that is taken from the request.
+    """
+
+    ORIGIN = "https://blackwall-free.onrender.com"
+
+    def test_a_client_supplied_ORIGIN_is_DISCARDED(self):
+        # THE ATTACK. MUTATION: honouring an absolute request url. A caller
+        # would then choose what our 402 -- and the Bazaar entry bound to our
+        # payTo -- points at.
+        for hostile in ("https://evil.example/owned",
+                        "http://evil.example/v1/forecast-payment",
+                        "//evil.example/protocol-relative",
+                        "https://user:pw@evil.example/x"):
+            got = X.canonical_resource_url(self.ORIGIN, hostile)
+            self.assertTrue(got.startswith(self.ORIGIN + "/"),
+                            "%r -> %r escaped our origin" % (hostile, got))
+            self.assertNotIn("evil.example", got)
+
+    def test_a_non_http_scheme_cannot_survive(self):
+        # MUTATION: passing the scheme through. `javascript:` in a field that
+        # gets rendered by a catalog UI is an XSS primitive we would be
+        # publishing ourselves.
+        for bad in ("javascript:alert(1)", "data:text/html,<script>",
+                    "file:///etc/passwd"):
+            got = X.canonical_resource_url(self.ORIGIN, bad)
+            self.assertTrue(got.startswith(self.ORIGIN + "/"), got)
+            for scheme in ("javascript", "data:", "file:"):
+                self.assertNotIn(scheme, got.lower())
+
+    def test_the_PATH_is_kept_because_it_identifies_the_priced_resource(self):
+        # Different paths are different priced resources, so the path must
+        # survive -- this is not a "replace everything with a constant" fix.
+        self.assertEqual(X.canonical_resource_url(self.ORIGIN, "/v1/forecast-payment"),
+                         self.ORIGIN + "/v1/forecast-payment")
+        self.assertEqual(
+            X.canonical_resource_url(self.ORIGIN, "https://evil.example/v1/x?a=b"),
+            self.ORIGIN + "/v1/x?a=b")
+
+    def test_a_relative_path_becomes_ABSOLUTE(self):
+        # The listing half. MUTATION: leaving it relative -- measured 2000/2000
+        # catalogued entries carry an absolute url.
+        got = X.canonical_resource_url(self.ORIGIN, "v1/forecast-payment")
+        self.assertEqual(got, self.ORIGIN + "/v1/forecast-payment")
+
+    def test_PERCENT_ENCODED_separators_are_treated_as_separators(self):
+        # FUZZ FINDING (low). `/..%2f..` and `/v1/x%2f..%2f..%2fetc` survived
+        # normalization: %2f is not a literal "/", so segment splitting saw ONE
+        # segment that merely CONTAINS "..", and the traversal text reached the
+        # advertised url.
+        #
+        # NOT a host escape -- verified, every case stayed on our own origin, so
+        # nothing could be redirected. The residual risk is a CONSUMER that
+        # percent-decodes and then resolves, landing outside the path space we
+        # serve. Cheap to close, so closed.
+        # MUTATION: dropping the pre-decode of the encoded separators.
+        # THE PROPERTY IS "NO TRAVERSAL SEGMENT", NOT "NO `..` SUBSTRING", and
+        # the difference is real: `/a%255c..` is DOUBLE-encoded, so after the
+        # single decode round `..` remains as literal TEXT inside a segment
+        # (`a%5c..`) and resolves nowhere. Asserting the substring flagged that
+        # as a failure -- the third time today an assertion was wrong rather
+        # than the code, which is worth saying out loud.
+        #
+        # Decoding to a FIXED POINT would "fix" it and be worse: the number of
+        # rounds would be the attacker's choice, and each round can synthesize
+        # separators the previous one did not have.
+        from urllib.parse import urlsplit
+        for probe in ("/..%2f..", "/v1/x%2f..%2f..%2fetc", "/a%2F..%2F..%2Fb",
+                      "/a%5c..%5c..", "/a%255c.."):
+            got = X.canonical_resource_url(self.ORIGIN, probe)
+            self.assertTrue(got.startswith(self.ORIGIN + "/"), got)
+            segments = urlsplit(got).path.split("/")
+            self.assertNotIn("..", segments,
+                             "a traversal SEGMENT survived in %r -> %r"
+                             % (probe, got))
+            # AND no encoded separator may remain, or a consumer that decodes
+            # once reconstitutes the traversal we just normalized away. Both
+            # halves are needed: mutation testing showed the segment check
+            # ALONE passes with the decode deleted, because `..%2f..` is one
+            # segment that merely contains "..". Loosening an assertion to fix
+            # a false positive can walk straight past the true one.
+            for enc in ("%2f", "%2F", "%5c", "%5C"):
+                self.assertNotIn(enc, got,
+                                 "encoded separator %s survived in %r -> %r"
+                                 % (enc, probe, got))
+
+    def test_the_ORIGIN_is_checked_as_a_HOST_not_as_a_substring(self):
+        # THIS TEST EXISTS BECAUSE MY OWN FUZZ ASSERTION WAS WRONG. It grepped
+        # the output for "evil.example" and flagged `https:///evil.example/x`
+        # and `\\evil.example\x` as host leaks -- but both land as a PATH on
+        # our origin, which is correct and harmless. A substring check on a url
+        # cannot tell a host from a path, and a wrong assertion is how a suite
+        # grows a false sense of coverage.
+        # The property is about netloc, so assert netloc.
+        from urllib.parse import urlsplit
+        mine = urlsplit(self.ORIGIN).netloc
+        bs = chr(92)  # literal backslash, built from chr() so no escaping layer
+        for probe in ("https:///evil.example/x",
+                      bs + bs + "evil.example" + bs + "x",
+                      "//evil.example/x", "https://evil.example:8080/x",
+                      "http://user:pw@evil.example/x",
+                      "https://evil.example" + bs + "@ours/x"):
+            got = X.canonical_resource_url(self.ORIGIN, probe)
+            self.assertEqual(urlsplit(got).netloc, mine,
+                             "%r -> %r has netloc %r"
+                             % (probe, got, urlsplit(got).netloc))
+
+    def test_traversal_is_normalized_away(self):
+        # MUTATION: naive concatenation. `..` segments would let a caller
+        # advertise a url outside the path space we serve.
+        for probe in ("/a/../../../etc/passwd", "../../secret", "/./x/../y"):
+            got = X.canonical_resource_url(self.ORIGIN, probe)
+            self.assertTrue(got.startswith(self.ORIGIN + "/"), got)
+            self.assertNotIn("..", got)
+
+    def test_NO_ORIGIN_configured_leaves_the_path_alone(self):
+        # RESTRAINT CONTROL. An operator with no BLACKWALL_ORIGIN keeps today's
+        # behaviour for their own path -- so this change cannot break a working
+        # deploy -- but a client-supplied ORIGIN is still discarded, because that
+        # was never legitimate.
+        self.assertEqual(X.canonical_resource_url(None, "/v1/forecast-payment"),
+                         "/v1/forecast-payment")
+        self.assertEqual(X.canonical_resource_url("", "https://evil.example/x"),
+                         "/x")
+
+    def test_it_is_bounded(self):
+        # MUTATION: dropping the cap. The url goes into a base64 response
+        # header; an unbounded one produces a header proxies silently drop.
+        got = X.canonical_resource_url(self.ORIGIN, "/" + "x" * 9000)
+        self.assertLessEqual(len(got), X.MAX_RESOURCE_URL)
+
+    def test_junk_never_raises(self):
+        for junk in (None, 7, b"x", [], {}, "", "   "):
+            got = X.canonical_resource_url(self.ORIGIN, junk)
+            self.assertIsInstance(got, str)
+            self.assertTrue(got.startswith(self.ORIGIN), got)
+
+    def test_control_characters_are_stripped(self):
+        # The url is echoed into a header and into a public catalog; a newline
+        # would forge header structure. Same untrusted-echo class as
+        # payee_syntax's hint and approvals' decided_by.
+        # MUTATION TESTING CAUGHT THIS TEST, not the code: the string here was
+        # written through a heredoc and contained LITERAL backslash-r-n rather
+        # than real control characters, so removing the strip left it passing.
+        # Built from chr() now so there is no escaping layer to get wrong.
+        hostile = "/v1/x" + chr(13) + chr(10) + "X-Injected: 1"
+        got = X.canonical_resource_url(self.ORIGIN, hostile)
+        for ch in (chr(13), chr(10), chr(0), chr(9), " "):
+            self.assertNotIn(ch, got, "control char %r survived" % ch)
+
+
 class TestChooseFacilitator(unittest.TestCase):
     SECRET = base64.b64encode(bytes(range(64))).decode()
 
@@ -691,10 +961,54 @@ class TestChooseFacilitator(unittest.TestCase):
         fac, _ = X.choose_facilitator(None, None, None)
         self.assertIsNone(fac)
 
-    def test_partial_cdp_creds_do_not_select_cdp(self):
-        # Only one of the pair set -> not CDP (would fail to mint a token).
-        fac, _ = X.choose_facilitator("https://facilitator.x402.rs", "kid", None)
+    def test_half_set_cdp_creds_are_a_boot_ERROR_not_a_silent_fallback(self):
+        # THE SILENT-CUTOVER BUG. This test previously asserted the OPPOSITE --
+        # that one-of-the-pair "does not select CDP" -- which is true and is not
+        # the point: it fell back to `facilitator_url`, and on mainnet that is a
+        # keyless facilitator that settles perfectly well. So an operator who
+        # pasted CDP_API_KEY_ID and fumbled the secret got a service that
+        # settled real USDC through the OLD facilitator while they believed they
+        # had cut over. A successful settlement is then indistinguishable from a
+        # successful CUTOVER -- the failure mode is not "it doesn't work", it is
+        # "it works and proves the wrong thing".
+        #
+        # Setting either variable states the operator's intent. Honouring half of
+        # it is answering a different question from the one they asked. Same rule
+        # receipt_signer.py already applies to a malformed BLACKWALL_SIGNING_SEED:
+        # set-but-bad means they intended the feature, so fail LOUD.
+        #
+        # Mutation: `and` -> `or` in the guard, or dropping the raise entirely;
+        # either restores the silent fallback and this test fails.
+        for cid, secret in (("kid", None), (None, self.SECRET),
+                            ("kid", ""), ("", self.SECRET)):
+            with self.assertRaises(X.FacilitatorConfigError) as caught:
+                X.choose_facilitator("https://facilitator.x402.rs", cid, secret)
+            msg = str(caught.exception)
+            # It must name BOTH variables and which one is missing -- an operator
+            # reading a crash-looped deploy log has only this string.
+            self.assertIn("CDP_API_KEY_ID", msg)
+            self.assertIn("CDP_API_KEY_SECRET", msg)
+
+    def test_the_error_names_the_variable_that_is_actually_missing(self):
+        # Mutation: always naming the same side. Getting this backwards sends the
+        # operator to re-paste the field that was already correct.
+        with self.assertRaises(X.FacilitatorConfigError) as c:
+            X.choose_facilitator(None, "kid", None)
+        self.assertIn("CDP_API_KEY_SECRET is missing", str(c.exception))
+        with self.assertRaises(X.FacilitatorConfigError) as c:
+            X.choose_facilitator(None, None, self.SECRET)
+        self.assertIn("CDP_API_KEY_ID is missing", str(c.exception))
+
+    def test_neither_set_is_still_a_clean_keyless_fallback(self):
+        # RESTRAINT CONTROL. The guard must fire ONLY on a HALF-set pair. An
+        # operator running deliberately keyless has set neither, and that is a
+        # supported configuration -- turning it into a boot failure would take
+        # the free public deploy down.
+        fac, note = X.choose_facilitator("https://facilitator.x402.rs", None, None)
+        self.assertIsInstance(fac, X.HttpFacilitator)
         self.assertNotIsInstance(fac, X.CdpFacilitator)
+        fac2, _ = X.choose_facilitator(None, None, None)
+        self.assertIsNone(fac2)
 
     def test_cdp_host_guard_rejects_lookalike_urls(self):
         # THE TOKEN-LEAK BUG: the "is this a CDP host?" test must be a real
@@ -825,3 +1139,93 @@ class TestFacilitatorTimeoutEnv(unittest.TestCase):
         os.environ["BW_TEST_TIMEOUT"] = ""
         self.assertEqual(blackwall._float_env("BW_TEST_TIMEOUT", 8.0), 8.0)
         os.environ.pop("BW_TEST_TIMEOUT", None)
+
+
+class FacilitatorKindIsReportable(unittest.TestCase):
+    """WHICH FACILITATOR IS THIS SERVICE SETTLING THROUGH? It decides whether a
+    settlement can ever be catalogued -- per the Bazaar spec the FACILITATOR does
+    the cataloguing, and only CDP feeds the Bazaar -- and until now the answer
+    existed ONLY as a `sys.stderr` line at boot, served on no endpoint. So the
+    single most consequential config fact for the listing work could not be
+    checked without dashboard access, which is exactly the gap
+    `remote_ledger.describe_health` closed for ledger durability.
+
+    IT ALSO CANNOT BE READ OFF THE BOOT NOTE RELIABLY: `choose_facilitator` has
+    FOUR branches and the CDP-with-a-stale-URL one says "CDP creds set ... and
+    IGNORING non-CDP BLACKWALL_FACILITATOR=..." with NO mention of Bazaar. So
+    grepping the log for "Bazaar-eligible" reports "not CDP" on a config that IS
+    CDP -- a check aimed slightly to the left of its own property, the class this
+    repo keeps finding. This derives the kind from the OBJECT instead of the prose.
+    """
+
+    def test_each_facilitator_maps_to_its_own_label(self):
+        # Kills: collapsing cdp/keyless/mock, or reporting bazaar_eligible True
+        # for a keyless facilitator (which settles perfectly well and lists
+        # nothing -- the most expensive possible confusion here).
+        cdp = X.CdpFacilitator("id", "secret", base_url=X.CDP_FACILITATOR_URL)
+        self.assertEqual(X.facilitator_health(cdp),
+                         {"kind": "cdp", "bazaar_eligible": True})
+        self.assertEqual(X.facilitator_health(X.HttpFacilitator("https://f.example")),
+                         {"kind": "keyless", "bazaar_eligible": False})
+        self.assertEqual(X.facilitator_health(X.MockFacilitator()),
+                         {"kind": "mock", "bazaar_eligible": False})
+        self.assertEqual(X.facilitator_health(None),
+                         {"kind": "none", "bazaar_eligible": False})
+
+    def test_it_publishes_NO_url_and_NO_credential(self):
+        # The endpoint is PUBLIC and unauthenticated. A facilitator URL is
+        # operator config and a CDP key id is a credential, so the report is a
+        # WHITELIST of our own labels -- `remote_ledger`'s rule, where the answer
+        # was "do not echo" rather than "escape carefully". Mutation: add the
+        # url or the key id to the dict -> FAILS.
+        cdp = X.CdpFacilitator("SECRET-KEY-ID", "secret",
+                               base_url="https://api.cdp.coinbase.com/x")
+        blob = json.dumps(X.facilitator_health(cdp))
+        self.assertNotIn("SECRET-KEY-ID", blob)
+        self.assertNotIn("cdp.coinbase.com", blob)
+        self.assertNotIn("http", blob)
+        self.assertEqual(sorted(X.facilitator_health(cdp)),
+                         ["bazaar_eligible", "kind"])
+
+    def test_an_unknown_facilitator_is_unknown_not_eligible(self):
+        # Fail-safe direction: something we do not recognise must never be
+        # reported as Bazaar-eligible, or a future facilitator class silently
+        # claims a capability nobody verified. Mutation: default to cdp/True
+        # -> FAILS.
+        class _Odd:
+            pass
+        self.assertEqual(X.facilitator_health(_Odd()),
+                         {"kind": "unknown", "bazaar_eligible": False})
+
+    def test_it_never_raises(self):
+        # This runs on the health path, which must not fail on a reporting
+        # detail. Mutation: turn the handler into a re-raise -> FAILS.
+        #
+        # THE FIRST VERSION OF THIS TEST PASSED FOR THE WRONG REASON and mutation
+        # testing caught it: it used a class with a raising `__getattr__`, but
+        # `isinstance` never consults `__getattr__`, so the body never raised and
+        # the except branch was never reached -- the guard could be deleted with
+        # the test still green. A raising `__class__` PROPERTY is what actually
+        # makes `isinstance` raise, so that is what is used here.
+        class _Hostile:
+            @property
+            def __class__(self):
+                raise RuntimeError("boom")
+        self.assertEqual(X.facilitator_health(_Hostile()),
+                         {"kind": "unknown", "bazaar_eligible": False})
+
+
+class TheSubclassOrderIsLoadBearing(unittest.TestCase):
+    def test_cdp_is_an_HttpFacilitator_so_order_decides_the_label(self):
+        # `CdpFacilitator` SUBCLASSES `HttpFacilitator`, so an isinstance chain
+        # that tests the parent first labels a CDP facilitator `keyless` and
+        # reports bazaar_eligible False -- telling an operator their cutover is
+        # not live when it is, which is the most expensive mislabel this function
+        # can produce. Asserted as the RELATIONSHIP, not just the outcome, so the
+        # next person to reorder those branches sees why they must not.
+        # Mutation: swap the CdpFacilitator and HttpFacilitator rows -> FAILS.
+        self.assertTrue(issubclass(X.CdpFacilitator, X.HttpFacilitator),
+                        "if this ever stops being true, re-read facilitator_health")
+        cdp = X.CdpFacilitator("id", "secret", base_url=X.CDP_FACILITATOR_URL)
+        self.assertEqual(X.facilitator_health(cdp)["kind"], "cdp")
+        self.assertTrue(X.facilitator_health(cdp)["bazaar_eligible"])

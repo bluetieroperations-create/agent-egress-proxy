@@ -389,14 +389,25 @@ class TestCdpSelection(unittest.TestCase):
                              cdp_secret="secret",
                              authed_fetch=self._authed(self.KINDS))
 
-    def test_partial_creds_fall_back_to_the_url_path(self):
-        # Mutation: `cdp_id or cdp_secret`. choose_facilitator requires BOTH;
-        # with one set it uses the URL, and the preflight must model the same.
-        def fetch(url, **kw):
-            return {"kinds": [{"scheme": "exact", "network": "base"}]}
-        row = bp.check_facilitator("https://f.example", "exact", "base",
-                                   fetch=fetch, cdp_id="id")
-        self.assertEqual(row["status"], bp.OK)
+    def test_partial_creds_FAIL_they_do_not_fall_back_to_the_url_path(self):
+        # THIS TEST ASSERTED THE OPPOSITE AND WAS WRONG. It modelled the old
+        # silent fallback faithfully -- half-set CDP pair, probe the keyless
+        # URL, mainnet supported, status OK -- and so the preflight whose whole
+        # purpose is "what happens if I flip billing on?" PASSED the single most
+        # likely way a CDP cutover fails. Worse, the keyless facilitator it fell
+        # back to settles mainnet fine, so the operator would get a real
+        # settlement and read it as proof CDP worked.
+        #
+        # Mutation: dropping the FacilitatorConfigError catch (traceback instead
+        # of a graded row), or grading it WARN/OK. A misconfiguration that no
+        # amount of waiting fixes is FAIL, by this module's own rule.
+        def fetch(url, **kw):                       # must never be reached
+            raise AssertionError("probed a facilitator on a half-set CDP pair")
+        for kwargs in ({"cdp_id": "id"}, {"cdp_secret": "secret"}):
+            row = bp.check_facilitator("https://f.example", "exact", "base",
+                                       fetch=fetch, **kwargs)
+            self.assertEqual(row["status"], bp.FAIL, kwargs)
+            self.assertIn("CDP_API_KEY", row["detail"])
 
 
 class TestCdpAuthenticatedGet(unittest.TestCase):
@@ -761,6 +772,11 @@ class TestSupportedVersions(unittest.TestCase):
                                          "base", want_version=2)["status"], bp.OK)
 
 
+# CDP's published price. Named rather than inlined because it is ONE
+# facilitator's number, which is the whole point of the correction below.
+CDP = bp.CDP_SETTLEMENT_COST
+
+
 class TestSettlementCost(unittest.TestCase):
     """Does the fee cover what it COSTS to collect the fee?
 
@@ -791,7 +807,7 @@ class TestSettlementCost(unittest.TestCase):
         # Mutation: comparing fee > settle, or skipping the comparison. A $0.10
         # payment bills the $0.0001 floor and costs $0.001 to settle -- we lose
         # ten times what we collect, and it looks like revenue in every report.
-        row = bp.check_settlement_cost(self._fee, self._points("0.10"))
+        row = bp.check_settlement_cost(self._fee, self._points("0.10"), settle=CDP)
         self.assertEqual(row["status"], bp.WARN)
         self.assertEqual(row["below_settlement"], 1)
 
@@ -800,14 +816,14 @@ class TestSettlementCost(unittest.TestCase):
         # exits 2. Billing WORKS -- the 402 is valid, the payer pays, the money
         # arrives. Selling below cost is a decision an operator may make
         # deliberately, so it must not block a deploy.
-        row = bp.check_settlement_cost(self._fee, self._points(*["0.02"] * 50))
+        row = bp.check_settlement_cost(self._fee, self._points(*["0.02"] * 50), settle=CDP)
         self.assertNotEqual(row["status"], bp.FAIL)
         self.assertEqual(row["status"], bp.WARN)
 
     def test_a_fee_above_the_settlement_cost_is_ok(self):
         # Mutation: warning unconditionally. 10 bps of $50 is $0.05, fifty
         # times the settlement cost.
-        row = bp.check_settlement_cost(self._fee, self._points("50.00"))
+        row = bp.check_settlement_cost(self._fee, self._points("50.00"), settle=CDP)
         self.assertEqual(row["status"], bp.OK)
         self.assertEqual(row["below_settlement"], 0)
 
@@ -816,7 +832,7 @@ class TestSettlementCost(unittest.TestCase):
         # not bill is never settled either, so it costs nothing -- counting it
         # would invent a loss on the entire free tier and make the healthiest
         # possible config look the worst.
-        row = bp.check_settlement_cost(self._fee, self._points("0.005", "0.001"))
+        row = bp.check_settlement_cost(self._fee, self._points("0.005", "0.001"), settle=CDP)
         self.assertEqual(row["status"], bp.OK)
         self.assertEqual(row["billable"], 0)
 
@@ -825,21 +841,21 @@ class TestSettlementCost(unittest.TestCase):
         # breaks even; it is not a loss, and calling it one would flag a config
         # that is precisely at the line the check exists to find.
         fee_exact = lambda amount: 1000          # $0.001, == settle
-        row = bp.check_settlement_cost(fee_exact, self._points("1.00"))
+        row = bp.check_settlement_cost(fee_exact, self._points("1.00"), settle=CDP)
         self.assertEqual(row["status"], bp.OK)
 
     def test_the_settlement_cost_is_overridable(self):
         # Mutation: hardcoding CDP's price. It is a THIRD PARTY'S number, dated
         # 2026-09-08; when it moves, a hardcoded check mis-measures silently.
         pts = self._points("50.00")
-        self.assertEqual(bp.check_settlement_cost(self._fee, pts)["status"], bp.OK)
+        self.assertEqual(bp.check_settlement_cost(self._fee, pts, settle=CDP)["status"], bp.OK)
         expensive = bp.check_settlement_cost(self._fee, pts, settle="1.00")
         self.assertEqual(expensive["status"], bp.WARN)
 
     def test_a_missing_corpus_is_not_a_finding_about_the_config(self):
         # Mutation: reporting OK on no data, which claims a measurement that
         # never happened -- the failure mode seller_report's rule 1 exists for.
-        row = bp.check_settlement_cost(self._fee, [])
+        row = bp.check_settlement_cost(self._fee, [], settle=CDP)
         self.assertEqual(row["status"], bp.WARN)
         self.assertIn("NOT measured", row["detail"])
 
@@ -847,7 +863,7 @@ class TestSettlementCost(unittest.TestCase):
         # The corpus stores a price HULL, not a list, and `check_revenue`
         # reports an interval over both ends. A bare "41 of 46" next to
         # "46-164" reads as a contradiction unless it says which end it is.
-        row = bp.check_settlement_cost(self._fee, self._points("0.10"))
+        row = bp.check_settlement_cost(self._fee, self._points("0.10"), settle=CDP)
         self.assertIn("CHEAPEST", row["detail"])
 
     def test_a_fee_just_under_the_cost_is_still_a_loss(self):
@@ -856,7 +872,7 @@ class TestSettlementCost(unittest.TestCase):
         # settlement cost and still below it, so it loses money. A softened
         # threshold under-reports exactly the band nearest break-even, which is
         # where most of the corpus actually sits.
-        row = bp.check_settlement_cost(self._fee, self._points("0.60"))
+        row = bp.check_settlement_cost(self._fee, self._points("0.60"), settle=CDP)
         self.assertEqual(row["status"], bp.WARN)
         self.assertEqual(row["below_settlement"], 1)
         self.assertEqual(bp.Decimal(row["avg_shortfall"]),
@@ -866,7 +882,7 @@ class TestSettlementCost(unittest.TestCase):
         # Mutation: reporting a constant "0". The shortfall is the number an
         # operator reads to decide whether this matters at all -- a hardcoded
         # zero would make every below-cost config look free.
-        row = bp.check_settlement_cost(self._fee, self._points("0.10"))
+        row = bp.check_settlement_cost(self._fee, self._points("0.10"), settle=CDP)
         # $0.10 bills the $0.0001 floor against a $0.001 settlement.
         self.assertEqual(bp.Decimal(row["avg_shortfall"]),
                          bp.Decimal("0.000900"))
@@ -895,7 +911,7 @@ class TestSettlementCost(unittest.TestCase):
         # function ROUNDS, so break-even is 0.9995 rather than the 1.00 the
         # arithmetic gives -- and an inversion would be a SECOND implementation
         # of pricing, free to drift from the one that actually quotes.
-        row = bp.check_settlement_cost(self._fee, self._points("0.10"))
+        row = bp.check_settlement_cost(self._fee, self._points("0.10"), settle=CDP)
         self.assertEqual(bp.Decimal(row["breakeven"]), bp.Decimal("0.9995"))
 
     def test_break_even_is_none_when_no_payment_could_ever_cover_it(self):
@@ -905,6 +921,132 @@ class TestSettlementCost(unittest.TestCase):
                                        settle="10000")
         self.assertIsNone(row["breakeven"])
         self.assertNotIn("break-even is", row["detail"])
+
+
+class TestSettlementCostProvenance(unittest.TestCase):
+    """The per-settlement cost belongs to the FACILITATOR, not to this module.
+
+    It was a bare constant holding CDP's $0.001 while production settled through
+    PayAI, so the check reported a shortfall computed from a price sheet nobody
+    was paying. Reported by the parallel billing session after a real mainnet
+    settlement. The fix is not a better number -- it is refusing to supply one
+    we cannot source.
+    """
+
+    PAYEE = "0x" + "9b" * 20
+
+    def _points(self, *amounts):
+        return [("p%d" % i, bp.Decimal(str(a)), bp.Decimal(str(a)))
+                for i, a in enumerate(amounts)]
+
+    def test_cdp_credentials_resolve_to_cdps_published_price(self):
+        # Mutation: ignoring the credentials. BOTH present means choose_facilitator
+        # uses CDP whatever the URL says, so the cost must follow that selection.
+        cost, why = bp.settlement_cost_for(None, cdp_id="id", cdp_secret="sec")
+        self.assertEqual(cost, bp.CDP_SETTLEMENT_COST)
+        self.assertIn("CDP", why)
+
+    def test_a_cdp_credentialled_config_ignores_the_url_for_pricing_too(self):
+        # THE SUBTLE ONE. choose_facilitator silently DROPS a non-CDP URL when
+        # credentials are present. If the cost lookup read the URL instead, a
+        # config that settles through CDP would be priced as PayAI.
+        cost, _ = bp.settlement_cost_for("https://facilitator.payai.network",
+                                         cdp_id="id", cdp_secret="sec")
+        self.assertEqual(cost, bp.CDP_SETTLEMENT_COST)
+
+    def test_a_half_set_credential_pair_is_INVALID_not_merely_unpriced(self):
+        # THIS TEST PASSED FOR THE WRONG REASON before 2026-09-16. It asserted
+        # only `cost is None`, which was true under the OLD behaviour too --
+        # a half-set pair fell back to the URL, which is simply unpriced. So the
+        # assertion was satisfied by the very fallback that `choose_facilitator`
+        # now REFUSES TO BOOT on, and the report said "no facilitator
+        # configured" for a config that is invalid rather than absent.
+        # Found by running the half-set case end to end, not by a test.
+        # Mutation: re-deriving the selection as `CDP if (id and secret) else url`
+        # instead of calling choose_facilitator.
+        cost, why = bp.settlement_cost_for("https://facilitator.payai.network",
+                                           cdp_id="id")
+        self.assertIsNone(cost)
+        self.assertIn("invalid", why)
+        self.assertIn("CDP_API_KEY_SECRET", why)
+
+    def test_the_other_half_set_direction_too(self):
+        cost, why = bp.settlement_cost_for("https://facilitator.payai.network",
+                                           cdp_secret="sec")
+        self.assertIsNone(cost)
+        self.assertIn("invalid", why)
+        self.assertIn("CDP_API_KEY_ID", why)
+
+    def test_settlement_auth_does_not_call_a_half_set_pair_absent(self):
+        # Mutation: the old `if not (cdp_id and cdp_secret)` alone, which reports
+        # "no CDP credentials". That is FALSE when one is set, and it sends an
+        # operator looking for a missing config rather than a broken one.
+        row = bp.check_settlement_auth("id", None, "base", self.PAYEE)
+        self.assertEqual(row["status"], bp.NOTE)
+        self.assertIn("HALF-SET", row["detail"])
+        self.assertNotIn("no CDP credentials", row["detail"])
+
+    def test_settlement_auth_still_reports_genuinely_absent_credentials(self):
+        # The restraint control: neither set is a different, legitimate state.
+        row = bp.check_settlement_auth(None, None, "base", self.PAYEE)
+        self.assertIn("no CDP credentials", row["detail"])
+
+    def test_an_unpriced_facilitator_is_unknown_not_cdps_price(self):
+        # THE CORRECTION. Mutation: falling back to CDP_SETTLEMENT_COST. That is
+        # exactly the defect -- a number borrowed from a facilitator you are not
+        # using, presented as your cost.
+        cost, why = bp.settlement_cost_for("https://facilitator.x402.rs")
+        self.assertIsNone(cost)
+        self.assertIn("x402.rs", why)
+
+    def test_payai_is_unknown_rather_than_zero(self):
+        # Two settlements showed no ON-CHAIN deduction. That is evidence about
+        # the chain, not about commercial terms -- a fee billed off-chain looks
+        # identical from a receipt. Recording it as $0 would under-report a real
+        # loss, so unknown is the fail-safe direction.
+        # Mutation: adding PayAI to SETTLEMENT_COSTS with Decimal("0").
+        cost, why = bp.settlement_cost_for("https://facilitator.payai.network")
+        self.assertIsNone(cost)
+        self.assertIn("unverified", why)
+
+    def test_an_unknown_cost_declines_to_grade(self):
+        # Mutation: grading anyway, or reporting OK. NOTE says "I did not
+        # measure this"; OK would claim the economics are fine.
+        row = bp.check_settlement_cost(lambda a: 100, self._points("0.10"),
+                                       settle=None, provenance="no price on file")
+        self.assertEqual(row["status"], bp.NOTE)
+        self.assertIsNone(row["settlement_cost"])
+        self.assertIn("not graded", row["detail"])
+
+    def test_an_unknown_cost_still_reports_what_it_does_know(self):
+        # Break-even is a property of the PRICING POLICY alone, so it survives
+        # not knowing the facilitator's price and is worth saying. Mutation:
+        # returning a bare "unknown" with no numbers, which helps nobody.
+        row = bp.check_settlement_cost(lambda a: 100, self._points("0.10"),
+                                       settle=None, provenance="x")
+        self.assertEqual(row["billable"], 1)
+        self.assertIn("--settlement-cost", row["detail"])
+
+    def test_the_operators_own_number_beats_anything_on_file(self):
+        # An explicit --settlement-cost is a MEASURED figure from their own
+        # invoice; the table is at best a published one. Mutation: preferring
+        # the table when credentials are present.
+        rows = corpus(("0.50", "0.50"))
+        report = bp.preflight(GOOD, corpus=rows, offline=True,
+                              cdp_id="id", cdp_secret="sec",
+                              settlement_cost="100")
+        row = [c for c in report["checks"] if c["name"] == "settlement_cost"][0]
+        self.assertEqual(row["status"], bp.WARN)
+        self.assertEqual(row["settlement_cost"], "100")
+        self.assertIn("operator", row["cost_source"])
+
+    def test_no_facilitator_means_no_cost_claim(self):
+        # The shipped default: nothing configured. Mutation: assuming CDP.
+        rows = corpus(("0.50", "0.50"))
+        report = bp.preflight(GOOD, corpus=rows, offline=True)
+        row = [c for c in report["checks"] if c["name"] == "settlement_cost"][0]
+        self.assertEqual(row["status"], bp.NOTE)
+        self.assertIsNone(row["settlement_cost"])
 
 
 class TestPricePoints(unittest.TestCase):

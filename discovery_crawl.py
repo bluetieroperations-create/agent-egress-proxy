@@ -30,6 +30,7 @@ from decimal import Decimal
 import http_util
 import x402_challenge
 from addresses import is_evm_address
+import user_agent as ua_policy
 
 _MAX_DEPTH = 6
 _NESTED_KEYS = ("items", "resources", "data", "results", "endpoints")
@@ -237,14 +238,23 @@ def crawl_and_backfill(store, sources, *, fetch=None, chain_fetch=None, max_page
     ps = payees(resources)
     cf = chain_fetch or chain_backfill.BlockscoutPager().fetch
     summary = chain_backfill.backfill(store, ps, cf, max_pages=max_pages)
+    # Carry `truncated` up. Dropping it here would re-create the defect one level
+    # higher: a caller reads a healthy fetched/ingested pair and cannot tell that
+    # every payee stopped at the page cap.
     return {"resources": len(resources), "payees": len(ps),
-            "fetched": summary["fetched"], "ingested": summary["ingested"]}
+            "fetched": summary["fetched"], "ingested": summary["ingested"],
+            "truncated": summary.get("truncated", 0)}
 
 
 def _urllib_get_json(url, timeout=12):
     # retry/backoff on transient 429/5xx/timeout + size cap (see http_util); a
     # rate-limited Bazaar page is retried before crawl_bazaar treats it as the end.
-    return http_util.get_json(url, timeout=timeout, user_agent="Blackwall-discovery/0.1")
+    return http_util.get_json(
+        url, timeout=timeout,
+        # Browser-prefixed for the same reason as http_util.DEFAULT_UA: a bare
+        # token UA is challenged by a strict Cloudflare config, and the 403 is
+        # permanent -- it would look like "the Bazaar has no more pages".
+        user_agent=ua_policy.browser("discovery"))
 
 
 def _read_sources(args):
@@ -293,7 +303,11 @@ def main(argv=None):
                                      max_pages=args.backfill_max_pages)
         sys.stdout.write(json.dumps(
             {"resources": len(resources), "payees": len(ps),
-             "fetched": bf["fetched"], "ingested": bf["ingested"]}, indent=2) + "\n")
+             "fetched": bf["fetched"], "ingested": bf["ingested"],
+             "truncated": bf.get("truncated", 0)}, indent=2) + "\n")
+        if bf.get("truncated"):
+            sys.stderr.write("discovery_crawl: WARNING %d payee(s) hit the page "
+                             "cap -- seeded history is truncated.\n" % bf["truncated"])
     return 0
 
 
