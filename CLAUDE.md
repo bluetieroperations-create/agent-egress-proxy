@@ -1479,6 +1479,48 @@ Two complementary AI-agent guardrails, stdlib-only Python, TDD-first:
   `auto/directory-refresh` PR is not a fresh corpus, the weekly cadence leaves room
   for two consecutive rejects before the cliff, and flipping
   `PAYTO_BASELINE_GATES` still means checking the corpus age first.
+  THE AUTOMATION'S OWN DEPTH STOPPED BEING ENOUGH (2026-09-28), and the failure
+  mode is the quiet one: nothing breaks, the guard REJECTS, a nag issue opens,
+  and the corpus keeps walking toward the cliff. MEASURED, both runs against the
+  same committed corpus (331 entries / 702 hosts):
+
+      80 pages / top 200  ->  323 entries,  657 hosts  ->  REJECT (94%, floor 95%)
+     120 pages / top 800  ->  550 entries, 1068 hosts  ->  ACCEPT (95.7%)
+
+  NOTE WHICH NUMBER MOVED: entries barely fell (331 -> 323) while HOSTS
+  collapsed -- the exact case the retention metric exists for and an entry count
+  structurally cannot see, demonstrated against the shipped defaults rather than
+  argued. Coverage is bounded by BACKFILL BREADTH, not crawl depth: the directory
+  keeps only records whose `distinct_payers is not None`, so an endpoint the
+  backfill never reached is simply absent. The crawl now sees ~1200 endpoints and
+  the Bazaar catalog has grown 15,572 -> 16,061 -> 17,784 across the three checks
+  on record; 200 no longer spans it.
+  IT IS A RATCHET, which is the part worth carrying forward because it makes this
+  RECUR rather than being a one-time bump. Every ACCEPTed refresh becomes the
+  baseline the NEXT one is measured against, so the bar rises each time -- the
+  next candidate must retain >= 95% of 1068 hosts, not of 702. Meanwhile the
+  ecosystem's own churn MEASURED 4.3% (30 of 702 hosts simply gone), which already
+  consumes 85% of the 5% allowance. So a run that merely REPEATS its
+  predecessor's coverage lands ON the floor; it has to keep growing. `BACKFILL_TOP`
+  defaults 200 -> 800 in `scripts/refresh_directory.sh` (~20 min, measured ~14 at
+  500) and EXPECT TO RAISE IT AGAIN.
+  THE FIX BELONGS IN THE SCRIPT, NOT THE WORKFLOW, and getting that backwards is
+  a trap the repo has already sprung once: `directory-refresh.yml` passes its
+  inputs through EMPTY on purpose so the script's defaults are the single source
+  of truth, and a literal default in the workflow is exactly the bug
+  `seed-refresh.yml` shipped with `BACKFILL_PAGES=2` -- silently inert inputs.
+  Raising it there fixes one week and breaks `workflow_dispatch` permanently. The
+  workflow change is only the two input DESCRIPTIONS, which named the old numbers
+  and would otherwise decay into a lie.
+  DELIBERATELY NOT the other available fix: lowering `MIN_GATING_RETENTION` would
+  make every run pass by weakening a safety rule to cover a CAPACITY problem --
+  the same trade already refused for `MAX_INDEX_AGE_DAYS`.
+  CLEARED, NOT CHANGED, and recorded because a cleared concern is worth as much
+  as a fix: `refresh_guard`'s audit found the SEED guard accepting a candidate
+  STALER than the committed store when it carried more edges. `directory_guard`
+  is its sibling and was checked for the same class -- staler-but-richer REJECTS,
+  equal-age-but-richer REJECTS, fresher-and-richer ACCEPTS. There is no `gained`
+  escape hatch here, so the regression cannot exist in it.
   THREE FINDINGS from making it reachable, each caught before deploying:
   (1) the sidecar was NOT in the Dockerfile's COPY, so production would have read
   the corpus as undated and the gate would have been unreachable there while
