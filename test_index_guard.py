@@ -552,31 +552,60 @@ class TestTheArtifactSignature(unittest.TestCase):
 
 
 class TestTheSignatureAgainstTheShippedRefresh(unittest.TestCase):
-    """End-to-end on the real artifacts of the 2026-09-29 refresh."""
+    """The real 2026-09-29 refresh, transcribed rather than read from git.
+
+    The first version of this shelled out to `git show 8953934:...`. It passed here and
+    FAILED IN CI with exit 128, because actions/checkout@v4 clones at depth 1 and that
+    commit is not in the checkout -- an environment-dependent test, green on the machine
+    that wrote it and red on the only machine that matters.
+
+    Transcribing fixes more than the break. Reading the LIVE data/category_index.json as
+    the "after" side meant the test's subject changed with every refresh, so it would
+    have drifted away from the two states it was written to pin. These are the exact
+    bytes of commits 8953934 (before) and d3e027e (after).
+    """
+
+    BEFORE = {"ai-agents": "0.01", "content-media": "0.008552", "dev-tools": "0.002",
+              "finance": "0.005", "onchain": "0.0035", "search-data": "0.01"}
+    BEFORE_PAYEES = {"ai-agents": 26, "commerce": 4, "content-media": 6, "dev-tools": 7,
+                     "email-comms": 1, "finance": 29, "identity-security": 1,
+                     "onchain": 10, "search-data": 19, "storage-files": 4}
+    AFTER = {"ai-agents": "0.01", "content-media": "0.00675", "dev-tools": "0.002",
+             "finance": "0.005", "onchain": "0.0015", "search-data": "0.01"}
+    AFTER_PAYEES = {"ai-agents": 25, "commerce": 4, "content-media": 6, "dev-tools": 5,
+                    "email-comms": 1, "finance": 28, "identity-security": 1,
+                    "onchain": 8, "search-data": 23, "storage-files": 3}
 
     def test_it_classifies_the_whole_shipped_refresh_correctly(self):
-        # The committed index and sidecar, against the ones they replaced. Exactly one
-        # category must be named -- onchain -- and content-media must not be, because
-        # those two verdicts were each established by hand before this check existed.
+        # Exactly one category must be named -- onchain -- and content-media must not be.
+        # Both verdicts were established INDEPENDENTLY before this check existed:
+        # rebuilding from the store alone reproduces content-media's move exactly, while
+        # the OLD store crawled the same day already yields onchain's new rate.
         #
-        # kills: any rewrite that changes the verdict on real data, which a synthetic
-        # fixture alone would not catch.
-        import subprocess
-        def show(ref, path):
-            return json.loads(subprocess.check_output(["git", "show", "%s:%s" % (ref, path)]))
-        prev = "8953934"     # main immediately before the refresh merged
+        # kills: any rewrite that changes the verdict on real production numbers, which a
+        # hand-built fixture of round values would not catch.
         r = G.assess_index_refresh(
-            G.index_stats(show(prev, "data/category_index.json"),
-                          show(prev, "data/divergence_index.json"),
-                          category_payees=show(prev, "data/category_index.meta.json")["payees"]),
-            G.index_stats(json.load(open("data/category_index.json")),
-                          json.load(open("data/divergence_index.json")),
-                          category_payees=json.load(open("data/category_index.meta.json"))["payees"]))
+            G.index_stats(self.BEFORE, {"0x1": "2.0"}, category_payees=self.BEFORE_PAYEES),
+            G.index_stats(self.AFTER, {"0x1": "2.0"}, category_payees=self.AFTER_PAYEES))
         named = [w for w in r["warnings"] if "shrank" in w]
         self.assertEqual(len(named), 1, named)
         self.assertIn("onchain", named[0])
         self.assertNotIn("content-media", named[0])
         self.assertTrue(r["accept"], r["reasons"])
+
+    def test_the_transcription_still_matches_what_is_committed(self):
+        # The AFTER half is the corpus currently on main, so this catches a transcription
+        # slip and tells the next refresh's author that these fixtures are now historical.
+        # Compares the files on disk -- no git, so it survives a shallow checkout.
+        with open("data/category_index.json") as fh:
+            shipped = json.load(fh)
+        with open("data/category_index.meta.json") as fh:
+            shipped_payees = json.load(fh)["payees"]
+        if shipped != self.AFTER or shipped_payees != self.AFTER_PAYEES:
+            self.skipTest("the corpus has been refreshed past d3e027e; these fixtures are "
+                          "now historical, which is expected -- they pin a moment, not HEAD")
+        self.assertEqual(shipped, self.AFTER)
+        self.assertEqual(shipped_payees, self.AFTER_PAYEES)
 
 
 class TestTheSignatureIsACTUALLYWIRED(unittest.TestCase):
