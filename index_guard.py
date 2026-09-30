@@ -164,6 +164,20 @@ VALUE_DRIFT_WARN_RATIO = 3.0
 # different population, not a different market. Either half alone is ordinary -- prices
 # move, membership churns -- and neither fires on its own.
 #
+# HONEST LIMIT, because COUNT is a proxy for MEMBERSHIP and not the thing itself. A crawl
+# that SWAPS payees -- loses two and gains two in the same category -- moves the rate for
+# exactly the same reason while the count never changes, and this check says nothing. Nor
+# does VALUE_DRIFT_WARN_RATIO, since the artifact measured here (2.33x) sits under it. So
+# a whole shape of the failure is invisible, and pretending otherwise would be worse than
+# the gap: test_a_payee_SWAP_is_a_known_blind_spot pins it, so anyone who closes it has to
+# delete an assertion deliberately rather than discover the hole again.
+#
+# The fix, when it is wanted, is to record the payee SET in the sidecar instead of its
+# size, which also lets the warning name WHICH payees left. That was left out here for a
+# reason worth stating: six measured observations support the conjunction below, and ZERO
+# measured observations exist of a swap. Building the bigger artifact on a hazard nobody
+# has seen would be fitting to an imagined case while the observed one already had a fix.
+#
 # Still a WARNING. The artifact is not wrong, it is just not what the artifact appears to
 # say: the new rate does describe the payees now in the category. What an operator needs
 # is to know which question the number answered before acting on a HOLD line built from

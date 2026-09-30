@@ -623,3 +623,29 @@ class TestTheSignatureIsACTUALLYWIRED(unittest.TestCase):
         self.assertIn("--new-meta", call)
         # the OLD counts must come from the COMMITTED sidecar, not the candidate's
         self.assertIn("--old-meta       data/category_index.meta.json", call)
+
+
+class TestTheKnownBlindSpot(unittest.TestCase):
+    """What this check CANNOT see, asserted rather than left to be rediscovered."""
+
+    def test_a_payee_SWAP_is_a_known_blind_spot(self):
+        # COUNT is a proxy for MEMBERSHIP. A crawl that loses two payees and gains two in
+        # the same category moves the rate for exactly the artifact reason while the count
+        # never changes -- and VALUE_DRIFT_WARN_RATIO does not cover it either, because
+        # the measured artifact (2.33x) sits under the 3.0 line.
+        #
+        # This test asserts the GAP, deliberately. It is not a wish: closing it means
+        # recording the payee SET in the sidecar, and this assertion is what makes that a
+        # considered change -- whoever does it must delete this test on purpose rather
+        # than discover the hole a third time.
+        r = G.assess_index_refresh(
+            G.index_stats({"onchain": "0.0035"}, {"0x1": "2.0"},
+                          category_payees={"onchain": 10}),
+            G.index_stats({"onchain": "0.0015"}, {"0x1": "2.0"},
+                          category_payees={"onchain": 10}))
+        self.assertEqual([w for w in r["warnings"] if "shrank" in w], [],
+                         "a swap is now detected -- good; update this test and the "
+                         "HONEST LIMIT note in index_guard.py")
+        self.assertEqual([w for w in r["warnings"] if "moved" in w and "shrank" not in w], [],
+                         "2.33x is under VALUE_DRIFT_WARN_RATIO by design")
+        self.assertTrue(r["accept"])
