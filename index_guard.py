@@ -130,6 +130,45 @@ DIVERGENCE_WARN_RETENTION = 0.5
 # index cannot tell you which one moved.
 VALUE_DRIFT_WARN_RATIO = 3.0
 
+# THE ARTIFACT SIGNATURE, and the reason it needs no threshold at all.
+#
+# VALUE_DRIFT_WARN_RATIO asks HOW FAR a baseline moved, and the 2026-09-29 refresh
+# showed that question cannot answer the one that matters. `onchain` moved 2.33x and was
+# pure crawl drift; the 2026-09-28 refresh's `dev-tools` moved 2.25x and was legitimate.
+# Three and a half percent apart, opposite verdicts. Magnitude does not separate them,
+# which is why that line only ever annotates -- and why it stayed silent on both.
+#
+# WHAT DOES separate them is WHO the baseline is computed over. A category rate is a
+# median-of-medians across the distinct payees a LIVE Bazaar crawl put in that category,
+# priced from the store. So a move has exactly two possible sources, and the payee count
+# tells them apart:
+#
+#   the same payees, a different price   -> the market moved            REAL
+#   different payees, the same market    -> the crawl's membership moved ARTIFACT
+#
+# Measured on the two refreshes that produced the rule (payee counts from the sidecar):
+#
+#   onchain        0.0035 -> 0.0015   2.33x   10 -> 8 payees   ARTIFACT, proven: the
+#                                                              OLD store crawled the same
+#                                                              day already yields 0.0015
+#   content-media  0.008552 -> 0.00675 1.27x   6 -> 6 payees   REAL, proven: rebuilding
+#                                                              from the store alone
+#                                                              reproduces it exactly
+#   ai-agents      unchanged                  26 -> 25         churn, no move: silent
+#   dev-tools      unchanged                   7 -> 5          churn, no move: silent
+#   finance        unchanged                  29 -> 28         churn, no move: silent
+#   search-data    unchanged                  19 -> 23         growth: silent
+#
+# The CONJUNCTION classifies all six correctly, so there is no number to fit and none is
+# invented: a baseline that moved AT ALL while its payee set SHRANK is reporting a
+# different population, not a different market. Either half alone is ordinary -- prices
+# move, membership churns -- and neither fires on its own.
+#
+# Still a WARNING. The artifact is not wrong, it is just not what the artifact appears to
+# say: the new rate does describe the payees now in the category. What an operator needs
+# is to know which question the number answered before acting on a HOLD line built from
+# it. Rejecting would throw away a whole store refresh over a naming question.
+
 
 def _rate(raw):
     """`raw` as a strictly-positive Decimal rate, else None. FAIL-SOFT by the same
@@ -285,6 +324,31 @@ def assess_index_refresh(old, new, *, min_category_retention=MIN_CATEGORY_RETENT
                    "down" if after < before else "up",
                    after * hold, before * hold, _payee_note(new, cat)))
 
+    # ARTIFACT SIGNATURE: the baseline moved AND the payee set it is computed over shrank.
+    # See the comment on VALUE_DRIFT_WARN_RATIO for why this needs no threshold and why
+    # magnitude alone cannot do this job. Silent without BOTH sidecars, because a missing
+    # count is not evidence of a stable population.
+    old_counts = old.get("category_payees") or {}
+    new_counts = new.get("category_payees") or {}
+    for cat in sorted(set(old_vals) & set(new_vals)):
+        before, after = _rate(old_vals[cat]), _rate(new_vals[cat])
+        if before is None or after is None or before == after:
+            continue                      # unchanged rate: nothing to attribute
+        op, np_ = old_counts.get(cat), new_counts.get(cat)
+        if not isinstance(op, int) or not isinstance(np_, int) or np_ >= op:
+            continue                      # population held or grew: the move is the market
+        hold = Decimal(str(_hold_ratio()))
+        warnings.append(
+            "category baseline %s moved %s -> %s WHILE its payee set shrank %d -> %d -- "
+            "this rate is computed over the payees a live crawl put in the category, so a "
+            "move that arrives alongside a smaller population is reporting a DIFFERENT "
+            "POPULATION, not a different market. The HOLD line moved with it (>= %s "
+            "instead of >= %s). NOT a reject: the new rate does describe the payees now in "
+            "the category. Confirm before treating it as a price signal -- rebuild the "
+            "index against the OLD store; if it still yields the new rate, the crawl moved "
+            "and the market did not"
+            % (cat, old_vals[cat], new_vals[cat], op, np_, after * hold, before * hold))
+
     # Divergence membership churns both ways on a healthy refresh; report the shape so an
     # accept still leaves a record, without pretending either direction is a problem.
     d_lost = len(set(old["divergence_keys"]) - set(new["divergence_keys"]))
@@ -325,6 +389,9 @@ def main(argv=None):
     p.add_argument("--new-category", required=True, help="candidate category index")
     p.add_argument("--old-divergence", required=True, help="committed data/divergence_index.json")
     p.add_argument("--new-divergence", required=True, help="candidate divergence index")
+    p.add_argument("--old-meta", help="committed category_index.meta.json (optional; with "
+                   "--new-meta it supplies the BEFORE payee counts, which is what lets a "
+                   "move be attributed to the market or to the crawl's membership)")
     p.add_argument("--new-meta", help="candidate category_index.meta.json (optional; "
                    "supplies distinct-payee counts so a drift warning can say whether "
                    "the baseline was thin)")
@@ -333,9 +400,11 @@ def main(argv=None):
 
     # The sidecar is OPTIONAL and only annotates: a guard that refused to run without
     # it would make a new file a prerequisite for gating an old one.
+    old_meta = _load(args.old_meta) if args.old_meta else {}
     new_meta = _load(args.new_meta) if args.new_meta else {}
     result = assess_index_refresh(
-        index_stats(_load(args.old_category), _load(args.old_divergence)),
+        index_stats(_load(args.old_category), _load(args.old_divergence),
+                    category_payees=old_meta.get("payees")),
         index_stats(_load(args.new_category), _load(args.new_divergence),
                     category_payees=new_meta.get("payees")))
     for label in ("old", "new"):

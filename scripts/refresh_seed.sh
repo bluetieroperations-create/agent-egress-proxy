@@ -105,6 +105,7 @@ echo "refresh_seed: running the index guard (indexes: candidate vs committed) ..
 if python3 index_guard.py \
         --old-category   data/category_index.json   --new-category   "$TMP_CAT" \
         --old-divergence data/divergence_index.json --new-divergence "$TMP_DIV" \
+        --old-meta       data/category_index.meta.json \
         --new-meta       "$TMP_CAT_META"; then
     INDEX_OK=1
 else

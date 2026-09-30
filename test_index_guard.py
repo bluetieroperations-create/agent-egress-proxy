@@ -449,3 +449,177 @@ class TestTheShippedSidecar(unittest.TestCase):
         for cat, n in below.items():
             self.assertLess(n, self.meta["min_payees"],
                             "%s is below the floor yet absent from the index" % cat)
+
+
+class TestTheArtifactSignature(unittest.TestCase):
+    """A category rate is a median across the payees a LIVE crawl put in that category.
+
+    So a move has two possible sources and they call for opposite responses: the same
+    payees at a different price is the market moving; different payees at the same market
+    is the crawl's membership moving. VALUE_DRIFT_WARN_RATIO cannot tell them apart --
+    the artifact measured 2.33x and the legitimate move 2.25x, three and a half percent
+    apart with opposite verdicts. The payee count can.
+
+    Every case below is MEASURED, from the 2026-09-28 and 2026-09-29 refreshes.
+    """
+
+    def _assess(self, vals_old, vals_new, counts_old, counts_new):
+        return G.assess_index_refresh(
+            G.index_stats(vals_old, {"0x1": "2.0"}, category_payees=counts_old),
+            G.index_stats(vals_new, {"0x1": "2.0"}, category_payees=counts_new))
+
+    @staticmethod
+    def _artifact_warnings(r):
+        return [w for w in r["warnings"] if "shrank" in w]
+
+    def test_the_measured_ARTIFACT_is_named(self):
+        # onchain, 2026-09-29: 0.0035 -> 0.0015 while the payee set went 10 -> 8. Proven
+        # an artifact independently -- the OLD store crawled the same day already yields
+        # 0.0015, so the store contributed nothing and the crawl's membership moved.
+        #
+        # kills: deleting the check, or requiring a magnitude threshold it must clear
+        # (2.33x sits BELOW the measured-legitimate 2.25x's neighbourhood, so any
+        # threshold tuned to catch this also catches the legitimate one).
+        r = self._assess({"onchain": "0.0035"}, {"onchain": "0.0015"},
+                         {"onchain": 10}, {"onchain": 8})
+        w = self._artifact_warnings(r)
+        self.assertEqual(len(w), 1, r["warnings"])
+        self.assertIn("10 -> 8", w[0])
+        self.assertTrue(r["accept"], r["reasons"])
+
+    def test_the_measured_REAL_move_is_NOT_named(self):
+        # content-media, same refresh: 0.008552 -> 0.00675 with the payee set held at 6.
+        # Proven real -- rebuilding the index from the store alone reproduces it exactly.
+        #
+        # kills: warning on any move whatsoever, which would cry wolf on genuine price
+        # movement and train the reader to skip the warning that matters.
+        r = self._assess({"content-media": "0.008552"}, {"content-media": "0.00675"},
+                         {"content-media": 6}, {"content-media": 6})
+        self.assertEqual(self._artifact_warnings(r), [])
+
+    def test_a_payee_DROP_without_a_move_is_silent(self):
+        # ai-agents 26 -> 25, dev-tools 7 -> 5, finance 29 -> 28 -- all with the rate
+        # unchanged. Membership churns on every refresh; on its own it says nothing about
+        # the number, and warning here would bury the conjunction in noise.
+        #
+        # kills: dropping the "moved" half of the conjunction.
+        r = self._assess({"ai-agents": "0.01", "dev-tools": "0.002", "finance": "0.005"},
+                         {"ai-agents": "0.01", "dev-tools": "0.002", "finance": "0.005"},
+                         {"ai-agents": 26, "dev-tools": 7, "finance": 29},
+                         {"ai-agents": 25, "dev-tools": 5, "finance": 28})
+        self.assertEqual(self._artifact_warnings(r), [])
+
+    def test_a_move_with_a_GROWING_payee_set_is_silent(self):
+        # search-data went 19 -> 23. A rate computed over MORE payees is better supported
+        # than the one before it, whichever way the number went.
+        #
+        # kills: testing `!=` instead of `<` on the counts.
+        r = self._assess({"search-data": "0.008"}, {"search-data": "0.01"},
+                         {"search-data": 19}, {"search-data": 23})
+        self.assertEqual(self._artifact_warnings(r), [])
+
+    def test_it_needs_BOTH_sidecars_and_says_nothing_without_them(self):
+        # kills: treating a missing count as zero, or as a drop. The committed sidecar is
+        # new; against an index promoted before it existed there is no BEFORE count, and
+        # absence is not evidence of a shrinking population -- the same standard
+        # crawl_health applies to a missing crawl summary.
+        moved = ({"onchain": "0.0035"}, {"onchain": "0.0015"})
+        self.assertEqual(self._artifact_warnings(
+            self._assess(*moved, None, {"onchain": 8})), [])
+        self.assertEqual(self._artifact_warnings(
+            self._assess(*moved, {"onchain": 10}, None)), [])
+        self.assertEqual(self._artifact_warnings(
+            self._assess(*moved, None, None)), [])
+
+    def test_the_warning_states_the_HOLD_line_and_how_to_settle_it(self):
+        # kills: a warning that names the suspicion without the two things that make it
+        # actionable -- what the gate now does, and the one experiment that decides it.
+        r = self._assess({"onchain": "0.0035"}, {"onchain": "0.0015"},
+                         {"onchain": 10}, {"onchain": 8})
+        w = self._artifact_warnings(r)[0]
+        self.assertIn("0.075", w)            # new hold line: 0.0015 * 50
+        self.assertIn("0.175", w)            # old hold line: 0.0035 * 50
+        self.assertIn("OLD store", w)        # the experiment that settles it
+        self.assertNotIn("REJECT", w)
+
+    def test_it_never_rejects(self):
+        # kills: promoting this to `reasons`. An index reject fails the whole refresh,
+        # STORE included -- trading a corpus refresh for a naming question.
+        r = self._assess({"onchain": "1.0"}, {"onchain": "0.0001"},
+                         {"onchain": 40}, {"onchain": 2})
+        self.assertTrue(r["accept"], r["reasons"])
+        self.assertEqual(r["reasons"], [])
+
+
+class TestTheSignatureAgainstTheShippedRefresh(unittest.TestCase):
+    """End-to-end on the real artifacts of the 2026-09-29 refresh."""
+
+    def test_it_classifies_the_whole_shipped_refresh_correctly(self):
+        # The committed index and sidecar, against the ones they replaced. Exactly one
+        # category must be named -- onchain -- and content-media must not be, because
+        # those two verdicts were each established by hand before this check existed.
+        #
+        # kills: any rewrite that changes the verdict on real data, which a synthetic
+        # fixture alone would not catch.
+        import subprocess
+        def show(ref, path):
+            return json.loads(subprocess.check_output(["git", "show", "%s:%s" % (ref, path)]))
+        prev = "8953934"     # main immediately before the refresh merged
+        r = G.assess_index_refresh(
+            G.index_stats(show(prev, "data/category_index.json"),
+                          show(prev, "data/divergence_index.json"),
+                          category_payees=show(prev, "data/category_index.meta.json")["payees"]),
+            G.index_stats(json.load(open("data/category_index.json")),
+                          json.load(open("data/divergence_index.json")),
+                          category_payees=json.load(open("data/category_index.meta.json"))["payees"]))
+        named = [w for w in r["warnings"] if "shrank" in w]
+        self.assertEqual(len(named), 1, named)
+        self.assertIn("onchain", named[0])
+        self.assertNotIn("content-media", named[0])
+        self.assertTrue(r["accept"], r["reasons"])
+
+
+class TestTheSignatureIsACTUALLYWIRED(unittest.TestCase):
+    """The check is only as real as its plumbing.
+
+    Mutation testing found both halves of this gap: removing `category_payees` from the
+    CLI's OLD stats, and removing `--old-meta` from refresh_seed.sh, each left every
+    other test green while the signature silently stopped firing in production. That is
+    the wired-and-inert pattern this module's own docstring names -- `truncated` was
+    added by a commit called "a truncated crawl must say so" and then said so to nobody.
+    """
+
+    def test_the_CLI_end_to_end_emits_the_signature(self):
+        # Runs the actual command line, not assess_index_refresh. kills: dropping
+        # --old-meta from the parser, or forgetting to feed its payees into the OLD
+        # stats -- after which the guard reports a clean refresh forever.
+        import json as _json, subprocess, sys, tempfile, os
+        with tempfile.TemporaryDirectory() as d:
+            def w(name, obj):
+                p = os.path.join(d, name)
+                with open(p, "w") as fh:
+                    _json.dump(obj, fh)
+                return p
+            args = [sys.executable, "index_guard.py",
+                    "--old-category",   w("oc.json", {"onchain": "0.0035"}),
+                    "--new-category",   w("nc.json", {"onchain": "0.0015"}),
+                    "--old-divergence", w("od.json", {"0x1": "2.0"}),
+                    "--new-divergence", w("nd.json", {"0x1": "2.0"}),
+                    "--old-meta",       w("om.json", {"payees": {"onchain": 10}}),
+                    "--new-meta",       w("nm.json", {"payees": {"onchain": 8}})]
+            r = subprocess.run(args, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)   # a warning never rejects
+        self.assertIn("shrank 10 -> 8", r.stdout)
+
+    def test_refresh_seed_passes_BOTH_sidecars_to_the_guard(self):
+        # kills: dropping --old-meta from the script. The CLI would still accept the flag
+        # and the unit tests would still pass; the signature would simply never have a
+        # BEFORE count to compare against on any real refresh.
+        with open("scripts/refresh_seed.sh") as fh:
+            src = fh.read()
+        start = src.index("python3 index_guard.py")
+        call = src[start:src.index("then", start)]
+        self.assertIn("--old-meta", call)
+        self.assertIn("--new-meta", call)
+        # the OLD counts must come from the COMMITTED sidecar, not the candidate's
+        self.assertIn("--old-meta       data/category_index.meta.json", call)
