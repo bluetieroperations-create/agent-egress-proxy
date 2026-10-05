@@ -1,7 +1,6 @@
 {
   "ai-agents": "0.01",
-  "content-media": "0.00675",
-  "dev-tools": "0.002",
+  "content-media": "0.0069",
   "finance": "0.005",
   "onchain": "0.0015",
   "search-data": "0.01"
