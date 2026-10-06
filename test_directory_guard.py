@@ -237,3 +237,95 @@ class TestTheShippedCorpus(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _hstats(entries, host_keys, *, age_days, priced=None, sanctioned=0, dated=True):
+    """Like _stats, but carrying the host KEY SET the churn report reads."""
+    keys = sorted(host_keys)
+    return {"entries": entries, "hosts": len(keys), "host_keys": keys,
+            "priced": entries if priced is None else priced,
+            "sanctioned": sanctioned, "age_days": age_days, "dated": dated}
+
+
+class TestHostChurnIsReported(unittest.TestCase):
+    """A host COUNT cannot see membership, and this module said so about entries.
+
+    MIN_HOST_RETENTION exists because "entry count is not coverage" -- it is the
+    directory's analogue of refresh_guard.MIN_GATING_RETENTION. It was then implemented
+    as a host count, which has the identical blind spot one level down: the corpus can
+    turn over completely while the count grows, and every lost host is an endpoint the
+    gate used to cover and now reads as `unknown`.
+    """
+
+    @staticmethod
+    def _churn(r):
+        return [w for w in r["warnings"] if "churned" in w]
+
+    def test_the_2026_10_01_refresh_that_exposed_this(self):
+        # MEASURED. The payTo index went 1068 -> 1140 hosts: the size check read 106.7%
+        # retention and said nothing, while 206 of the original hosts had LEFT and 278
+        # new ones arrived -- 80.7% true membership retention.
+        #
+        # kills: deleting the churn report, or computing retention from the counts (which
+        # yields 106.7% and reports growth where a fifth of the coverage turned over).
+        old_hosts = {"h%04d" % i for i in range(1068)}
+        new_hosts = (old_hosts - {"h%04d" % i for i in range(206)}) | {
+            "n%04d" % i for i in range(278)}
+        self.assertEqual(len(new_hosts), 1140)          # the real counts, reproduced
+        r = G.assess_directory_refresh(_hstats(550, old_hosts, age_days=5.0),
+                   _hstats(711, new_hosts, age_days=0.0))
+        self.assertTrue(r["accept"], r["reasons"])       # it was a good refresh
+        w = self._churn(r)
+        self.assertEqual(len(w), 1, r["warnings"])
+        self.assertIn("206 lost", w[0])
+        self.assertIn("278 gained", w[0])
+        self.assertIn("80.7%", w[0])
+        self.assertIn("106.7%", w[0])                    # what the count said instead
+
+    def test_a_total_turnover_behind_a_growing_count_is_reported(self):
+        # The worst case the size check is blind to: every host replaced, count UP.
+        # 0% of the previous coverage survives and the old check reads 110%.
+        #
+        # kills: any implementation that keys off the counts at all.
+        r = G.assess_directory_refresh(_hstats(100, {"a%d" % i for i in range(100)}, age_days=5.0),
+                   _hstats(110, {"z%d" % i for i in range(110)}, age_days=0.0))
+        w = self._churn(r)
+        self.assertIn("0.0%", w[0])
+        self.assertIn("100 lost", w[0])
+
+    def test_an_unchanged_host_set_is_silent(self):
+        # kills: reporting churn unconditionally. A refresh that keeps every host has
+        # nothing to say here, and noise on every run is how a warning gets ignored.
+        hosts = {"a", "b", "c"}
+        r = G.assess_directory_refresh(_hstats(10, hosts, age_days=5.0), _hstats(12, hosts, age_days=0.0))
+        self.assertEqual(self._churn(r), [])
+
+    def test_it_NEVER_rejects(self):
+        # kills: promoting this to `reasons`. The only measured point is 80.7% on a
+        # refresh verified GOOD; there is no measured bad value, so a reject here would
+        # be an invented number -- and set at the size check's 0.95 it would have blocked
+        # that healthy refresh outright.
+        r = G.assess_directory_refresh(_hstats(100, {"a%d" % i for i in range(100)}, age_days=5.0),
+                   _hstats(110, {"z%d" % i for i in range(110)}, age_days=0.0))
+        self.assertTrue(r["accept"], r["reasons"])
+        self.assertEqual(r["reasons"], [])
+
+    def test_stats_without_host_keys_still_assess(self):
+        # kills: indexing host_keys directly. assess_directory_refresh is public and
+        # older callers pass hand-built stats; a KeyError there would take down the
+        # refresh over a missing annotation.
+        old = _stats(550, 1068, age_days=5.0, sanctioned=0)
+        new = _stats(711, 1140, age_days=0.0, sanctioned=0)
+        r = G.assess_directory_refresh(old, new)
+        self.assertTrue(r["accept"], r["reasons"])
+        self.assertEqual(self._churn(r), [])
+
+    def test_directory_stats_carries_the_host_keys(self):
+        # kills: dropping host_keys from directory_stats, which leaves the report
+        # permanently silent while every other test that builds stats by hand passes.
+        recs = [_record("0xaa", ["one.example", "two.example"]),
+                _record("0xbb", ["three.example"])]
+        s = G.directory_stats(recs, age_days=0.0, dated=True)
+        self.assertEqual(s["hosts"], len(s["host_keys"]))
+        self.assertEqual(set(s["host_keys"]),
+                         {"one.example", "two.example", "three.example"})
