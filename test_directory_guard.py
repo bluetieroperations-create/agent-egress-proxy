@@ -329,3 +329,55 @@ class TestHostChurnIsReported(unittest.TestCase):
         self.assertEqual(s["hosts"], len(s["host_keys"]))
         self.assertEqual(set(s["host_keys"]),
                          {"one.example", "two.example", "three.example"})
+
+
+class TestTheCLIActuallyREPORTS(unittest.TestCase):
+    """A warning that never reaches the operator is not a warning.
+
+    Mutation testing found this: deleting the CLI's `for w in result["warnings"]` loop
+    left all 26 other tests green while EVERY warning this module produces -- priced-entry
+    loss, sanctioned entries, host churn -- stopped reaching anyone. The assessment dict
+    still carried them; nobody ever saw them. Same wired-and-inert shape as `truncated`
+    in refresh_guard, which was added by a commit called "a truncated crawl must say so"
+    and then said so to nobody.
+    """
+
+    def _run(self, old_records, new_records):
+        import json as _json, os, subprocess, sys, tempfile, hashlib, datetime
+        d = tempfile.mkdtemp()
+        def write(name, records, age_days):
+            path = os.path.join(d, name)
+            body = _json.dumps(records)
+            with open(path, "w") as fh:
+                fh.write(body)
+            # the content-pinned sidecar, so the corpus reads as DATED
+            stamp = (datetime.datetime.now(datetime.timezone.utc)
+                     - datetime.timedelta(days=age_days)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            with open(path[:-len(".json")] + ".meta.json", "w") as fh:
+                _json.dump({"generated_at": stamp,
+                            "sha256": hashlib.sha256(body.encode()).hexdigest()}, fh)
+            return path
+        old = write("old.json", old_records, 7.0)
+        new = write("new.json", new_records, 0.0)
+        return subprocess.run([sys.executable, "directory_guard.py", "--old", old, "--new", new],
+                              capture_output=True, text=True)
+
+    def test_host_churn_reaches_stdout(self):
+        # kills: deleting the CLI's warning loop, which silences every warning in this
+        # module at once while the assessment dict still contains them.
+        old = [_record("0x%02d" % i, ["gone%d.example" % i]) for i in range(10)]
+        new = [_record("0x%02d" % i, ["new%d.example" % i]) for i in range(12)]
+        r = self._run(old, new)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)   # a warning never rejects
+        self.assertIn("churned", r.stdout)
+        self.assertIn("10 lost", r.stdout)
+        self.assertIn("0.0%", r.stdout)        # none of the previous hosts survive
+
+    def test_an_unremarkable_refresh_prints_no_warning(self):
+        # kills: printing a warning unconditionally, which would make the line above pass
+        # for the wrong reason and train the reader to ignore it.
+        recs = [_record("0x%02d" % i, ["same%d.example" % i]) for i in range(10)]
+        more = recs + [_record("0xff", ["same0.example"])]
+        r = self._run(recs, more)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("churned", r.stdout)
