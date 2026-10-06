@@ -77,6 +77,11 @@ def directory_stats(records, *, age_days=None, dated=None):
     screened = sum(1 for r in records if isinstance(r, dict)
                    and r.get("sanctioned"))
     return {"entries": len(records), "hosts": len(index), "priced": priced,
+            # The host KEYS, not only how many. A count cannot see membership: the
+            # 2026-10-01 refresh grew the index 1068 -> 1140 while 206 of the original
+            # hosts LEFT, and the count-based check below read that as 106.7% retention.
+            # See the churn report in assess_directory_refresh.
+            "host_keys": sorted(index),
             "sanctioned": screened, "age_days": age_days,
             "dated": bool(dated) if dated is not None else age_days is not None}
 
@@ -108,6 +113,12 @@ def assess_directory_refresh(old, new, *, min_retention=MIN_RETENTION,
 
     # 3. HOST retention -- the metric that survives a healthy-looking entry count.
     #    An absent host reads as `unknown`, so losing hosts silently narrows the gate.
+    #
+    #    This is a SIZE check and it is kept as the reject because 0.95 was calibrated
+    #    against a size. It catches the corpus shrinking. What it CANNOT catch is the
+    #    corpus turning over while staying the same size, which the churn report below
+    #    exists to surface -- this module said "an entry count cannot see this" about
+    #    entries and then used a HOST COUNT, which cannot see it either.
     if old["hosts"] and new["hosts"] < old["hosts"] * min_host_retention:
         reasons.append(
             "payTo-index hosts collapsed %d -> %d (kept %.0f%%, need >= %.0f%%) -- %d "
@@ -151,7 +162,38 @@ def assess_directory_refresh(old, new, *, min_retention=MIN_RETENTION,
             "carry no advertised price to compare against"
             % (old["priced"], new["priced"]))
 
-    # A SANCTIONED entry shipping in the corpus the gate reads is worth saying out loud.
+    # HOST CHURN, reported whenever it happens rather than against a threshold.
+    #
+    # THE GAP THIS CLOSES. The reject above is a size check, and size is not membership:
+    # measured on the 2026-10-01 refresh, the payTo index went 1068 -> 1140 hosts and the
+    # guard read 106.7% retention and said nothing, while 206 of the original hosts had
+    # LEFT and 278 new ones had arrived. Those 206 are endpoints the gate used to cover
+    # and now reads as `unknown`. This module wrote "an entry count cannot see this"
+    # about entries, then used a host count, which cannot see it either.
+    #
+    # NO THRESHOLD, and that is deliberate rather than lazy. The only measured point
+    # available is 80.7% membership retention on that refresh, which was verified good
+    # -- it grew in every dimension, the sidecar pinned it, the full suite passed, and it
+    # shipped. There is NO measured bad value. A reject below 80.7% would be a number
+    # nobody has evidence for, and one at the 0.95 the size check uses would have blocked
+    # a healthy refresh outright. So this reports and does not gate, exactly as
+    # index_guard reports divergence churn: the operator gets the fact the count hides,
+    # and a reject waits for a case that actually justifies one.
+    old_hosts = set(old.get("host_keys") or ())
+    new_hosts = set(new.get("host_keys") or ())
+    if old_hosts:
+        lost, gained = old_hosts - new_hosts, new_hosts - old_hosts
+        if lost or gained:
+            kept = len(old_hosts & new_hosts) / float(len(old_hosts))
+            warnings.append(
+                "payTo-index hosts churned: %d lost, %d gained -- %.1f%% of the previous "
+                "hosts survive (the count went %d -> %d, which reads as %.1f%% and hides "
+                "this). Each lost host is an endpoint the gate used to cover and now "
+                "reads as `unknown`"
+                % (len(lost), len(gained), 100.0 * kept, old["hosts"], new["hosts"],
+                   100.0 * new["hosts"] / old["hosts"] if old["hosts"] else 0.0))
+
+        # A SANCTIONED entry shipping in the corpus the gate reads is worth saying out loud.
     #
     # This warning used to be the other way round -- it fired when the sanctioned count
     # FELL to zero, on the theory that zero means NOT SCREENED rather than clean. That
