@@ -2144,7 +2144,7 @@ test_rwa_balance.py test_rwa_report.py \
  test_rwa_backfill.py test_issuer_trust_gate.py test_revert_scan.py \
  test_transfer_sim.py test_settlement_sim.py test_rpc_node.py \
  test_auth_sim.py test_directory_liveness.py test_directory_guard.py test_price_corroboration.py test_advertised_prices.py test_deploy_manifest.py test_receipt_signer.py test_x402_challenge.py test_x402_pay.py test_screen_payer.py test_mcp_http.py test_upto_scheme.py test_asset_coverage.py test_payee_syntax.py test_payto_baseline.py test_honeypot.py test_billing_preflight.py test_seller_report.py test_seller_portal.py test_reachability_ledger.py test_approvals.py test_token_decimals.py test_hmac_key.py \
- test_bounded_server.py test_ci_coverage.py test_remote_ledger.py test_seller_intel.py test_solana_backfill.py test_user_agent.py test_volume_integrity.py
+ test_bounded_server.py test_ci_coverage.py test_dependabot_config.py test_remote_ledger.py test_seller_intel.py test_solana_backfill.py test_user_agent.py test_volume_integrity.py
 ```
 
 `clients/demo_flywheel.py` demonstrates the verdict->outcome->reputation->verdict loop
