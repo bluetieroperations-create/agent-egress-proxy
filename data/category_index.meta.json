@@ -1,24 +1,24 @@
 {
-  "generated_at": "2026-10-05T17:40:52Z",
+  "generated_at": "2026-10-26T16:30:40Z",
   "indexed": [
     "ai-agents",
-    "content-media",
+    "dev-tools",
     "finance",
     "onchain",
     "search-data"
   ],
   "min_payees": 5,
   "payees": {
-    "ai-agents": 25,
-    "commerce": 4,
-    "content-media": 5,
-    "dev-tools": 4,
+    "ai-agents": 16,
+    "commerce": 3,
+    "content-media": 3,
+    "dev-tools": 7,
     "email-comms": 1,
-    "finance": 26,
+    "finance": 20,
     "identity-security": 1,
-    "onchain": 8,
-    "search-data": 25,
+    "onchain": 6,
+    "search-data": 26,
     "storage-files": 4
   },
-  "sha256": "5eac4e673b8a526d6af285be54c91ac845559372d1368f68a3da078a95f1fe9d"
+  "sha256": "6bc3155b425813901e3adb508f0825e6b453e3e1b3d23d01332935dbccf34a9d"
 }
